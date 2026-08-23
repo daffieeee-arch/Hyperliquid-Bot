@@ -4,7 +4,7 @@ This register records the current high-level decisions and the conditions under 
 
 ## ADR-001 — Python for the quantitative/trading core
 
-**Decision:** Use Python for market-data adapters, research, backtesting, strategies, portfolio/risk and initial Hyperliquid execution.
+**Decision:** Use Python for market-data adapters, research, backtesting, strategies, portfolio/risk and initial execution.
 
 **Why:** Strong quantitative ecosystem, rapid iteration, official Hyperliquid Python SDK, and sufficient performance for the initial seconds-to-days strategy horizons.
 
@@ -56,19 +56,19 @@ This register records the current high-level decisions and the conditions under 
 
 ---
 
-## ADR-006 — Hyperliquid as initial primary execution venue
+## ADR-006 — Hyperliquid as primary derivatives venue
 
-**Decision:** Hyperliquid is the first execution venue, while data architecture remains multi-venue.
+**Decision:** Hyperliquid is the initial primary venue for perpetuals and basis/carry. Bitvavo is the preferred candidate for the first very-small-capital spot deployment. The data architecture remains multi-venue.
 
-**Why:** Strong automation support, public market data, spot/perpetual products and suitable API/agent-wallet model.
+**Why:** Hyperliquid offers strong automation support, public market data, perpetual products and a suitable API/agent-wallet model. Bitvavo provides an existing verified account, EUR funding, spot markets and useful free L2 data.
 
-**Constraint:** Strategy interfaces must not become vendor-locked; execution and data are abstracted.
+**Constraint:** Strategy interfaces must not become vendor-locked; execution and data are abstracted. Neither venue receives live capital before its own promotion gates are met.
 
 ---
 
 ## ADR-007 — Free market data first
 
-**Decision:** Use Hyperliquid, Binance and other useful free sources plus our own collector before purchasing institutional data.
+**Decision:** Use Hyperliquid, Bitvavo, Kraken, Binance and other useful free sources plus our own collectors before purchasing institutional data.
 
 **Why:** The first candidate edges can be researched without expensive subscriptions. Paid data does not guarantee alpha.
 
@@ -102,7 +102,7 @@ This register records the current high-level decisions and the conditions under 
 
 ## ADR-011 — Secrets isolated from frontend and master wallet
 
-**Decision:** The master wallet seed/private key never resides on the trading host. Dedicated Hyperliquid agent/API wallets are used for automation. Browser code never receives signing keys.
+**Decision:** The Hyperliquid master wallet seed/private key never resides on the trading host. Dedicated Hyperliquid agent/API wallets are used for automation. Centralized-exchange credentials use minimum permissions with withdrawals disabled. Browser code never receives signing keys.
 
 **Why:** Minimize blast radius and make the production security boundary explicit from day one.
 
@@ -113,3 +113,39 @@ This register records the current high-level decisions and the conditions under 
 **Decision:** Start with ClickHouse + PostgreSQL + Redis + Grafana/Alloy + Python services + Next.js. Do not add Kafka, Kubernetes, Elasticsearch/OpenSearch or Spark without a demonstrated bottleneck.
 
 **Why:** Preserve RAM, operational simplicity and reliability on the current 64 GB ECC TrueNAS host.
+
+---
+
+## ADR-013 — Observe many venues; trade on few venues
+
+**Decision:** Public market data may be collected from multiple venues, but live execution venues are introduced one at a time through separate approval gates.
+
+**Initial role split:**
+
+- Hyperliquid: perpetuals, basis/carry and public data;
+- Bitvavo: EUR on-ramp, spot and candidate first small-live spot venue;
+- Kraken: public data, official paper/MCP research and optional future hedge/backup venue;
+- Binance: public reference data initially.
+
+**Why:** Multi-venue data improves price discovery and strategy research, while each live venue adds nonlinear operational, reconciliation, security and counterparty complexity.
+
+**Promotion requirement:** A new live venue must demonstrate measurable benefit such as lower all-in costs, better liquidity, a required hedge, profitable cross-venue functionality or meaningful operational redundancy.
+
+---
+
+## ADR-014 — EUR/USDC conversion belongs to treasury routing
+
+**Decision:** EUR-to-USDC conversion may be automated through a venue adapter, including Bitvavo's `USDC-EUR` market, but conversion is controlled by a dedicated treasury/quote-asset policy rather than individual strategy code.
+
+**Why:** The cheapest route can vary among direct EUR trading, conversion to USDC, and use of existing USDC inventory. Repeated automatic conversion can create unnecessary fees, spread, FX exposure and stablecoin risk.
+
+**Required controls:**
+
+- dynamically discovered markets and fee tiers;
+- all-in route-cost comparison;
+- target/min/max EUR and USDC balances;
+- per-order and daily conversion limits;
+- stale-data and slippage guards;
+- optional human approval for large conversions;
+- explicit EUR/USD and USDC risk reporting;
+- complete conversion audit trail.

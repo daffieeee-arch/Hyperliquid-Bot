@@ -1,6 +1,6 @@
 # Hyperliquid Quant Trading Platform
 
-Private multi-strategy crypto quantitative research and trading platform, designed for research-first development on TrueNAS SCALE and eventual controlled live execution on Hyperliquid.
+Private multi-strategy crypto quantitative research and trading platform, designed for research-first development on TrueNAS SCALE and eventual controlled live execution. Hyperliquid is the initial primary derivatives venue, while Bitvavo and Kraken are incorporated selectively through a phased multi-venue architecture.
 
 > **Current stage:** Architecture / Research Foundation  
 > **Default trading mode:** PAPER  
@@ -25,12 +25,24 @@ See [Product Vision](docs/PRODUCT_VISION.md) and [Strategies](docs/STRATEGIES.md
 - Research first; production trading second.
 - Multiple independent strategies instead of one monolithic model.
 - Free market data first. Paid data is considered only after measured incremental value.
+- **Observe many venues; trade on few venues.**
 - The same strategy and risk code path is used in paper, shadow, testnet and live modes.
 - Leverage is a consequence of risk-based position sizing, never the source of the edge.
 - No martingale, uncontrolled averaging down or discretionary LLM order placement.
 - Every trade must be explainable and reproducible from point-in-time data.
 - Master-wallet secrets never live on the trading server.
 - Human approval is required to promote research into capital-bearing live operation.
+
+## Initial venue roles
+
+| Venue | Initial role |
+|---|---|
+| Hyperliquid | Perpetuals, basis/carry and public market data |
+| Bitvavo | EUR on-ramp, spot data and candidate first small-live spot venue |
+| Kraken | Public data, paper/MCP research and optional future hedge/backup venue |
+| Binance | Public reference data only initially |
+
+See [Venue Strategy](docs/VENUES.md).
 
 ## Technology direction
 
@@ -63,11 +75,13 @@ quant/
   portfolio/
   risk/
   execution/
+  treasury/
   backtest/
   validation/
 data/
   adapters/
   schemas/
+  instruments/
 infra/
   clickhouse/
   postgres/
@@ -115,6 +129,7 @@ These are planning ranges, not promises of profitability.
 
 - [Product Vision](docs/PRODUCT_VISION.md)
 - [Architecture](docs/ARCHITECTURE.md)
+- [Venue Strategy](docs/VENUES.md)
 - [Roadmap](docs/ROADMAP.md)
 - [Strategies](docs/STRATEGIES.md)
 - [Research Method](docs/RESEARCH_METHOD.md)

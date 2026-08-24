@@ -2,22 +2,55 @@
 
 ## Goal
 
-Build a professional trading workstation, not a decorative dashboard. The operator should be able to understand portfolio state, strategy health, execution quality and market context within seconds, then drill down to the exact cause of any trade or anomaly.
+Build a professional trading workstation, not a decorative dashboard. The operator should understand portfolio state, strategy health, execution quality and market context within seconds, then drill down to the exact cause of any trade or anomaly.
 
 ## Technology
 
-- TypeScript
-- React
-- Next.js
-- WebSocket for realtime state
-- REST/HTTP for control/query operations
+- TypeScript;
+- React;
+- Next.js;
+- WebSocket for realtime state;
+- REST/HTTP for control/query operations;
+- strict typing and component tests;
+- production build packaged as a Linux container image.
 
 The browser never receives trading secrets.
+
+## Development model
+
+Frontend development happens in WSL2 on the Windows workstation. Next.js hot reload may be viewed from the Windows browser through localhost while the source and toolchain remain in the WSL Linux filesystem.
+
+The local frontend uses:
+
+- mock/fixture data;
+- a local FastAPI instance;
+- disposable local ClickHouse/Grafana where needed;
+- explicit environment banners;
+- no real trading credentials.
+
+TrueNAS does not compile or hot-reload the frontend. GitHub Actions creates a production image, and TrueNAS pulls a pinned tag/digest.
+
+Runtime configuration that differs between DEV/PAPER/SHADOW/LIVE must be supplied through safe server-side configuration. No secret may be exposed through `NEXT_PUBLIC_*` variables or browser bundles.
+
+## Version and environment identity
+
+The cockpit always displays:
+
+- environment (`DEV`, `PAPER`, `SHADOW`, `LIVE`);
+- backend connectivity/state;
+- source commit;
+- frontend image digest/build version;
+- active strategy/configuration version;
+- latest deployment time.
+
+A frontend/backend version incompatibility is visible and may disable mutating controls.
 
 ## Primary workspaces
 
 ### DESK
+
 The command center:
+
 - equity / PnL;
 - gross and net exposure;
 - drawdown;
@@ -25,10 +58,13 @@ The command center:
 - open positions;
 - largest risks;
 - alerts/incidents;
-- kill-switch status.
+- kill-switch status;
+- environment and deployment version.
 
 ### MARKETS
+
 TradingView/Bookmap-inspired market workspace:
+
 - synchronized charts;
 - watchlists;
 - depth and liquidity heatmap;
@@ -39,10 +75,13 @@ TradingView/Bookmap-inspired market workspace:
 - cross-exchange spread;
 - volatility;
 - market breadth;
-- strategy signal overlays.
+- strategy signal overlays;
+- venue/data-quality health.
 
 ### EXECUTION
+
 Professional OMS/TCA-style blotter:
+
 - working orders;
 - fills;
 - partial fills;
@@ -51,17 +90,22 @@ Professional OMS/TCA-style blotter:
 - slippage;
 - queue/fill quality;
 - latency;
-- opportunity cost.
+- opportunity cost;
+- order/reconciliation state;
+- client order and correlation IDs.
 
 ### PORTFOLIO
+
 - holdings/positions;
 - realized/unrealized PnL;
 - strategy attribution;
 - asset attribution;
 - cash/collateral;
-- hedge relationships.
+- hedge relationships;
+- venue and quote-currency allocation.
 
 ### RISK
+
 - gross/net exposure;
 - leverage;
 - liquidation distance;
@@ -71,9 +115,11 @@ Professional OMS/TCA-style blotter:
 - drawdown;
 - VaR/Expected Shortfall monitoring;
 - scenario stress tests;
-- risk-budget consumption.
+- risk-budget consumption;
+- venue/counterparty risk.
 
 ### STRATEGIES
+
 Leaderboard and lifecycle management:
 
 ```text
@@ -86,14 +132,16 @@ Mean Reversion     QUARANTINE  0%          ...      ...      DEGRADED
 ```
 
 ### RESEARCH
+
 Experiment registry, backtest comparison, promotion gates, parameter stability and paper-vs-backtest decay.
 
 ### SYSTEM
-Collector status, ClickHouse/Redis/Postgres state, WebSocket health, resource use, recent deployments and incidents.
+
+Collector status, ClickHouse/Redis/PostgreSQL state, WebSocket health, resource use, data gaps, recent deployments, image digests and incidents.
 
 ## Why-this-trade panel
 
-Every live/paper position should be explainable:
+Every paper/live position should be explainable:
 
 ```text
 Strategy: Spot Momentum v0.3.2
@@ -109,6 +157,7 @@ Expected edge: ...
 Risk budget: ...
 Stop / exit logic: ...
 Model/feature version: ...
+Code commit / image digest: ...
 ```
 
 This is mandatory for auditability and model debugging.
@@ -116,6 +165,7 @@ This is mandatory for auditability and model debugging.
 ## Interaction design
 
 Professional workflow matters more than visual decoration:
+
 - keyboard shortcuts;
 - sortable/filterable tables;
 - synchronized symbol selection;
@@ -123,21 +173,28 @@ Professional workflow matters more than visual decoration:
 - dockable/resizable panels;
 - multi-monitor friendly layout;
 - fast drill-down from portfolio -> strategy -> trade -> raw market/execution timeline;
-- clear distinction between informational and action controls.
+- clear distinction between informational and action controls;
+- deep links to relevant Grafana forensic views;
+- stale/loading/error states that cannot be mistaken for valid market state.
 
 ## PAPER versus LIVE
 
 Modes must be visually impossible to confuse.
 
-PAPER should prominently display `PAPER TRADING — NO REAL CAPITAL`.
+PAPER prominently displays:
 
-LIVE requires a clearly different state treatment and explicit operator action before capital-bearing strategies are enabled.
+```text
+PAPER TRADING — NO REAL CAPITAL
+```
+
+LIVE uses a clearly different visual state and requires explicit backend authorization. The frontend does not decide whether live mode exists.
 
 Global controls:
-- `HALT NEW ORDERS`
-- `FLATTEN & HALT`
 
-These controls invoke backend risk/execution actions; the UI is not itself the kill switch.
+- `HALT NEW ORDERS`;
+- `FLATTEN & HALT`.
+
+These controls invoke backend risk/execution actions; the UI is not itself the kill switch. Critical actions require confirmation and produce an audit record.
 
 ## Strategy Lab
 
@@ -150,15 +207,30 @@ Spot Momentum          ...        ...     ...      ...
 Perp Momentum          ...        ...     ...      ...
 ```
 
-The purpose is to make backtest decay visible rather than hide it.
+The purpose is to expose backtest decay rather than hide it.
+
+## Build and test expectations
+
+Before a frontend image is releasable:
+
+- TypeScript strict typecheck passes;
+- lint/format checks pass;
+- component/unit tests pass;
+- production Next.js build passes;
+- API schema/client compatibility is verified;
+- no secrets appear in the output bundle;
+- environment banner tests pass;
+- destructive controls remain disabled against mock/read-only backends;
+- image health check succeeds.
 
 ## Design inspiration
 
 Borrow workflow principles—not visual cloning—from:
+
 - Bloomberg/EMS-style dense information hierarchy;
 - TradingView synchronized charting;
 - Bookmap liquidity/order-flow context;
 - institutional OMS/EMS order blotters;
 - professional risk dashboards.
 
-The finished product should feel like one coherent terminal even though Grafana remains available for deep observability/forensics.
+The finished product should feel like one coherent terminal even though Grafana remains available for deep observability and forensics.

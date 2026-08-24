@@ -4,16 +4,55 @@
 
 Prevent false discovery, overfitting, survivorship bias, look-ahead bias and unrealistic execution assumptions from creating fictitious trading edges.
 
+Research must also be reproducible across the Windows/WSL2 development environment, GitHub CI and the TrueNAS research/runtime environment.
+
+## Research environments
+
+### Windows/WSL2
+
+Use for:
+
+- hypothesis development;
+- deterministic unit/replay tests;
+- small and medium backtests;
+- frontend/reporting work;
+- bounded sample datasets;
+- later GPU-assisted experiments.
+
+### GitHub CI
+
+Use for:
+
+- deterministic regression experiments;
+- strategy safety tests;
+- schema/contract checks;
+- reproducible build verification.
+
+CI is not the place for large stochastic research sweeps whose result changes every run.
+
+### TrueNAS research worker
+
+Use for:
+
+- large ClickHouse scans;
+- longer historical studies;
+- continuous paper data;
+- low-priority batch research against the authoritative self-collected dataset.
+
+The research worker has explicit CPU/RAM/I/O limits and cannot share failure fate with collectors or trading/risk services.
+
 ## Dataset discipline
 
-All research must preserve point-in-time correctness:
+All research preserves point-in-time correctness:
 
 - only assets tradable at that historical moment may be included;
-- listings/delistings must be timestamped;
-- funding/OI/metadata may only be used once they were actually available;
+- listings/delistings are timestamped;
+- funding/OI/metadata may only be used once actually available;
 - missing values are not silently converted to zero;
 - exchange timestamps and local receipt timestamps are distinguished;
-- fee schedules must match the relevant historical period where possible.
+- fee schedules match the relevant historical period where possible;
+- dataset extraction time and transformation code are recorded;
+- local exports retain provenance back to the TrueNAS/ClickHouse source version.
 
 ## Dataset partitions
 
@@ -26,9 +65,23 @@ Default structure:
 
 The untouched OOS period must not be reused as a tuning dataset after a disappointing result.
 
+## Reproducible execution
+
+Every experiment runs from:
+
+- a committed code state;
+- pinned dependencies/lockfiles;
+- versioned strategy/configuration;
+- identified dataset version/range;
+- explicit random seed where stochastic methods are used;
+- declared compute environment;
+- recorded image/commit when run on TrueNAS.
+
+Do not treat a notebook's uncommitted interactive state as a validated experiment.
+
 ## Cost model
 
-Every strategy report must include:
+Every strategy report includes:
 
 - maker/taker fees;
 - spread;
@@ -36,13 +89,17 @@ Every strategy report must include:
 - funding;
 - partial-fill assumptions where relevant;
 - hedge costs for multi-leg trades;
-- optional latency/adverse-selection penalties.
+- optional latency/adverse-selection penalties;
+- quote-currency conversion costs where relevant;
+- venue-specific borrow/carry costs where relevant.
 
-Stress at minimum with higher-than-expected costs (for example 1.5x and 2.0x modeled slippage/cost components where meaningful).
+Stress at minimum with higher-than-expected costs, such as 1.5x and 2.0x modeled slippage/cost components where meaningful.
 
 ## Fill realism
 
-A limit price being touched does not imply a full maker fill. Event-driven simulation should become increasingly conservative as order-book data improves. Queue position, available depth and adverse selection must be considered for microstructure strategies.
+A limit price being touched does not imply a full maker fill. Event-driven simulation becomes increasingly conservative as order-book data improves. Queue position, available depth, latency and adverse selection must be considered for microstructure strategies.
+
+Backtests, local replay and TrueNAS PAPER must expose fill-model assumptions so paper-versus-simulation decay can be measured.
 
 ## Robustness tests
 
@@ -57,7 +114,9 @@ Candidate strategies should be tested for:
 - higher costs;
 - delayed entry/exit assumptions;
 - reduced fill rates;
-- different start dates.
+- different start dates;
+- data gaps/reconnect scenarios;
+- deployment/runtime version changes where relevant.
 
 ## Core metrics
 
@@ -77,7 +136,9 @@ At minimum report:
 - turnover;
 - trade count;
 - market beta / net and gross exposure where relevant;
-- fees, funding and slippage contribution.
+- fees, funding and slippage contribution;
+- result by venue, asset and regime;
+- paper-versus-backtest divergence.
 
 ## Promotion criteria
 
@@ -89,20 +150,25 @@ There is no single magic threshold, but an initial candidate should normally dem
 - acceptable drawdown for its target risk budget;
 - reasonable parameter stability;
 - resilience to cost stress;
-- paper/shadow behavior consistent with simulation.
+- paper/shadow behavior consistent with simulation;
+- reproducibility from a clean checkout/container;
+- no material dependency on the Windows workstation for 24/7 operation.
 
 A high in-sample Sharpe alone is explicitly insufficient.
 
 ## Experiment registry
 
-Each experiment should record:
+Each experiment records:
 
 - immutable experiment ID;
 - code commit SHA;
+- container image digest where applicable;
 - dataset/version/range;
+- source environment (`DEV`, `CI`, `TRUENAS_RESEARCH`);
 - feature set;
 - strategy/model version;
 - parameters;
+- random seed where applicable;
 - cost assumptions;
 - metrics;
 - artifacts;
@@ -120,7 +186,10 @@ An ML model must not:
 - train on future information;
 - dynamically rewrite its own live objective;
 - promote itself into live capital;
-- bypass risk limits.
+- bypass risk limits;
+- depend on a GPU in the production critical path unless separately justified and tested.
+
+The Windows RTX GPU is a research accelerator, not a mandatory runtime dependency.
 
 ## Research question examples
 
@@ -132,3 +201,4 @@ Examples of properly testable questions:
 - Does Hyperliquid lag Binance for specific assets/regimes enough to overcome costs?
 - Does basis convergence remain profitable after both-leg execution costs?
 - Does order-book imbalance improve entry quality rather than merely predict tiny pre-cost returns?
+- Does a feature improve results out-of-sample and in 24/7 TrueNAS paper data, not only in a local backtest?

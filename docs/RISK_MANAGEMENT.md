@@ -4,12 +4,14 @@
 
 Edge comes first; leverage only scales an already validated edge. Position size is determined from portfolio risk, volatility, stop distance, liquidity and correlation—not from a fixed leverage target.
 
+Risk includes more than market movement. The platform also treats data quality, software version, deployment state, runtime health, venue concentration and credential boundaries as risk inputs.
+
 ## Initial conservative defaults for paper research
 
 These values are starting hypotheses, not immutable production limits:
 
 - risk per trade: roughly 0.20-0.30% of equity;
-- maximum simultaneous positions: initially small (for example 3-5);
+- maximum simultaneous positions: initially small, for example 3-5;
 - daily loss guard: approximately 1%;
 - weekly loss guard: approximately 3%;
 - hard strategy/portfolio drawdown kill threshold: approximately 7-10% depending on strategy mix;
@@ -17,6 +19,8 @@ These values are starting hypotheses, not immutable production limits:
 - no uncontrolled DCA;
 - no averaging down outside predeclared rules;
 - every leveraged directional position has an explicit loss-control mechanism.
+
+Paper defaults are not automatically copied into live configuration. Live limits require separate approval.
 
 ## Position sizing
 
@@ -28,6 +32,15 @@ position_notional = account_risk_budget / stop_distance_fraction
 
 Example: $50,000 equity, 0.30% risk ($150), 2% stop distance -> $7,500 notional. Effective portfolio leverage is therefore 0.15x, not an arbitrary 5x.
 
+Position sizing is capped by:
+
+- venue maximum and internal maximum leverage;
+- minimum liquidation distance;
+- order-book depth and expected slippage;
+- per-asset/strategy/venue concentration;
+- current data/runtime health;
+- total gross and net portfolio limits.
+
 ## Portfolio-level risk
 
 Track at minimum:
@@ -36,17 +49,41 @@ Track at minimum:
 - net exposure;
 - effective leverage;
 - exposure by asset/sector/strategy;
+- exposure by venue and quote currency;
 - BTC/ETH beta;
 - realized and forecast volatility;
 - correlation clusters;
 - drawdown;
 - VaR / Expected Shortfall as monitoring tools;
 - liquidation distance for leveraged positions;
-- liquidity/capacity risk.
+- liquidity/capacity risk;
+- venue/counterparty concentration;
+- EUR/USD and stablecoin exposure.
 
 ## Strategy risk budgets
 
 Each strategy receives a risk budget separate from capital allocation. A high-correlation portfolio of strategies must not appear diversified merely because it has many names.
+
+Risk allocation is attached to a specific strategy/configuration version and deployment environment. PAPER evidence does not authorize LIVE risk.
+
+## Operational and deployment risk
+
+The risk engine receives health signals including:
+
+- market-data freshness and gaps;
+- collector/queue pressure;
+- ClickHouse/control-state health;
+- reconciliation status;
+- venue/API status;
+- active environment;
+- approved image digest versus deployed digest;
+- configuration version;
+- restart/crash state;
+- resource pressure and clock health.
+
+A mismatch between approved and deployed software/configuration blocks new live risk.
+
+The Windows development workstation is never part of the continuous execution dependency chain. Turning it off must not affect TrueNAS PAPER/SHADOW/LIVE services.
 
 ## Dynamic risk controls
 
@@ -58,9 +95,12 @@ Safe adaptation may reduce position sizing when:
 - execution slippage worsens;
 - strategy drawdown deepens;
 - correlation between strategies rises;
-- data quality becomes uncertain.
+- data quality becomes uncertain;
+- venue health degrades;
+- runtime resource pressure rises;
+- observed fills diverge from the simulator.
 
-Hard limits are never relaxed automatically by an ML model.
+Hard limits are never relaxed automatically by an ML model, LLM, frontend or deployment process.
 
 ## Strategy health states
 
@@ -68,20 +108,25 @@ Hard limits are never relaxed automatically by an ML model.
 ACTIVE -> REDUCED -> QUARANTINED -> RETIRED
 ```
 
-A strategy may be reduced or quarantined when live/paper outcomes materially diverge from its validated distribution, for example via persistent negative expectancy, abnormal slippage, higher drawdown or changed market regime.
+A strategy may be reduced or quarantined when paper/live outcomes materially diverge from its validated distribution, for example via persistent negative expectancy, abnormal slippage, higher drawdown or changed market regime.
+
+Software health is tracked separately. A strategy may remain valid while an image is rolled back, and software may remain healthy while a strategy is quarantined.
 
 ## Kill switches
 
-The production control plane must provide:
+The production control plane provides:
 
 - `HALT NEW ORDERS` — no new entries; existing positions still managed safely;
 - `FLATTEN & HALT` — controlled close-out then disable execution;
 - automatic stale-data halt;
 - API/connectivity failure halt;
 - drawdown/loss-limit halt;
-- reconciliation mismatch halt.
+- reconciliation mismatch halt;
+- deployment/configuration mismatch halt;
+- venue-health halt;
+- resource-pressure halt where continued operation is unsafe.
 
-A kill switch must live in the trading/control layer, not only in the UI.
+A kill switch lives in the trading/control layer, not only in the UI, Grafana, Hermes or Codex.
 
 ## Stress scenarios
 
@@ -91,7 +136,18 @@ Before live promotion test scenarios such as:
 - spread multiple times normal;
 - funding reversal;
 - partial fill of only one hedge leg;
-- WebSocket disconnect during open position;
+- WebSocket disconnect during an open position;
 - exchange API rejects/cancel delay;
 - restart with open positions;
-- stale local state versus exchange state.
+- stale local state versus exchange state;
+- ClickHouse/control database unavailable;
+- Redis unavailable when introduced;
+- wrong/stale image digest or configuration;
+- TrueNAS container restart or host reboot;
+- Windows workstation and Hermes unavailable;
+- rollback during an open paper/shadow position;
+- venue outage while a multi-leg hedge is incomplete.
+
+## Runtime maturity gate
+
+TrueNAS 26 BETA.3 may be used for PAPER research with monitoring and backups. Before material live risk, prefer a stable runtime release or explicitly approve and document the operating-system risk after soak, recovery and rollback testing.

@@ -2,20 +2,27 @@
 
 ## Overview
 
-The platform follows one simple venue principle:
+The platform follows two governing principles:
 
 > **Observe many venues; trade on few venues.**
 
-The data plane may ingest multiple free public feeds, while authenticated live execution is introduced gradually and only where it has a measurable purpose.
+> **Develop away from the 24/7 runtime; deploy tested immutable artifacts.**
+
+The data plane may ingest multiple free public feeds, while authenticated execution is introduced gradually and only where it has a measurable purpose. Source development happens on Windows 11 through WSL2 and Codex. TrueNAS runs pinned Linux container images for persistent data collection, paper trading, observability and eventual live execution.
 
 ```mermaid
 flowchart LR
+    DEV[Windows 11 + WSL2\nCodex development] --> GH[GitHub PR]
+    GH --> CI[GitHub Actions\nTests + image build]
+    CI --> REG[Private GHCR\nversioned image + digest]
+    REG --> TN[TrueNAS SCALE\nPAPER / SHADOW / LIVE]
+
     HL[Hyperliquid] --> MD[Market Data Adapters]
     BV[Bitvavo] --> MD
     KR[Kraken] --> MD
     BN[Binance / Other Free Feeds] --> MD
     MD --> CH[(ClickHouse)]
-    MD --> R[(Redis)]
+    MD --> R[(Redis when needed)]
 
     CH --> Q[Research & Backtest]
     CH --> F[Feature Engine]
@@ -30,7 +37,7 @@ flowchart LR
     VR --> BE[Bitvavo Spot Adapter]
     VR --> KE[Kraken Adapter - optional]
 
-    PG[(PostgreSQL)] --> S
+    PG[(PostgreSQL when needed)] --> S
     PG --> K
     PG --> VR
 
@@ -42,7 +49,50 @@ flowchart LR
     O[Grafana + Alloy / OpenTelemetry] --> CH
 ```
 
-See [Venue Strategy](VENUES.md) for the rollout policy and exchange roles.
+See [Development Workflow](DEVELOPMENT.md), [Deployment](DEPLOYMENT.md), and [Venue Strategy](VENUES.md).
+
+## Environment separation
+
+### DEV — Windows 11 + WSL2
+
+Owns:
+
+- source code;
+- Codex-driven implementation;
+- unit tests;
+- local disposable integration services;
+- small deterministic datasets and replay fixtures;
+- frontend development;
+- small/medium research experiments.
+
+DEV does not own 24/7 state and does not contain production trading credentials.
+
+### CI — GitHub Actions
+
+Owns independent verification and release construction:
+
+- lint/type/test checks;
+- frontend production build;
+- contract and safety tests;
+- container build;
+- secret/dependency/security checks;
+- release image publication to private GHCR.
+
+CI does not directly promote a strategy into live capital.
+
+### PAPER / SHADOW / LIVE — TrueNAS
+
+Owns:
+
+- continuous market-data collection;
+- durable ClickHouse data;
+- paper/shadow/live strategy processes;
+- operational state;
+- Grafana and production cockpit;
+- runtime secrets;
+- monitoring, alerts, recovery and backups.
+
+These are separately configured deployments. Source code is never edited in place inside the running TrueNAS containers.
 
 ## Separation of concerns
 
@@ -63,9 +113,17 @@ MarketData.venue_health(venue)
 
 Initial public adapters target Hyperliquid, Bitvavo, Kraken and selected Binance feeds. Additional venues are added only where they serve a research hypothesis or resilience requirement.
 
+The local development data plane uses mocks, fixtures and disposable services. The TrueNAS data plane is authoritative for self-collected 24/7 history.
+
 ### Research Plane
 
-Runs isolated experiments and may consume significant CPU/RAM without affecting the live trading process. It contains feature research, event-driven backtesting, walk-forward validation, Monte Carlo/stress tests and an experiment registry.
+Runs isolated experiments and may consume significant CPU/RAM without affecting the continuous trading/data path. It contains feature research, event-driven backtesting, walk-forward validation, Monte Carlo/stress tests and an experiment registry.
+
+Research may run:
+
+- locally in WSL2 against bounded sample data;
+- in CI for deterministic regression tests;
+- as a controlled low-priority TrueNAS research worker against larger datasets.
 
 Research can compare many venues without granting those venues live order permissions.
 
@@ -82,11 +140,11 @@ Small, deterministic and continuously available. It consists of:
 - account reconciliation;
 - treasury and quote-asset controls.
 
-No research job may share failure fate with the trading process.
+No research job or development tool may share failure fate with the trading process.
 
 ### Control Plane
 
-FastAPI + PostgreSQL manage configuration and lifecycle state, including:
+FastAPI and, when required, PostgreSQL manage configuration and lifecycle state, including:
 
 - active strategy versions;
 - allocations;
@@ -98,13 +156,36 @@ FastAPI + PostgreSQL manage configuration and lifecycle state, including:
 - trading mode;
 - experiment/promotion status;
 - operator actions;
-- audit history.
+- audit history;
+- deployed commit/image digest.
+
+PostgreSQL is the planned durable transactional store, but it is not a blocker for the first local vertical slice. The initial implementation may begin with versioned configuration and explicit interfaces before introducing the service.
 
 ### Observability Plane
 
 Grafana and OpenTelemetry/Grafana Alloy expose metrics, logs, traces, alerts and forensic timelines. Observability has read access to trading analytics and must not become a path to sign orders.
 
-Every balance, signal, order, fill, fee and PnL record must include a venue and canonical instrument identifier.
+Grafana dashboard definitions are version-controlled. Grafana MCP may edit dashboards and alerts within the Hyperliquid project scope, while datasource database credentials remain read-only wherever possible.
+
+Every balance, signal, order, fill, fee and PnL record includes a venue and canonical instrument identifier. Every deployment and trading record includes a code commit, image digest and configuration version.
+
+### Build & Deployment Plane
+
+The supply chain converts reviewed source into runtime artifacts:
+
+```text
+source branch
+  -> pull request
+  -> CI validation
+  -> merge
+  -> release image build
+  -> private GHCR
+  -> digest-pinned TrueNAS deployment
+  -> health/soak gates
+  -> promotion or rollback
+```
+
+The same image digest should be promoted through PAPER, SHADOW and SMALL LIVE wherever practical. Configuration and secrets change by environment; application code does not.
 
 ## Venue-neutral domain model
 
@@ -177,9 +258,11 @@ Use for append-heavy analytical/time-series data:
 - PnL/equity snapshots;
 - backtest results.
 
+A small disposable ClickHouse container is used in local development. The managed TrueNAS ClickHouse instance holds continuous paper/runtime data in a separate Hyperliquid database and with separate writer/read-only identities.
+
 ### PostgreSQL
 
-Use for durable transactional/configuration state:
+Use for durable transactional/configuration state when the control plane requires it:
 
 - strategy registry and versions;
 - model metadata;
@@ -194,7 +277,7 @@ Use for durable transactional/configuration state:
 
 ### Redis
 
-Use as a bounded realtime nervous system, not as the system of record:
+Use as a bounded realtime nervous system only when multiple services require shared low-latency state:
 
 - current market state;
 - signal state;
@@ -203,7 +286,7 @@ Use as a bounded realtime nervous system, not as the system of record:
 - order/position cache;
 - lightweight streams/events.
 
-Redis must have memory limits and persistence choices appropriate to disposable realtime state.
+The first local slice may use bounded in-process queues. Redis is not the authoritative long-term market-data or execution ledger and is introduced only when service separation justifies it.
 
 ## Backend / frontend boundary
 
@@ -220,7 +303,7 @@ flowchart TD
     MW[Master Hardware Wallet] -. authorizes .-> HL
 ```
 
-Withdrawal/funding permissions are never granted to automated Bitvavo/Kraken credentials. The Hyperliquid master wallet seed never resides on TrueNAS.
+Withdrawal/funding permissions are never granted to automated Bitvavo/Kraken credentials. The Hyperliquid master wallet seed never resides on Windows, TrueNAS, Docker, GitHub or the browser.
 
 ## Execution modes
 
@@ -234,9 +317,9 @@ All modes implement one broker/execution interface:
 
 Strategy and risk code must not branch into separate logic just because the broker or venue changes. This is central to avoiding paper/live drift.
 
-Each live venue is promoted separately. A strategy approved for paper trading on multiple venues is not automatically approved to place live orders on those venues.
+The source tree may contain future execution adapters, but local DEV runs fail closed to PAPER unless a separate explicitly authorized integration environment is used. Each live venue is promoted separately.
 
-## Planned service layout
+## Planned repository layout
 
 ```text
 apps/
@@ -269,7 +352,9 @@ data/
   schemas/
   instruments/
 infra/
-  docker/
+  dev/
+  images/
+  truenas/
   clickhouse/
   postgres/
   redis/
@@ -280,6 +365,8 @@ infra/
 ## Performance philosophy
 
 Python is the default trading/research language because the first strategies operate over seconds-to-days rather than microseconds. If profiling later proves a latency-sensitive path has meaningful economic value, that isolated collector/execution component may be replaced with Rust without changing strategy APIs.
+
+The Windows RTX GPU may support later model experiments, but the first strategy and execution path must not depend on a GPU.
 
 ## Reliability requirements
 
@@ -300,4 +387,6 @@ The production execution path must eventually support:
 - dead-man/cancel-all protection where supported;
 - explicit counterparty/venue concentration limits;
 - separate exchange credentials with minimum permissions;
-- dedicated Hyperliquid agent wallet(s) separate from the master wallet.
+- dedicated Hyperliquid agent wallet(s) separate from the master wallet;
+- versioned image deployment with health checks and tested rollback;
+- no runtime dependency on the Windows development machine.

@@ -6,36 +6,46 @@ A professional crypto quantitative research and trading platform centered on Hyp
 
 The platform is designed to behave more like a small systematic trading desk than a single retail bot. It should continuously test multiple independent sources of edge, measure whether those edges survive realistic costs, allocate capital according to current evidence, and reduce or quarantine strategies whose live behavior diverges from their validated distribution.
 
+Development happens on a Windows 11 workstation through WSL2 and Codex. Tested, versioned Linux container images are deployed to TrueNAS SCALE for continuous data collection, paper/shadow trading, observability and eventual controlled live execution. The runtime remains independent of the development workstation.
+
 ## Strategic objective
 
-The objective is not to maximize the number of trades or to chase a fixed percentage target. The objective is to maximize **risk-adjusted, after-cost expected return** while keeping drawdowns, concentration, leverage, operational risk and model risk within explicit limits.
+The objective is not to maximize the number of trades or chase a fixed percentage target. The objective is to maximize **risk-adjusted, after-cost expected return** while keeping drawdowns, concentration, leverage, operational risk and model risk within explicit limits.
 
 ## Initial alpha engines
 
 ### 1. Spot Momentum
+
 Hold high-relative-strength spot assets for hours to days, allowing exceptional winners to run while controlling downside with volatility-aware exits.
 
 ### 2. Perpetual Momentum
+
 Long or short liquid perpetual markets depending on regime and momentum. Leverage is determined by risk sizing and volatility, not chosen as a fixed multiplier.
 
 ### 3. Basis & Carry
+
 Market-neutral or low-beta relative-value trades using spot/perpetual or cross-venue price dislocations, funding and basis convergence.
 
 ### 4. Relative Strength
+
 Long stronger assets and hedge broad market beta with BTC/ETH or weaker assets where appropriate.
 
 ### 5. Order Flow / Microstructure
+
 Use spreads, depth, imbalance, aggressive flow and cross-exchange lead/lag primarily to improve timing and execution; only promote to standalone alpha if it proves independently robust.
 
 ## Professional operating model
 
-The platform has five logical planes:
+The platform has six logical planes:
 
 - **Data Plane** — collection, normalization and point-in-time storage.
 - **Research Plane** — hypotheses, backtests, validation and experiment registry.
 - **Trading Plane** — signals, portfolio construction, risk and execution.
 - **Control Plane** — configuration, strategy lifecycle, permissions and operator actions.
 - **Observability Plane** — Grafana, traces, logs, alerts and forensic reconstruction.
+- **Build & Deployment Plane** — Windows/WSL2 development, GitHub CI, private images and TrueNAS promotion/rollback.
+
+The build/deployment plane ensures that source changes do not directly affect 24/7 services. PAPER, SHADOW and LIVE are distinct runtime environments with separate configuration, secrets and approval gates.
 
 ## What self-learning means here
 
@@ -50,19 +60,35 @@ Safe adaptation includes:
 - execution model calibration;
 - strategy health monitoring and automatic quarantine.
 
-AI/Hermes can assist research by proposing hypotheses, running experiments, comparing models and producing reports. A newly discovered model may not directly enter live trading. Promotion always follows the research-to-live gate sequence.
+AI/Hermes/Codex can assist research and engineering by proposing hypotheses, implementing code, running experiments, comparing models and producing reports. A newly discovered model may not directly enter live trading. Promotion always follows both strategy and software-artifact gates.
 
 ## Free-data-first policy
 
 The first research stage uses free sources only:
 
-- Hyperliquid public market data;
-- Hyperliquid historical data where available;
-- Binance public historical/realtime data;
-- Bybit/other free exchange data where useful;
+- Hyperliquid public market data and historical data where available;
+- Binance public historical/realtime reference data;
+- Bitvavo public EUR/USDC spot and L2 data;
+- Kraken public market data and paper/MCP capabilities;
+- other free exchange data where a specific hypothesis requires it;
 - self-collected WebSocket data stored in ClickHouse.
 
-Paid data is only considered when an explicit research bottleneck exists and incremental value can be measured with an A/B-style feature comparison.
+Paid data is only considered when an explicit research bottleneck exists and incremental value can be measured against the free-data baseline.
+
+## Engineering objective
+
+The platform must be reproducible and operable, not merely correct on one computer.
+
+Success requires:
+
+- source controlled in GitHub;
+- deterministic local and CI tests;
+- version-pinned dependencies;
+- immutable container artifacts;
+- digest-pinned TrueNAS deployments;
+- deployment health checks and rollback;
+- no dependence on the Windows PC for 24/7 operation;
+- every trade attributable to strategy, configuration, commit and image digest.
 
 ## Success criteria
 
@@ -75,7 +101,8 @@ Success is not a pretty backtest. A strategy is interesting only when it demonst
 - out-of-sample persistence;
 - realistic fill assumptions;
 - stress resilience when costs are increased;
-- consistent paper/shadow behavior relative to simulation.
+- consistent paper/shadow behavior relative to simulation;
+- stable operation on the runtime host.
 
 ## Non-goals
 
@@ -86,4 +113,5 @@ We are not building:
 - an LLM that directly decides BUY/SELL in production;
 - a strategy that depends on hidden look-ahead information;
 - a system that automatically promotes new research into live capital;
-- an HFT system requiring microsecond co-location as the first objective.
+- an HFT system requiring microsecond co-location as the first objective;
+- a production system that runs from a mutable source checkout on TrueNAS.

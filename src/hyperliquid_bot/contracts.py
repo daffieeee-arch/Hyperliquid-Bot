@@ -1,8 +1,9 @@
 """Small venue-neutral contracts for normalized market data."""
 
+import json
 import re
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 from typing import Final
@@ -27,8 +28,8 @@ class InstrumentType(StrEnum):
 
 MARKET_EVENT_SCHEMA_VERSION: Final = 1
 
+_INSTRUMENT_ID_VERSION: Final = "instrument-v1"
 _CANONICAL_ASSET_PATTERN: Final = re.compile(r"[A-Z0-9]+(?:[._][A-Z0-9]+)*")
-_CONTRACT_QUALIFIER_PATTERN: Final = re.compile(r"[A-Z0-9]+(?:[._-][A-Z0-9]+)*")
 
 
 def _require_text(value: object, *, field_name: str) -> str:
@@ -48,14 +49,25 @@ def _require_canonical_asset(value: object, *, field_name: str) -> str:
     return asset
 
 
-def _require_contract_qualifier(value: object) -> str:
-    qualifier = _require_text(value, field_name="contract_qualifier")
-    if _CONTRACT_QUALIFIER_PATTERN.fullmatch(qualifier) is None:
-        raise ValueError(
-            "contract_qualifier must contain only uppercase ASCII letters, digits, dots, "
-            "underscores or hyphens."
-        )
-    return qualifier
+def _serialize_instrument_id(
+    *,
+    venue: Venue,
+    instrument_type: InstrumentType,
+    venue_market_id: str,
+    base_asset: str,
+    quote_asset: str,
+    contract_expiry: date | None,
+) -> str:
+    components: list[str | None] = [
+        _INSTRUMENT_ID_VERSION,
+        venue.value,
+        instrument_type.value,
+        venue_market_id,
+        base_asset,
+        quote_asset,
+        contract_expiry.isoformat() if contract_expiry is not None else None,
+    ]
+    return json.dumps(components, ensure_ascii=True, separators=(",", ":"))
 
 
 def _require_positive_decimal(value: object, *, field_name: str) -> None:
@@ -81,8 +93,9 @@ class Instrument:
     instrument_type: InstrumentType
     base_asset: str
     quote_asset: str
-    native_symbol: str
-    contract_qualifier: str | None = None
+    venue_market_id: str
+    native_symbol: str = field(compare=False)
+    contract_qualifier: date | None = None
     canonical_instrument_id: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -93,19 +106,29 @@ class Instrument:
 
         base_asset = _require_canonical_asset(self.base_asset, field_name="base_asset")
         quote_asset = _require_canonical_asset(self.quote_asset, field_name="quote_asset")
+        venue_market_id = _require_text(self.venue_market_id, field_name="venue_market_id")
         _require_text(self.native_symbol, field_name="native_symbol")
         if base_asset == quote_asset:
             raise ValueError("base_asset and quote_asset must differ.")
 
-        canonical_id = f"{self.venue.value}:{self.instrument_type.value}:{base_asset}-{quote_asset}"
+        contract_expiry: date | None = None
         if self.instrument_type is InstrumentType.FUTURE:
             if self.contract_qualifier is None:
                 raise ValueError("future instruments require a contract_qualifier.")
-            qualifier = _require_contract_qualifier(self.contract_qualifier)
-            canonical_id = f"{canonical_id}:{qualifier}"
+            if type(self.contract_qualifier) is not date:
+                raise TypeError("contract_qualifier must be a date.")
+            contract_expiry = self.contract_qualifier
         elif self.contract_qualifier is not None:
             raise ValueError("contract_qualifier is only valid for future instruments.")
 
+        canonical_id = _serialize_instrument_id(
+            venue=self.venue,
+            instrument_type=self.instrument_type,
+            venue_market_id=venue_market_id,
+            base_asset=base_asset,
+            quote_asset=quote_asset,
+            contract_expiry=contract_expiry,
+        )
         object.__setattr__(self, "canonical_instrument_id", canonical_id)
 
 

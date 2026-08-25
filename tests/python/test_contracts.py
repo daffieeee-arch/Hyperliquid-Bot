@@ -1,7 +1,7 @@
 """Deterministic tests for the Phase 1A-1 market-data contracts."""
 
 from dataclasses import FrozenInstanceError, replace
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import cast
 
@@ -23,6 +23,7 @@ def _instrument() -> Instrument:
         instrument_type=InstrumentType.SPOT,
         base_asset="SOL",
         quote_asset="EUR",
+        venue_market_id="SOL-EUR",
         native_symbol="SOL-EUR",
     )
 
@@ -63,57 +64,98 @@ def test_enum_members_are_exactly_the_documented_values() -> None:
     ]
 
 
-def test_instrument_generates_documented_canonical_id_and_preserves_native_symbol() -> None:
+def test_instrument_generates_unambiguous_versioned_id_and_preserves_native_symbol() -> None:
     instrument = _instrument()
 
-    assert instrument.canonical_instrument_id == "bitvavo:spot:SOL-EUR"
+    assert instrument.canonical_instrument_id == (
+        '["instrument-v1","bitvavo","spot","SOL-EUR","SOL","EUR",null]'
+    )
+    assert instrument.venue_market_id == "SOL-EUR"
     assert instrument.native_symbol == "SOL-EUR"
 
 
-def test_native_symbol_is_stored_separately_from_the_canonical_id() -> None:
+def test_native_symbol_aliases_share_identity_for_the_same_venue_market_id() -> None:
     first = _instrument()
     second = Instrument(
         venue=Venue.BITVAVO,
         instrument_type=InstrumentType.SPOT,
         base_asset="SOL",
         quote_asset="EUR",
+        venue_market_id="SOL-EUR",
         native_symbol="SOLEUR",
     )
 
     assert first.canonical_instrument_id == second.canonical_instrument_id
     assert first.native_symbol != second.native_symbol
+    assert first == second
+    assert hash(first) == hash(second)
 
 
-def test_future_contract_qualifier_prevents_canonical_id_collisions() -> None:
+def test_hip3_dex_namespace_disambiguates_markets_with_the_same_pair() -> None:
+    first_dex = Instrument(
+        venue=Venue.HYPERLIQUID,
+        instrument_type=InstrumentType.PERPETUAL,
+        base_asset="BTC",
+        quote_asset="USDC",
+        venue_market_id="builder-a:BTC",
+        native_symbol="builder-a:BTC",
+    )
+    second_dex = Instrument(
+        venue=Venue.HYPERLIQUID,
+        instrument_type=InstrumentType.PERPETUAL,
+        base_asset="BTC",
+        quote_asset="USDC",
+        venue_market_id="builder-b:BTC",
+        native_symbol="builder-b:BTC",
+    )
+
+    assert first_dex.canonical_instrument_id == (
+        '["instrument-v1","hyperliquid","perpetual","builder-a:BTC","BTC","USDC",null]'
+    )
+    assert second_dex.canonical_instrument_id == (
+        '["instrument-v1","hyperliquid","perpetual","builder-b:BTC","BTC","USDC",null]'
+    )
+    assert first_dex.canonical_instrument_id != second_dex.canonical_instrument_id
+    assert first_dex != second_dex
+
+
+def test_typed_future_expiry_prevents_canonical_id_collisions() -> None:
     september_future = Instrument(
         venue=Venue.BINANCE,
         instrument_type=InstrumentType.FUTURE,
         base_asset="BTC",
         quote_asset="USDT",
+        venue_market_id="BTCUSDT-DELIVERY",
         native_symbol="BTCUSDT_260925",
-        contract_qualifier="2026-09-25",
+        contract_qualifier=date(2026, 9, 25),
     )
     december_future = Instrument(
         venue=Venue.BINANCE,
         instrument_type=InstrumentType.FUTURE,
         base_asset="BTC",
         quote_asset="USDT",
+        venue_market_id="BTCUSDT-DELIVERY",
         native_symbol="BTCUSDT_261225",
-        contract_qualifier="2026-12-25",
+        contract_qualifier=date(2026, 12, 25),
     )
 
-    assert september_future.canonical_instrument_id == "binance:future:BTC-USDT:2026-09-25"
-    assert december_future.canonical_instrument_id == "binance:future:BTC-USDT:2026-12-25"
+    assert september_future.canonical_instrument_id == (
+        '["instrument-v1","binance","future","BTCUSDT-DELIVERY","BTC","USDT","2026-09-25"]'
+    )
+    assert december_future.canonical_instrument_id == (
+        '["instrument-v1","binance","future","BTCUSDT-DELIVERY","BTC","USDT","2026-12-25"]'
+    )
     assert september_future.canonical_instrument_id != december_future.canonical_instrument_id
 
 
-def test_contract_qualifier_is_required_only_for_futures() -> None:
+def test_contract_qualifier_is_a_typed_date_required_only_for_futures() -> None:
     with pytest.raises(ValueError):
         Instrument(
             venue=Venue.BINANCE,
             instrument_type=InstrumentType.FUTURE,
             base_asset="BTC",
             quote_asset="USDT",
+            venue_market_id="BTCUSDT-DELIVERY",
             native_symbol="BTCUSDT_260925",
         )
 
@@ -123,19 +165,54 @@ def test_contract_qualifier_is_required_only_for_futures() -> None:
             instrument_type=InstrumentType.SPOT,
             base_asset="SOL",
             quote_asset="EUR",
+            venue_market_id="SOL-EUR",
             native_symbol="SOL-EUR",
-            contract_qualifier="2026-09-25",
+            contract_qualifier=date(2026, 9, 25),
         )
 
-    with pytest.raises(ValueError):
+
+@pytest.mark.parametrize(
+    "invalid_expiry",
+    [
+        pytest.param("2026-09-25", id="iso-string"),
+        pytest.param("20260925", id="compact-date"),
+        pytest.param("2026-W39-5", id="iso-week-date"),
+        pytest.param("2026-9-25", id="non-padded"),
+        pytest.param("25-09-2026", id="day-first"),
+        pytest.param("2026-02-29", id="invalid-non-leap-day"),
+        pytest.param("2026-04-31", id="invalid-month-day"),
+        pytest.param("0000-01-01", id="invalid-year"),
+        pytest.param(datetime(2026, 9, 25, tzinfo=UTC), id="datetime-subclass"),
+    ],
+)
+def test_future_rejects_string_and_datetime_expiry_representations(
+    invalid_expiry: object,
+) -> None:
+    with pytest.raises(TypeError):
         Instrument(
             venue=Venue.BINANCE,
             instrument_type=InstrumentType.FUTURE,
             base_asset="BTC",
             quote_asset="USDT",
+            venue_market_id="BTCUSDT-DELIVERY",
             native_symbol="BTCUSDT_260925",
-            contract_qualifier="2026:09:25",
+            contract_qualifier=cast(date, invalid_expiry),
         )
+
+
+def test_future_accepts_a_valid_leap_day() -> None:
+    instrument = Instrument(
+        venue=Venue.BINANCE,
+        instrument_type=InstrumentType.FUTURE,
+        base_asset="BTC",
+        quote_asset="USDT",
+        venue_market_id="BTCUSDT-DELIVERY",
+        native_symbol="BTCUSDT_280229",
+        contract_qualifier=date(2028, 2, 29),
+    )
+
+    assert instrument.contract_qualifier == date(2028, 2, 29)
+    assert instrument.canonical_instrument_id.endswith('"2028-02-29"]')
 
 
 def test_identical_contract_input_is_deterministic_and_hashable() -> None:
@@ -167,6 +244,7 @@ def test_instrument_rejects_noncanonical_asset_codes(invalid_asset: str) -> None
             instrument_type=InstrumentType.SPOT,
             base_asset=invalid_asset,
             quote_asset="EUR",
+            venue_market_id="SOL-EUR",
             native_symbol="SOL-EUR",
         )
 
@@ -176,6 +254,7 @@ def test_instrument_rejects_noncanonical_asset_codes(invalid_asset: str) -> None
             instrument_type=InstrumentType.SPOT,
             base_asset="SOL",
             quote_asset=invalid_asset,
+            venue_market_id="SOL-EUR",
             native_symbol="SOL-EUR",
         )
 
@@ -196,8 +275,29 @@ def test_instrument_rejects_invalid_native_symbols(native_symbol: str) -> None:
             instrument_type=InstrumentType.SPOT,
             base_asset="SOL",
             quote_asset="EUR",
+            venue_market_id="SOL-EUR",
             native_symbol=native_symbol,
         )
+
+
+@pytest.mark.parametrize(
+    "venue_market_id",
+    [
+        pytest.param("", id="empty"),
+        pytest.param(" ", id="whitespace"),
+        pytest.param(" builder:BTC", id="leading-whitespace"),
+        pytest.param("builder:BTC ", id="trailing-whitespace"),
+        pytest.param("builder:BTC\n", id="control-character"),
+    ],
+)
+def test_instrument_rejects_invalid_venue_market_ids(venue_market_id: str) -> None:
+    with pytest.raises(ValueError):
+        replace(_instrument(), venue_market_id=venue_market_id)
+
+
+def test_instrument_rejects_non_string_venue_market_id() -> None:
+    with pytest.raises(TypeError):
+        replace(_instrument(), venue_market_id=cast(str, 1))
 
 
 def test_instrument_rejects_invalid_runtime_types_and_identical_assets() -> None:
@@ -207,6 +307,7 @@ def test_instrument_rejects_invalid_runtime_types_and_identical_assets() -> None
             instrument_type=InstrumentType.SPOT,
             base_asset="SOL",
             quote_asset="EUR",
+            venue_market_id="SOL-EUR",
             native_symbol="SOL-EUR",
         )
 
@@ -216,6 +317,7 @@ def test_instrument_rejects_invalid_runtime_types_and_identical_assets() -> None
             instrument_type=cast(InstrumentType, "spot"),
             base_asset="SOL",
             quote_asset="EUR",
+            venue_market_id="SOL-EUR",
             native_symbol="SOL-EUR",
         )
 
@@ -225,6 +327,7 @@ def test_instrument_rejects_invalid_runtime_types_and_identical_assets() -> None
             instrument_type=InstrumentType.SPOT,
             base_asset=cast(str, 1),
             quote_asset="EUR",
+            venue_market_id="SOL-EUR",
             native_symbol="SOL-EUR",
         )
 
@@ -234,6 +337,7 @@ def test_instrument_rejects_invalid_runtime_types_and_identical_assets() -> None
             instrument_type=InstrumentType.SPOT,
             base_asset="SOL",
             quote_asset="EUR",
+            venue_market_id="SOL-EUR",
             native_symbol=cast(str, b"SOL-EUR"),
         )
 
@@ -243,6 +347,7 @@ def test_instrument_rejects_invalid_runtime_types_and_identical_assets() -> None
             instrument_type=InstrumentType.SPOT,
             base_asset="SOL",
             quote_asset="SOL",
+            venue_market_id="SOL-SOL",
             native_symbol="SOL-SOL",
         )
 

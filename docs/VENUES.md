@@ -49,6 +49,23 @@ Each additional live execution adapter requires production support for:
 
 Complexity grows faster than the number of venues. A new live venue is admitted only when its expected benefit exceeds its engineering and operational cost.
 
+## Feed identity and credential separation
+
+A venue and instrument do not uniquely identify a feed product. Future normalized feed identity
+must separately identify the product and access tier so public, authenticated read-only,
+account-/tier-gated, institutional and node-provided feeds cannot be conflated. Bitvavo Standard
+and Market Data Pro are distinct products: Pro is a committed future authenticated read-only feed
+that must support simultaneous A/B collection with Standard and must never silently fall back to
+Standard while retaining Pro identity.
+
+Read-only market-data credentials and execution credentials have different authority and lifecycle.
+Any future automated data credential is dedicated to data, never reused as an execution key,
+receives no Trade or Withdraw permission, and is IP-allowlisted where possible. This phase creates
+no Bitvavo key or authenticated integration. Potential future gated sources such as Kraken L3,
+Coinbase Exchange full/L3/direct, Deribit raw, OKX higher-tier 10-ms/SBE, Bybit institutional and
+Hyperliquid node/L4 require separate later approval and do not expand the currently implemented
+venues.
+
 ## Phased rollout
 
 ### Phase 1 — Public data and unified paper execution
@@ -188,6 +205,27 @@ Examples:
 
 Venue adapters own mapping from venue metadata and `native_symbol` aliases to this normalized identity, plus venue-native precision rules.
 
+### Binance Spot raw-trade boundary
+
+The Phase 1A-3A Binance adapter is a pure offline boundary for one already JSON-decoded Spot raw
+`@trade` event. It does not implement a WebSocket collector, combined-stream router, `@aggTrade`,
+futures, authentication, account access or execution. The source symbol `s` is preserved exactly
+and resolved case-sensitively only against an injected `Venue.BINANCE` / `InstrumentType.SPOT`
+registry by exact `native_symbol`. No base asset, quote asset, market type or canonical identity is
+inferred from the symbol text.
+
+Binance's `m` flag states whether the buyer was maker: `true` therefore maps to a venue-neutral
+sell aggressor, while `false` maps to buy. The caller must explicitly select milliseconds or
+microseconds for both `E` (exchange event time) and `T` (trade execution time); the unit is
+never inferred. The schema-v2 envelope uses `T` as `event_time`, while the immutable source DTO
+also preserves exact raw `E`, raw `T`, their UTC conversions, the chosen unit, trade ID `t` and
+uninterpreted flag `M`.
+
+Normalized source identity is exactly the compact JSON array
+`["binance-spot-trade-v1", symbol, trade_id]`. `source_transaction_id`, `source_sequence` and
+`correlation_id` remain null: Binance documents `t` as a trade ID, not as a guaranteed contiguous
+replay/gap sequence. Schema version 2 remains unchanged.
+
 ### Hyperliquid public-trade boundary
 
 The offline Hyperliquid trades adapter accepts only a `trades` channel frame whose `data` value is
@@ -276,7 +314,10 @@ wallet, order, HTTP metadata, storage or trading capability.
 
 ## Security boundaries
 
-- Bitvavo/Kraken live keys: view/trade only; withdrawals disabled; IP allowlist where supported.
+- Automated read-only data keys: data access only; no Trade or Withdraw permission; IP allowlist
+  where supported; never reused for execution.
+- Bitvavo/Kraken live execution keys: view/trade only; withdrawals disabled; IP allowlist where
+  supported.
 - Hyperliquid: dedicated agent/API wallet; master wallet key never on TrueNAS.
 - Kraken MCP: safe services only during research and paper phases.
 - LLMs never hold unrestricted withdrawal/funding permissions.

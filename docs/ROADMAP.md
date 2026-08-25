@@ -60,6 +60,9 @@ deterministic synthetic fixtures were merged through PR #4 in merge commit
 `89339aab3099457dfce290803f2d8b5b9be8ea72`; its Python, TypeScript and secret-scan checks passed.
 Phase 1A-2B's unauthenticated public-trades WebSocket lifecycle is implemented and validated in
 PR #5. It remains undeployed and does not enable LIVE.
+Phase 1A-3A defines and locally validates a pure offline Binance Spot raw `@trade` decoder and
+schema-v2 normalization boundary with a deterministic synthetic fixture. It is not a WebSocket
+collector, authenticated integration, storage path, deployment or LIVE capability.
 
 Target: useful local output within approximately the first 1-2 weeks of active development.
 
@@ -80,6 +83,14 @@ Deliverables:
 - Python/TypeScript tests and container build smoke tests.
 
 Redis and PostgreSQL are not mandatory for this thin slice. They are introduced when multi-process shared state and durable control-plane requirements justify them.
+
+The next multi-venue data architecture slice is expected to separate feed product identity,
+capabilities and entitlement from venue/instrument identity; define immutable raw capture,
+feed/session/subscription identity, coverage/gap states, versioned event families and deterministic
+replay; and establish Bronze/Silver/Gold storage boundaries. Later work includes simultaneous
+Bitvavo Standard/Market Data Pro comparison, other approved advanced feeds, ClickHouse persistence,
+Grafana/Alloy/OpenTelemetry forensics and the Bloomberg/EMS-inspired cockpit. None of those systems
+is implemented by Phase 1A-3A.
 
 ## Phase 1B — TrueNAS 24/7 PAPER deployment
 

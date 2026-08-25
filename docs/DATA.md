@@ -79,14 +79,17 @@ Primary research uses:
 
 ### Bitvavo
 
-Use Bitvavo as a free public data source for EUR and available USDC spot markets:
+Use Bitvavo Standard as a free public data source for EUR and available USDC spot markets:
 
 - trades and candles;
 - best bid/offer;
 - standard L2 order book;
-- Market Data Pro non-conflated L2 updates with sequence tracking;
 - market metadata, precision and order capabilities;
 - EUR/USDC and asset quote-route comparison.
+
+Bitvavo Market Data Pro is a distinct, committed future authenticated read-only comparison feed,
+not part of the free public Standard feed. Its future access and simultaneous Standard/Pro
+collection requirements are defined under feed-product identity below.
 
 Primary research uses:
 
@@ -130,9 +133,58 @@ Use public historical/realtime data as an external reference for:
 
 Binance is initially a data venue, not an execution venue.
 
+#### Phase 1A-3A Binance Spot raw-trade boundary
+
+The Phase 1A-3A adapter accepts one already JSON-decoded Binance Spot raw `@trade` event per
+invocation. It does not accept `@aggTrade`, combined-stream wrappers, futures events or any
+transport message. All nine documented fields (`e`, `E`, `s`, `t`, `p`, `q`, `T`, `m` and `M`)
+are required; unknown additive fields are tolerated.
+
+The caller explicitly supplies either `MILLISECONDS` or `MICROSECONDS` for both timestamps. The
+adapter never infers a unit from integer magnitude and uses exact integer arithmetic:
+
+- `T` is the trade execution time and becomes the schema-v2 envelope `event_time`;
+- `E` is the exchange event time and remains available, with the raw `T` and selected
+  unit, on the immutable Binance source DTO;
+- `t` is retained as the trade ID and in the deterministic source identity, not presented as a
+  contiguous gap or replay sequence;
+- `m=true` means the buyer was maker and therefore maps to sell aggressor; `m=false` maps to buy;
+- `M` is retained on the source DTO without assigning normalized meaning to it.
+
+The deterministic source ID is the compact JSON array
+`["binance-spot-trade-v1", symbol, trade_id]`. Exact, case-sensitive symbol resolution uses only an
+explicit injected Binance Spot instrument registry; the adapter never derives assets, quote,
+instrument type or canonical identity from the symbol. Schema version 2 is unchanged. No Binance
+collector, account integration, storage path, dashboard or execution capability is introduced by
+this offline boundary.
+
 ### Other free venues
 
 Bybit, OKX, Coinbase or Deribit may be added where a specific hypothesis requires them. Avoid collecting everything simply because it exists.
+
+## Feed-product identity and access tiers
+
+A venue and instrument do not uniquely identify a market-data feed product. A future generic feed
+contract must distinguish public, authenticated read-only, account- or tier-gated, institutional
+and node-provided products, including their L2, L3, order-level/L4, trade, BBO, snapshot, delta,
+funding, open-interest, liquidation, option, implied-volatility and Greek capabilities.
+
+Bitvavo Standard and Market Data Pro are distinct feeds. Market Data Pro is a committed future
+authenticated read-only comparison feed. Any future Pro key is dedicated to data only, receives no
+Trade or Withdraw permission, is IP-allowlisted where possible, is never reused as an execution
+key, and may never silently fall back to Standard while claiming Pro identity. Standard and Pro
+must later support simultaneous A/B collection. This phase creates no Bitvavo key or integration.
+
+Potential future gated candidates include Kraken L3; Coinbase Exchange full/L3/direct; Deribit raw;
+OKX higher-tier 10-ms/SBE feeds; Bybit institutional feeds; and Hyperliquid node/L4 data. Listing
+them here neither implements them nor authorizes credentials or expansion of the current `Venue`
+enum.
+
+The next architectural slice is expected to define feed identity and capabilities, access and
+entitlement tiers, immutable raw capture, feed/session/subscription identity, coverage and gap
+states, versioned event families, deterministic replay, and Bronze/Silver/Gold storage boundaries.
+ClickHouse storage, Grafana/Alloy/OpenTelemetry observability, FastAPI services and the
+Bloomberg/EMS-inspired cockpit remain downstream consumers, not features of Phase 1A-3A.
 
 ## Self-collected dataset
 
@@ -341,7 +393,9 @@ Every ingestion path exposes:
 - queue depth/backpressure/drop metrics;
 - deployed image digest and collector commit.
 
-Data quality is observable in Grafana and can block trading.
+Future Grafana/Alloy/OpenTelemetry integration must make data quality observable, and deterministic
+stale/gap controls may then block trading. Those integrations are not implemented by the offline
+Phase 1A-3A boundary.
 
 ## Point-in-time metadata
 

@@ -55,6 +55,12 @@ Exit gate:
 
 Status: **started, not complete**
 
+Phase 1A-2A's pure Hyperliquid public-trade decoder, schema-v2 normalization boundary and
+deterministic synthetic fixtures were merged through PR #4 in merge commit
+`89339aab3099457dfce290803f2d8b5b9be8ea72`; its Python, TypeScript and secret-scan checks passed.
+Phase 1A-2B's unauthenticated public-trades WebSocket lifecycle is implemented and validated in
+PR #5. It remains undeployed and does not enable LIVE.
+
 Target: useful local output within approximately the first 1-2 weeks of active development.
 
 Deliverables:

@@ -217,6 +217,63 @@ The decoder and normalizer are pure and offline. Receipt time, process-local mon
 collector version, collector commit, gap state and the instrument registry are explicit caller
 inputs.
 
+### Hyperliquid public-trades WebSocket lifecycle
+
+The Phase 1A collector uses one unauthenticated connection to the fixed public mainnet endpoint
+`wss://api.hyperliquid.xyz/ws`. It sorts a non-empty immutable Hyperliquid instrument registry by
+exact `native_symbol`, enforces the documented 1,000-subscription ceiling before connecting, and
+sends one `trades` subscription per configured symbol. Names are neither inferred nor rewritten:
+regular names, HIP-3 `{dex}:{coin}` names and spot identifiers such as `@107` stay exact.
+
+An application-message router separates the official-SDK greeting, `subscriptionResponse`, `pong`
+and `trades` before the trade decoder. It accepts text frames only, rejects malformed JSON,
+duplicate object keys and non-finite JSON numbers, and fails closed on unknown channels or invalid
+control structures. Unknown additive fields inside otherwise valid known messages remain tolerated.
+Acknowledgements are correlated by exact coin; order is irrelevant, exact duplicates are
+idempotent and counted, and a coin's trades cannot be published before that coin is acknowledged.
+
+The collector uses Hyperliquid's JSON application heartbeat (`{"method":"ping"}` and
+`{"channel":"pong"}`), not only a WebSocket protocol-level ping. Its interval is strictly below
+the documented 60-second server-outbound-idle timeout, and subscribe/ping sends plus pong, receive,
+open and close waits are finite. Heartbeat processing coordinates with the single reader while that
+reader applies bounded queue backpressure, so it cannot race a second receive operation. Implicit
+proxy discovery is disabled while ordinary TLS certificate verification stays enabled. Every
+reconnect creates a fresh connection and resubscribes each configured coin once. Conservative
+message and reconnect budgets remain below the documented venue limits. Only transport-class
+failures are retried with capped exponential backoff and injected bounded jitter; malformed
+protocol, decoder, schema and publisher failures are terminal.
+
+After each completed application-ping send, the next heartbeat interval runs concurrently with pong
+processing. The conservative bound between completed sends is
+`max(heartbeat_interval, pong_timeout + publish_timeout) + publish_timeout + send_timeout`, which
+must remain below 60 seconds and is 54 seconds with the defaults. Normal, going-away, abnormal,
+server-error, restart, temporary and bad-gateway close conditions reconnect. Protocol,
+unsupported-data, invalid-payload, policy, oversized-message, incompatible-extension and unknown
+close codes fail closed. Raw close reasons are never retained or exposed.
+
+Each decoded frame becomes one immutable queue item, so a validated frame is either published in
+wire order as a whole or not published. The in-process queue, the WebSocket frame buffers and the
+source-event-ID LRU cache all have finite positive capacities. A full application queue applies
+bounded backpressure; expiry is terminal, emits no partial prefix, and marks gap state. The LRU
+maps each source event ID to its exact source-trade semantic fingerprint. Exact replays within
+frames, across frames and across reconnect overlap are suppressed and refresh recency; conflicting
+reuse of an ID fails the complete frame atomically. It is process-local only: restart or eviction
+removes that protection, so this is not durable exactly-once delivery.
+
+The first session begins with `is_gap=false` while coverage is certain. Once a subscription send is
+attempted, delivery may be ambiguous; a later retryable disconnect, send/receive/subscription timeout
+or heartbeat failure makes gap state sticky even without an acknowledgement. A connection failure
+before any send attempt does not. Resubscription and acknowledgements never clear the flag.
+Hyperliquid does not provide a documented public-trade replay boundary that proves complete
+recovery, so only a future explicit backfill/reconciliation mechanism may clear it.
+
+One logical consumer drains already queued immutable batches before observing a sanitized terminal
+outcome. Health exposes only a bounded last-failure category. Neither consumer termination nor
+health stores raw frames, exception objects, users, hashes or close reasons. Dependency-level
+WebSocket frame logging uses an isolated disabled logger and remains suppressed even when
+application-wide or root DEBUG logging is enabled. The collector has no private stream, credential,
+wallet, order, HTTP metadata, storage or trading capability.
+
 ## Security boundaries
 
 - Bitvavo/Kraken live keys: view/trade only; withdrawals disabled; IP allowlist where supported.
@@ -244,6 +301,9 @@ Required views include:
 ## Official references
 
 - Hyperliquid WebSocket subscriptions: https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/websocket/subscriptions
+- Hyperliquid WebSocket lifecycle: https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/websocket
+- Hyperliquid timeouts and heartbeats: https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/websocket/timeouts-and-heartbeats
+- Hyperliquid rate limits: https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/rate-limits-and-user-limits
 - Hyperliquid notation: https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/notation
 - Hyperliquid asset IDs: https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/asset-ids
 - Bitvavo Create Order API: https://docs.bitvavo.com/docs/rest-api/create-order/

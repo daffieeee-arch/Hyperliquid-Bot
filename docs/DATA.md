@@ -143,8 +143,10 @@ timestamp
 receive_timestamp
 venue
 canonical_instrument_id
+venue_market_id
 native_symbol
 instrument_type
+contract_expiry
 base_asset
 quote_asset
 listing_status
@@ -178,6 +180,9 @@ is_gap
 schema_version
 collector_version
 ```
+
+`venue_market_id` identifies one concrete market within its venue and instrument type.
+`contract_expiry` is point-in-time metadata for futures and is null for spot and perpetual instruments.
 
 Cross-exchange and route features may add:
 
@@ -282,9 +287,10 @@ Data quality is observable in Grafana and can block trading.
 Maintain historical metadata for:
 
 - listing/delisting;
-- venue and native symbol;
+- venue, `venue_market_id` and native symbol;
 - base/quote currency;
 - instrument type;
+- `contract_expiry` for futures;
 - tick size;
 - size precision;
 - minimum order size;

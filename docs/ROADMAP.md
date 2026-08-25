@@ -26,7 +26,11 @@ Deliverables:
 
 ## Phase 0B — Windows/WSL2 development foundation
 
-Status: **next active phase**
+Status: **complete**
+
+Completed through PR #2 and merge commit
+`9ab3c0eb795e0ede365da7c5cabe2fe900d74518`. Python, TypeScript and secret-scanning
+checks passed. Nothing was deployed and LIVE was not enabled.
 
 Target: first development days.
 
@@ -48,6 +52,8 @@ Exit gate:
 - Codex can modify a feature branch, run tests and open a pull request without touching TrueNAS or using live trading credentials.
 
 ## Phase 1A — Local foundation vertical slice
+
+Status: **started, not complete**
 
 Target: useful local output within approximately the first 1-2 weeks of active development.
 

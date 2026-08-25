@@ -1,4 +1,4 @@
-"""Deterministic tests for the Phase 1A-1 market-data contracts."""
+"""Deterministic tests for the venue-neutral market-data contracts."""
 
 from dataclasses import FrozenInstanceError, replace
 from datetime import UTC, date, datetime, timedelta, timezone
@@ -9,6 +9,7 @@ import pytest
 
 from hyperliquid_bot.contracts import (
     MARKET_EVENT_SCHEMA_VERSION,
+    AggressorSide,
     Instrument,
     InstrumentType,
     MarketEventEnvelope,
@@ -29,7 +30,11 @@ def _instrument() -> Instrument:
 
 
 def _trade() -> TradeEvent:
-    return TradeEvent(price=Decimal("123.4500"), quantity=Decimal("0.125"))
+    return TradeEvent(
+        price=Decimal("123.4500"),
+        quantity=Decimal("0.125"),
+        aggressor_side=AggressorSide.BUY,
+    )
 
 
 def _envelope() -> MarketEventEnvelope:
@@ -43,6 +48,8 @@ def _envelope() -> MarketEventEnvelope:
         collector_version="collector-v1",
         collector_commit="9ab3c0e",
         is_gap=False,
+        source_event_id="fixture-event-v1",
+        source_transaction_id="fixture-transaction-v1",
         source_sequence=42,
         correlation_id="trade-42",
     )
@@ -61,6 +68,10 @@ def test_enum_members_are_exactly_the_documented_values() -> None:
         ("SPOT", "spot"),
         ("PERPETUAL", "perpetual"),
         ("FUTURE", "future"),
+    ]
+    assert [(side.name, side.value) for side in AggressorSide] == [
+        ("BUY", "buy"),
+        ("SELL", "sell"),
     ]
 
 
@@ -371,10 +382,18 @@ def test_instrument_rejects_invalid_runtime_types_and_identical_assets() -> None
 )
 def test_trade_rejects_non_decimal_financial_values(invalid_value: object) -> None:
     with pytest.raises(TypeError):
-        TradeEvent(price=cast(Decimal, invalid_value), quantity=Decimal("1"))
+        TradeEvent(
+            price=cast(Decimal, invalid_value),
+            quantity=Decimal("1"),
+            aggressor_side=AggressorSide.BUY,
+        )
 
     with pytest.raises(TypeError):
-        TradeEvent(price=Decimal("1"), quantity=cast(Decimal, invalid_value))
+        TradeEvent(
+            price=Decimal("1"),
+            quantity=cast(Decimal, invalid_value),
+            aggressor_side=AggressorSide.BUY,
+        )
 
 
 @pytest.mark.parametrize(
@@ -391,20 +410,46 @@ def test_trade_rejects_non_decimal_financial_values(invalid_value: object) -> No
 )
 def test_trade_rejects_nonpositive_or_nonfinite_decimals(invalid_value: Decimal) -> None:
     with pytest.raises(ValueError):
-        TradeEvent(price=invalid_value, quantity=Decimal("1"))
+        TradeEvent(
+            price=invalid_value,
+            quantity=Decimal("1"),
+            aggressor_side=AggressorSide.BUY,
+        )
 
     with pytest.raises(ValueError):
-        TradeEvent(price=Decimal("1"), quantity=invalid_value)
+        TradeEvent(
+            price=Decimal("1"),
+            quantity=invalid_value,
+            aggressor_side=AggressorSide.BUY,
+        )
 
 
 def test_trade_preserves_small_and_high_precision_decimals() -> None:
     price = Decimal("0.0000000000000000000000000001")
     quantity = Decimal("123456789.123456789123456789")
 
-    trade = TradeEvent(price=price, quantity=quantity)
+    trade = TradeEvent(
+        price=price,
+        quantity=quantity,
+        aggressor_side=AggressorSide.SELL,
+    )
 
     assert trade.price is price
     assert trade.quantity is quantity
+    assert trade.aggressor_side is AggressorSide.SELL
+
+
+def test_trade_requires_exact_aggressor_side_enum() -> None:
+    with pytest.raises(TypeError):
+        TradeEvent(
+            price=Decimal("1"),
+            quantity=Decimal("1"),
+            aggressor_side=cast(AggressorSide, "buy"),
+        )
+
+
+def test_market_event_schema_version_is_two_after_required_trade_side_change() -> None:
+    assert MARKET_EVENT_SCHEMA_VERSION == 2
 
 
 @pytest.mark.parametrize(
@@ -412,7 +457,8 @@ def test_trade_preserves_small_and_high_precision_decimals() -> None:
     [
         pytest.param(-1, id="negative"),
         pytest.param(0, id="zero"),
-        pytest.param(2, id="unsupported"),
+        pytest.param(1, id="previous-breaking-version"),
+        pytest.param(3, id="future-version"),
     ],
 )
 def test_envelope_rejects_unsupported_schema_versions(schema_version: int) -> None:
@@ -496,6 +542,7 @@ def test_envelope_accepts_alternative_zero_offset_utc() -> None:
         collector_version="collector-v1",
         collector_commit="9ab3c0e",
         is_gap=False,
+        source_event_id="zero-offset-event-v1",
     )
 
     assert envelope.event_time.tzinfo is UTC
@@ -513,6 +560,7 @@ def test_envelope_allows_received_time_before_event_time() -> None:
         collector_version="collector-v1",
         collector_commit="9ab3c0e",
         is_gap=False,
+        source_event_id="received-before-event-v1",
     )
 
     assert envelope.received_time < envelope.event_time
@@ -524,15 +572,20 @@ def test_envelope_preserves_provenance_sequence_and_gap_metadata() -> None:
     assert envelope.collector_version == "collector-v1"
     assert envelope.collector_commit == "9ab3c0e"
     assert envelope.is_gap is False
+    assert envelope.source_event_id == "fixture-event-v1"
+    assert envelope.source_transaction_id == "fixture-transaction-v1"
     assert envelope.source_sequence == 42
     assert envelope.correlation_id == "trade-42"
 
     without_source_identifiers = replace(
         envelope,
+        source_transaction_id=None,
         source_sequence=None,
         correlation_id=None,
         is_gap=True,
     )
+    assert without_source_identifiers.source_event_id == "fixture-event-v1"
+    assert without_source_identifiers.source_transaction_id is None
     assert without_source_identifiers.source_sequence is None
     assert without_source_identifiers.correlation_id is None
     assert without_source_identifiers.is_gap is True
@@ -549,6 +602,40 @@ def test_envelope_rejects_invalid_required_provenance_metadata() -> None:
         replace(template, collector_version=cast(str, 1))
     with pytest.raises(TypeError):
         replace(template, is_gap=cast(bool, 0))
+
+
+@pytest.mark.parametrize(
+    "source_event_id",
+    [
+        pytest.param("", id="empty"),
+        pytest.param(" event ", id="outer-whitespace"),
+        pytest.param("event\n", id="control-character"),
+    ],
+)
+def test_envelope_rejects_invalid_source_event_ids(source_event_id: str) -> None:
+    with pytest.raises(ValueError):
+        replace(_envelope(), source_event_id=source_event_id)
+
+    with pytest.raises(TypeError):
+        replace(_envelope(), source_event_id=cast(str, 1))
+
+
+@pytest.mark.parametrize(
+    "source_transaction_id",
+    [
+        pytest.param("", id="empty"),
+        pytest.param(" transaction ", id="outer-whitespace"),
+        pytest.param("transaction\n", id="control-character"),
+    ],
+)
+def test_envelope_rejects_invalid_source_transaction_ids(
+    source_transaction_id: str,
+) -> None:
+    with pytest.raises(ValueError):
+        replace(_envelope(), source_transaction_id=source_transaction_id)
+
+    with pytest.raises(TypeError):
+        replace(_envelope(), source_transaction_id=cast(str, 1))
 
 
 @pytest.mark.parametrize(

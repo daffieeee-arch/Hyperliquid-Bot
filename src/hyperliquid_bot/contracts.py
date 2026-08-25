@@ -26,7 +26,14 @@ class InstrumentType(StrEnum):
     FUTURE = "future"
 
 
-MARKET_EVENT_SCHEMA_VERSION: Final = 1
+class AggressorSide(StrEnum):
+    """Venue-neutral side of the order that crossed the spread."""
+
+    BUY = "buy"
+    SELL = "sell"
+
+
+MARKET_EVENT_SCHEMA_VERSION: Final = 2
 
 _INSTRUMENT_ID_VERSION: Final = "instrument-v1"
 _CANONICAL_ASSET_PATTERN: Final = re.compile(r"[A-Z0-9]+(?:[._][A-Z0-9]+)*")
@@ -137,14 +144,17 @@ class Instrument:
 
 @dataclass(frozen=True, slots=True)
 class TradeEvent:
-    """Normalized positive price and quantity reported for one trade."""
+    """Normalized price, quantity and aggressor side for one trade."""
 
     price: Decimal
     quantity: Decimal
+    aggressor_side: AggressorSide
 
     def __post_init__(self) -> None:
         _require_positive_decimal(self.price, field_name="price")
         _require_positive_decimal(self.quantity, field_name="quantity")
+        if type(self.aggressor_side) is not AggressorSide:
+            raise TypeError("aggressor_side must be an AggressorSide.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,6 +170,8 @@ class MarketEventEnvelope:
     collector_version: str
     collector_commit: str
     is_gap: bool
+    source_event_id: str
+    source_transaction_id: str | None = None
     source_sequence: int | None = None
     correlation_id: str | None = None
 
@@ -187,6 +199,9 @@ class MarketEventEnvelope:
         _require_text(self.collector_commit, field_name="collector_commit")
         if type(self.is_gap) is not bool:
             raise TypeError("is_gap must be a boolean.")
+        _require_text(self.source_event_id, field_name="source_event_id")
+        if self.source_transaction_id is not None:
+            _require_text(self.source_transaction_id, field_name="source_transaction_id")
 
         if self.source_sequence is not None:
             if type(self.source_sequence) is not int:

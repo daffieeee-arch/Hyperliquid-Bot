@@ -235,6 +235,44 @@ adapter DTO but is not yet copied into the venue-neutral trade contract.
 
 When pressure exceeds capacity, the system must not silently accumulate unbounded memory. It applies an explicit per-stream policy: backpressure, reconnect/replay, sampling for non-critical telemetry, or fail/stale state. Trading-relevant feeds may not silently drop without marking the data invalid.
 
+### Phase 1A Hyperliquid trades collector policy
+
+The local public-trades collector puts each fully validated WebSocket frame into the in-process
+queue as one immutable tuple of schema-v2 envelopes. Queue capacity counts frame batches, is finite
+and positive, and a bounded `put` wait provides backpressure. If capacity remains unavailable, no
+part of that frame is published, the collector fails closed, and sticky gap state is set. Empty
+trade arrays are valid no-ops.
+
+Receipt wall time and process-local monotonic nanoseconds are captured once immediately after each
+WebSocket receive. Every trade in that frame receives the same pair. All trade objects are decoded,
+resolved by exact configured and acknowledged `native_symbol`, and normalized before any queue
+publication. Mixed-coin frames are allowed when every coin independently passes those checks.
+
+A bounded process-local LRU uses the existing deterministic `source_event_id` to suppress overlap
+within one frame, across frames and across reconnects while preserving the wire order of new
+events. Each ID maps to an immutable semantic fingerprint covering coin, side, normalized price and
+size, event time, trade ID, transaction hash, ordered users and canonical instrument identity. A
+matching fingerprint is an ordinary replay and refreshes LRU recency; reuse of the same ID with
+different semantics is a terminal source conflict. Conflict detection completes before any queue,
+cache, emitted-count or duplicate-count mutation for that frame. Receipt clocks, collector version,
+collector commit and gap state are deliberately excluded from replay identity. The cache is not
+persisted and cannot guarantee exactly-once delivery after process restart or after an ID is
+evicted.
+
+This phase supports one logical batch consumer. A separate terminal event wakes a waiting consumer
+without consuming bounded queue capacity. Already queued batches are returned first; once the queue
+is empty, producer failure or cancellation raises a sanitized collector-termination result. Health
+retains only a bounded failure category, never the exception, raw frame, users, transaction hash or
+WebSocket close reason. Dependency-level WebSocket frame logging is routed to an isolated disabled
+logger and remains suppressed even when application-wide or root DEBUG logging is enabled.
+
+The initial session emits `is_gap=false` only while coverage remains certain. Immediately before a
+subscription send is attempted, delivery becomes potentially ambiguous; any subsequent retryable
+disconnect or timeout makes `is_gap=true` sticky even when no acknowledgement was observed.
+Handshake failure before any send attempt does not create a gap. Later acknowledgements do not prove
+replay completeness and cannot clear the flag. No `recentTrades` backfill, storage, queue replay or
+gap repair exists in this phase.
+
 ## ClickHouse environments
 
 ### Local DEV

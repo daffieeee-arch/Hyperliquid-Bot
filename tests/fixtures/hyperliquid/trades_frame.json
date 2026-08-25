@@ -1,0 +1,31 @@
+{
+  "channel": "trades",
+  "data": [
+    {
+      "coin": "BTC",
+      "side": "B",
+      "px": "12345.678900000000000001",
+      "sz": "0.000000010000000000",
+      "hash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+      "time": 1720000000123,
+      "tid": 42,
+      "users": [
+        "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      ]
+    },
+    {
+      "coin": "BTC",
+      "side": "A",
+      "px": "0.123456789012345678",
+      "sz": "987654321.000000000000000001",
+      "hash": "0x2222222222222222222222222222222222222222222222222222222222222222",
+      "time": 1720000000456,
+      "tid": 1125899906842623,
+      "users": [
+        "0xcccccccccccccccccccccccccccccccccccccccc",
+        "0xdddddddddddddddddddddddddddddddddddddddd"
+      ]
+    }
+  ]
+}

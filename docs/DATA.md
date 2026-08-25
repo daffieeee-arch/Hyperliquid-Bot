@@ -48,7 +48,9 @@ Commit only small sanitized fixtures needed for deterministic tests. Do not comm
 - proprietary experiment outputs that belong in the experiment store;
 - data whose license forbids redistribution.
 
-Each fixture records source, capture window, schema version and any transformations.
+Each fixture records its source or schema basis, schema version and any transformations. A captured
+fixture also records its capture window; a synthetic fixture states explicitly that no capture
+window exists and must not be described as captured production data.
 
 ## Initial free sources
 
@@ -205,10 +207,31 @@ Every event includes at minimum:
 - venue and canonical instrument;
 - source timestamp;
 - monotonic local receive timestamp;
-- sequence/correlation identifier where available;
+- a stable source-event identifier;
+- source transaction, sequence and correlation identifiers where their distinct semantics apply;
 - schema version;
 - collector build/commit metadata;
 - gap/quality status.
+
+### Market-event schema v2
+
+Market-event schema version 2 makes `aggressor_side` (`buy` or `sell`) mandatory on every
+`TradeEvent`, alongside its exact decimal `price` and `quantity`. This is a breaking change from
+schema version 1; v1 payloads must not be presented as v2 without an explicit migration.
+
+The envelope keeps different provenance concepts separate:
+
+- `source_event_id` is mandatory and identifies the source event deterministically;
+- `source_transaction_id` is optional transaction provenance;
+- `source_sequence` is reserved for an ordered source sequence;
+- `correlation_id` is reserved for cross-operation correlation, not source-event identity.
+
+For Hyperliquid public trades, `source_event_id` is the compact JSON array
+`["hyperliquid-trade-v1", time_ms, coin, tid]`. The complete `coin` string is preserved, including a
+HIP-3 `{dex}:{coin}` namespace. The transaction `hash` is retained as `source_transaction_id`.
+Hyperliquid documents `tid` as a 50-bit hash rather than an ordered sequence, so
+`source_sequence` remains null. The source `users` array is retained in buyer/seller order by the
+adapter DTO but is not yet copied into the venue-neutral trade contract.
 
 When pressure exceeds capacity, the system must not silently accumulate unbounded memory. It applies an explicit per-stream policy: backpressure, reconnect/replay, sampling for non-critical telemetry, or fail/stale state. Trading-relevant feeds may not silently drop without marking the data invalid.
 

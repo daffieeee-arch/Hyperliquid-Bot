@@ -1,0 +1,18 @@
+{
+  "channel": "trades",
+  "data": [
+    {
+      "coin": "xyz:XYZ100",
+      "side": "A",
+      "px": "0.123456789012345678",
+      "sz": "987654321.000000000000000001",
+      "hash": "0x3333333333333333333333333333333333333333333333333333333333333333",
+      "time": 1720000000789,
+      "tid": 1125899906842622,
+      "users": [
+        "0xcccccccccccccccccccccccccccccccccccccccc",
+        "0xdddddddddddddddddddddddddddddddddddddddd"
+      ]
+    }
+  ]
+}

@@ -188,6 +188,35 @@ Examples:
 
 Venue adapters own mapping from venue metadata and `native_symbol` aliases to this normalized identity, plus venue-native precision rules.
 
+### Hyperliquid public-trade boundary
+
+The offline Hyperliquid trades adapter accepts only a `trades` channel frame whose `data` value is
+an array of documented `WsTrade` objects. Every object requires `coin`, `side`, `px`, `sz`, `hash`,
+`time`, `tid` and `users`. Unknown additive frame and trade fields are ignored, while every required
+field remains strictly validated.
+
+Normalization resolves `coin` by exact `native_symbol` lookup in an injected Hyperliquid instrument
+registry. It never derives the base asset, quote asset or instrument type from the text. This exact
+lookup preserves a HIP-3 identifier such as `{dex}:{coin}` and fails closed when no instrument or
+more than one instrument matches.
+
+Hyperliquid trade-side notation describes the aggressing order: `B` maps to venue-neutral `buy` and
+`A` maps to venue-neutral `sell`. Prices and sizes remain exact positive finite decimals. The
+documented `[buyer, seller]` user ordering is retained in the adapter DTO but is not part of the
+venue-neutral trade event.
+
+Normalized Hyperliquid event provenance uses these separate fields:
+
+- `source_event_id` is the compact versioned JSON array
+  `["hyperliquid-trade-v1", time_ms, coin, tid]`;
+- `source_transaction_id` preserves the source `hash`;
+- `source_sequence` remains null because `tid` is a 50-bit trade hash, not an ordered sequence;
+- `correlation_id` is not overloaded with source identity.
+
+The decoder and normalizer are pure and offline. Receipt time, process-local monotonic time,
+collector version, collector commit, gap state and the instrument registry are explicit caller
+inputs.
+
 ## Security boundaries
 
 - Bitvavo/Kraken live keys: view/trade only; withdrawals disabled; IP allowlist where supported.
@@ -214,6 +243,9 @@ Required views include:
 
 ## Official references
 
+- Hyperliquid WebSocket subscriptions: https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/websocket/subscriptions
+- Hyperliquid notation: https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/notation
+- Hyperliquid asset IDs: https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/asset-ids
 - Bitvavo Create Order API: https://docs.bitvavo.com/docs/rest-api/create-order/
 - Bitvavo Get Markets API: https://docs.bitvavo.com/docs/rest-api/get-markets/
 - Bitvavo fee schedule: https://bitvavo.com/en/fees

@@ -161,18 +161,32 @@ The router produces a deterministic execution plan that is stored before orders 
 
 ## Symbol and instrument normalization
 
-Use canonical identifiers internally, for example:
+An instrument identifies one concrete market. Its identity fields are normalized as follows:
 
-```text
-asset: SOL
-instrument_type: spot | perpetual | future
-venue: bitvavo | hyperliquid | kraken | binance
-base: SOL
-quote: EUR | USDC | USD
-canonical_instrument_id: bitvavo:spot:SOL-EUR
+- `venue_market_id` is the stable unique identifier of one concrete market within a venue and instrument type;
+- `native_symbol` is a separately retained adapter alias and does not determine canonical identity, dataclass equality or hash;
+- aliases for the same concrete market map to the same `venue_market_id`;
+- Hyperliquid HIP-3 markets use the complete `{dex}:{coin}` name as `venue_market_id` so different perp DEX namespaces cannot collide;
+- `contract_expiry` is exactly Python `datetime.date | None`, is required for `future`, forbidden for `spot` and `perpetual`, and serializes as `YYYY-MM-DD`.
+
+The canonical instrument ID is a versioned compact JSON array. Its component order is exactly:
+
+1. version;
+2. venue;
+3. instrument type;
+4. `venue_market_id`;
+5. base asset;
+6. quote asset;
+7. `contract_expiry`.
+
+Examples:
+
+```json
+["instrument-v1","bitvavo","spot","SOL-EUR","SOL","EUR",null]
+["instrument-v1","binance","future","BTCUSDT_260925","BTC","USDT","2026-09-25"]
 ```
 
-Venue adapters own mapping to native symbols and precision rules.
+Venue adapters own mapping from venue metadata and `native_symbol` aliases to this normalized identity, plus venue-native precision rules.
 
 ## Security boundaries
 

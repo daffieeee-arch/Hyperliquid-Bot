@@ -119,55 +119,61 @@ def test_hip3_dex_namespace_disambiguates_markets_with_the_same_pair() -> None:
     assert first_dex != second_dex
 
 
-def test_typed_future_expiry_prevents_canonical_id_collisions() -> None:
+def test_future_identity_uses_concrete_market_id_and_normalized_expiry() -> None:
     september_future = Instrument(
         venue=Venue.BINANCE,
         instrument_type=InstrumentType.FUTURE,
         base_asset="BTC",
         quote_asset="USDT",
-        venue_market_id="BTCUSDT-DELIVERY",
+        venue_market_id="BTCUSDT_260925",
         native_symbol="BTCUSDT_260925",
-        contract_qualifier=date(2026, 9, 25),
+        contract_expiry=date(2026, 9, 25),
     )
     december_future = Instrument(
         venue=Venue.BINANCE,
         instrument_type=InstrumentType.FUTURE,
         base_asset="BTC",
         quote_asset="USDT",
-        venue_market_id="BTCUSDT-DELIVERY",
+        venue_market_id="BTCUSDT_261225",
         native_symbol="BTCUSDT_261225",
-        contract_qualifier=date(2026, 12, 25),
+        contract_expiry=date(2026, 12, 25),
     )
 
     assert september_future.canonical_instrument_id == (
-        '["instrument-v1","binance","future","BTCUSDT-DELIVERY","BTC","USDT","2026-09-25"]'
+        '["instrument-v1","binance","future","BTCUSDT_260925","BTC","USDT","2026-09-25"]'
     )
     assert december_future.canonical_instrument_id == (
-        '["instrument-v1","binance","future","BTCUSDT-DELIVERY","BTC","USDT","2026-12-25"]'
+        '["instrument-v1","binance","future","BTCUSDT_261225","BTC","USDT","2026-12-25"]'
     )
     assert september_future.canonical_instrument_id != december_future.canonical_instrument_id
+    assert september_future != december_future
 
 
-def test_contract_qualifier_is_a_typed_date_required_only_for_futures() -> None:
+def test_future_requires_contract_expiry() -> None:
     with pytest.raises(ValueError):
         Instrument(
             venue=Venue.BINANCE,
             instrument_type=InstrumentType.FUTURE,
             base_asset="BTC",
             quote_asset="USDT",
-            venue_market_id="BTCUSDT-DELIVERY",
+            venue_market_id="BTCUSDT_260925",
             native_symbol="BTCUSDT_260925",
         )
 
+
+@pytest.mark.parametrize("instrument_type", [InstrumentType.SPOT, InstrumentType.PERPETUAL])
+def test_contract_expiry_is_forbidden_for_non_futures(
+    instrument_type: InstrumentType,
+) -> None:
     with pytest.raises(ValueError):
         Instrument(
             venue=Venue.BITVAVO,
-            instrument_type=InstrumentType.SPOT,
+            instrument_type=instrument_type,
             base_asset="SOL",
             quote_asset="EUR",
             venue_market_id="SOL-EUR",
             native_symbol="SOL-EUR",
-            contract_qualifier=date(2026, 9, 25),
+            contract_expiry=date(2026, 9, 25),
         )
 
 
@@ -182,10 +188,12 @@ def test_contract_qualifier_is_a_typed_date_required_only_for_futures() -> None:
         pytest.param("2026-02-29", id="invalid-non-leap-day"),
         pytest.param("2026-04-31", id="invalid-month-day"),
         pytest.param("0000-01-01", id="invalid-year"),
+        pytest.param(1, id="integer"),
+        pytest.param(True, id="boolean"),
         pytest.param(datetime(2026, 9, 25, tzinfo=UTC), id="datetime-subclass"),
     ],
 )
-def test_future_rejects_string_and_datetime_expiry_representations(
+def test_future_rejects_non_date_contract_expiry(
     invalid_expiry: object,
 ) -> None:
     with pytest.raises(TypeError):
@@ -194,9 +202,9 @@ def test_future_rejects_string_and_datetime_expiry_representations(
             instrument_type=InstrumentType.FUTURE,
             base_asset="BTC",
             quote_asset="USDT",
-            venue_market_id="BTCUSDT-DELIVERY",
+            venue_market_id="BTCUSDT_260925",
             native_symbol="BTCUSDT_260925",
-            contract_qualifier=cast(date, invalid_expiry),
+            contract_expiry=cast(date, invalid_expiry),
         )
 
 
@@ -206,12 +214,12 @@ def test_future_accepts_a_valid_leap_day() -> None:
         instrument_type=InstrumentType.FUTURE,
         base_asset="BTC",
         quote_asset="USDT",
-        venue_market_id="BTCUSDT-DELIVERY",
+        venue_market_id="BTCUSDT_280229",
         native_symbol="BTCUSDT_280229",
-        contract_qualifier=date(2028, 2, 29),
+        contract_expiry=date(2028, 2, 29),
     )
 
-    assert instrument.contract_qualifier == date(2028, 2, 29)
+    assert instrument.contract_expiry == date(2028, 2, 29)
     assert instrument.canonical_instrument_id.endswith('"2028-02-29"]')
 
 

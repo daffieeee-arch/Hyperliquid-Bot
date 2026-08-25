@@ -87,7 +87,11 @@ def _require_utc_datetime(value: object, *, field_name: str) -> datetime:
 
 @dataclass(frozen=True, slots=True)
 class Instrument:
-    """Immutable normalized identity while retaining the venue-native symbol."""
+    """Immutable identity for one concrete venue market.
+
+    The venue market ID is stable and unique within a venue and instrument type.
+    The native symbol is an adapter alias and does not affect identity, equality or hash.
+    """
 
     venue: Venue
     instrument_type: InstrumentType
@@ -95,7 +99,7 @@ class Instrument:
     quote_asset: str
     venue_market_id: str
     native_symbol: str = field(compare=False)
-    contract_qualifier: date | None = None
+    contract_expiry: date | None = None
     canonical_instrument_id: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -111,15 +115,14 @@ class Instrument:
         if base_asset == quote_asset:
             raise ValueError("base_asset and quote_asset must differ.")
 
-        contract_expiry: date | None = None
+        contract_expiry = self.contract_expiry
+        if contract_expiry is not None and type(contract_expiry) is not date:
+            raise TypeError("contract_expiry must be a date.")
         if self.instrument_type is InstrumentType.FUTURE:
-            if self.contract_qualifier is None:
-                raise ValueError("future instruments require a contract_qualifier.")
-            if type(self.contract_qualifier) is not date:
-                raise TypeError("contract_qualifier must be a date.")
-            contract_expiry = self.contract_qualifier
-        elif self.contract_qualifier is not None:
-            raise ValueError("contract_qualifier is only valid for future instruments.")
+            if contract_expiry is None:
+                raise ValueError("future instruments require a contract_expiry.")
+        elif contract_expiry is not None:
+            raise ValueError("contract_expiry is only valid for future instruments.")
 
         canonical_id = _serialize_instrument_id(
             venue=self.venue,

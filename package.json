@@ -1,0 +1,26 @@
+{
+  "name": "hyperliquid-bot-foundation",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.23.0",
+  "engines": {
+    "node": "24.18.1",
+    "pnpm": "11.23.0"
+  },
+  "scripts": {
+    "format:check": "prettier --check .github/workflows/ci.yml eslint.config.mjs package.json pnpm-workspace.yaml prettier.config.mjs tsconfig.json vitest.config.ts tests/typescript/toolchain.test.ts",
+    "lint": "eslint --max-warnings=0 vitest.config.ts tests/typescript/toolchain.test.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "24.13.3",
+    "eslint": "10.9.0",
+    "prettier": "3.9.6",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.67.0",
+    "vitest": "4.1.11"
+  }
+}

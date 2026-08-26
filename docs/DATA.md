@@ -219,10 +219,14 @@ source-conflict transitions must name the same raw record, exact affected index 
 scope. A normalization failure carries its source-event ID when decoding established one and
 otherwise carries null; that nullable value must exactly equal the rejected index outcome's
 logical source identity. Source conflicts always require a non-null exact source-event ID. The v3
-contracts are tested but dormant; no existing producer imports or emits v3, and v2 remains the
-only active Silver envelope.
-No raw sink or raw capture, operational coverage tracker or deterministic replay exists yet. The
-producer and collector cutover occurs atomically only in Phase 1A-3B1D. ClickHouse storage,
+envelope contracts remain dormant; no runtime producer constructs or emits
+`MarketEventEnvelopeV3`, and v2 remains the only active Silver envelope. Phase 1A-3B1B activates
+`RawMarketDataRecord` and
+`NormalizationOutcome` for Hyperliquid public trades: mandatory bounded sinks accept the raw
+application-message record before parsing and the one frame outcome before any runtime commit.
+Acceptance means ownership at the storage-neutral sink boundary, not durable persistence. No
+operational coverage tracker, delivery outcome or deterministic replay exists yet. The producer
+and collector cutover occurs atomically only in Phase 1A-3B1D. ClickHouse storage,
 Grafana/Alloy/OpenTelemetry observability, FastAPI services and the Bloomberg/EMS-inspired cockpit
 remain downstream. Nothing was deployed, and SHADOW/LIVE remain disabled.
 
@@ -341,7 +345,7 @@ not change. The logical source key is `(feed_product_id, source_event_id)`; the 
 `(raw_record_id, raw_event_index)`; the materialization key adds normalization run, event family,
 family version and payload type.
 
-For a successfully returned `websockets` 17 application message, future Bronze TEXT bytes are
+For a successfully returned `websockets` 17 application message, Hyperliquid Bronze TEXT bytes are
 exactly `message.encode("utf-8")`; BINARY bytes are unchanged. This is the post-extension,
 reassembled application-message boundary, not control/close frames, fragment or compression wire
 bytes, TCP/TLS bytes, or invalid UTF-8 rejected before `recv()` returns. Decode failure does not
@@ -368,12 +372,19 @@ unit, positive exact contract multiplier, linear/inverse form, settlement asset,
 explicit last-trading/settlement timestamps are retained without parsing symbol text. Leverage is
 account/position context and is not a public trade-event field.
 
-These v3 contracts are defined and tested but dormant. No existing producer imports or emits v3;
-v2 remains the only active Silver envelope. No raw sink or raw capture, operational coverage
-tracker or deterministic replay exists. The atomic producer and collector cutover happens only in
-3B1D. Nothing was deployed, and SHADOW/LIVE remain disabled.
+These v3 envelope contracts are defined and tested but dormant. No runtime producer constructs or
+emits `MarketEventEnvelopeV3`; v2 remains the only active Silver envelope. Hyperliquid now performs
+storage-neutral raw
+and normalization-outcome acceptance, but there is no concrete persistence, operational coverage
+tracker, delivery outcome or deterministic replay. The atomic producer and collector cutover
+happens only in 3B1D. Nothing was deployed, and SHADOW/LIVE remain disabled.
 
-Index-specific dormant normalization outcomes derive a closed raw/spec/attempt/public-selector/
+Subscription state changes retain the exact immutable transition produced by the pure reducer in
+an append-only current-session journal. Its finite limit is three state-changing transitions per
+wire spec; duplicate acknowledgements do not append, and each reconnect starts a new session
+journal. Bronze ACK records remain immutable pre-parse snapshots and are never rewritten.
+
+Index-specific normalization outcomes derive a closed raw/spec/attempt/public-selector/
 canonical-instrument/Silver-scope binding from the supplied immutable raw record and decoded-index
 context. Attached coverage transitions are limited to exact in-scope normalization failures or
 source-event conflicts from that same raw record, normalization run and event index. A pre-index
@@ -389,13 +400,50 @@ invalid before indexing; future evidence categories remain rejected until explic
 Ordinary validation exceptions and their traceback frames remain private implementation details:
 traceback locals can retain rejected bytes or text even when bounded exception arguments,
 `__cause__` and `__context__` do not. Phase 1A-3B1B must catch and classify such failures inside a
-private boundary, discard the caught exception after leaving the catch block, and export, store or
-log only a frozen category-only `SanitizedValidationFailure`. It may not propagate traceback
-frames, frame locals, input values, free-form messages or `exc_info`.
+private boundary and export only a frozen category-only `SanitizedValidationFailure`. Public
+producer and consumer operations use standalone module-level coroutine boundaries: after the
+private operation finishes, they discard its exception, traceback and coroutine reference before
+creating a fresh bounded public error. No library frame on that exported error graph retains the
+collector, connection, sinks, queue, raw values, source values or destination values. Internal
+exceptions and `exc_info` may never be logged, stored or otherwise exported.
 
 When pressure exceeds capacity, the system must not silently accumulate unbounded memory. It applies an explicit per-stream policy: backpressure, reconnect/replay, sampling for non-critical telemetry, or fail/stale state. Trading-relevant feeds may not silently drop without marking the data invalid.
 
 ### Phase 1A Hyperliquid trades collector policy
+
+Every successful `recv()` return first captures its one UTC/monotonic receive-time pair, exact
+frame kind and exact post-extension, reassembled application-message bytes. The run-wide ingress
+ordinal is never reused and continues across connection sessions. The complete current-session
+attempt table is snapshotted before parsing. A mandatory raw sink must accept and echo the exact
+raw locator ID, full-record integrity digest and declared destination identity within its
+one-second default bound before any router or decoder runs. Malformed JSON, duplicate keys,
+non-finite JSON, unknown channels, greeting,
+acknowledgement, pong, empty trade arrays, binary messages, duplicate trades and source conflicts
+all cross this same raw-first boundary. Failures before a successful application-message return do
+not fabricate a Bronze record.
+
+After pure routing and candidate calculation, a distinct mandatory outcome sink must accept and
+echo exactly one immutable frame outcome within its one-second default bound. Verified raw
+acceptance increments only `accepted_raw_record_count`; verified outcome acceptance then increments
+only `accepted_normalization_outcome_count`, and the latter never exceeds the former. Before
+outcome acceptance, acknowledgement, pong, deduplication, delivery, received-message counters and
+the schema-v2 queue remain unchanged. Raw or outcome rejection is terminal; a timeout or arbitrary
+sink exception is acceptance-ambiguous, terminal and never retried. The collector owns both sinks
+for one run, bounds their closes by their respective acceptance timeout, and attempts outcome close
+before raw close at most once each. Successful sink acceptance means ownership of the complete
+value, not persistence.
+
+In Phase 1A-3B1B summary wording, an unqualified reference to counters at the outcome commit
+boundary means ordinary control, trade, pong, acknowledgement, deduplication and delivery counters;
+it does not include the two explicitly named sink-acceptance telemetry counters above.
+
+Sink acceptance and close use a collector-level deadline race rather than waiting for child
+cancellation to complete. Once the deadline wins, no late success is accepted and no processing or
+runtime commit follows; the child is cancelled and any eventual result or exception is privately
+consumed. This is a scheduling and fail-stop guarantee for the collector, not forced termination
+of arbitrary in-process Python. Conforming sinks must be cancellation-cooperative. A sink that
+deliberately suppresses cancellation may outlive the collector decision and require process
+teardown; future sinks needing an absolute kill boundary must run in an isolated worker or process.
 
 The local public-trades collector puts each fully validated WebSocket frame into the in-process
 queue as one immutable tuple of schema-v2 envelopes. Queue capacity counts frame batches, is finite
@@ -410,10 +458,13 @@ publication. Mixed-coin frames are allowed when every coin independently passes 
 
 A bounded process-local LRU uses the existing deterministic `source_event_id` to suppress overlap
 within one frame, across frames and across reconnects while preserving the wire order of new
-events. Each ID maps to an immutable semantic fingerprint covering coin, side, normalized price and
-size, event time, trade ID, transaction hash, ordered users and canonical instrument identity. A
-matching fingerprint is an ordinary replay and refreshes LRU recency; reuse of the same ID with
-different semantics is a terminal source conflict. Conflict detection completes before any queue,
+events. Each ID maps to a bounded SHA-256 digest of an unambiguous semantic preimage covering coin,
+side, normalized price and size, event time, trade ID, transaction hash, ordered users and canonical
+instrument identity; the cache retains neither users nor the transaction hash themselves. A
+matching digest is an ordinary replay and refreshes LRU recency; reuse of the same ID with different
+semantics is a terminal source conflict. Frame-local fingerprints survive candidate LRU eviction,
+so a later conflicting reuse in that same frame cannot be mistaken for a new event. Conflict
+detection completes before any queue,
 cache, emitted-count or duplicate-count mutation for that frame. Receipt clocks, collector version,
 collector commit and gap state are deliberately excluded from replay identity. The cache is not
 persisted and cannot guarantee exactly-once delivery after process restart or after an ID is
@@ -432,6 +483,11 @@ disconnect or timeout makes `is_gap=true` sticky even when no acknowledgement wa
 Handshake failure before any send attempt does not create a gap. Later acknowledgements do not prove
 replay completeness and cannot clear the flag. No `recentTrades` backfill, storage, queue replay or
 gap repair exists in this phase.
+
+Normalization-outcome acceptance is the current normalization commit boundary, not the delivery
+boundary. A subsequent schema-v2 queue timeout can therefore leave an accepted outcome without a
+successful delivery record. Phase 1A-3B1C will add separate `DeliveryOutcome` and operational
+coverage transitions; Phase 1A-3B1B deliberately creates neither.
 
 ## ClickHouse environments
 

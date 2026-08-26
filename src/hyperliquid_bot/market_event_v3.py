@@ -1323,7 +1323,7 @@ _NORMALIZATION_FAILURE_TO_FRAME_EVIDENCE: Final = {
 
 @dataclass(frozen=True, slots=True)
 class RawEventNormalizationOutcome:
-    """Dormant, index-specific normalization audit outcome.
+    """Index-specific normalization audit outcome.
 
     ID preimage, in exact order::
 
@@ -1456,7 +1456,7 @@ class RawEventNormalizationOutcome:
 
 @dataclass(frozen=True, slots=True)
 class NormalizationOutcome:
-    """Dormant, frame-atomic normalization outcome with a closed status matrix.
+    """Frame-atomic normalization outcome with a closed status matrix.
 
     ID preimage, in exact order::
 
@@ -1537,6 +1537,15 @@ class NormalizationOutcome:
             raise TypeError(
                 "preindex_scope_binding must be a RawFrameNormalizationScopeBinding or None."
             )
+        if self.frame_status is FrameNormalizationStatus.REJECTED_BEFORE_INDEXING:
+            if self.preindex_scope_binding is None:
+                raise ValueError(
+                    "pre-index rejection requires the complete raw-frame scope binding."
+                )
+            if self.preindex_scope_binding.raw_record_id != self.raw_record_id:
+                raise ValueError("pre-index scope binding must match the outcome raw record.")
+        elif self.preindex_scope_binding is not None:
+            raise ValueError("pre-index scope binding is valid only for pre-index rejection.")
         evidence = _require_exact_tuple(
             self.evidence,
             item_type=NormalizationEvidence,
@@ -1561,7 +1570,6 @@ class NormalizationOutcome:
         raw_components = json.loads(self.raw_record_id.value)
         raw_feed_product_id = FeedProductId(raw_components[1])
         raw_collector_run_id = raw_components[2]
-        preindex_binding_used = False
         for transition_id in transition_ids:
             transition_components = json.loads(transition_id.value)
             scope_components = json.loads(transition_components[1])
@@ -1622,7 +1630,6 @@ class NormalizationOutcome:
                         raise ValueError(
                             "pre-index normalization failure requires the exact raw frame scope."
                         )
-                    preindex_binding_used = True
                 else:
                     matching_failure_outcomes = tuple(
                         outcome
@@ -1686,11 +1693,6 @@ class NormalizationOutcome:
                     "NormalizationOutcome transition evidence must be a normalization failure "
                     "or source-event conflict."
                 )
-
-        if self.preindex_scope_binding is not None and not preindex_binding_used:
-            raise ValueError(
-                "preindex_scope_binding is allowed only for its attached pre-index transition."
-            )
 
         indexes = tuple(outcome.observation_key.raw_event_index for outcome in outcomes)
         if indexes != tuple(sorted(set(indexes))):

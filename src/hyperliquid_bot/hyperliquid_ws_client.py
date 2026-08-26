@@ -3,32 +3,83 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import math
 import ssl
 import time
 from collections import OrderedDict
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
 from enum import StrEnum
+from functools import partial
 from typing import Final, NoReturn, Protocol, cast
 
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed, InvalidMessage, InvalidStatus
 
-from .contracts import AggressorSide, Instrument, MarketEventEnvelope, Venue
+from .contracts import Instrument, MarketEventEnvelope, Venue
+from .data_provenance import (
+    MAX_RAW_APPLICATION_MESSAGE_BYTES,
+    CollectorRunId,
+    NormalizationRunId,
+    RawMarketDataRecord,
+    SanitizedValidationFailure,
+    SourceEventId,
+    SubscriptionAttemptSnapshot,
+    SubscriptionAttemptStatus,
+    SubscriptionAttemptTransition,
+    ValidationFailureCategory,
+)
+from .hyperliquid_capture import (
+    HYPERLIQUID_MAX_SUBSCRIPTIONS as _HYPERLIQUID_MAX_SUBSCRIPTIONS,
+)
+from .hyperliquid_capture import (
+    HyperliquidSessionAttempts,
+    application_message_bytes,
+    attempt_snapshot_for_coin,
+    build_hyperliquid_capture_plan,
+    build_raw_market_data_record,
+    control_normalization_outcome,
+    decoded_wire_payload_context,
+    empty_trade_normalization_outcome,
+    frame_normalization_outcome,
+    new_hyperliquid_session_attempts,
+    preindex_rejection_normalization_outcome,
+    raw_event_outcome,
+    raw_event_scope_binding,
+    subscription_spec_for_coin,
+    transition_hyperliquid_attempt,
+)
 from .hyperliquid_trades import (
     HyperliquidWsTrade,
-    decode_hyperliquid_trades_frame,
+    hyperliquid_trade_source_event_id,
     normalize_hyperliquid_trade,
+)
+from .market_data_sinks import (
+    NormalizationOutcomeAcceptance,
+    NormalizationOutcomeRejected,
+    NormalizationOutcomeSink,
+    RawRecordAcceptance,
+    RawRecordRejected,
+    RawRecordSink,
+    SinkDestinationId,
+    SinkFailureCategory,
+)
+from .market_event_v3 import (
+    FrameNormalizationStatus,
+    NormalizationEvidence,
+    NormalizationOutcome,
+    RawEventDisposition,
+    RawEventNormalizationOutcome,
+    RawEventNormalizationScopeBinding,
 )
 
 HYPERLIQUID_MAINNET_WEBSOCKET_URL: Final = "wss://api.hyperliquid.xyz/ws"
-HYPERLIQUID_MAX_SUBSCRIPTIONS: Final = 1_000
+HYPERLIQUID_MAX_SUBSCRIPTIONS: Final = _HYPERLIQUID_MAX_SUBSCRIPTIONS
 
 _TRANSPORT_PRIVACY_LOGGER: Final = logging.Logger(
     "hyperliquid_bot.hyperliquid_ws_transport_privacy",
@@ -43,9 +94,11 @@ _PING_MESSAGE: Final = '{"method":"ping"}'
 _SERVER_IDLE_TIMEOUT_SECONDS: Final = 60.0
 _CONNECTIONS_PER_MINUTE_BUDGET: Final = 20.0
 _OUTBOUND_MESSAGES_PER_MINUTE_BUDGET: Final = 900.0
+_MAX_BUILD_TEXT_LENGTH: Final = 256
 _RETRYABLE_HTTP_STATUSES: Final = frozenset({500, 502, 503, 504})
 _RETRYABLE_CLOSE_CODES: Final = frozenset({1000, 1001, 1005, 1006, 1011, 1012, 1013, 1014})
 _TERMINAL_CLOSE_CODES: Final = frozenset({1002, 1003, 1007, 1008, 1009, 1010})
+_MAX_QUARANTINED_SINK_OPERATIONS: Final = 3
 
 
 class HyperliquidCollectorError(RuntimeError):
@@ -84,8 +137,42 @@ class HyperliquidCollectorStateError(HyperliquidCollectorError):
     """The collector was used in an invalid local lifecycle state."""
 
 
+class HyperliquidSinkBoundaryError(HyperliquidCollectorError):
+    """A mandatory sink failed with one sanitized bounded category."""
+
+    def __init__(self, category: SinkFailureCategory) -> None:
+        if type(category) is not SinkFailureCategory:
+            raise TypeError("category must be a SinkFailureCategory.")
+        self.category = category
+        super().__init__(f"Market-data sink boundary failed ({category.value}).")
+
+
+class HyperliquidCaptureValidationError(HyperliquidCollectorError):
+    """Private capture construction failed and exposed only a bounded category."""
+
+    def __init__(self, failure: SanitizedValidationFailure) -> None:
+        if type(failure) is not SanitizedValidationFailure:
+            raise TypeError("failure must be a SanitizedValidationFailure.")
+        self.failure = failure
+        super().__init__(f"Market-data capture validation failed ({failure.category.value}).")
+
+
 class _RetryableTransportError(HyperliquidCollectorError):
     """An error known to originate at an active WebSocket transport operation."""
+
+
+class _SinkHardDeadlineExpired(Exception):
+    """An argumentless private signal for the collector's sink deadline."""
+
+    def __init__(self) -> None:
+        super().__init__()
+
+
+class _SinkOperationCancelled(Exception):
+    """An argumentless private signal for a sink that cancelled itself."""
+
+    def __init__(self) -> None:
+        super().__init__()
 
 
 class SessionState(StrEnum):
@@ -110,6 +197,9 @@ class FailureCategory(StrEnum):
     TERMINAL_CLOSE_OR_PROTOCOL_VIOLATION = "terminal_close_or_protocol_violation"
     SOURCE_EVENT_CONFLICT = "source_event_conflict"
     BACKPRESSURE = "backpressure"
+    RAW_SINK_FAILURE = "raw_sink_failure"
+    NORMALIZATION_OUTCOME_SINK_FAILURE = "normalization_outcome_sink_failure"
+    SINK_CLOSE_FAILURE = "sink_close_failure"
     LOCAL_LIFECYCLE_FAILURE = "local_lifecycle_failure"
 
 
@@ -205,6 +295,8 @@ def _require_text(value: object, *, field_name: str) -> str:
     text = value
     if not text or text != text.strip() or not text.isprintable():
         raise ValueError(f"{field_name} must be non-empty printable text without outer whitespace.")
+    if len(text) > _MAX_BUILD_TEXT_LENGTH:
+        raise ValueError(f"{field_name} exceeds the provenance text bound.")
     return text
 
 
@@ -241,6 +333,8 @@ class HyperliquidTradesCollectorConfig:
     collector_commit: str
     queue_capacity: int = 16
     dedup_capacity: int = 10_000
+    raw_sink_timeout_seconds: float = 1.0
+    outcome_sink_timeout_seconds: float = 1.0
     publish_timeout_seconds: float = 5.0
     subscription_timeout_seconds: float = 20.0
     heartbeat_interval_seconds: float = 45.0
@@ -288,11 +382,21 @@ class HyperliquidTradesCollectorConfig:
             self.websocket_max_size_bytes,
             field_name="websocket_max_size_bytes",
         )
+        if self.websocket_max_size_bytes > MAX_RAW_APPLICATION_MESSAGE_BYTES:
+            raise ValueError("websocket_max_size_bytes cannot exceed the Bronze raw-message limit.")
         _require_positive_int(
             self.websocket_max_queue_frames,
             field_name="websocket_max_queue_frames",
         )
 
+        raw_sink_timeout = _require_finite_number(
+            self.raw_sink_timeout_seconds,
+            field_name="raw_sink_timeout_seconds",
+        )
+        outcome_sink_timeout = _require_finite_number(
+            self.outcome_sink_timeout_seconds,
+            field_name="outcome_sink_timeout_seconds",
+        )
         publish_timeout = _require_finite_number(
             self.publish_timeout_seconds,
             field_name="publish_timeout_seconds",
@@ -348,7 +452,12 @@ class HyperliquidTradesCollectorConfig:
         if heartbeat_interval < 5.0:
             raise ValueError("heartbeat_interval_seconds would exceed a safe message rate.")
         recurrent_ping_deadline = (
-            max(heartbeat_interval, pong_timeout + publish_timeout) + publish_timeout + send_timeout
+            max(
+                heartbeat_interval,
+                pong_timeout + 2 * (raw_sink_timeout + outcome_sink_timeout) + publish_timeout,
+            )
+            + (raw_sink_timeout + outcome_sink_timeout + publish_timeout)
+            + send_timeout
         )
         if recurrent_ping_deadline >= _SERVER_IDLE_TIMEOUT_SECONDS:
             raise ValueError(
@@ -373,6 +482,8 @@ class HyperliquidTradesCollectorConfig:
         if backoff_max < max(backoff_initial, minimum_reconnect_delay):
             raise ValueError("backoff_max_seconds is below the safe initial reconnect delay.")
 
+        object.__setattr__(self, "raw_sink_timeout_seconds", raw_sink_timeout)
+        object.__setattr__(self, "outcome_sink_timeout_seconds", outcome_sink_timeout)
         object.__setattr__(self, "publish_timeout_seconds", publish_timeout)
         object.__setattr__(self, "subscription_timeout_seconds", subscription_timeout)
         object.__setattr__(self, "heartbeat_interval_seconds", heartbeat_interval)
@@ -406,6 +517,8 @@ class HyperliquidCollectorHealth:
     reconnect_count: int
     received_control_message_count: int
     received_trade_message_count: int
+    accepted_raw_record_count: int
+    accepted_normalization_outcome_count: int
     emitted_event_count: int
     duplicate_event_count: int
     duplicate_acknowledgement_count: int
@@ -418,22 +531,47 @@ class HyperliquidCollectorHealth:
     dedup_cache_size: int
     sticky_gap: bool
     last_failure_category: FailureCategory | None
+    last_sink_failure_category: SinkFailureCategory | None
     last_received_time: datetime | None
     last_received_monotonic_ns: int | None
 
 
 @dataclass(frozen=True, slots=True)
 class _SourceEventFingerprint:
-    coin: str
-    venue_side: str
-    aggressor_side: AggressorSide
-    price: Decimal
-    quantity: Decimal
-    event_time: datetime
-    tid: int
-    source_transaction_id: str
-    users: tuple[str, str]
-    canonical_instrument_id: str
+    """Bounded digest of replay semantics without retaining source-private values."""
+
+    sha256: str = field(repr=False)
+
+
+def _source_event_fingerprint(
+    trade: HyperliquidWsTrade,
+    event: MarketEventEnvelope,
+) -> _SourceEventFingerprint:
+    """Hash exact semantic replay fields without retaining the canonical preimage."""
+
+    price_numerator, price_denominator = event.event.price.as_integer_ratio()
+    quantity_numerator, quantity_denominator = event.event.quantity.as_integer_ratio()
+    preimage = json.dumps(
+        (
+            "hyperliquid-trade-semantic-fingerprint-v1",
+            trade.coin,
+            trade.side,
+            event.event.aggressor_side.value,
+            str(price_numerator),
+            str(price_denominator),
+            str(quantity_numerator),
+            str(quantity_denominator),
+            event.event_time.isoformat(timespec="microseconds"),
+            trade.tid,
+            trade.hash,
+            trade.users,
+            event.instrument.canonical_instrument_id,
+        ),
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    digest = hashlib.sha256(preimage).hexdigest()
+    return _SourceEventFingerprint(digest)
 
 
 @dataclass(frozen=True, slots=True)
@@ -442,10 +580,307 @@ class _TerminalOutcome:
     failure_category: FailureCategory | None
 
 
+class _ExportedFailureKind(StrEnum):
+    PROTOCOL = "protocol"
+    TERMINAL_CLOSE = "terminal_close"
+    SOURCE_EVENT_CONFLICT = "source_event_conflict"
+    BACKPRESSURE = "backpressure"
+    HEARTBEAT_TIMEOUT = "heartbeat_timeout"
+    RECEIVE_TIMEOUT = "receive_timeout"
+    SUBSCRIPTION_TIMEOUT = "subscription_timeout"
+    RUN_STATE = "run_state"
+    CONSUMER_STATE = "consumer_state"
+    SINK = "sink"
+    CAPTURE_VALIDATION = "capture_validation"
+    TERMINATED = "terminated"
+
+
+@dataclass(frozen=True, slots=True)
+class _ExportedFailure:
+    """Bounded standalone information allowed to cross a public async boundary."""
+
+    kind: _ExportedFailureKind
+    sink_category: SinkFailureCategory | None = None
+    validation_category: ValidationFailureCategory | None = None
+    session_state: SessionState | None = None
+    failure_category: FailureCategory | None = None
+
+
+_MISSING_EXCEPTION_ATTRIBUTE: Final = object()
+
+
+def _private_exception_attribute(error: Exception, name: str) -> object:
+    """Read one exact exception attribute without invoking user-defined accessors."""
+
+    value: object = _MISSING_EXCEPTION_ATTRIBUTE
+    try:
+        attributes = object.__getattribute__(error, "__dict__")
+        if isinstance(attributes, dict):
+            value = dict.get(attributes, name, _MISSING_EXCEPTION_ATTRIBUTE)
+    except BaseException:
+        pass
+    return value
+
+
+def _validation_failure_category(value: object) -> ValidationFailureCategory | None:
+    if type(value) is not SanitizedValidationFailure:
+        return None
+    category: object = _MISSING_EXCEPTION_ATTRIBUTE
+    try:
+        category = object.__getattribute__(value, "category")
+    except BaseException:
+        pass
+    if type(category) is not ValidationFailureCategory:
+        return None
+    return category
+
+
+def _classify_run_failure(error: Exception) -> _ExportedFailure:
+    if type(error) is HyperliquidSinkBoundaryError:
+        category = _private_exception_attribute(error, "category")
+        if type(category) is not SinkFailureCategory:
+            return _ExportedFailure(_ExportedFailureKind.RUN_STATE)
+        return _ExportedFailure(
+            _ExportedFailureKind.SINK,
+            sink_category=category,
+        )
+    if type(error) is HyperliquidCaptureValidationError:
+        category = _validation_failure_category(_private_exception_attribute(error, "failure"))
+        if category is None:
+            return _ExportedFailure(_ExportedFailureKind.RUN_STATE)
+        return _ExportedFailure(
+            _ExportedFailureKind.CAPTURE_VALIDATION,
+            validation_category=category,
+        )
+    if isinstance(error, HyperliquidSourceEventConflictError):
+        return _ExportedFailure(_ExportedFailureKind.SOURCE_EVENT_CONFLICT)
+    if isinstance(error, HyperliquidTerminalCloseError):
+        return _ExportedFailure(_ExportedFailureKind.TERMINAL_CLOSE)
+    if isinstance(error, HyperliquidProtocolError):
+        return _ExportedFailure(_ExportedFailureKind.PROTOCOL)
+    if isinstance(error, HyperliquidBackpressureError):
+        return _ExportedFailure(_ExportedFailureKind.BACKPRESSURE)
+    if isinstance(error, HyperliquidHeartbeatTimeoutError):
+        return _ExportedFailure(_ExportedFailureKind.HEARTBEAT_TIMEOUT)
+    if isinstance(error, HyperliquidReceiveTimeoutError):
+        return _ExportedFailure(_ExportedFailureKind.RECEIVE_TIMEOUT)
+    if isinstance(error, HyperliquidSubscriptionTimeoutError):
+        return _ExportedFailure(_ExportedFailureKind.SUBSCRIPTION_TIMEOUT)
+    return _ExportedFailure(_ExportedFailureKind.RUN_STATE)
+
+
+def _raise_exported_failure(failure: _ExportedFailure) -> NoReturn:
+    """Create a fresh public error from bounded values outside a catch block."""
+
+    kind = (
+        failure.kind
+        if type(failure.kind) is _ExportedFailureKind
+        else _ExportedFailureKind.RUN_STATE
+    )
+    if kind is _ExportedFailureKind.SINK:
+        sink_category = (
+            failure.sink_category
+            if type(failure.sink_category) is SinkFailureCategory
+            else SinkFailureCategory.RAW_ACCEPTANCE_INVALID
+        )
+        raise HyperliquidSinkBoundaryError(sink_category) from None
+    if kind is _ExportedFailureKind.CAPTURE_VALIDATION:
+        validation_category = (
+            failure.validation_category
+            if type(failure.validation_category) is ValidationFailureCategory
+            else ValidationFailureCategory.LOCAL_VALIDATION_FAILURE
+        )
+        raise HyperliquidCaptureValidationError(
+            SanitizedValidationFailure(validation_category)
+        ) from None
+    if kind is _ExportedFailureKind.SOURCE_EVENT_CONFLICT:
+        raise HyperliquidSourceEventConflictError(
+            "A source-event ID was reused for conflicting trade semantics."
+        ) from None
+    if kind is _ExportedFailureKind.TERMINAL_CLOSE:
+        raise HyperliquidTerminalCloseError(
+            "WebSocket closed with a terminal protocol condition."
+        ) from None
+    if kind is _ExportedFailureKind.PROTOCOL:
+        raise HyperliquidProtocolError("WebSocket application message was rejected.") from None
+    if kind is _ExportedFailureKind.BACKPRESSURE:
+        raise HyperliquidBackpressureError(
+            "The normalized event queue remained full beyond its limit."
+        ) from None
+    if kind is _ExportedFailureKind.HEARTBEAT_TIMEOUT:
+        raise HyperliquidHeartbeatTimeoutError(
+            "Hyperliquid application heartbeat timed out."
+        ) from None
+    if kind is _ExportedFailureKind.RECEIVE_TIMEOUT:
+        raise HyperliquidReceiveTimeoutError(
+            "No WebSocket application message was received in time."
+        ) from None
+    if kind is _ExportedFailureKind.SUBSCRIPTION_TIMEOUT:
+        raise HyperliquidSubscriptionTimeoutError(
+            "Not all trades subscriptions were acknowledged in time."
+        ) from None
+    if kind is _ExportedFailureKind.TERMINATED:
+        state = (
+            failure.session_state
+            if type(failure.session_state) is SessionState
+            else SessionState.FAILED
+        )
+        terminal_category = (
+            failure.failure_category if type(failure.failure_category) is FailureCategory else None
+        )
+        raise HyperliquidCollectorTerminatedError(
+            session_state=state,
+            failure_category=terminal_category,
+        ) from None
+    if kind is _ExportedFailureKind.CONSUMER_STATE:
+        raise HyperliquidCollectorStateError(
+            "Only one logical event-batch consumer is supported."
+        ) from None
+    raise HyperliquidCollectorStateError("A collector instance may only be run once.") from None
+
+
+async def _export_run_boundary(
+    private_operation_factory: Callable[[], Coroutine[object, object, NoReturn]],
+) -> NoReturn:
+    """Export only a fresh bounded error, never the private collector traceback."""
+
+    failure: _ExportedFailure | None = None
+    cancelled = False
+    private_operation = private_operation_factory()
+    del private_operation_factory
+    try:
+        await private_operation
+    except asyncio.CancelledError:
+        cancelled = True
+    except Exception as error:
+        failure = _classify_run_failure(error)
+    del private_operation
+    if cancelled:
+        raise asyncio.CancelledError from None
+    if failure is None:
+        failure = _ExportedFailure(_ExportedFailureKind.RUN_STATE)
+    _raise_exported_failure(failure)
+
+
+async def _export_receive_boundary(
+    private_operation_factory: Callable[[], Coroutine[object, object, EventBatch]],
+) -> EventBatch:
+    """Return one batch or export a fresh bounded consumer error."""
+
+    result: EventBatch | None = None
+    failure: _ExportedFailure | None = None
+    cancelled = False
+    private_operation = private_operation_factory()
+    del private_operation_factory
+    try:
+        result = await private_operation
+    except asyncio.CancelledError:
+        cancelled = True
+    except HyperliquidCollectorTerminatedError as error:
+        exported_state = _private_exception_attribute(error, "session_state")
+        exported_category = _private_exception_attribute(error, "failure_category")
+        session_state = (
+            exported_state if type(exported_state) is SessionState else SessionState.FAILED
+        )
+        terminal_category = (
+            exported_category if type(exported_category) is FailureCategory else None
+        )
+        failure = _ExportedFailure(
+            _ExportedFailureKind.TERMINATED,
+            session_state=session_state,
+            failure_category=terminal_category,
+        )
+    except Exception:
+        failure = _ExportedFailure(_ExportedFailureKind.CONSUMER_STATE)
+    del private_operation
+    if cancelled:
+        raise asyncio.CancelledError from None
+    if failure is not None:
+        _raise_exported_failure(failure)
+    if result is None:
+        _raise_exported_failure(_ExportedFailure(_ExportedFailureKind.CONSUMER_STATE))
+    return result
+
+
 @dataclass(slots=True)
 class _ReceiverFlowState:
     available: asyncio.Event
     block_generation: int = 0
+
+
+class _PreparedCommitKind(StrEnum):
+    GREETING = "greeting"
+    PONG = "pong"
+    ACKNOWLEDGEMENT = "acknowledgement"
+    TRADES = "trades"
+    REJECTION = "rejection"
+
+
+class _PreparedTerminalFailure(StrEnum):
+    PROTOCOL = "protocol"
+    SOURCE_EVENT_CONFLICT = "source_event_conflict"
+
+
+class _ReceivedMessageResult(StrEnum):
+    COMMITTED = "committed"
+    CANCELLED = "cancelled"
+    RAW_SINK_FAILURE = "raw_sink_failure"
+    OUTCOME_SINK_FAILURE = "outcome_sink_failure"
+    PROTOCOL_FAILURE = "protocol_failure"
+    SOURCE_EVENT_CONFLICT = "source_event_conflict"
+    BACKPRESSURE = "backpressure"
+    LOCAL_FAILURE = "local_failure"
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedMessage:
+    outcome: NormalizationOutcome
+    commit_kind: _PreparedCommitKind
+    acknowledgement_coin: str | None = None
+    candidate_cache: OrderedDict[str, _SourceEventFingerprint] | None = field(
+        default=None,
+        repr=False,
+    )
+    batch: EventBatch = ()
+    duplicate_count: int = 0
+    terminal_failure: _PreparedTerminalFailure | None = None
+
+
+def _raise_received_message_failure(
+    result: _ReceivedMessageResult,
+    sink_failure: SinkFailureCategory | None,
+) -> NoReturn:
+    """Raise one bounded error after all payload-bearing worker locals are gone."""
+
+    if result is _ReceivedMessageResult.CANCELLED:
+        raise asyncio.CancelledError
+    if result is _ReceivedMessageResult.RAW_SINK_FAILURE:
+        category = (
+            sink_failure
+            if sink_failure is not None and sink_failure.value.startswith("raw-")
+            else SinkFailureCategory.RAW_ACCEPTANCE_INVALID
+        )
+        raise HyperliquidSinkBoundaryError(category)
+    if result is _ReceivedMessageResult.OUTCOME_SINK_FAILURE:
+        category = (
+            sink_failure
+            if sink_failure is not None and sink_failure.value.startswith("outcome-")
+            else SinkFailureCategory.OUTCOME_ACCEPTANCE_INVALID
+        )
+        raise HyperliquidSinkBoundaryError(category)
+    if result is _ReceivedMessageResult.SOURCE_EVENT_CONFLICT:
+        raise HyperliquidSourceEventConflictError(
+            "A source-event ID was reused for conflicting trade semantics."
+        )
+    if result is _ReceivedMessageResult.BACKPRESSURE:
+        raise HyperliquidBackpressureError(
+            "The normalized event queue remained full beyond its limit."
+        )
+    if result is _ReceivedMessageResult.PROTOCOL_FAILURE:
+        raise HyperliquidProtocolError("WebSocket application message was rejected.")
+    raise HyperliquidCaptureValidationError(
+        SanitizedValidationFailure(ValidationFailureCategory.LOCAL_VALIDATION_FAILURE)
+    )
 
 
 def _reject_duplicate_object_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -504,7 +939,7 @@ def route_hyperliquid_websocket_message(message: object) -> RoutedMessage:
         )
     except HyperliquidProtocolError as exc:
         parse_error = str(exc)
-    except (json.JSONDecodeError, UnicodeError):
+    except (ValueError, UnicodeError, RecursionError, OverflowError):
         parse_error = "WebSocket application message is not valid JSON."
     if parse_error is not None:
         raise HyperliquidProtocolError(parse_error)
@@ -556,6 +991,22 @@ async def _asyncio_timeout[ResultT](
     timeout_seconds: float,
 ) -> ResultT:
     return await asyncio.wait_for(awaitable, timeout=timeout_seconds)
+
+
+def _consume_quarantined_sink_operation(
+    registry: set[asyncio.Future[object]] | None,
+    operation: asyncio.Future[object],
+) -> None:
+    """Consume one late sink result privately and release its bounded registry slot."""
+
+    if registry is not None:
+        registry.discard(operation)
+    if operation.cancelled():
+        return
+    try:
+        operation.exception()
+    except BaseException:
+        pass
 
 
 def _system_utc_now() -> datetime:
@@ -639,6 +1090,13 @@ def _is_retryable_transport_error(error: Exception) -> bool:
 
 
 def _failure_category(error: Exception) -> FailureCategory:
+    if type(error) is HyperliquidSinkBoundaryError:
+        category = _private_exception_attribute(error, "category")
+        if type(category) is not SinkFailureCategory:
+            return FailureCategory.LOCAL_LIFECYCLE_FAILURE
+        if category.value.startswith("raw-"):
+            return FailureCategory.RAW_SINK_FAILURE
+        return FailureCategory.NORMALIZATION_OUTCOME_SINK_FAILURE
     if isinstance(error, HyperliquidSourceEventConflictError):
         return FailureCategory.SOURCE_EVENT_CONFLICT
     if isinstance(error, HyperliquidBackpressureError):
@@ -668,11 +1126,25 @@ async def _send_transport_message(
     except Exception as exc:
         failure = _wire_failure_disposition(exc)
         if failure is None:
-            raise
+            failure = _WireFailureDisposition.TERMINAL_CLOSE
     if failure is _WireFailureDisposition.RETRYABLE:
         raise _RetryableTransportError("WebSocket send failed transiently.")
     if failure is _WireFailureDisposition.TERMINAL_CLOSE:
         raise HyperliquidTerminalCloseError("WebSocket closed with a terminal protocol condition.")
+
+
+def _declared_sink_destination(sink: object) -> SinkDestinationId | None:
+    """Read a sink's public destination without exporting a getter failure."""
+
+    destination: object | None = None
+    valid = True
+    try:
+        destination = sink.destination_id  # type: ignore[attr-defined]
+    except Exception:
+        valid = False
+    if not valid or type(destination) is not SinkDestinationId:
+        return None
+    return destination
 
 
 class HyperliquidTradesCollector:
@@ -682,6 +1154,12 @@ class HyperliquidTradesCollector:
         self,
         config: HyperliquidTradesCollectorConfig,
         *,
+        collector_run_id: CollectorRunId,
+        normalization_run_id: NormalizationRunId,
+        normalizer_version: str,
+        normalizer_commit: str,
+        raw_record_sink: RawRecordSink,
+        normalization_outcome_sink: NormalizationOutcomeSink,
         connection_factory: ConnectionFactory = _open_mainnet_connection,
         utc_now: UtcNow = _system_utc_now,
         monotonic_now: MonotonicNow = _system_monotonic_ns,
@@ -691,7 +1169,32 @@ class HyperliquidTradesCollector:
     ) -> None:
         if type(config) is not HyperliquidTradesCollectorConfig:
             raise TypeError("config must be a HyperliquidTradesCollectorConfig.")
+        if type(collector_run_id) is not CollectorRunId:
+            raise TypeError("collector_run_id must be a CollectorRunId.")
+        if type(normalization_run_id) is not NormalizationRunId:
+            raise TypeError("normalization_run_id must be a NormalizationRunId.")
+        _require_text(normalizer_version, field_name="normalizer_version")
+        _require_text(normalizer_commit, field_name="normalizer_commit")
+        if cast(object, raw_record_sink) is cast(object, normalization_outcome_sink):
+            raise ValueError("raw and normalization-outcome sinks must be distinct objects.")
+        if not isinstance(raw_record_sink, RawRecordSink):
+            raise TypeError("raw_record_sink must satisfy RawRecordSink.")
+        if not isinstance(normalization_outcome_sink, NormalizationOutcomeSink):
+            raise TypeError("normalization_outcome_sink must satisfy NormalizationOutcomeSink.")
+        raw_destination = _declared_sink_destination(raw_record_sink)
+        outcome_destination = _declared_sink_destination(normalization_outcome_sink)
+        if raw_destination is None or outcome_destination is None:
+            raise TypeError("each sink must declare a valid SinkDestinationId.")
         self._config = config
+        self._collector_run_id = collector_run_id
+        self._normalization_run_id = normalization_run_id
+        self._normalizer_version = normalizer_version
+        self._normalizer_commit = normalizer_commit
+        self._raw_record_sink = raw_record_sink
+        self._normalization_outcome_sink = normalization_outcome_sink
+        self._raw_sink_destination_id = raw_destination
+        self._outcome_sink_destination_id = outcome_destination
+        self._capture_plan = build_hyperliquid_capture_plan(config.instruments)
         self._connection_factory = connection_factory
         self._utc_now = utc_now
         self._monotonic_now = monotonic_now
@@ -708,8 +1211,11 @@ class HyperliquidTradesCollector:
         self._configured_by_coin = {
             instrument.native_symbol: instrument for instrument in config.instruments
         }
-        self._sent_coins: set[str] = set()
         self._acknowledged_coins: set[str] = set()
+        self._session_attempts: HyperliquidSessionAttempts | None = None
+        self._attempt_transition_journal: list[SubscriptionAttemptTransition] = []
+        self._connection_ordinal = 0
+        self._next_ingress_ordinal = 0
         self._state = SessionState.IDLE
         self._running = False
         self._has_run = False
@@ -723,6 +1229,8 @@ class HyperliquidTradesCollector:
         self._reconnect_count = 0
         self._received_control_message_count = 0
         self._received_trade_message_count = 0
+        self._accepted_raw_record_count = 0
+        self._accepted_normalization_outcome_count = 0
         self._emitted_event_count = 0
         self._duplicate_event_count = 0
         self._duplicate_acknowledgement_count = 0
@@ -732,8 +1240,12 @@ class HyperliquidTradesCollector:
         self._backpressure_error_count = 0
         self._queue_high_water_mark = 0
         self._last_failure_category: FailureCategory | None = None
+        self._last_sink_failure_category: SinkFailureCategory | None = None
         self._last_received_time: datetime | None = None
         self._last_received_monotonic_ns: int | None = None
+        self._outcome_sink_close_started = False
+        self._raw_sink_close_started = False
+        self._quarantined_sink_operations: set[asyncio.Future[object]] = set()
 
     @property
     def health(self) -> HyperliquidCollectorHealth:
@@ -751,6 +1263,8 @@ class HyperliquidTradesCollector:
             reconnect_count=self._reconnect_count,
             received_control_message_count=self._received_control_message_count,
             received_trade_message_count=self._received_trade_message_count,
+            accepted_raw_record_count=self._accepted_raw_record_count,
+            accepted_normalization_outcome_count=(self._accepted_normalization_outcome_count),
             emitted_event_count=self._emitted_event_count,
             duplicate_event_count=self._duplicate_event_count,
             duplicate_acknowledgement_count=self._duplicate_acknowledgement_count,
@@ -763,11 +1277,17 @@ class HyperliquidTradesCollector:
             dedup_cache_size=len(self._dedup_cache),
             sticky_gap=self._sticky_gap,
             last_failure_category=self._last_failure_category,
+            last_sink_failure_category=self._last_sink_failure_category,
             last_received_time=self._last_received_time,
             last_received_monotonic_ns=self._last_received_monotonic_ns,
         )
 
-    async def receive_batch(self) -> EventBatch:
+    def receive_batch(self) -> Coroutine[object, object, EventBatch]:
+        """Return a standalone consumer boundary without retaining collector state."""
+
+        return _export_receive_boundary(self._receive_batch_private)
+
+    async def _receive_batch_private(self) -> EventBatch:
         """Wait for the next batch or sanitized producer termination.
 
         Phase 1A-2B supports one logical consumer at a time.
@@ -801,7 +1321,12 @@ class HyperliquidTradesCollector:
         finally:
             self._consumer_active = False
 
-    async def run(self) -> NoReturn:
+    def run(self) -> Coroutine[object, object, NoReturn]:
+        """Return a standalone producer boundary without exporting private state."""
+
+        return _export_run_boundary(self._run_private)
+
+    async def _run_private(self) -> NoReturn:
         """Run until cancellation or a fatal local/protocol failure."""
 
         if self._running or self._has_run:
@@ -810,6 +1335,7 @@ class HyperliquidTradesCollector:
         self._running = True
         self._has_run = True
         next_backoff = self._config.backoff_initial_seconds
+        terminal_outcome: _TerminalOutcome | None = None
 
         try:
             while True:
@@ -817,8 +1343,14 @@ class HyperliquidTradesCollector:
                 self._session_fully_active = False
                 self._session_subscription_delivery_uncertain = False
                 self._connection_attempts += 1
+                session_attempts = new_hyperliquid_session_attempts(
+                    self._capture_plan,
+                    collector_run_id=self._collector_run_id,
+                    connection_ordinal=self._connection_ordinal,
+                )
+                self._connection_ordinal += 1
                 try:
-                    await self._run_connection_attempt()
+                    await self._run_connection_attempt(session_attempts)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
@@ -861,26 +1393,27 @@ class HyperliquidTradesCollector:
                     )
         except asyncio.CancelledError:
             self._state = SessionState.STOPPED
-            self._signal_terminal_outcome(
-                _TerminalOutcome(
-                    session_state=SessionState.STOPPED,
-                    failure_category=None,
-                )
+            terminal_outcome = _TerminalOutcome(
+                session_state=SessionState.STOPPED,
+                failure_category=None,
             )
             raise
         except Exception as exc:
             self._state = SessionState.FAILED
             category = _failure_category(exc)
             self._last_failure_category = category
-            self._signal_terminal_outcome(
-                _TerminalOutcome(
-                    session_state=SessionState.FAILED,
-                    failure_category=category,
-                )
+            terminal_outcome = _TerminalOutcome(
+                session_state=SessionState.FAILED,
+                failure_category=category,
             )
             raise
         finally:
-            self._running = False
+            try:
+                await self._close_owned_sinks()
+            finally:
+                self._running = False
+                if terminal_outcome is not None:
+                    self._signal_terminal_outcome(terminal_outcome)
 
     def _signal_terminal_outcome(self, outcome: _TerminalOutcome) -> None:
         if self._terminal_outcome is not None:
@@ -889,21 +1422,33 @@ class HyperliquidTradesCollector:
         self._terminal_event.set()
         self._consumer_wakeup.set()
 
-    async def _run_connection_attempt(self) -> None:
-        connection_established = False
+    async def _run_connection_attempt(
+        self,
+        session_attempts: HyperliquidSessionAttempts,
+    ) -> None:
         failure: _WireFailureDisposition | None = None
+        bounded_error: HyperliquidCollectorError | None = None
+        cancelled = False
         try:
             async with self._connection_factory(self._config) as connection:
-                connection_established = True
                 self._successful_connections += 1
-                await self._run_session(connection)
+                try:
+                    await self._run_session(connection, session_attempts)
+                except asyncio.CancelledError:
+                    cancelled = True
+                except HyperliquidCollectorError as exc:
+                    bounded_error = exc
         except asyncio.CancelledError:
-            raise
+            cancelled = True
         except Exception as exc:
-            failure = _wire_failure_disposition(exc)
-            raw_close = isinstance(exc, ConnectionClosed)
-            if failure is None or (connection_established and not raw_close):
-                raise
+            if not cancelled:
+                failure = _wire_failure_disposition(exc)
+                if failure is None:
+                    failure = _WireFailureDisposition.TERMINAL_CLOSE
+        if cancelled:
+            raise asyncio.CancelledError
+        if bounded_error is not None:
+            raise bounded_error
         if failure is _WireFailureDisposition.RETRYABLE:
             raise _RetryableTransportError("WebSocket connection failed transiently.")
         if failure is _WireFailureDisposition.TERMINAL_CLOSE:
@@ -911,8 +1456,13 @@ class HyperliquidTradesCollector:
                 "WebSocket closed with a terminal protocol condition."
             )
 
-    async def _run_session(self, connection: WebSocketConnection) -> None:
-        self._sent_coins.clear()
+    async def _run_session(
+        self,
+        connection: WebSocketConnection,
+        session_attempts: HyperliquidSessionAttempts,
+    ) -> None:
+        self._session_attempts = session_attempts
+        self._attempt_transition_journal.clear()
         self._acknowledged_coins.clear()
         self._awaiting_pong = False
         self._state = SessionState.SUBSCRIBING
@@ -973,8 +1523,8 @@ class HyperliquidTradesCollector:
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
             self._awaiting_pong = False
-            self._sent_coins.clear()
             self._acknowledged_coins.clear()
+            self._session_attempts = None
 
     async def _subscribe_and_await_activation(
         self,
@@ -983,20 +1533,26 @@ class HyperliquidTradesCollector:
     ) -> None:
         async def subscribe_and_wait() -> None:
             for coin in self._config.configured_coins:
-                self._sent_coins.add(coin)
+                self._transition_attempt(coin, SubscriptionAttemptStatus.SEND_STARTED)
                 self._session_subscription_delivery_uncertain = True
                 await _send_transport_message(connection, _subscription_message(coin))
+                snapshot = self._current_attempt_snapshot(coin)
+                if snapshot.attempt_status is SubscriptionAttemptStatus.SEND_STARTED:
+                    self._transition_attempt(coin, SubscriptionAttemptStatus.SENT)
             await activation_event.wait()
 
+        timed_out = False
         try:
             await self._timeout_runner(
                 subscribe_and_wait(),
                 self._config.subscription_timeout_seconds,
             )
-        except TimeoutError as exc:
+        except TimeoutError:
+            timed_out = True
+        if timed_out:
             raise HyperliquidSubscriptionTimeoutError(
                 "Not all trades subscriptions were acknowledged in time."
-            ) from exc
+            )
 
     async def _heartbeat(
         self,
@@ -1012,31 +1568,43 @@ class HyperliquidTradesCollector:
                 pong_event.clear()
                 self._awaiting_pong = True
                 block_generation = receiver_flow.block_generation
+                send_timed_out = False
                 try:
                     await self._timeout_runner(
                         _send_transport_message(connection, _PING_MESSAGE),
                         self._config.send_timeout_seconds,
                     )
-                except TimeoutError as exc:
+                except TimeoutError:
+                    send_timed_out = True
+                if send_timed_out:
                     raise HyperliquidHeartbeatTimeoutError(
                         "Hyperliquid application ping could not be sent in time."
-                    ) from exc
+                    )
                 self._ping_count += 1
                 interval_task = asyncio.create_task(
                     self._wait_heartbeat_interval(),
                     name="hyperliquid-heartbeat-interval",
                 )
+                pong_timed_out = False
                 try:
                     await self._timeout_runner(
                         self._await_pong(pong_event, receiver_flow, block_generation),
-                        self._config.pong_timeout_seconds + self._config.publish_timeout_seconds,
+                        self._config.pong_timeout_seconds
+                        + 2
+                        * (
+                            self._config.raw_sink_timeout_seconds
+                            + self._config.outcome_sink_timeout_seconds
+                        )
+                        + self._config.publish_timeout_seconds,
                     )
-                except TimeoutError as exc:
-                    raise HyperliquidHeartbeatTimeoutError(
-                        "Hyperliquid application pong was not received in time."
-                    ) from exc
+                except TimeoutError:
+                    pong_timed_out = True
                 finally:
                     self._awaiting_pong = False
+                if pong_timed_out:
+                    raise HyperliquidHeartbeatTimeoutError(
+                        "Hyperliquid application pong was not received in time."
+                    )
                 await interval_task
                 interval_task = None
         finally:
@@ -1080,21 +1648,26 @@ class HyperliquidTradesCollector:
     ) -> None:
         while True:
             failure: _WireFailureDisposition | None = None
+            receive_timed_out = False
             try:
                 message = await self._timeout_runner(
                     connection.recv(),
                     self._config.receive_timeout_seconds,
                 )
-            except TimeoutError as exc:
-                raise HyperliquidReceiveTimeoutError(
-                    "No WebSocket application message was received in time."
-                ) from exc
+            except TimeoutError:
+                receive_timed_out = True
             except asyncio.CancelledError:
                 raise
+            except UnicodeDecodeError:
+                failure = _WireFailureDisposition.TERMINAL_CLOSE
             except Exception as exc:
                 failure = _wire_failure_disposition(exc)
                 if failure is None:
-                    raise
+                    failure = _WireFailureDisposition.TERMINAL_CLOSE
+            if receive_timed_out:
+                raise HyperliquidReceiveTimeoutError(
+                    "No WebSocket application message was received in time."
+                )
             if failure is _WireFailureDisposition.RETRYABLE:
                 raise _RetryableTransportError("WebSocket receive failed transiently.")
             if failure is _WireFailureDisposition.TERMINAL_CLOSE:
@@ -1102,34 +1675,63 @@ class HyperliquidTradesCollector:
                     "WebSocket closed with a terminal protocol condition."
                 )
 
-            received_time, received_monotonic_ns = self._capture_receive_clock()
-            self._last_received_time = received_time
-            self._last_received_monotonic_ns = received_monotonic_ns
+            receiver_flow.block_generation += 1
+            receiver_flow.available.clear()
             try:
-                routed = route_hyperliquid_websocket_message(message)
-            except HyperliquidProtocolError:
-                self._protocol_error_count += 1
-                raise
-
-            if isinstance(routed, TradesMessage):
-                self._received_trade_message_count += 1
-                await self._process_trades(
-                    routed.frame,
-                    received_time=received_time,
-                    received_monotonic_ns=received_monotonic_ns,
-                    receiver_flow=receiver_flow,
+                result = await self._process_received_message_privately(
+                    message,
+                    pong_event=pong_event,
+                    activation_event=activation_event,
                 )
-                continue
+            finally:
+                receiver_flow.available.set()
+            del message
+            if result is not _ReceivedMessageResult.COMMITTED:
+                _raise_received_message_failure(result, self._last_sink_failure_category)
+            await asyncio.sleep(0)
 
-            self._received_control_message_count += 1
-            if isinstance(routed, GreetingMessage):
-                continue
-            if isinstance(routed, PongMessage):
-                self._pong_count += 1
-                if self._awaiting_pong:
-                    pong_event.set()
-                continue
-            self._acknowledge(routed.coin, activation_event)
+    async def _process_received_message_privately(
+        self,
+        message: object,
+        *,
+        pong_event: asyncio.Event,
+        activation_event: asyncio.Event,
+    ) -> _ReceivedMessageResult:
+        phase = _ReceivedMessageResult.LOCAL_FAILURE
+        result = _ReceivedMessageResult.COMMITTED
+        try:
+            received_time, received_monotonic_ns = self._capture_receive_clock()
+            raw_record = self._construct_raw_record_privately(
+                message,
+                received_time=received_time,
+                received_monotonic_ns=received_monotonic_ns,
+            )
+            phase = _ReceivedMessageResult.RAW_SINK_FAILURE
+            await self._accept_raw_record(raw_record)
+            prepared = self._prepare_message_privately(message, raw_record)
+            phase = _ReceivedMessageResult.OUTCOME_SINK_FAILURE
+            await self._accept_normalization_outcome(prepared.outcome)
+            phase = _ReceivedMessageResult.LOCAL_FAILURE
+            await self._commit_prepared_message(
+                prepared,
+                received_time=received_time,
+                received_monotonic_ns=received_monotonic_ns,
+                pong_event=pong_event,
+                activation_event=activation_event,
+            )
+        except asyncio.CancelledError:
+            result = _ReceivedMessageResult.CANCELLED
+        except HyperliquidSinkBoundaryError:
+            result = phase
+        except HyperliquidSourceEventConflictError:
+            result = _ReceivedMessageResult.SOURCE_EVENT_CONFLICT
+        except HyperliquidBackpressureError:
+            result = _ReceivedMessageResult.BACKPRESSURE
+        except HyperliquidProtocolError:
+            result = _ReceivedMessageResult.PROTOCOL_FAILURE
+        except Exception:
+            result = _ReceivedMessageResult.LOCAL_FAILURE
+        return result
 
     def _capture_receive_clock(self) -> tuple[datetime, int]:
         received_time = self._utc_now()
@@ -1146,117 +1748,479 @@ class HyperliquidTradesCollector:
             raise ValueError("monotonic_now must return a non-negative integer.")
         return received_time, received_monotonic_ns
 
-    def _acknowledge(self, coin: str, activation_event: asyncio.Event) -> None:
-        if coin not in self._configured_by_coin:
-            self._protocol_error_count += 1
-            raise HyperliquidProtocolError(
-                "Subscription acknowledgement does not match a configured coin."
-            )
-        if coin not in self._sent_coins:
-            self._protocol_error_count += 1
-            raise HyperliquidProtocolError(
-                "Subscription acknowledgement arrived before its subscription was sent."
-            )
-        if coin in self._acknowledged_coins:
-            self._duplicate_acknowledgement_count += 1
-            return
-
-        self._acknowledged_coins.add(coin)
-        if len(self._acknowledged_coins) == len(self._configured_by_coin):
-            self._session_fully_active = True
-            self._state = SessionState.ACTIVE
-            activation_event.set()
-
-    async def _process_trades(
+    def _construct_raw_record_privately(
         self,
-        frame: dict[str, object],
+        message: object,
         *,
         received_time: datetime,
         received_monotonic_ns: int,
-        receiver_flow: _ReceiverFlowState,
-    ) -> None:
-        decode_failed = False
+    ) -> RawMarketDataRecord:
+        session_attempts = self._session_attempts
+        if session_attempts is None:
+            raise HyperliquidCollectorStateError("Capture session state is unavailable.")
+        ingress_ordinal = self._next_ingress_ordinal
+        self._next_ingress_ordinal += 1
+        record: RawMarketDataRecord | None = None
+        failure: SanitizedValidationFailure | None = None
         try:
-            trades = decode_hyperliquid_trades_frame(frame)
-        except (TypeError, ValueError):
-            decode_failed = True
-        if decode_failed:
-            self._protocol_error_count += 1
-            raise HyperliquidProtocolError("Hyperliquid trades frame is invalid.")
+            received_message = application_message_bytes(message)
+            record = build_raw_market_data_record(
+                self._capture_plan,
+                session_attempts,
+                collector_run_id=self._collector_run_id,
+                ingress_ordinal=ingress_ordinal,
+                message=received_message,
+                received_time=received_time,
+                received_monotonic_ns=received_monotonic_ns,
+                collector_version=self._config.collector_version,
+                collector_commit=self._config.collector_commit,
+            )
+        except TypeError:
+            failure = SanitizedValidationFailure(ValidationFailureCategory.INVALID_RUNTIME_TYPE)
+        except ValueError:
+            failure = SanitizedValidationFailure(ValidationFailureCategory.INVALID_VALUE)
+        if failure is not None:
+            raise HyperliquidCaptureValidationError(failure)
+        if record is None:
+            raise HyperliquidCaptureValidationError(
+                SanitizedValidationFailure(ValidationFailureCategory.LOCAL_VALIDATION_FAILURE)
+            )
+        return record
 
-        for trade in trades:
-            if trade.coin not in self._configured_by_coin:
-                self._protocol_error_count += 1
-                raise HyperliquidProtocolError("Hyperliquid trade references an unconfigured coin.")
-            if trade.coin not in self._acknowledged_coins:
-                self._protocol_error_count += 1
-                raise HyperliquidProtocolError(
-                    "Hyperliquid trade arrived before its subscription acknowledgement."
+    def _quarantine_sink_operation(self, operation: asyncio.Future[object]) -> None:
+        """Bound and privately reap an operation that outlived its collector deadline."""
+
+        registry = self._quarantined_sink_operations
+        owned_registry: set[asyncio.Future[object]] | None
+        if len(registry) >= _MAX_QUARANTINED_SINK_OPERATIONS:
+            owned_registry = None
+        else:
+            registry.add(operation)
+            owned_registry = registry
+        operation.add_done_callback(partial(_consume_quarantined_sink_operation, owned_registry))
+
+    async def _await_sink_deadline[ResultT](
+        self,
+        awaitable: Awaitable[ResultT],
+        timeout_seconds: float,
+        *,
+        task_name: str,
+    ) -> ResultT:
+        """Make a hard fail-stop decision without awaiting child cancellation completion."""
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout_seconds
+        operation = asyncio.ensure_future(awaitable)
+        if isinstance(operation, asyncio.Task):
+            operation.set_name(task_name)
+        try:
+            done, _ = await asyncio.wait({operation}, timeout=timeout_seconds)
+        except asyncio.CancelledError:
+            self._quarantine_sink_operation(cast(asyncio.Future[object], operation))
+            operation.cancel()
+            raise
+        if operation not in done or loop.time() >= deadline:
+            self._quarantine_sink_operation(cast(asyncio.Future[object], operation))
+            operation.cancel()
+            raise _SinkHardDeadlineExpired
+        try:
+            return operation.result()
+        except asyncio.CancelledError:
+            raise _SinkOperationCancelled from None
+
+    async def _accept_raw_record(self, raw_record: RawMarketDataRecord) -> None:
+        if type(raw_record) is not RawMarketDataRecord:
+            raise HyperliquidCaptureValidationError(
+                SanitizedValidationFailure(ValidationFailureCategory.INVALID_RUNTIME_TYPE)
+            )
+        result: object | None = None
+        failure: SinkFailureCategory | None = None
+        try:
+            result = await self._await_sink_deadline(
+                self._raw_record_sink.accept(raw_record),
+                self._config.raw_sink_timeout_seconds,
+                task_name="hyperliquid-raw-sink-accept",
+            )
+        except asyncio.CancelledError:
+            raise
+        except RawRecordRejected:
+            failure = SinkFailureCategory.RAW_EXPLICIT_REJECTION
+        except _SinkHardDeadlineExpired:
+            failure = SinkFailureCategory.RAW_ACCEPTANCE_TIMEOUT
+        except Exception:
+            failure = SinkFailureCategory.RAW_ACCEPTANCE_AMBIGUOUS
+        if failure is None and (
+            type(result) is not RawRecordAcceptance
+            or result.raw_record_id != raw_record.raw_record_id
+            or result.full_record_integrity_sha256 != raw_record.full_record_integrity_sha256
+            or result.destination_id != self._raw_sink_destination_id
+        ):
+            failure = SinkFailureCategory.RAW_ACCEPTANCE_INVALID
+        if failure is not None:
+            self._last_sink_failure_category = failure
+            raise HyperliquidSinkBoundaryError(failure)
+        self._accepted_raw_record_count += 1
+        if self._accepted_normalization_outcome_count > self._accepted_raw_record_count:
+            raise HyperliquidCollectorStateError(
+                "Normalization-outcome acceptance cannot exceed raw-record acceptance."
+            )
+
+    async def _accept_normalization_outcome(self, outcome: NormalizationOutcome) -> None:
+        result: object | None = None
+        failure: SinkFailureCategory | None = None
+        try:
+            result = await self._await_sink_deadline(
+                self._normalization_outcome_sink.accept(outcome),
+                self._config.outcome_sink_timeout_seconds,
+                task_name="hyperliquid-normalization-outcome-sink-accept",
+            )
+        except asyncio.CancelledError:
+            raise
+        except NormalizationOutcomeRejected:
+            failure = SinkFailureCategory.OUTCOME_EXPLICIT_REJECTION
+        except _SinkHardDeadlineExpired:
+            failure = SinkFailureCategory.OUTCOME_ACCEPTANCE_TIMEOUT
+        except Exception:
+            failure = SinkFailureCategory.OUTCOME_ACCEPTANCE_AMBIGUOUS
+        if failure is None and (
+            type(result) is not NormalizationOutcomeAcceptance
+            or result.normalization_outcome_id != outcome.normalization_outcome_id
+            or result.destination_id != self._outcome_sink_destination_id
+        ):
+            failure = SinkFailureCategory.OUTCOME_ACCEPTANCE_INVALID
+        if failure is not None:
+            self._last_sink_failure_category = failure
+            raise HyperliquidSinkBoundaryError(failure)
+        if self._accepted_normalization_outcome_count >= self._accepted_raw_record_count:
+            raise HyperliquidCollectorStateError(
+                "Normalization-outcome acceptance requires a prior raw-record acceptance."
+            )
+        self._accepted_normalization_outcome_count += 1
+
+    def _prepare_message_privately(
+        self,
+        message: object,
+        raw_record: RawMarketDataRecord,
+    ) -> _PreparedMessage:
+        prepared: _PreparedMessage | None = None
+        failure: SanitizedValidationFailure | None = None
+        try:
+            prepared = self._prepare_message(message, raw_record)
+        except TypeError:
+            failure = SanitizedValidationFailure(ValidationFailureCategory.INVALID_RUNTIME_TYPE)
+        except (LookupError, ValueError):
+            failure = SanitizedValidationFailure(ValidationFailureCategory.INVARIANT_VIOLATION)
+        except Exception:
+            failure = SanitizedValidationFailure(ValidationFailureCategory.LOCAL_VALIDATION_FAILURE)
+        if failure is not None:
+            fallback: _PreparedMessage | None = None
+            fallback_failed = False
+            try:
+                fallback = self._prepared_preindex_rejection(
+                    raw_record,
+                    evidence=NormalizationEvidence.LOCAL_CONTRACT_FAILURE,
                 )
+            except (LookupError, TypeError, ValueError):
+                fallback_failed = True
+            if not fallback_failed and fallback is not None:
+                return fallback
+            raise HyperliquidCaptureValidationError(failure)
+        if prepared is None:
+            fallback = self._prepared_preindex_rejection(
+                raw_record,
+                evidence=NormalizationEvidence.LOCAL_CONTRACT_FAILURE,
+            )
+            return fallback
+        return prepared
 
-        normalization_failed = False
+    def _prepare_message(
+        self,
+        message: object,
+        raw_record: RawMarketDataRecord,
+    ) -> _PreparedMessage:
+        if type(raw_record) is not RawMarketDataRecord:
+            raise TypeError("raw_record must be a RawMarketDataRecord.")
+        route_failed = False
+        routed: RoutedMessage | None = None
         try:
-            events = tuple(
-                normalize_hyperliquid_trade(
+            routed = route_hyperliquid_websocket_message(message)
+        except HyperliquidProtocolError:
+            route_failed = True
+        if route_failed:
+            return self._prepared_preindex_rejection(
+                raw_record,
+                evidence=NormalizationEvidence.PROTOCOL_REJECTION,
+            )
+        if routed is None:
+            raise ValueError("route decision is unavailable.")
+        if isinstance(routed, GreetingMessage):
+            return _PreparedMessage(
+                outcome=self._control_outcome(raw_record),
+                commit_kind=_PreparedCommitKind.GREETING,
+            )
+        if isinstance(routed, PongMessage):
+            return _PreparedMessage(
+                outcome=self._control_outcome(raw_record),
+                commit_kind=_PreparedCommitKind.PONG,
+            )
+        if isinstance(routed, SubscriptionAcknowledgement):
+            if not self._acknowledgement_is_valid(routed.coin):
+                return self._prepared_preindex_rejection(
+                    raw_record,
+                    evidence=NormalizationEvidence.PROVENANCE_MISMATCH,
+                )
+            return _PreparedMessage(
+                outcome=self._control_outcome(raw_record),
+                commit_kind=_PreparedCommitKind.ACKNOWLEDGEMENT,
+                acknowledgement_coin=routed.coin,
+            )
+        return self._prepare_trades(routed.frame, raw_record)
+
+    def _control_outcome(self, raw_record: RawMarketDataRecord) -> NormalizationOutcome:
+        if type(raw_record) is not RawMarketDataRecord:
+            raise TypeError("raw_record must be a RawMarketDataRecord.")
+        return control_normalization_outcome(
+            raw_record,
+            normalization_run_id=self._normalization_run_id,
+            normalizer_version=self._normalizer_version,
+            normalizer_commit=self._normalizer_commit,
+        )
+
+    def _prepared_preindex_rejection(
+        self,
+        raw_record: RawMarketDataRecord,
+        *,
+        evidence: NormalizationEvidence,
+        is_trade_message: bool = False,
+    ) -> _PreparedMessage:
+        if type(raw_record) is not RawMarketDataRecord:
+            raise TypeError("raw_record must be a RawMarketDataRecord.")
+        return _PreparedMessage(
+            outcome=preindex_rejection_normalization_outcome(
+                self._capture_plan,
+                raw_record,
+                normalization_run_id=self._normalization_run_id,
+                normalizer_version=self._normalizer_version,
+                normalizer_commit=self._normalizer_commit,
+                evidence=evidence,
+            ),
+            commit_kind=(
+                _PreparedCommitKind.TRADES if is_trade_message else _PreparedCommitKind.REJECTION
+            ),
+            terminal_failure=_PreparedTerminalFailure.PROTOCOL,
+        )
+
+    def _prepare_trades(
+        self,
+        frame: dict[str, object],
+        raw_record: RawMarketDataRecord,
+    ) -> _PreparedMessage:
+        if type(raw_record) is not RawMarketDataRecord:
+            raise TypeError("raw_record must be a RawMarketDataRecord.")
+        data = frame.get("data")
+        if type(data) is not list:
+            return self._prepared_preindex_rejection(
+                raw_record,
+                evidence=NormalizationEvidence.DECODER_REJECTION,
+                is_trade_message=True,
+            )
+        raw_items = cast(list[object], data)
+        if not raw_items:
+            return _PreparedMessage(
+                outcome=empty_trade_normalization_outcome(
+                    raw_record,
+                    normalization_run_id=self._normalization_run_id,
+                    normalizer_version=self._normalizer_version,
+                    normalizer_commit=self._normalizer_commit,
+                ),
+                commit_kind=_PreparedCommitKind.TRADES,
+            )
+
+        coins: list[str] = []
+        for item in raw_items:
+            if type(item) is not dict:
+                return self._prepared_preindex_rejection(
+                    raw_record,
+                    evidence=NormalizationEvidence.DECODER_REJECTION,
+                    is_trade_message=True,
+                )
+            item_object = cast(dict[object, object], item)
+            coin = item_object.get("coin")
+            if type(coin) is not str:
+                return self._prepared_preindex_rejection(
+                    raw_record,
+                    evidence=NormalizationEvidence.DECODER_REJECTION,
+                    is_trade_message=True,
+                )
+            if coin not in self._configured_by_coin:
+                return self._prepared_preindex_rejection(
+                    raw_record,
+                    evidence=NormalizationEvidence.UNKNOWN_INSTRUMENT,
+                    is_trade_message=True,
+                )
+            coins.append(coin)
+
+        decoded: list[HyperliquidWsTrade | None] = []
+        events: list[MarketEventEnvelope | None] = []
+        failures: list[NormalizationEvidence | None] = []
+        for item, coin in zip(raw_items, coins, strict=True):
+            trade: HyperliquidWsTrade | None = None
+            decode_failed = False
+            try:
+                trade = HyperliquidWsTrade.from_payload(item)
+            except (TypeError, ValueError):
+                decode_failed = True
+            if decode_failed or trade is None:
+                decoded.append(None)
+                events.append(None)
+                failures.append(NormalizationEvidence.DECODER_REJECTION)
+                continue
+
+            decoded.append(trade)
+            snapshot = attempt_snapshot_for_coin(
+                self._capture_plan,
+                self._require_session_attempts(),
+                coin,
+            )
+            if snapshot.attempt_status is not SubscriptionAttemptStatus.ACKNOWLEDGED:
+                events.append(None)
+                failures.append(NormalizationEvidence.PROVENANCE_MISMATCH)
+                continue
+
+            event: MarketEventEnvelope | None = None
+            normalization_failed = False
+            try:
+                event = normalize_hyperliquid_trade(
                     trade,
                     instrument_registry=self._config.instruments,
-                    received_time=received_time,
-                    received_monotonic_ns=received_monotonic_ns,
+                    received_time=raw_record.received_time,
+                    received_monotonic_ns=raw_record.received_monotonic_ns,
                     collector_version=self._config.collector_version,
                     collector_commit=self._config.collector_commit,
                     is_gap=self._sticky_gap,
                 )
-                for trade in trades
-            )
-        except (LookupError, TypeError, ValueError):
-            normalization_failed = True
-        if normalization_failed:
-            self._protocol_error_count += 1
-            raise HyperliquidProtocolError(
-                "Hyperliquid trade normalization violated the schema boundary."
-            )
-        await self._publish_new_events(trades, events, receiver_flow)
+            except (LookupError, TypeError, ValueError):
+                normalization_failed = True
+            if normalization_failed or event is None:
+                events.append(None)
+                failures.append(NormalizationEvidence.LOCAL_CONTRACT_FAILURE)
+            else:
+                events.append(event)
+                failures.append(None)
 
-    async def _publish_new_events(
+        decoded_context = decoded_wire_payload_context(
+            self._capture_plan,
+            raw_record,
+            tuple(coins),
+        )
+        scope_bindings = tuple(
+            raw_event_scope_binding(
+                self._capture_plan,
+                raw_record,
+                decoded_context,
+                raw_event_index=index,
+                coin=coin,
+            )
+            for index, coin in enumerate(coins)
+        )
+        source_ids = tuple(
+            SourceEventId(hyperliquid_trade_source_event_id(trade)) if trade is not None else None
+            for trade in decoded
+        )
+
+        if any(failure is not None for failure in failures):
+            item_outcomes: list[RawEventNormalizationOutcome] = []
+            for index, failure in enumerate(failures):
+                disposition = (
+                    RawEventDisposition.REJECTED
+                    if failure is not None
+                    else RawEventDisposition.NOT_MATERIALIZED_FRAME_ABORTED
+                )
+                item_outcomes.append(
+                    raw_event_outcome(
+                        raw_record=raw_record,
+                        normalization_run_id=self._normalization_run_id,
+                        scope_binding=scope_bindings[index],
+                        source_event_id=source_ids[index],
+                        disposition=disposition,
+                        evidence=(
+                            failure
+                            if failure is not None
+                            else NormalizationEvidence.FRAME_ATOMIC_ABORT
+                        ),
+                    )
+                )
+            evidence = tuple(
+                sorted(
+                    {item.evidence for item in item_outcomes if item.evidence is not None},
+                    key=lambda item: item.value,
+                )
+            )
+            return _PreparedMessage(
+                outcome=frame_normalization_outcome(
+                    raw_record=raw_record,
+                    normalization_run_id=self._normalization_run_id,
+                    normalizer_version=self._normalizer_version,
+                    normalizer_commit=self._normalizer_commit,
+                    frame_status=FrameNormalizationStatus.REJECTED_AFTER_INDEXING,
+                    decoded_event_count=len(raw_items),
+                    raw_event_outcomes=tuple(item_outcomes),
+                    evidence=evidence,
+                ),
+                commit_kind=_PreparedCommitKind.TRADES,
+                terminal_failure=_PreparedTerminalFailure.PROTOCOL,
+            )
+
+        valid_trades = tuple(cast(HyperliquidWsTrade, trade) for trade in decoded)
+        valid_events = tuple(cast(MarketEventEnvelope, event) for event in events)
+        return self._prepare_valid_trades(
+            raw_record,
+            valid_trades,
+            valid_events,
+            source_ids=tuple(cast(SourceEventId, item) for item in source_ids),
+            scope_bindings=scope_bindings,
+        )
+
+    def _prepare_valid_trades(
         self,
+        raw_record: RawMarketDataRecord,
         trades: tuple[HyperliquidWsTrade, ...],
         events: EventBatch,
-        receiver_flow: _ReceiverFlowState,
-    ) -> None:
-        if not events:
-            return
-
+        *,
+        source_ids: tuple[SourceEventId, ...],
+        scope_bindings: tuple[RawEventNormalizationScopeBinding, ...],
+    ) -> _PreparedMessage:
+        if type(raw_record) is not RawMarketDataRecord:
+            raise TypeError("raw_record must be a RawMarketDataRecord.")
+        if any(type(item) is not RawEventNormalizationScopeBinding for item in scope_bindings):
+            raise TypeError("scope_bindings contain an invalid value.")
+        bindings = scope_bindings
         candidate_cache = self._dedup_cache.copy()
         frame_fingerprints: dict[str, _SourceEventFingerprint] = {}
+        classifications: list[RawEventDisposition] = []
         new_events: list[MarketEventEnvelope] = []
         duplicate_count = 0
+        conflict_found = False
+
         for trade, event in zip(trades, events, strict=True):
             event_id = event.source_event_id
-            fingerprint = _SourceEventFingerprint(
-                coin=trade.coin,
-                venue_side=trade.side,
-                aggressor_side=trade.aggressor_side,
-                price=event.event.price,
-                quantity=event.event.quantity,
-                event_time=event.event_time,
-                tid=trade.tid,
-                source_transaction_id=trade.hash,
-                users=trade.users,
-                canonical_instrument_id=event.instrument.canonical_instrument_id,
-            )
-            known_fingerprint = frame_fingerprints.get(event_id)
-            if known_fingerprint is None:
-                known_fingerprint = candidate_cache.get(event_id)
-            if known_fingerprint is not None and known_fingerprint != fingerprint:
-                raise HyperliquidSourceEventConflictError(
-                    "A source-event ID was reused for conflicting trade semantics."
-                )
-            if known_fingerprint is not None:
+            fingerprint = _source_event_fingerprint(trade, event)
+            known = frame_fingerprints.get(event_id)
+            if known is None:
+                known = candidate_cache.get(event_id)
+                if known is not None:
+                    frame_fingerprints[event_id] = known
+            if known is not None and known != fingerprint:
+                classifications.append(RawEventDisposition.SOURCE_EVENT_CONFLICT)
+                conflict_found = True
+                continue
+            if known is not None:
+                classifications.append(RawEventDisposition.EXACT_DUPLICATE_SUPPRESSED)
                 duplicate_count += 1
             else:
+                classifications.append(RawEventDisposition.MATERIALIZED_NEW)
                 new_events.append(event)
-
-            frame_fingerprints[event_id] = fingerprint
+                frame_fingerprints[event_id] = fingerprint
             if event_id in candidate_cache:
                 candidate_cache.move_to_end(event_id)
             else:
@@ -1264,30 +2228,262 @@ class HyperliquidTradesCollector:
             while len(candidate_cache) > self._config.dedup_capacity:
                 candidate_cache.popitem(last=False)
 
-        if new_events:
-            batch = tuple(new_events)
-            receiver_will_block = self._queue.full()
-            if receiver_will_block:
-                receiver_flow.block_generation += 1
-                receiver_flow.available.clear()
+        if conflict_found:
+            item_outcomes = tuple(
+                raw_event_outcome(
+                    raw_record=raw_record,
+                    normalization_run_id=self._normalization_run_id,
+                    scope_binding=bindings[index],
+                    source_event_id=source_ids[index],
+                    disposition=(
+                        RawEventDisposition.NOT_MATERIALIZED_FRAME_ABORTED
+                        if disposition is RawEventDisposition.MATERIALIZED_NEW
+                        else disposition
+                    ),
+                    evidence=(
+                        NormalizationEvidence.SOURCE_EVENT_CONFLICT
+                        if disposition is RawEventDisposition.SOURCE_EVENT_CONFLICT
+                        else (
+                            NormalizationEvidence.FRAME_ATOMIC_ABORT
+                            if disposition is RawEventDisposition.MATERIALIZED_NEW
+                            else None
+                        )
+                    ),
+                )
+                for index, disposition in enumerate(classifications)
+            )
+            evidence = tuple(
+                sorted(
+                    {item.evidence for item in item_outcomes if item.evidence is not None},
+                    key=lambda item: item.value,
+                )
+            )
+            return _PreparedMessage(
+                outcome=frame_normalization_outcome(
+                    raw_record=raw_record,
+                    normalization_run_id=self._normalization_run_id,
+                    normalizer_version=self._normalizer_version,
+                    normalizer_commit=self._normalizer_commit,
+                    frame_status=FrameNormalizationStatus.SOURCE_EVENT_CONFLICT,
+                    decoded_event_count=len(events),
+                    raw_event_outcomes=item_outcomes,
+                    evidence=evidence,
+                ),
+                commit_kind=_PreparedCommitKind.TRADES,
+                terminal_failure=_PreparedTerminalFailure.SOURCE_EVENT_CONFLICT,
+            )
+
+        item_outcomes = tuple(
+            raw_event_outcome(
+                raw_record=raw_record,
+                normalization_run_id=self._normalization_run_id,
+                scope_binding=bindings[index],
+                source_event_id=source_ids[index],
+                disposition=disposition,
+            )
+            for index, disposition in enumerate(classifications)
+        )
+        dispositions = set(classifications)
+        if dispositions == {RawEventDisposition.MATERIALIZED_NEW}:
+            frame_status = FrameNormalizationStatus.MATERIALIZED
+        elif dispositions == {RawEventDisposition.EXACT_DUPLICATE_SUPPRESSED}:
+            frame_status = FrameNormalizationStatus.DUPLICATES_ONLY
+        else:
+            frame_status = FrameNormalizationStatus.MIXED_SUCCESS
+        return _PreparedMessage(
+            outcome=frame_normalization_outcome(
+                raw_record=raw_record,
+                normalization_run_id=self._normalization_run_id,
+                normalizer_version=self._normalizer_version,
+                normalizer_commit=self._normalizer_commit,
+                frame_status=frame_status,
+                decoded_event_count=len(events),
+                raw_event_outcomes=item_outcomes,
+            ),
+            commit_kind=_PreparedCommitKind.TRADES,
+            candidate_cache=candidate_cache,
+            batch=tuple(new_events),
+            duplicate_count=duplicate_count,
+        )
+
+    async def _commit_prepared_message(
+        self,
+        prepared: _PreparedMessage,
+        *,
+        received_time: datetime,
+        received_monotonic_ns: int,
+        pong_event: asyncio.Event,
+        activation_event: asyncio.Event,
+    ) -> None:
+        self._last_received_time = received_time
+        self._last_received_monotonic_ns = received_monotonic_ns
+
+        if prepared.commit_kind is _PreparedCommitKind.TRADES:
+            self._received_trade_message_count += 1
+        elif prepared.commit_kind is not _PreparedCommitKind.REJECTION:
+            self._received_control_message_count += 1
+
+        if prepared.terminal_failure is not None:
+            self._protocol_error_count += 1
+            if prepared.terminal_failure is _PreparedTerminalFailure.SOURCE_EVENT_CONFLICT:
+                raise HyperliquidSourceEventConflictError(
+                    "A source-event ID was reused for conflicting trade semantics."
+                )
+            raise HyperliquidProtocolError("WebSocket application message was rejected.")
+
+        if prepared.commit_kind is _PreparedCommitKind.GREETING:
+            return
+        if prepared.commit_kind is _PreparedCommitKind.PONG:
+            self._pong_count += 1
+            if self._awaiting_pong:
+                pong_event.set()
+            return
+        if prepared.commit_kind is _PreparedCommitKind.ACKNOWLEDGEMENT:
+            coin = prepared.acknowledgement_coin
+            if coin is None:
+                raise HyperliquidCollectorStateError(
+                    "Prepared acknowledgement coin is unavailable."
+                )
+            self._acknowledge(coin, activation_event)
+            return
+
+        if prepared.batch:
+            publish_timed_out = False
             try:
-                try:
-                    await self._timeout_runner(
-                        self._queue.put(batch),
-                        self._config.publish_timeout_seconds,
-                    )
-                except TimeoutError as exc:
-                    self._backpressure_error_count += 1
-                    self._sticky_gap = True
-                    raise HyperliquidBackpressureError(
-                        "The normalized event queue remained full beyond its limit."
-                    ) from exc
-            finally:
-                if receiver_will_block:
-                    receiver_flow.available.set()
+                await self._timeout_runner(
+                    self._queue.put(prepared.batch),
+                    self._config.publish_timeout_seconds,
+                )
+            except TimeoutError:
+                publish_timed_out = True
+            if publish_timed_out:
+                self._backpressure_error_count += 1
+                self._sticky_gap = True
+                raise HyperliquidBackpressureError(
+                    "The normalized event queue remained full beyond its limit."
+                )
             self._queue_high_water_mark = max(self._queue_high_water_mark, self._queue.qsize())
-            self._emitted_event_count += len(batch)
+            self._emitted_event_count += len(prepared.batch)
             self._consumer_wakeup.set()
 
-        self._dedup_cache = candidate_cache
-        self._duplicate_event_count += duplicate_count
+        if prepared.candidate_cache is not None:
+            self._dedup_cache = prepared.candidate_cache
+        self._duplicate_event_count += prepared.duplicate_count
+
+    def _require_session_attempts(self) -> HyperliquidSessionAttempts:
+        if self._session_attempts is None:
+            raise HyperliquidCollectorStateError("Subscription attempt state is unavailable.")
+        return self._session_attempts
+
+    def _current_attempt_snapshot(self, coin: str) -> SubscriptionAttemptSnapshot:
+        return attempt_snapshot_for_coin(
+            self._capture_plan,
+            self._require_session_attempts(),
+            coin,
+        )
+
+    def _transition_attempt(
+        self,
+        coin: str,
+        status: SubscriptionAttemptStatus,
+    ) -> None:
+        spec = subscription_spec_for_coin(self._capture_plan, coin)
+        updated_attempts, transition = transition_hyperliquid_attempt(
+            self._require_session_attempts(),
+            subscription_spec=spec,
+            requested_status=status,
+        )
+        self._session_attempts = updated_attempts
+        if transition.previous_status is not transition.new_status:
+            self._attempt_transition_journal.append(transition)
+            if len(self._attempt_transition_journal) > 3 * len(
+                self._capture_plan.subscription_plan.subscription_specs
+            ):
+                raise HyperliquidCollectorStateError(
+                    "Subscription attempt transition journal exceeded its finite bound."
+                )
+
+    def _acknowledgement_is_valid(self, coin: str) -> bool:
+        if coin not in self._configured_by_coin:
+            return False
+        snapshot = attempt_snapshot_for_coin(
+            self._capture_plan,
+            self._require_session_attempts(),
+            coin,
+        )
+        return snapshot.attempt_status in {
+            SubscriptionAttemptStatus.SEND_STARTED,
+            SubscriptionAttemptStatus.SENT,
+            SubscriptionAttemptStatus.ACKNOWLEDGED,
+        }
+
+    def _acknowledge(self, coin: str, activation_event: asyncio.Event) -> None:
+        snapshot = attempt_snapshot_for_coin(
+            self._capture_plan,
+            self._require_session_attempts(),
+            coin,
+        )
+        if snapshot.attempt_status is SubscriptionAttemptStatus.ACKNOWLEDGED:
+            self._duplicate_acknowledgement_count += 1
+            return
+        self._transition_attempt(coin, SubscriptionAttemptStatus.ACKNOWLEDGED)
+        self._acknowledged_coins.add(coin)
+        if len(self._acknowledged_coins) == len(self._configured_by_coin):
+            self._session_fully_active = True
+            self._state = SessionState.ACTIVE
+            activation_event.set()
+
+    async def _close_owned_sinks(self) -> None:
+        close_failure: SinkFailureCategory | None = None
+        cancelled = False
+        if not self._outcome_sink_close_started:
+            self._outcome_sink_close_started = True
+            close_failure, outcome_cancelled = await self._close_one_sink(
+                self._normalization_outcome_sink,
+                timeout_seconds=self._config.outcome_sink_timeout_seconds,
+                timeout_category=SinkFailureCategory.OUTCOME_CLOSE_TIMEOUT,
+                failure_category=SinkFailureCategory.OUTCOME_CLOSE_FAILURE,
+            )
+            cancelled = cancelled or outcome_cancelled
+        if not self._raw_sink_close_started:
+            self._raw_sink_close_started = True
+            raw_close_failure, raw_cancelled = await self._close_one_sink(
+                self._raw_record_sink,
+                timeout_seconds=self._config.raw_sink_timeout_seconds,
+                timeout_category=SinkFailureCategory.RAW_CLOSE_TIMEOUT,
+                failure_category=SinkFailureCategory.RAW_CLOSE_FAILURE,
+            )
+            cancelled = cancelled or raw_cancelled
+            if close_failure is None:
+                close_failure = raw_close_failure
+        if close_failure is not None:
+            if self._last_sink_failure_category is None:
+                self._last_sink_failure_category = close_failure
+            if self._last_failure_category is None and self._state is not SessionState.STOPPED:
+                self._last_failure_category = FailureCategory.SINK_CLOSE_FAILURE
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _close_one_sink(
+        self,
+        sink: RawRecordSink | NormalizationOutcomeSink,
+        *,
+        timeout_seconds: float,
+        timeout_category: SinkFailureCategory,
+        failure_category: SinkFailureCategory,
+    ) -> tuple[SinkFailureCategory | None, bool]:
+        result: SinkFailureCategory | None = None
+        cancelled = False
+        try:
+            await self._await_sink_deadline(
+                sink.aclose(),
+                timeout_seconds,
+                task_name="hyperliquid-market-data-sink-close",
+            )
+        except asyncio.CancelledError:
+            cancelled = True
+        except _SinkHardDeadlineExpired:
+            result = timeout_category
+        except Exception:
+            result = failure_category
+        return result, cancelled

@@ -64,11 +64,17 @@ Phase 1A-3A defines and locally validates a pure offline Binance Spot raw `@trad
 schema-v2 normalization boundary with a deterministic synthetic fixture. It is not a WebSocket
 collector, authenticated integration, storage path, deployment or LIVE capability.
 Phase 1A-3B1A defines and tests the additive pure feed-provenance, raw-record, instrument-metadata,
-coverage, event-family, v3-envelope and normalization-outcome contracts. They are dormant: no
-existing producer imports or emits v3, and v2 remains the only active Silver envelope.
-The dormant outcome contracts bind conflict/failure transitions to exact raw and event scope;
-future runtime code must expose only category-only sanitized validation failures, never internal
-exceptions or tracebacks.
+coverage, event-family, v3-envelope and normalization-outcome contracts. No runtime producer
+constructs or emits `MarketEventEnvelopeV3`, and v2 remains the only active Silver envelope.
+The outcome contracts bind conflict/failure decisions to exact raw and event scope; Phase 1A-3B1B
+activates their bounded publication and exposes only category-only sanitized validation failures,
+never internal exceptions or tracebacks.
+Phase 1A-3B1B integrates the storage-neutral Hyperliquid Bronze boundary: a mandatory bounded raw
+sink accepts each successful application-message observation before parsing, and a separate
+mandatory bounded outcome sink accepts exactly one normalization decision before control,
+deduplication, counters or schema-v2 queue state becomes visible. The v3 envelope remains dormant,
+v2 remains the only active Silver output, and no concrete persistence, operational coverage or
+delivery outcome is added.
 
 Target: useful local output within approximately the first 1-2 weeks of active development.
 
@@ -103,11 +109,11 @@ The multi-venue data-contract spine proceeds in bounded steps:
 5. **Phase 1A-3B2 — deterministic replay:** digest verification, sealed run manifests and exact
    Bronze-to-Silver lineage.
 
-Phase 1A-3B1A implements no raw sink or raw capture, operational coverage tracker or deterministic
-replay. Later work includes simultaneous Bitvavo Standard/Market Data Pro comparison, approved
-advanced feeds, ClickHouse persistence, Grafana/Alloy/OpenTelemetry forensics and the
-Bloomberg/EMS-inspired cockpit. None is deployed by this slice; SHADOW/LIVE remain disabled. Phase
-1A remains started, not complete.
+Phase 1A-3B1B implements no concrete persistence, operational coverage tracker, delivery outcome
+or deterministic replay. Later work includes simultaneous Bitvavo Standard/Market Data Pro
+comparison, approved advanced feeds, ClickHouse persistence, Grafana/Alloy/OpenTelemetry
+forensics and the Bloomberg/EMS-inspired cockpit. None is deployed by this slice; SHADOW/LIVE
+remain disabled. Phase 1A remains started, not complete.
 
 ## Phase 1B — TrueNAS 24/7 PAPER deployment
 

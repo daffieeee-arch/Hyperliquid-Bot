@@ -180,11 +180,51 @@ OKX higher-tier 10-ms/SBE feeds; Bybit institutional feeds; and Hyperliquid node
 them here neither implements them nor authorizes credentials or expansion of the current `Venue`
 enum.
 
-The next architectural slice is expected to define feed identity and capabilities, access and
-entitlement tiers, immutable raw capture, feed/session/subscription identity, coverage and gap
-states, versioned event families, deterministic replay, and Bronze/Silver/Gold storage boundaries.
-ClickHouse storage, Grafana/Alloy/OpenTelemetry observability, FastAPI services and the
-Bloomberg/EMS-inspired cockpit remain downstream consumers, not features of Phase 1A-3A.
+The dormant Phase 1A-3B1A contracts now define feed identity and capabilities, access requirements
+and entitlement classes, feed/run/session/subscription identities, immutable raw-record values,
+coverage primitives, versioned event-family bindings and Bronze/Silver/Gold boundaries. The two
+initial feed-product catalogue identities are exact versioned products for Hyperliquid production
+mainnet public WebSocket market data and Binance production mainnet Spot JSON market streams.
+Capabilities are sorted, bounded, append-only point-in-time observations; they describe a product
+but never grant access or record credentials.
+
+Subscription identities admit only closed public-semantic fields for their exact feed binding.
+The current Hyperliquid public-trades spec is exactly one `subscribe`/`trades` request with an exact
+coin; Binance Spot uses the exact public `SUBSCRIBE`/`@trade` shape. API keys, tokens, signatures,
+account or credential state, authorization state, secret endpoints and runtime timeout/retry
+controls are not valid identity fields. Full validated plan content is independently inspectable,
+while the stable `SubscriptionPlanId` is a bounded versioned SHA-256 content address. The current
+Hyperliquid trade binding requires an acknowledged attempt before event materialization.
+
+Point-in-time metadata selection first filters to observations visible at raw receipt for one
+requested canonical instrument and authority. Future observations and other authorities do not
+affect that historical slice; explicit full-catalogue validation is separate. Selection is the
+only supported path to `ResolvedInstrumentMetadata`. Canonical instrument IDs are structurally
+validated against `Instrument`, not truncated by a generic metadata-text limit. When both
+derivative boundaries exist, settlement must equal or follow last trading.
+
+Trade-family-v2 provenance requires exactly one `TRADE_EXECUTION_TIME` whose UTC instant equals
+the selected metadata and envelope event time; exchange event time remains a separate optional
+source fact. Coverage scopes bind the family schema version, and epochs bind scope, collector run,
+ordinal and explicit UTC/monotonic activation boundaries. Initial completeness begins only at
+typed activation evidence. Definite rejection of a successfully received raw record makes Bronze
+ingress confirmed incomplete; ambiguous sink acceptance remains uncertain. ACK, reconnect or a
+state snapshot cannot repair historical trade coverage, and 3B1A defines no recovery proof. Event
+materialization additionally requires both embedded coverage epochs to belong to the raw record's
+collector run.
+
+These are definitions, not runtime claims. Indexed normalization outcomes require their frame
+evidence to equal the exact canonical union of index evidence. Attached normalization-failure or
+source-conflict transitions must name the same raw record, exact affected index and exact Silver
+scope. A normalization failure carries its source-event ID when decoding established one and
+otherwise carries null; that nullable value must exactly equal the rejected index outcome's
+logical source identity. Source conflicts always require a non-null exact source-event ID. The v3
+contracts are tested but dormant; no existing producer imports or emits v3, and v2 remains the
+only active Silver envelope.
+No raw sink or raw capture, operational coverage tracker or deterministic replay exists yet. The
+producer and collector cutover occurs atomically only in Phase 1A-3B1D. ClickHouse storage,
+Grafana/Alloy/OpenTelemetry observability, FastAPI services and the Bloomberg/EMS-inspired cockpit
+remain downstream. Nothing was deployed, and SHADOW/LIVE remain disabled.
 
 ## Self-collected dataset
 
@@ -284,6 +324,74 @@ HIP-3 `{dex}:{coin}` namespace. The transaction `hash` is retained as `source_tr
 Hyperliquid documents `tid` as a 50-bit hash rather than an ordered sequence, so
 `source_sequence` remains null. The source `users` array is retained in buyer/seller order by the
 adapter DTO but is not yet copied into the venue-neutral trade contract.
+
+### Dormant provenance-complete envelope v3
+
+Phase 1A-3B1A defines a mandatory future outer envelope version 3 while leaving every active v2
+producer unchanged. The trade event family remains independently versioned as family version 2,
+with the current immutable `TradeEvent` payload. A later breaking trade-payload change requires a
+new family version and binding; it does not silently change trade-family-v2 semantics.
+
+Source and observation facts are separate. `SourceProvenance` contains the stable source-event ID,
+optional source-transaction ID, exact typed source-time facts and typed source-sequence ranges.
+`ObservationProvenance` contains feed product, collector run, connection session, subscription
+plan/spec/attempt, raw record/index, receive wall and monotonic clocks, collector build,
+normalization run and normalizer build. Existing Hyperliquid and Binance source-event strings do
+not change. The logical source key is `(feed_product_id, source_event_id)`; the observation key is
+`(raw_record_id, raw_event_index)`; the materialization key adds normalization run, event family,
+family version and payload type.
+
+For a successfully returned `websockets` 17 application message, future Bronze TEXT bytes are
+exactly `message.encode("utf-8")`; BINARY bytes are unchanged. This is the post-extension,
+reassembled application-message boundary, not control/close frames, fragment or compression wire
+bytes, TCP/TLS bytes, or invalid UTF-8 rejected before `recv()` returns. Decode failure does not
+prevent a raw value from being represented. Derived raw length, payload SHA-256, locator ID and
+full-record digest are recomputed by stored-record verification. Contiguous supplied ordinals
+cannot detect a missing tail; sealed run manifests belong to deterministic replay in 3B2.
+
+Coverage has independent Bronze-ingress, Silver-normalization and Silver-delivery domains. A v3
+event carries exactly ingress and normalization references known when materialized. Delivery is a
+separate immutable outcome: Silver delivery means bounded collector-output-queue acceptance, not
+downstream consumption or durable persistence. ACK or reconnect alone never repairs degraded
+coverage. A definitively rejected successfully received raw record establishes confirmed Bronze
+incompleteness; a positively identified in-scope market message that cannot normalize establishes
+confirmed Silver-normalization incompleteness. Unclassified terminal or sink-acceptance ambiguity
+remains uncertain. Source-event conflict remains distinct integrity evidence.
+Source-event conflict in Silver normalization is positively identified integrity loss and is
+therefore `CONFIRMED_INCOMPLETE`, both at initial activation and on a later transition; it is not
+an ambiguity state and cannot be cleared by ACK, reconnect or unrelated evidence.
+
+Point-in-time derivative metadata separates content-addressed instrument specifications from
+append-only authority observations. Selection is authority-explicit and requires both
+`observed_at <= raw received_time` and validity at event time, preventing look-ahead. Quantity
+unit, positive exact contract multiplier, linear/inverse form, settlement asset, expiry and
+explicit last-trading/settlement timestamps are retained without parsing symbol text. Leverage is
+account/position context and is not a public trade-event field.
+
+These v3 contracts are defined and tested but dormant. No existing producer imports or emits v3;
+v2 remains the only active Silver envelope. No raw sink or raw capture, operational coverage
+tracker or deterministic replay exists. The atomic producer and collector cutover happens only in
+3B1D. Nothing was deployed, and SHADOW/LIVE remain disabled.
+
+Index-specific dormant normalization outcomes derive a closed raw/spec/attempt/public-selector/
+canonical-instrument/Silver-scope binding from the supplied immutable raw record and decoded-index
+context. Attached coverage transitions are limited to exact in-scope normalization failures or
+source-event conflicts from that same raw record, normalization run and event index. A pre-index
+parse failure uses a separately factory-validated raw-frame scope containing every plan spec with
+the matching event-family/version/payload binding and every instrument bound to those specs.
+Without typed route evidence it cannot select a narrower arbitrary plan subset. Transport,
+reconnect, raw-sink, delivery and unrelated historical transitions cannot be attached to a frame
+outcome. Pre-index frame evidence is a positive closed allowlist containing only protocol or
+decoder rejection, unknown instrument, unavailable metadata, provenance mismatch and local
+contract failure. Source-event conflict and frame-atomic abort require indexed outcomes and are
+invalid before indexing; future evidence categories remain rejected until explicitly classified.
+
+Ordinary validation exceptions and their traceback frames remain private implementation details:
+traceback locals can retain rejected bytes or text even when bounded exception arguments,
+`__cause__` and `__context__` do not. Phase 1A-3B1B must catch and classify such failures inside a
+private boundary, discard the caught exception after leaving the catch block, and export, store or
+log only a frozen category-only `SanitizedValidationFailure`. It may not propagate traceback
+frames, frame locals, input values, free-form messages or `exc_info`.
 
 When pressure exceeds capacity, the system must not silently accumulate unbounded memory. It applies an explicit per-stream policy: backpressure, reconnect/replay, sampling for non-critical telemetry, or fail/stale state. Trading-relevant feeds may not silently drop without marking the data invalid.
 

@@ -115,6 +115,35 @@ Initial public adapters target Hyperliquid, Bitvavo, Kraken and selected Binance
 
 The local development data plane uses mocks, fixtures and disposable services. The TrueNAS data plane is authoritative for self-collected 24/7 history.
 
+#### Dormant provenance spine and atomic v3 cutover
+
+Phase 1A-3B1A defines pure, frozen contracts for feed products, collection/subscription identity,
+raw application-message records, point-in-time instrument metadata, explicit coverage, event
+families and a provenance-complete `MarketEventEnvelopeV3`. These v3 contracts are defined and
+tested but dormant. Their import direction is
+`contracts.py <- data_provenance.py <- instrument_metadata.py <- market_event_v3.py`. No existing
+producer imports or emits v3, and schema v2 remains the only active Silver envelope.
+
+The eventual storage-neutral responsibilities are:
+
+- Bronze preserves exact post-extension, reassembled application-message bytes and immutable
+  capture lineage without requiring successful decoding;
+- Silver contains validated venue-neutral event families with Bronze observation lineage, source
+  provenance, resolved point-in-time metadata and ingress/normalization coverage;
+- Gold contains reproducible point-in-time features and aggregates derived from identified Silver
+  inputs.
+
+There is no raw sink or raw capture, operational coverage tracker or deterministic replay yet.
+Phase 1A-3B1B adds separate mandatory bounded acceptance for immutable Bronze records and
+normalization outcomes; successful acceptance means sink-boundary ownership, not durable storage.
+Internal constructor exceptions and traceback frames are private implementation details. The
+3B1B runtime boundary must catch, classify and discard them without logging or retaining
+`exc_info`; only a frozen bounded validation-failure category value may leave that boundary.
+Phase 1A-3B1C activates coverage transitions, and only 3B1D atomically moves both normalizers and
+the collector to the mandatory v3 envelope and removes outer v2 plus `is_gap`. No dual writer or
+permanent v2 wrapper is planned. Nothing in this contract slice is deployed, and SHADOW/LIVE
+remain disabled. ADR-022 records the complete decision and canonical identity rules.
+
 ### Research Plane
 
 Runs isolated experiments and may consume significant CPU/RAM without affecting the continuous trading/data path. It contains feature research, event-driven backtesting, walk-forward validation, Monte Carlo/stress tests and an experiment registry.

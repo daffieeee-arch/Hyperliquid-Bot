@@ -66,6 +66,43 @@ Coinbase Exchange full/L3/direct, Deribit raw, OKX higher-tier 10-ms/SBE, Bybit 
 Hyperliquid node/L4 require separate later approval and do not expand the currently implemented
 venues.
 
+Phase 1A-3B1A assigns exact catalogue identities to Hyperliquid production/mainnet public
+WebSocket market data and Binance production/mainnet Spot JSON market streams. Product identity
+records venue, source environment/network, a stable opaque product code, access requirement,
+entitlement class, transport and wire encoding. It describes what access a product requires; it
+does not prove caller authorization. Bitvavo Standard, Bitvavo Market Data Pro and Binance
+USDⓈ-M must therefore receive different future identities rather than inheriting one venue-level
+identity. Capabilities are separate append-only point-in-time observations and never grant access.
+
+Subscription identity is also layered. A plan identifies the complete desired configuration; a
+spec identifies exactly one outbound wire subscription; and an attempt identifies one concrete
+send for one session and spec. Normalized event family and payload type are plan-level adapter
+bindings, not parts of a wire-spec ID. Hyperliquid therefore uses one spec per exact coin, and each
+event in a mixed-coin message retains its own coin-specific spec and attempt lineage. The current
+Hyperliquid production/mainnet public-trades binding accepts only the explicit public
+`subscribe`/`trades`/`coin` semantics and requires an `ACKNOWLEDGED` attempt for event
+materialization. Pending, send-started and sent snapshots remain valid capture-time control facts,
+but cannot materialize a trade event.
+
+The full desired plan is validated as canonical content; its strongly typed plan ID is a bounded
+versioned SHA-256 content address. Only closed non-secret public parameters and endpoint-profile
+catalogue values can enter subscription identities. API keys, tokens, signatures, account or
+credential state, authorization state, secret endpoints and runtime timeout/retry values are not
+representable. Capabilities and access requirements describe the feed product and never confer
+authorization.
+
+For the dormant trade-v2 binding, exactly one trade-execution source-time fact must match the
+selected point-in-time metadata and v3 envelope event time. Metadata is selected only from the
+requested authority's observations visible at raw receipt; future and unrelated-authority
+assertions cannot change a historical selection. Derivative settlement may not precede last
+trading. Coverage begins at an explicit activation boundary and cannot be repaired by ACK,
+reconnect or an authoritative snapshot alone.
+
+The v3 contracts are defined and tested but dormant. No existing producer imports or emits v3;
+v2 remains the only active Silver envelope. No raw sink or raw capture, operational coverage
+tracker or deterministic replay exists. The atomic producer and collector cutover happens only in
+Phase 1A-3B1D. Nothing was deployed, and SHADOW/LIVE remain disabled.
+
 ## Phased rollout
 
 ### Phase 1 — Public data and unified paper execution

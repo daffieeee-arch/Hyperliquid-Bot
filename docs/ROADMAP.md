@@ -75,6 +75,10 @@ mandatory bounded outcome sink accepts exactly one normalization decision before
 deduplication, counters or schema-v2 queue state becomes visible. The v3 envelope remains dormant,
 v2 remains the only active Silver output, and no concrete persistence, operational coverage or
 delivery outcome is added.
+Phase 1A-3B1C-1 closes the pure representation gaps for coverage initialization, cause-specific
+fan-out, prepared atomic mutation and no-op lineage, frame-atomic abort evidence, and exact delivery
+knowledge. These contracts are dormant: 3B1B still publishes transition-empty outcomes, and no
+coverage state, queue linearization, sink, consumer or health behavior changes in this slice.
 
 Target: useful local output within approximately the first 1-2 weeks of active development.
 
@@ -102,11 +106,15 @@ The multi-venue data-contract spine proceeds in bounded steps:
 2. **Phase 1A-3B1B — Bronze raw capture:** separate mandatory bounded acceptance for raw records
    before parsing and normalization outcomes after processing; acceptance is not yet durable
    persistence;
-3. **Phase 1A-3B1C — coverage engine:** operational immutable coverage transitions and separate
-   delivery outcomes;
-4. **Phase 1A-3B1D — atomic cutover:** both normalizers and the collector move together to the one
+3. **Phase 1A-3B1C-1 — contract closure:** pure coverage initialization/mutation and delivery
+   knowledge contracts only;
+4. **Phase 1A-3B1C-2 — coverage runtime:** operational immutable coverage state and temporary v2
+   `is_gap` projection;
+5. **Phase 1A-3B1C-3 — atomic delivery:** one audited composite output-queue item per delivered
+   non-empty normalization outcome;
+6. **Phase 1A-3B1D — atomic cutover:** both normalizers and the collector move together to the one
    mandatory outer-v3 envelope; outer v2 and `is_gap` are removed without dual writing;
-5. **Phase 1A-3B2 — deterministic replay:** digest verification, sealed run manifests and exact
+7. **Phase 1A-3B2 — deterministic replay:** digest verification, sealed run manifests and exact
    Bronze-to-Silver lineage.
 
 Phase 1A-3B1B implements no concrete persistence, operational coverage tracker, delivery outcome

@@ -282,9 +282,21 @@ The exact computed preimages are:
 | `coverage-evidence-v1` | scope ID, epoch ID, collector-run ID, evidence kind, exact typed source reference, observed UTC, observed monotonic ns |
 | `normalization-failure-evidence-v1` | raw-record ID, normalization-run ID, raw-event index or null, source-event ID when established or null otherwise (always null before indexing), bounded failure category, exact coverage-scope ID |
 | `coverage-transition-v1` | scope ID, epoch ID, positive transition ordinal, previous status, next status, reason, coverage-evidence ID |
-| `delivery-batch-content-v1` | ordered materialization-key texts |
-| `delivery-batch-v1` | item count, SHA-256 of exact `delivery-batch-content-v1` text |
-| `delivery-attempt-v1` | destination ID, delivery-batch ID, non-negative attempt ordinal |
+| `coverage-initialization-v1` | collector-run ID, coverage-scope ID, coverage-epoch ID, initial status, initial reason, activation UTC, activation monotonic ns, evidence ID, evidence UTC, evidence monotonic ns |
+| `coverage-state-reference-v1` | `initialization`, coverage-initialization ID; or `transition`, coverage-initialization ID, exact predecessor coverage-state-reference ID, latest coverage-transition ID; this is a candidate token until commit acceptance |
+| `coverage-target-catalog-content-v1` | subscription-plan ID, sorted unique plan-derived leaf coverage-scope IDs |
+| `coverage-target-catalog-v1` | subscription-plan ID, target count, SHA-256 of exact `coverage-target-catalog-content-v1` text |
+| `coverage-fanout-proof-content-v1` | fan-out kind, subscription-plan ID, coverage-target-catalog ID, connection-session ID, exact kind-specific source row, sorted unique selected coverage-scope IDs |
+| `coverage-fanout-proof-v1` | fan-out kind, subscription-plan ID, coverage-target-catalog ID, target count, SHA-256 of exact `coverage-fanout-proof-content-v1` text |
+| `coverage-mutation-no-op-v1` | coverage-scope ID, current coverage-state-reference ID, requested status, initial reason, transition reason, coverage-evidence ID, `already-at-or-beyond-requested-severity` |
+| `coverage-mutation-batch-content-v1` | coverage-fanout-proof ID, exact raw-coverage-fanout-binding ID or null, sorted complete expected pre-state rows, sorted initialization IDs, sorted transition IDs, sorted no-op rows, sorted complete resulting coverage-state-reference IDs |
+| `coverage-mutation-batch-v1` | coverage-fanout-proof ID, target count, SHA-256 of exact `coverage-mutation-batch-content-v1` text |
+| `coverage-commit-acceptance-content-v1` | coverage-mutation-batch ID, sorted complete resulting coverage-state-reference IDs |
+| `coverage-commit-acceptance-v1` | coverage-mutation-batch ID, resulting-state count, SHA-256 of exact `coverage-commit-acceptance-content-v1` text |
+| `committed-coverage-state-v1` | exact candidate coverage-state-reference ID, matching coverage-commit-acceptance ID whose result set contains that state |
+| `delivery-batch-content-v1` | ordered materialization-key texts; retained lower locator content |
+| `delivery-batch-v1` | item count, SHA-256 of exact `delivery-batch-content-v1` text; retained lower locator ID |
+| `delivery-attempt-v1` | destination ID, lower delivery-batch ID, non-negative attempt ordinal; retained lower locator ID |
 | `logical-source-key-v1` | feed-product ID, source-event ID |
 | `observation-key-v1` | raw-record ID, non-negative raw-event index |
 | `materialization-key-v1` | normalization-run ID, observation-key ID, event family, family version, payload type |
@@ -292,7 +304,24 @@ The exact computed preimages are:
 | `raw-frame-normalization-scope-binding-v1` | raw-record ID, full-record integrity SHA-256, subscription-plan ID, coverage-scope ID |
 | `raw-event-normalization-outcome-v1` | observation-key ID, complete `raw-event-normalization-scope-binding-v1` row, disposition, optional logical-source-key ID, optional materialization-key ID, optional bounded evidence |
 | `normalization-outcome-content-v1` | ordered index-outcome IDs, ordered committed-materialization IDs, sorted evidence, sorted coverage-transition IDs, optional pre-index `raw-frame-normalization-scope-binding-v1` row |
+| `raw-coverage-fanout-snapshot-content-v1` | complete sorted `[subscription-spec ID,subscription-attempt ID,attempt status]` rows from the exact raw record |
+| `raw-coverage-fanout-binding-content-v1` | raw-record ID, full-record integrity SHA-256, subscription-plan ID, connection-session ID, coverage-fanout-proof ID, SHA-256 of exact `raw-coverage-fanout-snapshot-content-v1` text |
+| `raw-coverage-fanout-binding-v1` | raw-record ID, coverage-fanout-proof ID, snapshot-content SHA-256, SHA-256 of exact `raw-coverage-fanout-binding-content-v1` text |
+| `frame-atomic-abort-primary-cause-content-v1` | sorted unique primary coverage-evidence IDs |
+| `frame-atomic-abort-evidence-v1` | raw-record ID, normalization-run ID, target raw-event index, target source-event ID, target Silver-normalization scope ID, primary-cause count, SHA-256 of exact `frame-atomic-abort-primary-cause-content-v1` text |
+| `normalization-source-conflict-binding-v1` | source-conflict coverage-evidence ID, normalization-run ID |
+| `normalization-coverage-lineage-content-v2` | prepared coverage-mutation-batch ID, exact raw-coverage-fanout-binding ID, sorted primary coverage-evidence IDs, sorted frame-atomic-abort evidence IDs, sorted source-conflict-binding IDs, sorted prepared transition IDs, sorted no-op rows, sorted candidate resulting state-reference IDs |
+| `normalization-coverage-lineage-v2` | prepared coverage-mutation-batch ID, primary-evidence count, abort-evidence count, conflict-binding count, transition count, no-op count, resulting-state count, SHA-256 of exact `normalization-coverage-lineage-content-v2` text |
+| `normalization-outcome-content-v2` | ordered index-outcome IDs, ordered committed-materialization IDs, sorted evidence, exact prepared normalization-coverage-lineage ID, optional pre-index `raw-frame-normalization-scope-binding-v1` row |
 | `normalization-outcome-v1` | normalization-run ID, raw-record ID, normalizer version, normalizer commit, frame status, optional decoded count, normalization-outcome-content SHA-256 |
+| `delivery-item-commitment-v1` | materialization-key ID, lowercase SHA-256 of exact serialized event content |
+| `delivery-item-commitments-v1` | complete ordered `[materialization-key ID,event-content SHA-256]` rows; its SHA-256 is the aggregate item-content digest |
+| `normalization-delivery-batch-content-v1` | normalization-outcome ID, complete ordered item-commitment rows, item count, aggregate SHA-256 of exact `delivery-item-commitments-v1` text |
+| `normalization-delivery-batch-commitment-v1` | retained lower `delivery-batch-v1` ID, normalization-outcome ID, item count, SHA-256 of exact `normalization-delivery-batch-content-v1` text |
+| `normalization-delivery-attempt-binding-v1` | retained lower `delivery-attempt-v1` ID, exact normalization-delivery-batch-commitment ID |
+| `normalization-delivery-outcome-v1` | normalization-delivery-attempt-binding ID, knowledge status, bounded reason, observed UTC, observed monotonic ns |
+| `delivery-commit-acceptance-v1` | accepted normalization-delivery-outcome ID, exact normalization-delivery-batch-commitment ID |
+| `delivery-commit-failure-v1` | definitely-not-accepted or acceptance-uncertain normalization-delivery-outcome ID |
 
 Nested typed identifiers are encoded in these arrays as their canonical JSON text string, not as
 nested identity arrays. Genuine nested component collections use JSON arrays. Public wire
@@ -319,7 +348,8 @@ Coverage evidence embeds exactly one closed typed source row:
 | `initial-activation-evidence-v1` | connection-session ID, acknowledged-attempt count, spec-member Merkle root, SHA-256 of `["initial-activation-attempts-v1",sorted [attempt ID,"acknowledged"] rows]` |
 | `transport-ambiguity-evidence-v1` | feed-product ID, connection-session ID, optional subscription-attempt ID, optional complete `subscription-spec-membership-proof-v1` row |
 | `raw-record-evidence-v1` | raw-record ID, identified coverage-scope ID |
-| `upstream-coverage-transition-evidence-v1` | upstream coverage-transition ID |
+| `upstream-coverage-transition-evidence-v1` | committed upstream coverage-state ID whose state contains a transition |
+| `upstream-coverage-state-evidence-v1` | committed upstream coverage-state ID |
 | `normalization-failure-evidence-reference-v1` | exact `normalization-failure-evidence-v1` ID |
 | `source-sequence-break-evidence-v1` | feed-product ID, sequence role, namespace/domain, non-negative first and last values, identified coverage-scope ID |
 | `source-event-conflict-evidence-v1` | feed-product ID, source-event ID, raw-record ID, raw-event index, identified coverage-scope ID |
@@ -331,12 +361,32 @@ The outer `coverage-evidence-v1` row additionally binds scope ID, epoch ID, coll
 evidence kind and injected UTC/monotonic observation boundaries. Thus none of these rows is a free
 label, and membership-bearing evidence can be checked against the exact high-cardinality scope.
 
-`raw-record-content-v1`, `instrument-specification-content-v1`,
-`subscription-spec-content-v1`, `subscription-plan-content-v1`,
-`coverage-scope-content-v1`, `delivery-batch-content-v1` and
-`normalization-outcome-content-v1` remain independently validated beside their bounded digest
-identities where applicable. Their SHA-256 values are integrity/content commitments, not a
-substitute for retaining the full canonical content. UTC input is an exact built-in,
+Coverage fan-out uses one of these closed kind-specific source rows inside
+`coverage-fanout-proof-content-v1`:
+
+| Source tag | Ordered components after the tag |
+| --- | --- |
+| `handshake-before-send-v1` | connection-session ID; selects no scope |
+| `possibly-delivered-specs-v1` | complete sorted `[subscription-attempt ID,attempt status]` snapshot rows, sorted selected `SEND_STARTED`/`SENT` attempt IDs |
+| `one-possibly-delivered-spec-v1` | complete nested `possibly-delivered-specs-v1` row for a one-spec plan |
+| `acknowledged-active-v1` | coverage domain, complete sorted attempt/status snapshot rows, sorted acknowledged attempt IDs |
+| `exact-routed-events-v1` | sorted unique `[attempt ID,spec ID,canonical instrument ID,event family,family version,payload type]` rows |
+| `all-possibly-active-v1` | coverage domain, event family or null, family version or null, payload type or null, complete sorted attempt/status snapshot rows |
+
+The target catalogue represents configured plan leaves. The selected rows then distinguish exact
+possibly delivered, acknowledged, routed and complete relevant possibly-active populations. For
+Silver pre-index failures, family, family version and payload are mandatory; unrelated families
+cannot enter the selected slice. A no-attempt handshake ambiguity remains lifecycle evidence but
+cannot create ordinal-zero coverage.
+
+Canonical content including `raw-record-content-v1`, `instrument-specification-content-v1`,
+`subscription-spec-content-v1`, `subscription-plan-content-v1`, `coverage-scope-content-v1`,
+`coverage-mutation-batch-content-v1`, `raw-coverage-fanout-binding-content-v1`,
+`normalization-coverage-lineage-content-v2`, `delivery-batch-content-v1`,
+`normalization-delivery-batch-content-v1` and both normalization-outcome content versions remains
+independently validated beside its bounded digest identity where applicable. These SHA-256 values
+are integrity/content commitments, not a substitute for retaining the full canonical content. UTC
+input is an exact built-in,
 timezone-aware `datetime` with zero offset and serializes with a four-digit year and exactly six
 fractional digits. Decimal text uses `Decimal.as_tuple()` only: finite values, at most 128
 coefficient digits, exponent in `[-128,128]`, signed zero as `0`, fixed-point output of at most 256
@@ -371,6 +421,9 @@ ceilings are:
 | decoded event bindings, normalization index outcomes or committed materialization keys | 4,096 each |
 | normalization evidence values | 8 |
 | normalization coverage-transition references | 1,024 |
+| normalization lineage additional-primary, frame-abort or source-conflict tuples | 4,096 each |
+| normalization lineage complete primary-evidence union | 8,192 |
+| coverage target-catalogue, fan-out and mutation targets | 4,096 each |
 
 Literal boundary and boundary-plus-one tests bind every numeric ceiling through the shared
 validator. Owner-level tests also prove that each owning constructor or finite-sequence validator
@@ -466,7 +519,7 @@ remain distinct Bronze records even when their v2 events are suppressed. Timeout
 failure is acceptance-ambiguous, terminal and never retried; explicit typed rejection is terminal
 and known not to be accepted. No runtime coverage transition or `DeliveryOutcome` is constructed
 in 3B1B. Consequently an accepted normalization outcome may precede a later v2 output-queue
-timeout; 3B1C adds separate delivery auditability.
+timeout; operational atomic delivery auditability follows in 3B1C-3.
 
 Internal validation exceptions are private implementation details, not observable contract
 values. Their traceback frames may retain rejected constructor inputs in frame locals even when
@@ -533,9 +586,11 @@ stay stable while desired/wire configuration stays unchanged. The same source ev
 two feed products is two logical source keys.
 
 Coverage is separate for Bronze ingress, Silver normalization and Silver delivery. An event embeds
-exactly ingress and normalization references known at construction. Delivery is a separate
-immutable `DeliveryOutcome`; Silver delivery means bounded collector-output-queue acceptance, not
-consumer processing or persistence. The pure reducer enforces scope/epoch continuity, the next
+exactly ingress and normalization references known at construction. Delivery knowledge is a
+separate immutable `OutcomeDeliveryResult`; `DeliveryCommitAcceptance` and
+`DeliveryCommitFailure` provide the closed success/failure results. Silver delivery means bounded
+collector-output-queue acceptance, not consumer processing or persistence. The pure reducer
+enforces scope/epoch continuity, the next
 ordinal, bounded transitions and recovery evidence. ACK or reconnect alone never improves degraded
 coverage. Epoch identity binds scope, collector run, ordinal and an explicit UTC/monotonic
 activation boundary. Initial `COMPLETE` requires typed initial-activation evidence at exactly that
@@ -583,8 +638,16 @@ cannot be attached. Delivery state never appears in `NormalizationOutcome`.
 - **3B1B — Bronze raw capture:** integrate mandatory bounded `RawRecordSink` acceptance before
   parsing and separate bounded `NormalizationOutcomeSink` acceptance after each frame's
   processing/materialization decision; v2 remains the only Silver envelope.
-- **3B1C — coverage engine:** emit immutable coverage transitions/outcomes with destination-specific
-  delivery evidence; v2 remains the only Silver envelope.
+- **3B1C-1 — pure contract closure:** define coverage initialization/state references,
+  plan-derived fan-out, prepared compare-and-swap mutation/no-op lineage, frame-atomic abort
+  evidence and outcome-bound delivery knowledge. These contracts are dormant and perform no
+  async, sink, queue, collector or health work.
+- **3B1C-2 — coverage runtime:** operationalize immutable Bronze-ingress and Silver-normalization
+  coverage and the temporary lossy v2 `is_gap` projection. Existing 3B1B outcomes remain
+  transition-empty until this step.
+- **3B1C-3 — atomic delivery:** expose one composite queue item containing the delivered v2 batch
+  and its accepted delivery outcome. Output-queue acceptance is not dequeue, consumer processing
+  or persistence.
 - **3B1D — atomic cutover:** migrate both normalizers and the collector together to the one mandatory
   v3 envelope, preserve existing source-event bytes, and remove outer v2 and `is_gap`.
 - **3B2 — deterministic replay:** verify digests and sealed run manifests, preserve ingress order,
@@ -595,9 +658,28 @@ cannot be attached. Delivery state never appears in `NormalizationOutcome`.
 producer constructs or emits `MarketEventEnvelopeV3`; v2 remains the only active Silver envelope.
 Phase 1A-3B1B activates
 mandatory storage-neutral raw-record and normalization-outcome acceptance in the Hyperliquid
-collector, without claiming persistence. No operational coverage tracker, delivery outcome,
-deterministic replay or deployment exists. The atomic producer and collector cutover occurs only
-in 3B1D. SHADOW and LIVE remain disabled.
+collector, without claiming persistence. Pure delivery-knowledge contracts are dormant; no
+operational coverage tracker, delivery linearization/composite queue item, deterministic replay or
+deployment exists. The atomic producer and collector cutover occurs only in 3B1D. SHADOW and LIVE
+remain disabled.
+
+The direct 3B1C runtime was blocked by five contract gaps: no ordinal-zero commit identity, no
+cause-derived complete fan-out/CAS batch, no no-op lineage for repeated degradation, no typed
+frame-atomic abort cause binding, and no outcome-complete delivery knowledge contract. 3B1C-1
+closes only those representational gaps. A prepared mutation, initialization or transition is not
+committed coverage. Only an exact `CoverageCommitAcceptance` for the complete resulting
+state-reference set is commit proof. Repeated evidence at an already-degraded state creates no
+fake transition or ordinal, but its no-op still binds the exact compatible reason and evidence.
+Fan-out evidence is cross-checked against the exact session and selected attempt. Any raw-backed
+mutation additionally commits to `RawCoverageFanoutBinding`: the raw record's full-record digest
+and complete attempt-status snapshot must reproduce the same fan-out exactly, so matching only a
+raw-record session cannot substitute a different snapshot. Typed outcome lineage additionally
+requires every indexed or pre-index normalization-scope binding to carry that same full-record
+integrity SHA-256; the lower raw-record locator alone is insufficient. An event's Bronze/Silver
+pair must share one collector run and preserve exact committed upstream lineage. Delivery success
+and failure use separate closed result values; process-local delivery evidence is not durable
+persistence. The current v2 output-queue binding permits only delivery-attempt ordinal zero and no
+retry; another attempt policy requires a new explicit binding.
 
 **Why:** No deployed dataset or ClickHouse schema depends on v2, so one atomic migration provides a
 clean long-term boundary without permanent compatibility complexity while preserving reviewable,

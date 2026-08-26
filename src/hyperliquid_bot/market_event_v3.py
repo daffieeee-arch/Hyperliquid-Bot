@@ -1,8 +1,10 @@
-"""Dormant outer-envelope-v3 market-data contracts.
+"""Market-data contracts for normalization audit and the dormant v3 boundary.
 
-Nothing in this module is imported by the active schema-v2 producers.  The
-contracts describe the future atomic cutover boundary and perform only pure,
-locally checkable validation over explicitly supplied values.
+``NormalizationOutcome`` is active in the schema-v2 capture path.  The strict
+coverage and delivery contracts added for the next lifecycle slice, plus
+``MarketEventEnvelopeV3`` and ``NormalizationContext``, remain dormant.  All
+contracts here perform only pure, locally checkable validation over explicitly
+supplied values.
 """
 
 import json
@@ -26,12 +28,23 @@ from hyperliquid_bot.data_provenance import (
     ConnectionSessionId,
     CorrelationId,
     CoverageDomain,
+    CoverageEvidence,
+    CoverageEvidenceId,
     CoverageEvidenceKind,
+    CoverageFanoutKind,
+    CoverageMutationBatch,
+    CoverageMutationBatchId,
+    CoverageMutationNoOp,
     CoverageReason,
     CoverageScope,
     CoverageScopeId,
+    CoverageStateReference,
     CoverageStatus,
+    CoverageTransition,
     CoverageTransitionId,
+    DeliveryAttemptId,
+    DeliveryAttemptIdentity,
+    DeliveryBatchId,
     EventActivationRequirement,
     EventCoverage,
     FeedProductId,
@@ -39,11 +52,14 @@ from hyperliquid_bot.data_provenance import (
     InstrumentMetadataObservationId,
     InstrumentSpecificationId,
     NormalizationFailureCategory,
+    NormalizationFailureEvidenceSource,
     NormalizationRunId,
     PublicSourceSelector,
     PublicSourceSelectorKind,
+    RawCoverageFanoutBinding,
     RawMarketDataRecord,
     RawRecordId,
+    SourceEventConflictEvidenceSource,
     SourceEventId,
     SourceSequenceRange,
     SourceTimeFact,
@@ -58,6 +74,7 @@ from hyperliquid_bot.data_provenance import (
     canonical_json_array,
     canonical_utc_datetime,
     parse_canonical_json_array,
+    require_code,
     require_collection_size,
     require_sha256,
     sha256_hex,
@@ -75,7 +92,23 @@ _RAW_EVENT_NORMALIZATION_SCOPE_BINDING_VERSION: Final = "raw-event-normalization
 _RAW_FRAME_NORMALIZATION_SCOPE_BINDING_VERSION: Final = "raw-frame-normalization-scope-binding-v1"
 _RAW_EVENT_NORMALIZATION_OUTCOME_ID_VERSION: Final = "raw-event-normalization-outcome-v1"
 _NORMALIZATION_OUTCOME_CONTENT_VERSION: Final = "normalization-outcome-content-v1"
+_TYPED_NORMALIZATION_OUTCOME_CONTENT_VERSION: Final = "normalization-outcome-content-v2"
 _NORMALIZATION_OUTCOME_ID_VERSION: Final = "normalization-outcome-v1"
+_FRAME_ATOMIC_ABORT_EVIDENCE_ID_VERSION: Final = "frame-atomic-abort-evidence-v1"
+_FRAME_ATOMIC_ABORT_CAUSE_CONTENT_VERSION: Final = "frame-atomic-abort-primary-cause-content-v1"
+_NORMALIZATION_SOURCE_CONFLICT_BINDING_ID_VERSION: Final = (
+    "normalization-source-conflict-binding-v1"
+)
+_NORMALIZATION_COVERAGE_LINEAGE_ID_VERSION: Final = "normalization-coverage-lineage-v2"
+_NORMALIZATION_COVERAGE_LINEAGE_CONTENT_VERSION: Final = "normalization-coverage-lineage-content-v2"
+_DELIVERY_ITEM_COMMITMENT_ID_VERSION: Final = "delivery-item-commitment-v1"
+_DELIVERY_ITEM_COMMITMENTS_CONTENT_VERSION: Final = "delivery-item-commitments-v1"
+_DELIVERY_BATCH_CONTENT_VERSION: Final = "normalization-delivery-batch-content-v1"
+_DELIVERY_BATCH_COMMITMENT_ID_VERSION: Final = "normalization-delivery-batch-commitment-v1"
+_OUTCOME_DELIVERY_ATTEMPT_BINDING_ID_VERSION: Final = "normalization-delivery-attempt-binding-v1"
+_DELIVERY_OUTCOME_ID_VERSION: Final = "normalization-delivery-outcome-v1"
+_DELIVERY_COMMIT_ACCEPTANCE_ID_VERSION: Final = "delivery-commit-acceptance-v1"
+_DELIVERY_COMMIT_FAILURE_ID_VERSION: Final = "delivery-commit-failure-v1"
 
 
 def _require_text(
@@ -355,6 +388,337 @@ class NormalizationOutcomeId:
         if components[5] not in {item.value for item in FrameNormalizationStatus}:
             raise ValueError("normalization_outcome_id has an unsupported frame status.")
         require_sha256(components[7], field_name="normalization_outcome_content_sha256")
+
+
+@dataclass(frozen=True, slots=True)
+class FrameAtomicAbortEvidenceId:
+    """Content-addressed identity for one frame-aborted indexed candidate."""
+
+    value: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        components = _parse_canonical_identifier(
+            self.value,
+            field_name="frame_atomic_abort_evidence_id",
+            version_tag=_FRAME_ATOMIC_ABORT_EVIDENCE_ID_VERSION,
+        )
+        if (
+            len(components) != 8
+            or type(components[1]) is not str
+            or type(components[2]) is not str
+            or type(components[3]) is not int
+            or components[3] < 0
+            or components[3] > MAX_UNSIGNED_64
+            or type(components[4]) is not str
+            or type(components[5]) is not str
+            or type(components[6]) is not int
+            or components[6] <= 0
+            or components[6] > MAX_NORMALIZATION_OUTCOME_ITEMS
+            or type(components[7]) is not str
+        ):
+            raise ValueError("frame_atomic_abort_evidence_id has invalid components.")
+        RawRecordId(components[1])
+        NormalizationRunId(components[2])
+        SourceEventId(components[4])
+        CoverageScopeId(components[5])
+        require_sha256(components[7], field_name="primary_cause_content_sha256")
+
+
+@dataclass(frozen=True, slots=True)
+class NormalizationSourceConflictBindingId:
+    """Upper-layer identity binding legacy conflict evidence to a normalization run."""
+
+    value: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        components = _parse_canonical_identifier(
+            self.value,
+            field_name="normalization_source_conflict_binding_id",
+            version_tag=_NORMALIZATION_SOURCE_CONFLICT_BINDING_ID_VERSION,
+        )
+        if len(components) != 3 or type(components[1]) is not str or type(components[2]) is not str:
+            raise ValueError("normalization_source_conflict_binding_id has invalid components.")
+        evidence_id = CoverageEvidenceId(components[1])
+        evidence_components = parse_canonical_json_array(
+            evidence_id.value,
+            field_name="coverage_evidence_id",
+        )
+        if evidence_components[4] != CoverageEvidenceKind.SOURCE_EVENT_CONFLICT.value:
+            raise ValueError("normalization source conflict binding requires conflict evidence.")
+        NormalizationRunId(components[2])
+
+
+@dataclass(frozen=True, slots=True)
+class NormalizationCoverageLineageId:
+    """Content-addressed identity for complete typed frame coverage lineage."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        components = _parse_canonical_identifier(
+            self.value,
+            field_name="normalization_coverage_lineage_id",
+            version_tag=_NORMALIZATION_COVERAGE_LINEAGE_ID_VERSION,
+        )
+        if len(components) != 9:
+            raise ValueError("normalization_coverage_lineage_id has invalid components.")
+        batch_id = components[1]
+        (
+            primary_count,
+            abort_count,
+            conflict_binding_count,
+            transition_count,
+            no_op_count,
+            state_count,
+        ) = components[2:8]
+        content_sha256 = components[8]
+        if (
+            type(batch_id) is not str
+            or type(primary_count) is not int
+            or type(abort_count) is not int
+            or type(transition_count) is not int
+            or type(conflict_binding_count) is not int
+            or type(no_op_count) is not int
+            or type(state_count) is not int
+            or primary_count < 0
+            or abort_count < 0
+            or transition_count < 0
+            or conflict_binding_count < 0
+            or no_op_count < 0
+            or state_count <= 0
+            or primary_count > MAX_NORMALIZATION_OUTCOME_ITEMS * 2
+            or abort_count > MAX_NORMALIZATION_OUTCOME_ITEMS
+            or transition_count > MAX_COVERAGE_TRANSITION_REFERENCES
+            or conflict_binding_count > MAX_NORMALIZATION_OUTCOME_ITEMS
+            or no_op_count > MAX_COVERAGE_TRANSITION_REFERENCES
+            or state_count > MAX_COVERAGE_TRANSITION_REFERENCES
+            or type(content_sha256) is not str
+        ):
+            raise ValueError("normalization_coverage_lineage_id has invalid components.")
+        CoverageMutationBatchId(batch_id)
+        require_sha256(
+            content_sha256,
+            field_name="normalization_coverage_lineage_content_sha256",
+        )
+
+
+class DeliveryKnowledgeStatus(StrEnum):
+    """What is known about one bounded output-queue acceptance attempt."""
+
+    ACCEPTED = "accepted"
+    DEFINITELY_NOT_ACCEPTED = "definitely-not-accepted"
+    ACCEPTANCE_UNCERTAIN = "acceptance-uncertain"
+
+
+class DeliveryOutcomeReason(StrEnum):
+    """Closed sanitized reason independent of delivery knowledge status."""
+
+    OUTPUT_QUEUE_ACCEPTANCE = "output-queue-acceptance"
+    QUEUE_CAPACITY_TIMEOUT = "queue-capacity-timeout"
+    CANCELLATION_BEFORE_LINEARIZATION = "cancellation-before-linearization"
+    EXPLICIT_REJECTION = "explicit-rejection"
+    LOCAL_CONTRACT_FAILURE = "local-contract-failure"
+    AMBIGUOUS_COMPLETION = "ambiguous-completion"
+
+
+@dataclass(frozen=True, slots=True)
+class DeliveryDestinationId:
+    """Caller-supplied bounded public identity for one delivery destination."""
+
+    value: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "value",
+            require_code(self.value, field_name="delivery_destination_id"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DeliveryItemCommitmentId:
+    """Canonical commitment to one materialization and its serialized event digest."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        components = _parse_canonical_identifier(
+            self.value,
+            field_name="delivery_item_commitment_id",
+            version_tag=_DELIVERY_ITEM_COMMITMENT_ID_VERSION,
+        )
+        if len(components) != 3 or type(components[1]) is not str or type(components[2]) is not str:
+            raise ValueError("delivery_item_commitment_id has invalid components.")
+        MaterializationKeyId(components[1])
+        require_sha256(components[2], field_name="event_content_sha256")
+
+
+@dataclass(frozen=True, slots=True)
+class DeliveryBatchCommitmentId:
+    """Canonical proof-neutral commitment to one outcome's complete event batch."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        components = _parse_canonical_identifier(
+            self.value,
+            field_name="delivery_batch_commitment_id",
+            version_tag=_DELIVERY_BATCH_COMMITMENT_ID_VERSION,
+        )
+        if (
+            len(components) != 5
+            or type(components[1]) is not str
+            or type(components[2]) is not str
+            or type(components[3]) is not int
+            or components[3] <= 0
+            or components[3] > MAX_NORMALIZATION_OUTCOME_ITEMS
+            or type(components[4]) is not str
+        ):
+            raise ValueError("delivery_batch_commitment_id has invalid components.")
+        legacy_batch_id = DeliveryBatchId(components[1])
+        legacy_components = parse_canonical_json_array(
+            legacy_batch_id.value,
+            field_name="legacy_delivery_batch_id",
+        )
+        if legacy_components[1] != components[3]:
+            raise ValueError("delivery batch commitment and legacy locator counts disagree.")
+        outcome_id = NormalizationOutcomeId(components[2])
+        outcome_components = parse_canonical_json_array(
+            outcome_id.value,
+            field_name="normalization_outcome_id",
+        )
+        if outcome_components[5] not in {
+            FrameNormalizationStatus.MATERIALIZED.value,
+            FrameNormalizationStatus.MIXED_SUCCESS.value,
+        }:
+            raise ValueError("delivery batch requires a successful materializing outcome.")
+        require_sha256(components[4], field_name="delivery_batch_content_sha256")
+
+
+@dataclass(frozen=True, slots=True)
+class OutcomeDeliveryAttemptBindingId:
+    """Canonical binding of a legacy attempt locator to one batch commitment."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        components = _parse_canonical_identifier(
+            self.value,
+            field_name="outcome_delivery_attempt_binding_id",
+            version_tag=_OUTCOME_DELIVERY_ATTEMPT_BINDING_ID_VERSION,
+        )
+        if len(components) != 3 or type(components[1]) is not str or type(components[2]) is not str:
+            raise ValueError("outcome_delivery_attempt_binding_id has invalid components.")
+        legacy_attempt_id = DeliveryAttemptId(components[1])
+        batch_commitment_id = DeliveryBatchCommitmentId(components[2])
+        attempt_components = parse_canonical_json_array(
+            legacy_attempt_id.value,
+            field_name="legacy_delivery_attempt_id",
+        )
+        batch_components = parse_canonical_json_array(
+            batch_commitment_id.value,
+            field_name="delivery_batch_commitment_id",
+        )
+        if attempt_components[2] != batch_components[1]:
+            raise ValueError("delivery attempt and batch commitment legacy locators disagree.")
+        if attempt_components[3] != 0:
+            raise ValueError("the current schema-v2 output queue permits only attempt ordinal 0.")
+
+
+@dataclass(frozen=True, slots=True)
+class DeliveryOutcomeId:
+    """Canonical identity for bounded delivery knowledge and sanitized reason."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        components = _parse_canonical_identifier(
+            self.value,
+            field_name="delivery_outcome_id",
+            version_tag=_DELIVERY_OUTCOME_ID_VERSION,
+        )
+        if (
+            len(components) != 6
+            or type(components[1]) is not str
+            or type(components[2]) is not str
+            or type(components[3]) is not str
+            or type(components[4]) is not str
+            or type(components[5]) is not int
+            or components[5] < 0
+            or components[5] > MAX_UNSIGNED_64
+        ):
+            raise ValueError("delivery_outcome_id has invalid components.")
+        OutcomeDeliveryAttemptBindingId(components[1])
+        if components[2] not in {item.value for item in DeliveryKnowledgeStatus}:
+            raise ValueError("delivery outcome has an unsupported knowledge status.")
+        if components[3] not in {item.value for item in DeliveryOutcomeReason}:
+            raise ValueError("delivery outcome has an unsupported reason.")
+        _validate_delivery_status_reason(
+            DeliveryKnowledgeStatus(components[2]),
+            DeliveryOutcomeReason(components[3]),
+        )
+        parsed: datetime | None = None
+        try:
+            parsed = datetime.fromisoformat(components[4].replace("Z", "+00:00"))
+        except ValueError:
+            pass
+        if parsed is None:
+            raise ValueError("delivery outcome observed_at is not canonical UTC.")
+        if canonical_utc_datetime(parsed, field_name="observed_at") != components[4]:
+            raise ValueError("delivery outcome observed_at is not canonical UTC.")
+
+
+@dataclass(frozen=True, slots=True)
+class DeliveryCommitAcceptanceId:
+    """Canonical identity for the only positive delivery-commit proof."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        components = _parse_canonical_identifier(
+            self.value,
+            field_name="delivery_commit_acceptance_id",
+            version_tag=_DELIVERY_COMMIT_ACCEPTANCE_ID_VERSION,
+        )
+        if len(components) != 3 or type(components[1]) is not str or type(components[2]) is not str:
+            raise ValueError("delivery_commit_acceptance_id has invalid components.")
+        outcome_id = DeliveryOutcomeId(components[1])
+        batch_id = DeliveryBatchCommitmentId(components[2])
+        outcome_components = parse_canonical_json_array(
+            outcome_id.value,
+            field_name="delivery_outcome_id",
+        )
+        if outcome_components[2] != DeliveryKnowledgeStatus.ACCEPTED.value:
+            raise ValueError("delivery commit acceptance requires accepted delivery knowledge.")
+        attempt_components = parse_canonical_json_array(
+            outcome_components[1],
+            field_name="outcome_delivery_attempt_binding_id",
+        )
+        if attempt_components[2] != batch_id.value:
+            raise ValueError("delivery commit acceptance outcome and batch disagree.")
+
+
+@dataclass(frozen=True, slots=True)
+class DeliveryCommitFailureId:
+    """Canonical non-acceptance or uncertainty result without event-batch content."""
+
+    value: str
+
+    def __post_init__(self) -> None:
+        components = _parse_canonical_identifier(
+            self.value,
+            field_name="delivery_commit_failure_id",
+            version_tag=_DELIVERY_COMMIT_FAILURE_ID_VERSION,
+        )
+        if len(components) != 2 or type(components[1]) is not str:
+            raise ValueError("delivery_commit_failure_id has invalid components.")
+        outcome_id = DeliveryOutcomeId(components[1])
+        outcome_components = parse_canonical_json_array(
+            outcome_id.value,
+            field_name="delivery_outcome_id",
+        )
+        if outcome_components[2] == DeliveryKnowledgeStatus.ACCEPTED.value:
+            raise ValueError("accepted delivery outcome cannot be represented as failure.")
 
 
 class EventFamily(StrEnum):
@@ -882,6 +1246,7 @@ class RawFrameNormalizationScopeBinding:
     full_record_integrity_sha256: str
     subscription_plan_id: SubscriptionPlanId
     coverage_scope_id: CoverageScopeId
+    coverage_scope: CoverageScope = field(repr=False)
 
     def __init__(self) -> None:
         raise TypeError("use RawFrameNormalizationScopeBinding.from_raw_record().")
@@ -963,6 +1328,7 @@ class RawFrameNormalizationScopeBinding:
             plan.subscription_plan_id,
         )
         object.__setattr__(instance, "coverage_scope_id", coverage_scope.coverage_scope_id)
+        object.__setattr__(instance, "coverage_scope", coverage_scope)
         return instance
 
     def canonical_components(self) -> tuple[str, str, str, str, str]:
@@ -1120,10 +1486,11 @@ class NormalizationContext:
 
         selected_spec_id = binding.subscription_spec.subscription_spec_id
         canonical_instrument_id = instrument.canonical_instrument_id
-        for coverage_reference in (
+        for committed_coverage_state in (
             event_coverage.bronze_ingress,
             event_coverage.silver_normalization,
         ):
+            coverage_reference = committed_coverage_state.state_reference.reference
             scope = coverage_reference.scope
             if coverage_reference.epoch.collector_run_id != raw_record.collector_run_id:
                 raise ValueError(
@@ -1315,10 +1682,507 @@ _NORMALIZATION_FAILURE_TO_FRAME_EVIDENCE: Final = {
     NormalizationFailureCategory.DECODER_REJECTION: NormalizationEvidence.DECODER_REJECTION,
     NormalizationFailureCategory.UNKNOWN_INSTRUMENT: NormalizationEvidence.UNKNOWN_INSTRUMENT,
     NormalizationFailureCategory.METADATA_UNAVAILABLE: NormalizationEvidence.METADATA_UNAVAILABLE,
+    NormalizationFailureCategory.PROVENANCE_MISMATCH: (NormalizationEvidence.PROVENANCE_MISMATCH),
     NormalizationFailureCategory.LOCAL_CONTRACT_FAILURE: (
         NormalizationEvidence.LOCAL_CONTRACT_FAILURE
     ),
 }
+
+
+@dataclass(frozen=True, slots=True)
+class FrameAtomicAbortEvidenceSource:
+    """Outcome-only evidence for one known candidate aborted by frame atomicity.
+
+    This value deliberately never creates a coverage transition. Its complete
+    primary-cause content is retained and content-addressed so the enclosing
+    typed lineage can prove which normalization failures or source conflicts
+    caused this otherwise valid candidate not to materialize.
+
+    ID preimage, in exact order::
+
+        ["frame-atomic-abort-evidence-v1", raw_record_id,
+         normalization_run_id, raw_event_index, source_event_id,
+         identified_coverage_scope_id, primary_cause_count,
+         primary_cause_content_sha256]
+
+    Cause-content preimage::
+
+        ["frame-atomic-abort-primary-cause-content-v1",
+         sorted_primary_coverage_evidence_ids]
+    """
+
+    raw_record_id: RawRecordId = field(repr=False)
+    normalization_run_id: NormalizationRunId
+    raw_event_index: int
+    source_event_id: SourceEventId = field(repr=False)
+    identified_coverage_scope_id: CoverageScopeId
+    primary_cause_coverage_evidence_ids: tuple[CoverageEvidenceId, ...] = field(repr=False)
+    primary_cause_content_sha256: str = field(init=False)
+    frame_atomic_abort_evidence_id: FrameAtomicAbortEvidenceId = field(
+        init=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        if type(self.raw_record_id) is not RawRecordId:
+            raise TypeError("raw_record_id must be a RawRecordId.")
+        if type(self.normalization_run_id) is not NormalizationRunId:
+            raise TypeError("normalization_run_id must be a NormalizationRunId.")
+        index = _require_non_negative_int(self.raw_event_index, field_name="raw_event_index")
+        if type(self.source_event_id) is not SourceEventId:
+            raise TypeError("source_event_id must be a SourceEventId.")
+        if type(self.identified_coverage_scope_id) is not CoverageScopeId:
+            raise TypeError("identified_coverage_scope_id must be a CoverageScopeId.")
+        causes = _require_exact_tuple(
+            self.primary_cause_coverage_evidence_ids,
+            item_type=CoverageEvidenceId,
+            field_name="primary_cause_coverage_evidence_ids",
+            maximum_items=MAX_NORMALIZATION_OUTCOME_ITEMS,
+        )
+        if not causes:
+            raise ValueError("frame atomic abort evidence requires at least one primary cause.")
+        if tuple(sorted(causes, key=lambda item: item.value)) != causes:
+            raise ValueError("primary cause evidence IDs must be sorted by canonical ID.")
+        if len(set(causes)) != len(causes):
+            raise ValueError("primary cause evidence IDs must be unique.")
+        for cause in causes:
+            components = parse_canonical_json_array(
+                cause.value,
+                field_name="primary_cause_coverage_evidence_id",
+            )
+            kind_component = components[4]
+            if type(kind_component) is not str:
+                raise ValueError("primary cause evidence has invalid kind.")
+            kind = CoverageEvidenceKind(kind_component)
+            if kind not in {
+                CoverageEvidenceKind.NORMALIZATION_FAILURE,
+                CoverageEvidenceKind.SOURCE_EVENT_CONFLICT,
+            }:
+                raise ValueError(
+                    "frame atomic abort causes must be normalization failures or source conflicts."
+                )
+            source_components = components[5]
+            if type(source_components) is not tuple:
+                raise ValueError("primary cause evidence has invalid source components.")
+            if kind is CoverageEvidenceKind.NORMALIZATION_FAILURE:
+                failure_components = parse_canonical_json_array(
+                    source_components[1],
+                    field_name="normalization_failure_evidence_id",
+                )
+                if (
+                    failure_components[1] != self.raw_record_id.value
+                    or failure_components[2] != self.normalization_run_id.value
+                    or failure_components[3] is None
+                    or failure_components[3] == index
+                ):
+                    raise ValueError(
+                        "frame atomic abort cause must match the frame and name another indexed "
+                        "item."
+                    )
+            else:
+                if (
+                    source_components[3] != self.raw_record_id.value
+                    or source_components[4] == index
+                ):
+                    raise ValueError(
+                        "frame atomic abort cause must match the frame and name another index."
+                    )
+
+        cause_content = canonical_json_array(
+            (
+                _FRAME_ATOMIC_ABORT_CAUSE_CONTENT_VERSION,
+                tuple(cause.value for cause in causes),
+            )
+        )
+        cause_sha256 = sha256_hex(
+            cause_content.encode("utf-8"),
+            field_name="frame_atomic_abort_primary_cause_content",
+        )
+        identifier = FrameAtomicAbortEvidenceId(
+            canonical_json_array(
+                (
+                    _FRAME_ATOMIC_ABORT_EVIDENCE_ID_VERSION,
+                    self.raw_record_id.value,
+                    self.normalization_run_id.value,
+                    index,
+                    self.source_event_id.value,
+                    self.identified_coverage_scope_id.value,
+                    len(causes),
+                    cause_sha256,
+                )
+            )
+        )
+        object.__setattr__(self, "primary_cause_content_sha256", cause_sha256)
+        object.__setattr__(self, "frame_atomic_abort_evidence_id", identifier)
+
+    @classmethod
+    def from_stored(
+        cls,
+        *,
+        raw_record_id: RawRecordId,
+        normalization_run_id: NormalizationRunId,
+        raw_event_index: int,
+        source_event_id: SourceEventId,
+        identified_coverage_scope_id: CoverageScopeId,
+        primary_cause_coverage_evidence_ids: tuple[CoverageEvidenceId, ...],
+        expected_primary_cause_content_sha256: str,
+        expected_evidence_id: FrameAtomicAbortEvidenceId,
+    ) -> Self:
+        """Recompute stored abort evidence and reject any digest or ID mismatch."""
+
+        require_sha256(
+            expected_primary_cause_content_sha256,
+            field_name="expected_primary_cause_content_sha256",
+        )
+        if type(expected_evidence_id) is not FrameAtomicAbortEvidenceId:
+            raise TypeError("expected_evidence_id must be a FrameAtomicAbortEvidenceId.")
+        value = cls(
+            raw_record_id,
+            normalization_run_id,
+            raw_event_index,
+            source_event_id,
+            identified_coverage_scope_id,
+            primary_cause_coverage_evidence_ids,
+        )
+        if (
+            value.primary_cause_content_sha256 != expected_primary_cause_content_sha256
+            or value.frame_atomic_abort_evidence_id != expected_evidence_id
+        ):
+            raise ValueError("stored frame atomic abort evidence does not match its content.")
+        return value
+
+
+@dataclass(frozen=True, slots=True)
+class NormalizationSourceConflictBinding:
+    """Bind one legacy v1 conflict evidence record to its exact normalization run.
+
+    ID preimage::
+
+        ["normalization-source-conflict-binding-v1",
+         coverage_evidence_id, normalization_run_id]
+    """
+
+    coverage_evidence: CoverageEvidence = field(repr=False)
+    normalization_run_id: NormalizationRunId
+    normalization_source_conflict_binding_id: NormalizationSourceConflictBindingId = field(
+        init=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        if type(self.coverage_evidence) is not CoverageEvidence:
+            raise TypeError("coverage_evidence must be a CoverageEvidence.")
+        if (
+            self.coverage_evidence.kind is not CoverageEvidenceKind.SOURCE_EVENT_CONFLICT
+            or type(self.coverage_evidence.source) is not SourceEventConflictEvidenceSource
+        ):
+            raise ValueError("normalization source conflict binding requires conflict evidence.")
+        if type(self.normalization_run_id) is not NormalizationRunId:
+            raise TypeError("normalization_run_id must be a NormalizationRunId.")
+        object.__setattr__(
+            self,
+            "normalization_source_conflict_binding_id",
+            NormalizationSourceConflictBindingId(
+                canonical_json_array(
+                    (
+                        _NORMALIZATION_SOURCE_CONFLICT_BINDING_ID_VERSION,
+                        self.coverage_evidence.coverage_evidence_id.value,
+                        self.normalization_run_id.value,
+                    )
+                )
+            ),
+        )
+
+    @classmethod
+    def from_stored(
+        cls,
+        *,
+        coverage_evidence: CoverageEvidence,
+        normalization_run_id: NormalizationRunId,
+        expected_binding_id: NormalizationSourceConflictBindingId,
+    ) -> Self:
+        if type(expected_binding_id) is not NormalizationSourceConflictBindingId:
+            raise TypeError("expected_binding_id must be a NormalizationSourceConflictBindingId.")
+        value = cls(coverage_evidence, normalization_run_id)
+        if value.normalization_source_conflict_binding_id != expected_binding_id:
+            raise ValueError("stored normalization source conflict binding does not match.")
+        return value
+
+
+@dataclass(frozen=True, slots=True)
+class NormalizationCoverageLineage:
+    """One prepared event-scoped mutation batch plus outcome-only abort evidence.
+
+    A prepared batch isn't a commit acceptance. Its transitions, no-ops, result
+    state references, and primary evidence are derived here and cannot be
+    independently supplied. Frame-atomic-abort evidence remains outcome-only.
+
+    Content preimage, in exact order::
+
+        ["normalization-coverage-lineage-content-v2",
+         coverage_mutation_batch_id,
+         raw_coverage_fanout_binding_id,
+         sorted_primary_coverage_evidence_ids,
+         sorted_frame_atomic_abort_evidence_ids,
+         sorted_normalization_source_conflict_binding_ids,
+         sorted_coverage_transition_ids,
+         sorted_coverage_no_op_rows,
+         sorted_resulting_state_reference_ids]
+
+    ID preimage::
+
+        ["normalization-coverage-lineage-v2", coverage_mutation_batch_id,
+         primary_evidence_count, frame_abort_evidence_count,
+         source_conflict_binding_count, transition_count, no_op_count,
+         resulting_state_count, content_sha256]
+    """
+
+    coverage_mutation_batch: CoverageMutationBatch = field(repr=False)
+    frame_atomic_abort_evidence: tuple[FrameAtomicAbortEvidenceSource, ...] = field(repr=False)
+    raw_fanout_binding: RawCoverageFanoutBinding = field(repr=False)
+    additional_primary_evidence: tuple[CoverageEvidence, ...] = field(
+        default=(),
+        repr=False,
+    )
+    source_conflict_bindings: tuple[NormalizationSourceConflictBinding, ...] = field(
+        default=(),
+        repr=False,
+    )
+    primary_evidence: tuple[CoverageEvidence, ...] = field(init=False, repr=False)
+    coverage_transitions: tuple[CoverageTransition, ...] = field(init=False, repr=False)
+    coverage_no_ops: tuple[CoverageMutationNoOp, ...] = field(init=False, repr=False)
+    resulting_state_references: tuple[CoverageStateReference, ...] = field(
+        init=False,
+        repr=False,
+    )
+    canonical_content: str = field(init=False, repr=False)
+    content_sha256: str = field(init=False)
+    normalization_coverage_lineage_id: NormalizationCoverageLineageId = field(init=False)
+
+    def __post_init__(self) -> None:
+        if type(self.coverage_mutation_batch) is not CoverageMutationBatch:
+            raise TypeError("coverage_mutation_batch must be a prepared CoverageMutationBatch.")
+        batch = self.coverage_mutation_batch
+        if type(self.raw_fanout_binding) is not RawCoverageFanoutBinding:
+            raise TypeError("raw_fanout_binding must be a RawCoverageFanoutBinding.")
+        if batch.raw_fanout_binding != self.raw_fanout_binding:
+            raise ValueError("normalization lineage requires the batch's exact raw fanout binding.")
+        if (
+            self.raw_fanout_binding.coverage_fanout_proof_id
+            != batch.fanout_proof.coverage_fanout_proof_id
+            or self.raw_fanout_binding.subscription_plan_id
+            != batch.fanout_proof.subscription_plan_id
+            or self.raw_fanout_binding.connection_session_id
+            != batch.fanout_proof.connection_session_id
+        ):
+            raise ValueError("raw fanout binding must match the prepared coverage batch.")
+        if batch.fanout_proof.kind not in {
+            CoverageFanoutKind.EXACT_ROUTED_EVENT,
+            CoverageFanoutKind.EXACT_ROUTED_EVENTS,
+            CoverageFanoutKind.ALL_POSSIBLY_ACTIVE,
+        }:
+            raise ValueError("frame outcomes reject lifecycle-only coverage fanout.")
+        if any(
+            scope.domain is not CoverageDomain.SILVER_NORMALIZATION
+            for scope in batch.fanout_proof.target_scopes
+        ):
+            raise ValueError("frame outcome coverage targets must all be Silver normalization.")
+        if (
+            batch.fanout_proof.kind is CoverageFanoutKind.EXACT_ROUTED_EVENT
+            and len(batch.fanout_proof.target_scopes) != 1
+        ):
+            raise ValueError("an exact routed frame mutation must have one target.")
+        aborts = _require_exact_tuple(
+            self.frame_atomic_abort_evidence,
+            item_type=FrameAtomicAbortEvidenceSource,
+            field_name="frame_atomic_abort_evidence",
+            maximum_items=MAX_NORMALIZATION_OUTCOME_ITEMS,
+        )
+        additional = _require_exact_tuple(
+            self.additional_primary_evidence,
+            item_type=CoverageEvidence,
+            field_name="additional_primary_evidence",
+            maximum_items=MAX_NORMALIZATION_OUTCOME_ITEMS,
+        )
+        if (
+            tuple(sorted(additional, key=lambda item: item.coverage_evidence_id.value))
+            != additional
+        ):
+            raise ValueError("additional primary evidence must be sorted by canonical ID.")
+        conflict_bindings = _require_exact_tuple(
+            self.source_conflict_bindings,
+            item_type=NormalizationSourceConflictBinding,
+            field_name="source_conflict_bindings",
+            maximum_items=MAX_NORMALIZATION_OUTCOME_ITEMS,
+        )
+        if (
+            tuple(
+                sorted(
+                    conflict_bindings,
+                    key=lambda item: item.normalization_source_conflict_binding_id.value,
+                )
+            )
+            != conflict_bindings
+        ):
+            raise ValueError("source conflict bindings must be sorted by canonical ID.")
+        selected_primary = tuple(
+            sorted(
+                (
+                    *(item.initial_evidence for item in batch.initializations),
+                    *(item.evidence for item in batch.transitions),
+                    *(item.request.evidence for item in batch.no_ops),
+                ),
+                key=lambda item: item.coverage_evidence_id.value,
+            )
+        )
+        primary = tuple(
+            sorted(
+                (*selected_primary, *additional),
+                key=lambda item: item.coverage_evidence_id.value,
+            )
+        )
+        transitions = batch.transitions
+        no_ops = batch.no_ops
+        resulting_states = batch.resulting_state_references
+        target_count = len(batch.fanout_proof.target_scopes)
+        if len(selected_primary) != target_count or len(resulting_states) != target_count:
+            raise ValueError("prepared lineage requires one selected cause and result per target.")
+        if (
+            tuple(
+                sorted(
+                    aborts,
+                    key=lambda item: item.frame_atomic_abort_evidence_id.value,
+                )
+            )
+            != aborts
+        ):
+            raise ValueError("frame atomic abort evidence must be sorted by canonical ID.")
+        primary_ids = tuple(item.coverage_evidence_id for item in primary)
+        abort_ids = tuple(item.frame_atomic_abort_evidence_id for item in aborts)
+        transition_ids = tuple(item.coverage_transition_id for item in transitions)
+        no_op_rows = tuple(item.canonical_row for item in no_ops)
+        conflict_binding_ids = tuple(
+            item.normalization_source_conflict_binding_id for item in conflict_bindings
+        )
+        state_ids = tuple(item.coverage_state_reference_id for item in resulting_states)
+        if len(set(abort_ids)) != len(abort_ids):
+            raise ValueError("frame atomic abort evidence must be unique.")
+        if len(set(primary_ids)) != len(primary_ids):
+            raise ValueError("primary evidence must be unique.")
+        if len(set(conflict_binding_ids)) != len(conflict_binding_ids):
+            raise ValueError("source conflict bindings must be unique.")
+        target_scope_ids = {scope.coverage_scope_id for scope in batch.fanout_proof.target_scopes}
+        selected_by_scope = {evidence.coverage_scope_id: evidence for evidence in selected_primary}
+        for evidence in primary:
+            if evidence.kind not in {
+                CoverageEvidenceKind.NORMALIZATION_FAILURE,
+                CoverageEvidenceKind.SOURCE_EVENT_CONFLICT,
+            }:
+                raise ValueError(
+                    "typed normalization lineage accepts only primary failure or conflict evidence."
+                )
+            if evidence.coverage_scope_id not in target_scope_ids:
+                raise ValueError("primary evidence must belong to a prepared target scope.")
+            if evidence.epoch != selected_by_scope[evidence.coverage_scope_id].epoch:
+                raise ValueError("primary evidence must use its selected target epoch and run.")
+        for selected in selected_primary:
+            matching = tuple(
+                evidence
+                for evidence in primary
+                if evidence.coverage_scope_id == selected.coverage_scope_id
+            )
+            if not matching or selected.coverage_evidence_id != min(
+                (item.coverage_evidence_id for item in matching),
+                key=lambda item: item.value,
+            ):
+                raise ValueError(
+                    "prepared mutation must select the canonical-lowest cause per target."
+                )
+        expected_conflicts = tuple(
+            evidence
+            for evidence in primary
+            if evidence.kind is CoverageEvidenceKind.SOURCE_EVENT_CONFLICT
+        )
+        if tuple(item.coverage_evidence for item in conflict_bindings) != expected_conflicts:
+            raise ValueError("every conflict cause requires one exact normalization-run binding.")
+        expected_cause_ids = primary_ids
+        for abort in aborts:
+            if abort.primary_cause_coverage_evidence_ids != expected_cause_ids:
+                raise ValueError(
+                    "every frame atomic abort must bind the complete primary cause set."
+                )
+
+        content = canonical_json_array(
+            (
+                _NORMALIZATION_COVERAGE_LINEAGE_CONTENT_VERSION,
+                batch.coverage_mutation_batch_id.value,
+                self.raw_fanout_binding.raw_coverage_fanout_binding_id.value,
+                tuple(item.value for item in primary_ids),
+                tuple(item.value for item in abort_ids),
+                tuple(item.value for item in conflict_binding_ids),
+                tuple(item.value for item in transition_ids),
+                no_op_rows,
+                tuple(item.value for item in state_ids),
+            )
+        )
+        content_sha256 = sha256_hex(
+            content.encode("utf-8"),
+            field_name="normalization_coverage_lineage_content",
+        )
+        identifier = NormalizationCoverageLineageId(
+            canonical_json_array(
+                (
+                    _NORMALIZATION_COVERAGE_LINEAGE_ID_VERSION,
+                    batch.coverage_mutation_batch_id.value,
+                    len(primary),
+                    len(aborts),
+                    len(conflict_bindings),
+                    len(transitions),
+                    len(no_ops),
+                    len(resulting_states),
+                    content_sha256,
+                )
+            )
+        )
+        object.__setattr__(self, "primary_evidence", primary)
+        object.__setattr__(self, "coverage_transitions", transitions)
+        object.__setattr__(self, "coverage_no_ops", no_ops)
+        object.__setattr__(self, "resulting_state_references", resulting_states)
+        object.__setattr__(self, "canonical_content", content)
+        object.__setattr__(self, "content_sha256", content_sha256)
+        object.__setattr__(self, "normalization_coverage_lineage_id", identifier)
+
+    @classmethod
+    def from_stored(
+        cls,
+        *,
+        coverage_mutation_batch: CoverageMutationBatch,
+        frame_atomic_abort_evidence: tuple[FrameAtomicAbortEvidenceSource, ...],
+        raw_fanout_binding: RawCoverageFanoutBinding,
+        additional_primary_evidence: tuple[CoverageEvidence, ...] = (),
+        source_conflict_bindings: tuple[NormalizationSourceConflictBinding, ...] = (),
+        expected_canonical_content: str,
+        expected_lineage_id: NormalizationCoverageLineageId,
+    ) -> Self:
+        """Recompute complete prepared lineage and reject stored-content mismatch."""
+
+        if type(expected_canonical_content) is not str:
+            raise TypeError("expected_canonical_content must be a built-in string.")
+        if type(expected_lineage_id) is not NormalizationCoverageLineageId:
+            raise TypeError("expected_lineage_id must be a NormalizationCoverageLineageId.")
+        value = cls(
+            coverage_mutation_batch,
+            frame_atomic_abort_evidence,
+            raw_fanout_binding,
+            additional_primary_evidence,
+            source_conflict_bindings,
+        )
+        if (
+            value.canonical_content != expected_canonical_content
+            or value.normalization_coverage_lineage_id != expected_lineage_id
+        ):
+            raise ValueError("stored normalization coverage lineage does not match its content.")
+        return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -1471,7 +2335,7 @@ class NormalizationOutcome:
           normalization_outcome_content_sha256
         ]
 
-    The digest is SHA-256 over this exact bounded-content preimage::
+    A legacy transition-empty outcome retains the exact 3B1B digest preimage::
 
         [
           "normalization-outcome-content-v1",
@@ -1479,6 +2343,17 @@ class NormalizationOutcome:
           ordered-committed-materialization-key-ids,
           sorted-evidence-codes,
           sorted-coverage-transition-ids,
+          pre-index-frame-scope-binding-or-null
+        ]
+
+    An outcome with complete typed coverage lineage instead uses::
+
+        [
+          "normalization-outcome-content-v2",
+          ordered-index-outcome-ids,
+          ordered-committed-materialization-key-ids,
+          sorted-evidence-codes,
+          normalization-coverage-lineage-id,
           pre-index-frame-scope-binding-or-null
         ]
     """
@@ -1494,6 +2369,7 @@ class NormalizationOutcome:
     preindex_scope_binding: RawFrameNormalizationScopeBinding | None = None
     evidence: tuple[NormalizationEvidence, ...] = ()
     coverage_transition_ids: tuple[CoverageTransitionId, ...] = ()
+    coverage_lineage: NormalizationCoverageLineage | None = None
     normalization_outcome_content_sha256: str = field(init=False)
     normalization_outcome_id: NormalizationOutcomeId = field(init=False)
 
@@ -1566,6 +2442,27 @@ class NormalizationOutcome:
             raise ValueError("coverage_transition_ids must be sorted by canonical ID.")
         if len(set(transition_ids)) != len(transition_ids):
             raise ValueError("coverage_transition_ids must be unique.")
+        if self.coverage_lineage is not None and (
+            type(self.coverage_lineage) is not NormalizationCoverageLineage
+        ):
+            raise TypeError("coverage_lineage must be a NormalizationCoverageLineage or None.")
+        if self.coverage_lineage is None:
+            if transition_ids:
+                raise ValueError(
+                    "legacy normalization outcomes must be transition-empty; "
+                    "typed transitions require coverage_lineage."
+                )
+        else:
+            if self.coverage_lineage.raw_fanout_binding.raw_record_id != self.raw_record_id:
+                raise ValueError("typed coverage lineage must bind the outcome raw record.")
+            typed_transition_ids = tuple(
+                transition.coverage_transition_id
+                for transition in self.coverage_lineage.coverage_transitions
+            )
+            if transition_ids:
+                raise ValueError("typed transition IDs are derived and cannot be supplied.")
+            transition_ids = typed_transition_ids
+            object.__setattr__(self, "coverage_transition_ids", transition_ids)
 
         raw_components = json.loads(self.raw_record_id.value)
         raw_feed_product_id = FeedProductId(raw_components[1])
@@ -1621,14 +2518,20 @@ class NormalizationOutcome:
                         raise ValueError(
                             "index-free normalization failure requires pre-index frame rejection."
                         )
+                    assert self.coverage_lineage is not None
+                    selected_scope_ids = {
+                        scope.coverage_scope_id.value
+                        for scope in (
+                            self.coverage_lineage.coverage_mutation_batch.fanout_proof.target_scopes
+                        )
+                    }
                     if (
                         self.preindex_scope_binding is None
                         or self.preindex_scope_binding.raw_record_id != self.raw_record_id
-                        or self.preindex_scope_binding.coverage_scope_id.value
-                        != transition_components[1]
+                        or transition_components[1] not in selected_scope_ids
                     ):
                         raise ValueError(
-                            "pre-index normalization failure requires the exact raw frame scope."
+                            "pre-index normalization failure requires a selected raw frame scope."
                         )
                 else:
                     matching_failure_outcomes = tuple(
@@ -1724,20 +2627,37 @@ class NormalizationOutcome:
 
         self._validate_closed_matrix(outcomes, materializations, evidence)
 
-        content_canonical = canonical_json_array(
-            (
-                _NORMALIZATION_OUTCOME_CONTENT_VERSION,
-                tuple(outcome.raw_event_normalization_outcome_id.value for outcome in outcomes),
-                tuple(key.materialization_key_id.value for key in materializations),
-                tuple(item.value for item in evidence),
-                tuple(item.value for item in transition_ids),
-                (
-                    self.preindex_scope_binding.canonical_components()
-                    if self.preindex_scope_binding is not None
-                    else None
-                ),
-            )
+        if self.coverage_lineage is not None:
+            self._validate_typed_coverage_lineage(outcomes)
+
+        common_content = (
+            tuple(outcome.raw_event_normalization_outcome_id.value for outcome in outcomes),
+            tuple(key.materialization_key_id.value for key in materializations),
+            tuple(item.value for item in evidence),
         )
+        scope_binding_content = (
+            self.preindex_scope_binding.canonical_components()
+            if self.preindex_scope_binding is not None
+            else None
+        )
+        if self.coverage_lineage is None:
+            content_canonical = canonical_json_array(
+                (
+                    _NORMALIZATION_OUTCOME_CONTENT_VERSION,
+                    *common_content,
+                    (),
+                    scope_binding_content,
+                )
+            )
+        else:
+            content_canonical = canonical_json_array(
+                (
+                    _TYPED_NORMALIZATION_OUTCOME_CONTENT_VERSION,
+                    *common_content,
+                    self.coverage_lineage.normalization_coverage_lineage_id.value,
+                    scope_binding_content,
+                )
+            )
         content_sha256 = sha256_hex(
             content_canonical.encode("utf-8"),
             field_name="normalization_outcome_content",
@@ -1764,6 +2684,284 @@ class NormalizationOutcome:
             "normalization_outcome_id",
             NormalizationOutcomeId(canonical),
         )
+
+    @classmethod
+    def legacy_transition_empty(
+        cls,
+        *,
+        normalization_run_id: NormalizationRunId,
+        raw_record_id: RawRecordId,
+        normalizer_version: str,
+        normalizer_commit: str,
+        frame_status: FrameNormalizationStatus,
+        decoded_event_count: int | None,
+        raw_event_outcomes: tuple[RawEventNormalizationOutcome, ...],
+        committed_materialization_keys: tuple[MaterializationKey, ...],
+        preindex_scope_binding: RawFrameNormalizationScopeBinding | None = None,
+        evidence: tuple[NormalizationEvidence, ...] = (),
+    ) -> Self:
+        """Construct the exact transition-empty 3B1B identity for compatibility."""
+
+        return cls(
+            normalization_run_id=normalization_run_id,
+            raw_record_id=raw_record_id,
+            normalizer_version=normalizer_version,
+            normalizer_commit=normalizer_commit,
+            frame_status=frame_status,
+            decoded_event_count=decoded_event_count,
+            raw_event_outcomes=raw_event_outcomes,
+            committed_materialization_keys=committed_materialization_keys,
+            preindex_scope_binding=preindex_scope_binding,
+            evidence=evidence,
+            coverage_transition_ids=(),
+            coverage_lineage=None,
+        )
+
+    @classmethod
+    def from_stored_typed(
+        cls,
+        *,
+        normalization_run_id: NormalizationRunId,
+        raw_record_id: RawRecordId,
+        normalizer_version: str,
+        normalizer_commit: str,
+        frame_status: FrameNormalizationStatus,
+        decoded_event_count: int | None,
+        raw_event_outcomes: tuple[RawEventNormalizationOutcome, ...],
+        committed_materialization_keys: tuple[MaterializationKey, ...],
+        coverage_lineage: NormalizationCoverageLineage,
+        preindex_scope_binding: RawFrameNormalizationScopeBinding | None = None,
+        evidence: tuple[NormalizationEvidence, ...] = (),
+        expected_content_sha256: str,
+        expected_outcome_id: NormalizationOutcomeId,
+    ) -> Self:
+        """Recompute one typed outcome without accepting caller-supplied derived IDs."""
+
+        if type(coverage_lineage) is not NormalizationCoverageLineage:
+            raise TypeError("coverage_lineage must be a NormalizationCoverageLineage.")
+        require_sha256(expected_content_sha256, field_name="expected_content_sha256")
+        if type(expected_outcome_id) is not NormalizationOutcomeId:
+            raise TypeError("expected_outcome_id must be a NormalizationOutcomeId.")
+        value = cls(
+            normalization_run_id=normalization_run_id,
+            raw_record_id=raw_record_id,
+            normalizer_version=normalizer_version,
+            normalizer_commit=normalizer_commit,
+            frame_status=frame_status,
+            decoded_event_count=decoded_event_count,
+            raw_event_outcomes=raw_event_outcomes,
+            committed_materialization_keys=committed_materialization_keys,
+            preindex_scope_binding=preindex_scope_binding,
+            evidence=evidence,
+            coverage_transition_ids=(),
+            coverage_lineage=coverage_lineage,
+        )
+        if (
+            value.normalization_outcome_content_sha256 != expected_content_sha256
+            or value.normalization_outcome_id != expected_outcome_id
+        ):
+            raise ValueError("stored typed normalization outcome doesn't match its content.")
+        return value
+
+    def _validate_typed_coverage_lineage(
+        self,
+        outcomes: tuple[RawEventNormalizationOutcome, ...],
+    ) -> None:
+        """Bind every typed evidence record to exactly one frame disposition."""
+
+        lineage = self.coverage_lineage
+        assert lineage is not None
+        primary = lineage.primary_evidence
+        aborts = lineage.frame_atomic_abort_evidence
+        conflict_bindings = lineage.source_conflict_bindings
+        expected_raw_integrity = lineage.raw_fanout_binding.full_record_integrity_sha256
+        if self.preindex_scope_binding is not None:
+            if self.preindex_scope_binding.full_record_integrity_sha256 != expected_raw_integrity:
+                raise ValueError(
+                    "typed pre-index lineage must bind the exact raw full-record content."
+                )
+        elif any(
+            outcome.normalization_scope_binding.full_record_integrity_sha256
+            != expected_raw_integrity
+            for outcome in outcomes
+        ):
+            raise ValueError("typed indexed lineage must bind the exact raw full-record content.")
+        if any(
+            binding.normalization_run_id != self.normalization_run_id
+            for binding in conflict_bindings
+        ):
+            raise ValueError("source conflict binding must match the outcome normalization run.")
+
+        if self.frame_status is FrameNormalizationStatus.REJECTED_BEFORE_INDEXING:
+            if self.preindex_scope_binding is None or aborts:
+                raise ValueError(
+                    "typed pre-index coverage lineage requires its frame scope and no aborts."
+                )
+            if (
+                lineage.coverage_mutation_batch.fanout_proof.kind
+                is not CoverageFanoutKind.ALL_POSSIBLY_ACTIVE
+            ):
+                raise ValueError("typed pre-index lineage requires complete Silver fanout.")
+            aggregate = self.preindex_scope_binding.coverage_scope
+            targets = lineage.coverage_mutation_batch.fanout_proof.target_scopes
+            selected_spec_ids = {
+                spec_id for target in targets for spec_id in target.subscription_spec_ids
+            }
+            selected_instrument_ids = {
+                instrument_id
+                for target in targets
+                for instrument_id in target.canonical_instrument_ids
+            }
+            if (
+                lineage.coverage_mutation_batch.fanout_proof.subscription_plan_id
+                != self.preindex_scope_binding.subscription_plan_id
+                or not targets
+                or any(
+                    (
+                        target.feed_product_id,
+                        target.event_family,
+                        target.event_family_schema_version,
+                        target.payload_type,
+                    )
+                    != (
+                        aggregate.feed_product_id,
+                        aggregate.event_family,
+                        aggregate.event_family_schema_version,
+                        aggregate.payload_type,
+                    )
+                    for target in targets
+                )
+                or not selected_spec_ids.issubset(set(aggregate.subscription_spec_ids))
+                or not selected_instrument_ids.issubset(set(aggregate.canonical_instrument_ids))
+            ):
+                raise ValueError(
+                    "typed pre-index targets must be the non-empty possibly-active slice of the "
+                    "aggregate frame scope."
+                )
+            matched_frame_evidence: list[NormalizationEvidence] = []
+            for coverage_evidence in primary:
+                source = coverage_evidence.source
+                if (
+                    type(source) is not NormalizationFailureEvidenceSource
+                    or source.raw_record_id != self.raw_record_id
+                    or source.normalization_run_id != self.normalization_run_id
+                    or source.raw_event_index is not None
+                    or source.source_event_id is not None
+                    or source.identified_coverage_scope_id != coverage_evidence.coverage_scope_id
+                ):
+                    raise ValueError(
+                        "typed pre-index evidence must bind the exact frame scope and no index."
+                    )
+                matched_frame_evidence.append(
+                    _NORMALIZATION_FAILURE_TO_FRAME_EVIDENCE[source.category]
+                )
+            if tuple(sorted(set(matched_frame_evidence), key=lambda item: item.value)) != (
+                self.evidence
+            ):
+                raise ValueError(
+                    "typed pre-index evidence must exactly explain the frame evidence union."
+                )
+            return
+
+        if lineage.coverage_mutation_batch.fanout_proof.kind not in {
+            CoverageFanoutKind.EXACT_ROUTED_EVENT,
+            CoverageFanoutKind.EXACT_ROUTED_EVENTS,
+        }:
+            raise ValueError("indexed typed lineage requires exact routed-event fanout.")
+
+        matched_primary_ids: list[CoverageEvidenceId] = []
+        for outcome in outcomes:
+            if outcome.disposition is RawEventDisposition.REJECTED:
+                matches = tuple(
+                    evidence
+                    for evidence in primary
+                    if type(evidence.source) is NormalizationFailureEvidenceSource
+                    and evidence.source.raw_record_id == self.raw_record_id
+                    and evidence.source.normalization_run_id == self.normalization_run_id
+                    and evidence.source.raw_event_index == outcome.observation_key.raw_event_index
+                    and evidence.source.identified_coverage_scope_id
+                    == outcome.normalization_scope_binding.coverage_scope_id
+                    and (
+                        evidence.source.source_event_id.value
+                        if evidence.source.source_event_id is not None
+                        else None
+                    )
+                    == (
+                        outcome.logical_source_key.source_event_id.value
+                        if outcome.logical_source_key is not None
+                        else None
+                    )
+                    and _NORMALIZATION_FAILURE_TO_FRAME_EVIDENCE[evidence.source.category]
+                    is outcome.evidence
+                )
+                if len(matches) != 1:
+                    raise ValueError(
+                        "every rejected index requires one exact typed failure evidence record."
+                    )
+                matched_primary_ids.append(matches[0].coverage_evidence_id)
+            elif outcome.disposition is RawEventDisposition.SOURCE_EVENT_CONFLICT:
+                matches = tuple(
+                    evidence
+                    for evidence in primary
+                    if type(evidence.source) is SourceEventConflictEvidenceSource
+                    and evidence.source.raw_record_id == self.raw_record_id
+                    and evidence.source.raw_event_index == outcome.observation_key.raw_event_index
+                    and evidence.source.identified_coverage_scope_id
+                    == outcome.normalization_scope_binding.coverage_scope_id
+                    and outcome.logical_source_key is not None
+                    and evidence.source.source_event_id
+                    == outcome.logical_source_key.source_event_id
+                )
+                if len(matches) != 1:
+                    raise ValueError(
+                        "every source-conflict index requires one exact typed conflict evidence "
+                        "record."
+                    )
+                if not any(
+                    binding.coverage_evidence == matches[0]
+                    and binding.normalization_run_id == self.normalization_run_id
+                    for binding in conflict_bindings
+                ):
+                    raise ValueError(
+                        "source-conflict index requires its exact normalization-run binding."
+                    )
+                matched_primary_ids.append(matches[0].coverage_evidence_id)
+            elif outcome.disposition is RawEventDisposition.NOT_MATERIALIZED_FRAME_ABORTED:
+                abort_matches = tuple(
+                    abort
+                    for abort in aborts
+                    if abort.raw_record_id == self.raw_record_id
+                    and abort.normalization_run_id == self.normalization_run_id
+                    and abort.raw_event_index == outcome.observation_key.raw_event_index
+                    and abort.identified_coverage_scope_id
+                    == outcome.normalization_scope_binding.coverage_scope_id
+                    and outcome.logical_source_key is not None
+                    and abort.source_event_id == outcome.logical_source_key.source_event_id
+                )
+                if len(abort_matches) != 1:
+                    raise ValueError(
+                        "every frame-aborted index requires one exact outcome-only abort evidence "
+                        "record."
+                    )
+            elif outcome.disposition in {
+                RawEventDisposition.MATERIALIZED_NEW,
+                RawEventDisposition.EXACT_DUPLICATE_SUPPRESSED,
+            }:
+                continue
+            else:  # pragma: no cover - closed enum exhaustiveness
+                raise AssertionError("unhandled raw-event disposition")
+
+        if len(matched_primary_ids) != len(primary) or set(matched_primary_ids) != {
+            item.coverage_evidence_id for item in primary
+        }:
+            raise ValueError("typed coverage lineage contains orphan primary evidence.")
+        aborted_indexes = {
+            outcome.observation_key.raw_event_index
+            for outcome in outcomes
+            if outcome.disposition is RawEventDisposition.NOT_MATERIALIZED_FRAME_ABORTED
+        }
+        if len(aborts) != len(aborted_indexes):
+            raise ValueError("typed coverage lineage contains orphan frame-abort evidence.")
 
     def _validate_closed_matrix(
         self,
@@ -1865,3 +3063,557 @@ class NormalizationOutcome:
                 raise ValueError("source-conflict frame violates the closed outcome matrix.")
             return
         raise AssertionError("unhandled frame normalization status")
+
+
+def _validate_delivery_status_reason(
+    status: DeliveryKnowledgeStatus,
+    reason: DeliveryOutcomeReason,
+) -> None:
+    allowed = {
+        DeliveryKnowledgeStatus.ACCEPTED: {
+            DeliveryOutcomeReason.OUTPUT_QUEUE_ACCEPTANCE,
+        },
+        DeliveryKnowledgeStatus.DEFINITELY_NOT_ACCEPTED: {
+            DeliveryOutcomeReason.QUEUE_CAPACITY_TIMEOUT,
+            DeliveryOutcomeReason.CANCELLATION_BEFORE_LINEARIZATION,
+            DeliveryOutcomeReason.EXPLICIT_REJECTION,
+            DeliveryOutcomeReason.LOCAL_CONTRACT_FAILURE,
+        },
+        DeliveryKnowledgeStatus.ACCEPTANCE_UNCERTAIN: {
+            DeliveryOutcomeReason.AMBIGUOUS_COMPLETION,
+        },
+    }
+    if reason not in allowed[status]:
+        raise ValueError("delivery knowledge status and reason are inconsistent.")
+
+
+@dataclass(frozen=True, slots=True)
+class DeliveryItemCommitment:
+    """Commit one materialization key to its exact serialized event-content digest.
+
+    ID preimage::
+
+        ["delivery-item-commitment-v1", materialization_key_id,
+         event_content_sha256]
+    """
+
+    materialization_key_id: MaterializationKeyId
+    event_content_sha256: str = field(repr=False)
+    delivery_item_commitment_id: DeliveryItemCommitmentId = field(init=False)
+
+    def __post_init__(self) -> None:
+        if type(self.materialization_key_id) is not MaterializationKeyId:
+            raise TypeError("materialization_key_id must be a MaterializationKeyId.")
+        digest = require_sha256(
+            self.event_content_sha256,
+            field_name="event_content_sha256",
+        )
+        object.__setattr__(
+            self,
+            "delivery_item_commitment_id",
+            DeliveryItemCommitmentId(
+                canonical_json_array(
+                    (
+                        _DELIVERY_ITEM_COMMITMENT_ID_VERSION,
+                        self.materialization_key_id.value,
+                        digest,
+                    )
+                )
+            ),
+        )
+
+    @classmethod
+    def from_stored(
+        cls,
+        *,
+        materialization_key_id: MaterializationKeyId,
+        event_content_sha256: str,
+        expected_commitment_id: DeliveryItemCommitmentId,
+    ) -> Self:
+        if type(expected_commitment_id) is not DeliveryItemCommitmentId:
+            raise TypeError("expected_commitment_id must be a DeliveryItemCommitmentId.")
+        value = cls(materialization_key_id, event_content_sha256)
+        if value.delivery_item_commitment_id != expected_commitment_id:
+            raise ValueError("stored delivery item commitment does not match its content.")
+        return value
+
+
+@dataclass(frozen=True, slots=True)
+class DeliveryBatchCommitment:
+    """Commit exact event content above the byte-compatible v1 batch locator.
+
+    Exact ordered-item-content preimage::
+
+        ["delivery-item-commitments-v1",
+         [[materialization_key_id, event_content_sha256], ...]]
+
+    Exact batch-content preimage::
+
+        ["normalization-delivery-batch-content-v1",
+         normalization_outcome_id,
+         [[materialization_key_id, event_content_sha256], ...],
+         item_count, SHA256(exact_ordered_item_content)]
+
+    Commitment ID preimage::
+
+        ["normalization-delivery-batch-commitment-v1", legacy_delivery_batch_id,
+         normalization_outcome_id, item_count, SHA256(exact_batch_content)]
+
+    ``DeliveryBatchId`` remains a proof-neutral locator over ordered
+    materialization-key text. This upper commitment composes that locator and
+    adds the exact outcome and serialized event-content binding.
+    """
+
+    normalization_outcome: NormalizationOutcome = field(repr=False)
+    item_commitments: tuple[DeliveryItemCommitment, ...] = field(repr=False)
+    legacy_delivery_batch_id: DeliveryBatchId = field(init=False)
+    item_count: int = field(init=False)
+    canonical_content: str = field(init=False, repr=False)
+    aggregate_content_sha256: str = field(init=False)
+    batch_content_sha256: str = field(init=False)
+    delivery_batch_commitment_id: DeliveryBatchCommitmentId = field(init=False)
+
+    def __post_init__(self) -> None:
+        if type(self.normalization_outcome) is not NormalizationOutcome:
+            raise TypeError("normalization_outcome must be a NormalizationOutcome.")
+        if self.normalization_outcome.frame_status not in {
+            FrameNormalizationStatus.MATERIALIZED,
+            FrameNormalizationStatus.MIXED_SUCCESS,
+        }:
+            raise ValueError("delivery batch requires a successful materializing outcome.")
+        items = _require_exact_tuple(
+            self.item_commitments,
+            item_type=DeliveryItemCommitment,
+            field_name="item_commitments",
+            maximum_items=MAX_NORMALIZATION_OUTCOME_ITEMS,
+        )
+        if not items:
+            raise ValueError("delivery batch requires at least one materialized event.")
+        expected_keys = tuple(
+            key.materialization_key_id
+            for key in self.normalization_outcome.committed_materialization_keys
+        )
+        actual_keys = tuple(item.materialization_key_id for item in items)
+        if actual_keys != expected_keys:
+            raise ValueError(
+                "delivery item commitments must exactly match outcome order and content."
+            )
+        if len(set(actual_keys)) != len(actual_keys):
+            raise ValueError("delivery item commitments must be unique by materialization key.")
+        item_rows = tuple(
+            (item.materialization_key_id.value, item.event_content_sha256) for item in items
+        )
+        ordered_item_content = canonical_json_array(
+            (_DELIVERY_ITEM_COMMITMENTS_CONTENT_VERSION, item_rows)
+        )
+        aggregate_digest = sha256_hex(
+            ordered_item_content.encode("utf-8"),
+            field_name="delivery_item_commitments_content",
+        )
+        content = canonical_json_array(
+            (
+                _DELIVERY_BATCH_CONTENT_VERSION,
+                self.normalization_outcome.normalization_outcome_id.value,
+                item_rows,
+                len(items),
+                aggregate_digest,
+            )
+        )
+        content_digest = sha256_hex(
+            content.encode("utf-8"),
+            field_name="delivery_batch_content",
+        )
+        legacy_locator = DeliveryAttemptIdentity(
+            destination_id="normalization-delivery-commitment",
+            materialization_key_canonical_texts=tuple(item[0] for item in item_rows),
+            attempt_ordinal=0,
+        )
+        identifier = DeliveryBatchCommitmentId(
+            canonical_json_array(
+                (
+                    _DELIVERY_BATCH_COMMITMENT_ID_VERSION,
+                    legacy_locator.delivery_batch_id.value,
+                    self.normalization_outcome.normalization_outcome_id.value,
+                    len(items),
+                    content_digest,
+                )
+            )
+        )
+        object.__setattr__(self, "legacy_delivery_batch_id", legacy_locator.delivery_batch_id)
+        object.__setattr__(self, "item_count", len(items))
+        object.__setattr__(self, "canonical_content", content)
+        object.__setattr__(self, "aggregate_content_sha256", aggregate_digest)
+        object.__setattr__(self, "batch_content_sha256", content_digest)
+        object.__setattr__(self, "delivery_batch_commitment_id", identifier)
+
+    @classmethod
+    def from_stored(
+        cls,
+        *,
+        normalization_outcome: NormalizationOutcome,
+        item_commitments: tuple[DeliveryItemCommitment, ...],
+        expected_legacy_delivery_batch_id: DeliveryBatchId,
+        expected_canonical_content: str,
+        expected_aggregate_content_sha256: str,
+        expected_batch_content_sha256: str,
+        expected_commitment_id: DeliveryBatchCommitmentId,
+    ) -> Self:
+        if type(expected_legacy_delivery_batch_id) is not DeliveryBatchId:
+            raise TypeError("expected_legacy_delivery_batch_id must be a DeliveryBatchId.")
+        if type(expected_canonical_content) is not str:
+            raise TypeError("expected_canonical_content must be a built-in string.")
+        require_sha256(
+            expected_aggregate_content_sha256,
+            field_name="expected_aggregate_content_sha256",
+        )
+        require_sha256(
+            expected_batch_content_sha256,
+            field_name="expected_batch_content_sha256",
+        )
+        if type(expected_commitment_id) is not DeliveryBatchCommitmentId:
+            raise TypeError("expected_commitment_id must be a DeliveryBatchCommitmentId.")
+        value = cls(normalization_outcome, item_commitments)
+        if (
+            value.legacy_delivery_batch_id != expected_legacy_delivery_batch_id
+            or value.canonical_content != expected_canonical_content
+            or value.aggregate_content_sha256 != expected_aggregate_content_sha256
+            or value.batch_content_sha256 != expected_batch_content_sha256
+            or value.delivery_batch_commitment_id != expected_commitment_id
+        ):
+            raise ValueError("stored delivery batch commitment does not match its content.")
+        return value
+
+
+@dataclass(frozen=True, slots=True)
+class OutcomeDeliveryAttemptBinding:
+    """Bind a legacy v1 attempt locator to one exact batch commitment.
+
+    Binding ID preimage::
+
+        ["normalization-delivery-attempt-binding-v1", legacy_delivery_attempt_id,
+         delivery_batch_commitment_id]
+
+    The current schema-v2 bounded output queue permits only ordinal zero.
+    """
+
+    destination_id: DeliveryDestinationId
+    delivery_batch_commitment: DeliveryBatchCommitment = field(repr=False)
+    attempt_ordinal: int = 0
+    legacy_delivery_attempt: DeliveryAttemptIdentity = field(init=False, repr=False)
+    outcome_delivery_attempt_binding_id: OutcomeDeliveryAttemptBindingId = field(init=False)
+
+    def __post_init__(self) -> None:
+        if type(self.destination_id) is not DeliveryDestinationId:
+            raise TypeError("destination_id must be a DeliveryDestinationId.")
+        if type(self.delivery_batch_commitment) is not DeliveryBatchCommitment:
+            raise TypeError("delivery_batch_commitment must be a DeliveryBatchCommitment.")
+        ordinal = _require_non_negative_int(
+            self.attempt_ordinal,
+            field_name="attempt_ordinal",
+        )
+        if ordinal != 0:
+            raise ValueError("the current schema-v2 output queue permits only attempt ordinal 0.")
+        legacy_attempt = DeliveryAttemptIdentity(
+            destination_id=self.destination_id.value,
+            materialization_key_canonical_texts=tuple(
+                item.materialization_key_id.value
+                for item in self.delivery_batch_commitment.item_commitments
+            ),
+            attempt_ordinal=ordinal,
+        )
+        if (
+            legacy_attempt.delivery_batch_id
+            != self.delivery_batch_commitment.legacy_delivery_batch_id
+        ):
+            raise ValueError("legacy attempt and batch commitment locators disagree.")
+        object.__setattr__(self, "legacy_delivery_attempt", legacy_attempt)
+        object.__setattr__(
+            self,
+            "outcome_delivery_attempt_binding_id",
+            OutcomeDeliveryAttemptBindingId(
+                canonical_json_array(
+                    (
+                        _OUTCOME_DELIVERY_ATTEMPT_BINDING_ID_VERSION,
+                        legacy_attempt.delivery_attempt_id.value,
+                        self.delivery_batch_commitment.delivery_batch_commitment_id.value,
+                    )
+                )
+            ),
+        )
+
+    @classmethod
+    def from_stored(
+        cls,
+        *,
+        destination_id: DeliveryDestinationId,
+        delivery_batch_commitment: DeliveryBatchCommitment,
+        attempt_ordinal: int,
+        expected_legacy_delivery_attempt_id: DeliveryAttemptId,
+        expected_binding_id: OutcomeDeliveryAttemptBindingId,
+    ) -> Self:
+        if type(expected_legacy_delivery_attempt_id) is not DeliveryAttemptId:
+            raise TypeError("expected_legacy_delivery_attempt_id must be a DeliveryAttemptId.")
+        if type(expected_binding_id) is not OutcomeDeliveryAttemptBindingId:
+            raise TypeError("expected_binding_id must be an OutcomeDeliveryAttemptBindingId.")
+        value = cls(destination_id, delivery_batch_commitment, attempt_ordinal)
+        if (
+            value.legacy_delivery_attempt.delivery_attempt_id != expected_legacy_delivery_attempt_id
+            or value.outcome_delivery_attempt_binding_id != expected_binding_id
+        ):
+            raise ValueError("stored outcome delivery attempt binding does not match its content.")
+        return value
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class OutcomeDeliveryResult:
+    """Sanitized immutable delivery knowledge without retaining event-batch content.
+
+    ID preimage::
+
+        ["normalization-delivery-outcome-v1", outcome_delivery_attempt_binding_id,
+         knowledge_status, reason, observed_at, observed_monotonic_ns]
+    """
+
+    outcome_delivery_attempt_binding_id: OutcomeDeliveryAttemptBindingId
+    knowledge_status: DeliveryKnowledgeStatus
+    reason: DeliveryOutcomeReason
+    observed_at: datetime
+    observed_monotonic_ns: int
+    delivery_outcome_id: DeliveryOutcomeId
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        raise TypeError("delivery outcomes are created only by commit result factories.")
+
+
+def _construct_nonaccepted_delivery_outcome(
+    *,
+    attempt: OutcomeDeliveryAttemptBinding,
+    knowledge_status: DeliveryKnowledgeStatus,
+    reason: DeliveryOutcomeReason,
+    observed_at: datetime,
+    observed_monotonic_ns: int,
+) -> OutcomeDeliveryResult:
+    if type(attempt) is not OutcomeDeliveryAttemptBinding:
+        raise TypeError("attempt must be an OutcomeDeliveryAttemptBinding.")
+    if type(knowledge_status) is not DeliveryKnowledgeStatus:
+        raise TypeError("knowledge_status must be a DeliveryKnowledgeStatus.")
+    if type(reason) is not DeliveryOutcomeReason:
+        raise TypeError("reason must be a DeliveryOutcomeReason.")
+    if knowledge_status is DeliveryKnowledgeStatus.ACCEPTED:
+        raise ValueError("accepted delivery knowledge requires commit acceptance.")
+    _validate_delivery_status_reason(knowledge_status, reason)
+    observed_text = canonical_utc_datetime(observed_at, field_name="observed_at")
+    monotonic = _require_non_negative_int(
+        observed_monotonic_ns,
+        field_name="observed_monotonic_ns",
+    )
+    value = object.__new__(OutcomeDeliveryResult)
+    object.__setattr__(
+        value,
+        "outcome_delivery_attempt_binding_id",
+        attempt.outcome_delivery_attempt_binding_id,
+    )
+    object.__setattr__(value, "knowledge_status", knowledge_status)
+    object.__setattr__(value, "reason", reason)
+    object.__setattr__(value, "observed_at", observed_at.replace(tzinfo=UTC))
+    object.__setattr__(value, "observed_monotonic_ns", monotonic)
+    object.__setattr__(
+        value,
+        "delivery_outcome_id",
+        DeliveryOutcomeId(
+            canonical_json_array(
+                (
+                    _DELIVERY_OUTCOME_ID_VERSION,
+                    attempt.outcome_delivery_attempt_binding_id.value,
+                    knowledge_status.value,
+                    reason.value,
+                    observed_text,
+                    monotonic,
+                )
+            )
+        ),
+    )
+    return value
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class DeliveryCommitAcceptance:
+    """The sole proof that a complete composite event batch was accepted."""
+
+    delivery_outcome: OutcomeDeliveryResult
+    delivery_batch_commitment: DeliveryBatchCommitment = field(repr=False)
+    delivery_commit_acceptance_id: DeliveryCommitAcceptanceId
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        raise TypeError("use DeliveryCommitAcceptance.from_linearized().")
+
+    @classmethod
+    def from_linearized(
+        cls,
+        *,
+        attempt: OutcomeDeliveryAttemptBinding,
+        observed_at: datetime,
+        observed_monotonic_ns: int,
+    ) -> Self:
+        """Atomically construct accepted knowledge and its composite-batch proof."""
+
+        if cls is not DeliveryCommitAcceptance:
+            raise TypeError("delivery commit acceptances do not support subclass factories.")
+        if type(attempt) is not OutcomeDeliveryAttemptBinding:
+            raise TypeError("attempt must be an OutcomeDeliveryAttemptBinding.")
+        observed_text = canonical_utc_datetime(observed_at, field_name="observed_at")
+        monotonic = _require_non_negative_int(
+            observed_monotonic_ns,
+            field_name="observed_monotonic_ns",
+        )
+        outcome = object.__new__(OutcomeDeliveryResult)
+        object.__setattr__(
+            outcome,
+            "outcome_delivery_attempt_binding_id",
+            attempt.outcome_delivery_attempt_binding_id,
+        )
+        object.__setattr__(outcome, "knowledge_status", DeliveryKnowledgeStatus.ACCEPTED)
+        object.__setattr__(outcome, "reason", DeliveryOutcomeReason.OUTPUT_QUEUE_ACCEPTANCE)
+        object.__setattr__(outcome, "observed_at", observed_at.replace(tzinfo=UTC))
+        object.__setattr__(outcome, "observed_monotonic_ns", monotonic)
+        object.__setattr__(
+            outcome,
+            "delivery_outcome_id",
+            DeliveryOutcomeId(
+                canonical_json_array(
+                    (
+                        _DELIVERY_OUTCOME_ID_VERSION,
+                        attempt.outcome_delivery_attempt_binding_id.value,
+                        DeliveryKnowledgeStatus.ACCEPTED.value,
+                        DeliveryOutcomeReason.OUTPUT_QUEUE_ACCEPTANCE.value,
+                        observed_text,
+                        monotonic,
+                    )
+                )
+            ),
+        )
+        value = object.__new__(cls)
+        object.__setattr__(value, "delivery_outcome", outcome)
+        object.__setattr__(
+            value,
+            "delivery_batch_commitment",
+            attempt.delivery_batch_commitment,
+        )
+        object.__setattr__(
+            value,
+            "delivery_commit_acceptance_id",
+            DeliveryCommitAcceptanceId(
+                canonical_json_array(
+                    (
+                        _DELIVERY_COMMIT_ACCEPTANCE_ID_VERSION,
+                        outcome.delivery_outcome_id.value,
+                        attempt.delivery_batch_commitment.delivery_batch_commitment_id.value,
+                    )
+                )
+            ),
+        )
+        return value
+
+    @classmethod
+    def from_stored(
+        cls,
+        *,
+        attempt: OutcomeDeliveryAttemptBinding,
+        observed_at: datetime,
+        observed_monotonic_ns: int,
+        expected_outcome_id: DeliveryOutcomeId,
+        expected_acceptance_id: DeliveryCommitAcceptanceId,
+    ) -> Self:
+        if type(expected_outcome_id) is not DeliveryOutcomeId:
+            raise TypeError("expected_outcome_id must be a DeliveryOutcomeId.")
+        if type(expected_acceptance_id) is not DeliveryCommitAcceptanceId:
+            raise TypeError("expected_acceptance_id must be a DeliveryCommitAcceptanceId.")
+        value = cls.from_linearized(
+            attempt=attempt,
+            observed_at=observed_at,
+            observed_monotonic_ns=observed_monotonic_ns,
+        )
+        if (
+            value.delivery_outcome.delivery_outcome_id != expected_outcome_id
+            or value.delivery_commit_acceptance_id != expected_acceptance_id
+        ):
+            raise ValueError("stored delivery commit acceptance does not match its content.")
+        return value
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class DeliveryCommitFailure:
+    """Non-acceptance or uncertainty result that retains no composite event batch."""
+
+    delivery_outcome: OutcomeDeliveryResult
+    delivery_commit_failure_id: DeliveryCommitFailureId
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        raise TypeError("use DeliveryCommitFailure.from_attempt().")
+
+    @classmethod
+    def from_attempt(
+        cls,
+        *,
+        attempt: OutcomeDeliveryAttemptBinding,
+        knowledge_status: DeliveryKnowledgeStatus,
+        reason: DeliveryOutcomeReason,
+        observed_at: datetime,
+        observed_monotonic_ns: int,
+    ) -> Self:
+        if cls is not DeliveryCommitFailure:
+            raise TypeError("delivery commit failures do not support subclass factories.")
+        if knowledge_status is DeliveryKnowledgeStatus.ACCEPTED:
+            raise ValueError("accepted delivery knowledge requires commit acceptance.")
+        outcome = _construct_nonaccepted_delivery_outcome(
+            attempt=attempt,
+            knowledge_status=knowledge_status,
+            reason=reason,
+            observed_at=observed_at,
+            observed_monotonic_ns=observed_monotonic_ns,
+        )
+        value = object.__new__(cls)
+        object.__setattr__(value, "delivery_outcome", outcome)
+        object.__setattr__(
+            value,
+            "delivery_commit_failure_id",
+            DeliveryCommitFailureId(
+                canonical_json_array(
+                    (
+                        _DELIVERY_COMMIT_FAILURE_ID_VERSION,
+                        outcome.delivery_outcome_id.value,
+                    )
+                )
+            ),
+        )
+        return value
+
+    @classmethod
+    def from_stored(
+        cls,
+        *,
+        attempt: OutcomeDeliveryAttemptBinding,
+        knowledge_status: DeliveryKnowledgeStatus,
+        reason: DeliveryOutcomeReason,
+        observed_at: datetime,
+        observed_monotonic_ns: int,
+        expected_outcome_id: DeliveryOutcomeId,
+        expected_failure_id: DeliveryCommitFailureId,
+    ) -> Self:
+        if type(expected_outcome_id) is not DeliveryOutcomeId:
+            raise TypeError("expected_outcome_id must be a DeliveryOutcomeId.")
+        if type(expected_failure_id) is not DeliveryCommitFailureId:
+            raise TypeError("expected_failure_id must be a DeliveryCommitFailureId.")
+        value = cls.from_attempt(
+            attempt=attempt,
+            knowledge_status=knowledge_status,
+            reason=reason,
+            observed_at=observed_at,
+            observed_monotonic_ns=observed_monotonic_ns,
+        )
+        if (
+            value.delivery_outcome.delivery_outcome_id != expected_outcome_id
+            or value.delivery_commit_failure_id != expected_failure_id
+        ):
+            raise ValueError("stored delivery commit failure does not match its content.")
+        return value

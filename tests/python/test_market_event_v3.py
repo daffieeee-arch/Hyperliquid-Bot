@@ -28,20 +28,32 @@ from hyperliquid_bot.data_provenance import (
     MAX_NORMALIZATION_OUTCOME_ITEMS,
     MAX_SOURCE_SEQUENCE_RANGES,
     MAX_SOURCE_TIME_FACTS,
+    MAX_UNSIGNED_64,
     AdapterFeedBindingId,
     CollectorRunId,
+    CommittedCoverageState,
     ConnectionSessionIdentity,
     CorrelationId,
+    CoverageCommitAcceptance,
     CoverageDomain,
     CoverageEpochIdentity,
     CoverageEvidence,
     CoverageEvidenceKind,
     CoverageEvidenceSource,
+    CoverageFanoutProof,
+    CoverageInitialization,
+    CoverageMutationBatch,
     CoverageReason,
     CoverageReference,
     CoverageScope,
+    CoverageStateReference,
     CoverageStatus,
+    CoverageTargetCatalog,
+    CoverageTransition,
     CoverageTransitionId,
+    DeliveryAttemptId,
+    DeliveryAttemptIdentity,
+    DeliveryBatchId,
     EventActivationRequirement,
     EventCoverage,
     FrameKind,
@@ -60,11 +72,15 @@ from hyperliquid_bot.data_provenance import (
     PublicSourceSelectorKind,
     PublicSubscriptionParameter,
     PublicSubscriptionParameterKind,
+    RawCoverageFanoutBinding,
+    RawCoverageFanoutBindingId,
     RawMarketDataRecord,
     RawRecordEvidenceSource,
     RawRecordId,
     ReconnectEvidenceSource,
+    RequestedCoverageMutation,
     RequestedCoverageTransition,
+    RoutedCoverageTarget,
     SourceEventConflictEvidenceSource,
     SourceEventId,
     SourceSequenceBreakEvidenceSource,
@@ -80,6 +96,7 @@ from hyperliquid_bot.data_provenance import (
     SubscriptionPlanIdentity,
     SubscriptionSpecIdentity,
     TransportAmbiguityEvidenceSource,
+    prepare_coverage_mutation_batch,
     reduce_coverage,
 )
 from hyperliquid_bot.instrument_metadata import (
@@ -97,7 +114,21 @@ from hyperliquid_bot.market_event_v3 import (
     AdapterFeedBinding,
     DecodedEventSubscriptionBinding,
     DecodedWirePayloadContext,
+    DeliveryBatchCommitment,
+    DeliveryBatchCommitmentId,
+    DeliveryCommitAcceptance,
+    DeliveryCommitAcceptanceId,
+    DeliveryCommitFailure,
+    DeliveryCommitFailureId,
+    DeliveryDestinationId,
+    DeliveryItemCommitment,
+    DeliveryItemCommitmentId,
+    DeliveryKnowledgeStatus,
+    DeliveryOutcomeId,
+    DeliveryOutcomeReason,
     EventFamily,
+    FrameAtomicAbortEvidenceId,
+    FrameAtomicAbortEvidenceSource,
     FrameNormalizationStatus,
     LogicalSourceKey,
     LogicalSourceKeyId,
@@ -105,12 +136,19 @@ from hyperliquid_bot.market_event_v3 import (
     MaterializationKey,
     MaterializationKeyId,
     NormalizationContext,
+    NormalizationCoverageLineage,
+    NormalizationCoverageLineageId,
     NormalizationEvidence,
     NormalizationOutcome,
     NormalizationOutcomeId,
+    NormalizationSourceConflictBinding,
+    NormalizationSourceConflictBindingId,
     ObservationKey,
     ObservationKeyId,
     ObservationProvenance,
+    OutcomeDeliveryAttemptBinding,
+    OutcomeDeliveryAttemptBindingId,
+    OutcomeDeliveryResult,
     PayloadType,
     RawEventDisposition,
     RawEventNormalizationOutcome,
@@ -413,17 +451,54 @@ def _coverage(
 ) -> EventCoverage:
     selected_instrument = instrument or _instrument()
     selected_collector_run_id = collector_run_id or CollectorRunId("collector-run-fixture")
+    adapter = _adapter_binding()
+    session = ConnectionSessionIdentity(selected_collector_run_id, 0)
+    plan = SubscriptionPlanIdentity(
+        feed_product_id=BINANCE_MAINNET_SPOT_JSON_STREAMS.feed_product_id,
+        adapter_feed_binding_id=adapter.adapter_feed_binding_id,
+        subscription_specs=(spec,),
+        instrument_bindings=(
+            InstrumentSubscriptionBinding(
+                instrument=selected_instrument,
+                source_selector=PublicSourceSelector(
+                    PublicSourceSelectorKind.BINANCE_SPOT_TRADE_STREAM,
+                    f"{selected_instrument.native_symbol.lower()}@trade",
+                ),
+                subscription_spec=spec,
+                adapter_profile=adapter.adapter_code,
+            ),
+        ),
+        normalization_bindings=(
+            NormalizationBinding(
+                subscription_spec_id=spec.subscription_spec_id,
+                adapter_profile=adapter.adapter_code,
+                event_family="trade",
+                event_family_schema_version=2,
+                payload_type="trade",
+            ),
+        ),
+        connection_wire_options=(
+            PublicConnectionOption(
+                PublicConnectionOptionKind.ENDPOINT_PROFILE,
+                PublicEndpointProfile.BINANCE_PRODUCTION_SPOT,
+            ),
+        ),
+    )
+    snapshot = SubscriptionAttemptSnapshot(
+        SubscriptionAttemptIdentity(session, spec, 0),
+        SubscriptionAttemptStatus.ACKNOWLEDGED,
+    )
+    catalog = CoverageTargetCatalog.from_subscription_plan(plan)
 
-    def reference(domain: CoverageDomain) -> CoverageReference:
-        scope = CoverageScope(
+    def committed_state(domain: CoverageDomain) -> CommittedCoverageState:
+        fanout = CoverageFanoutProof.acknowledged_active(
+            plan=plan,
+            catalog=catalog,
+            complete_snapshots=(snapshot,),
             domain=domain,
-            feed_product_id=BINANCE_MAINNET_SPOT_JSON_STREAMS.feed_product_id,
-            subscription_spec_ids=(spec.subscription_spec_id,),
-            canonical_instrument_ids=(selected_instrument.canonical_instrument_id,),
-            event_family="trade",
-            event_family_schema_version=2,
-            payload_type="trade",
         )
+        assert len(fanout.target_scopes) == 1
+        scope = fanout.target_scopes[0]
         activation_time = datetime(2026, 8, 26, 11, 0, tzinfo=UTC)
         epoch = CoverageEpochIdentity(
             scope=scope,
@@ -432,39 +507,41 @@ def _coverage(
             activation_time=activation_time,
             activation_monotonic_ns=100,
         )
-        return CoverageReference.initial(
+        evidence = CoverageEvidence(
+            kind=CoverageEvidenceKind.INITIAL_ACTIVATION,
+            source=InitialActivationEvidenceSource(session, (snapshot,)),
             scope=scope,
             epoch=epoch,
-            status=CoverageStatus.COMPLETE,
-            initial_reason=InitialCoverageReason.INITIAL_ACTIVATION,
-            initial_evidence=CoverageEvidence(
-                kind=CoverageEvidenceKind.INITIAL_ACTIVATION,
-                source=InitialActivationEvidenceSource(
-                    connection_session=ConnectionSessionIdentity(
-                        selected_collector_run_id,
-                        0,
-                    ),
-                    acknowledged_attempts=(
-                        SubscriptionAttemptSnapshot(
-                            subscription_attempt=SubscriptionAttemptIdentity(
-                                ConnectionSessionIdentity(selected_collector_run_id, 0),
-                                spec,
-                                0,
-                            ),
-                            attempt_status=SubscriptionAttemptStatus.ACKNOWLEDGED,
-                        ),
-                    ),
+            observed_at=activation_time,
+            observed_monotonic_ns=100,
+        )
+        batch = prepare_coverage_mutation_batch(
+            fanout_proof=fanout,
+            current_state_references=(),
+            requests=(
+                RequestedCoverageMutation(
+                    scope,
+                    epoch,
+                    CoverageStatus.COMPLETE,
+                    InitialCoverageReason.INITIAL_ACTIVATION,
+                    CoverageReason.INITIAL_SCOPE,
+                    evidence,
                 ),
-                scope=scope,
-                epoch=epoch,
-                observed_at=activation_time,
-                observed_monotonic_ns=100,
             ),
+        )
+        committed_references = batch.verify_compare_and_swap(())
+        acceptance = CoverageCommitAcceptance.after_compare_and_swap(
+            batch=batch,
+            committed_state_references=committed_references,
+        )
+        return CommittedCoverageState.from_commit(
+            state_reference=committed_references[0],
+            commit_acceptance=acceptance,
         )
 
     return EventCoverage(
-        bronze_ingress=reference(CoverageDomain.BRONZE_INGRESS),
-        silver_normalization=reference(CoverageDomain.SILVER_NORMALIZATION),
+        bronze_ingress=committed_state(CoverageDomain.BRONZE_INGRESS),
+        silver_normalization=committed_state(CoverageDomain.SILVER_NORMALIZATION),
     )
 
 
@@ -613,39 +690,53 @@ def _hyperliquid_context(attempt_status: SubscriptionAttemptStatus) -> Normaliza
         observations=(observation,),
     )
 
-    def reference(domain: CoverageDomain) -> CoverageReference:
-        scope = CoverageScope(
+    snapshot = SubscriptionAttemptSnapshot(
+        attempt,
+        SubscriptionAttemptStatus.ACKNOWLEDGED,
+    )
+    catalog = CoverageTargetCatalog.from_subscription_plan(plan)
+
+    def committed_state(domain: CoverageDomain) -> CommittedCoverageState:
+        fanout = CoverageFanoutProof.acknowledged_active(
+            plan=plan,
+            catalog=catalog,
+            complete_snapshots=(snapshot,),
             domain=domain,
-            feed_product_id=HYPERLIQUID_MAINNET_PUBLIC_TRADES.feed_product_id,
-            subscription_spec_ids=(spec.subscription_spec_id,),
-            canonical_instrument_ids=(instrument.canonical_instrument_id,),
-            event_family="trade",
-            event_family_schema_version=2,
-            payload_type="trade",
         )
+        assert len(fanout.target_scopes) == 1
+        scope = fanout.target_scopes[0]
         activation = datetime(2026, 8, 26, 11, 0, tzinfo=UTC)
         epoch = CoverageEpochIdentity(scope, run_id, 0, activation, 100)
-        return CoverageReference.initial(
+        evidence = CoverageEvidence(
+            kind=CoverageEvidenceKind.INITIAL_ACTIVATION,
+            source=InitialActivationEvidenceSource(session, (snapshot,)),
             scope=scope,
             epoch=epoch,
-            status=CoverageStatus.COMPLETE,
-            initial_reason=InitialCoverageReason.INITIAL_ACTIVATION,
-            initial_evidence=CoverageEvidence(
-                kind=CoverageEvidenceKind.INITIAL_ACTIVATION,
-                source=InitialActivationEvidenceSource(
-                    connection_session=session,
-                    acknowledged_attempts=(
-                        SubscriptionAttemptSnapshot(
-                            subscription_attempt=attempt,
-                            attempt_status=SubscriptionAttemptStatus.ACKNOWLEDGED,
-                        ),
-                    ),
+            observed_at=activation,
+            observed_monotonic_ns=100,
+        )
+        batch = prepare_coverage_mutation_batch(
+            fanout_proof=fanout,
+            current_state_references=(),
+            requests=(
+                RequestedCoverageMutation(
+                    scope,
+                    epoch,
+                    CoverageStatus.COMPLETE,
+                    InitialCoverageReason.INITIAL_ACTIVATION,
+                    CoverageReason.INITIAL_SCOPE,
+                    evidence,
                 ),
-                scope=scope,
-                epoch=epoch,
-                observed_at=activation,
-                observed_monotonic_ns=100,
             ),
+        )
+        committed_references = batch.verify_compare_and_swap(())
+        acceptance = CoverageCommitAcceptance.after_compare_and_swap(
+            batch=batch,
+            committed_state_references=committed_references,
+        )
+        return CommittedCoverageState.from_commit(
+            state_reference=committed_references[0],
+            commit_acceptance=acceptance,
         )
 
     decoded = DecodedWirePayloadContext(
@@ -675,8 +766,8 @@ def _hyperliquid_context(attempt_status: SubscriptionAttemptStatus) -> Normaliza
         normalizer_commit="normalizer-commit-fixture",
         resolved_instrument_metadata=resolved,
         event_coverage=EventCoverage(
-            reference(CoverageDomain.BRONZE_INGRESS),
-            reference(CoverageDomain.SILVER_NORMALIZATION),
+            committed_state(CoverageDomain.BRONZE_INGRESS),
+            committed_state(CoverageDomain.SILVER_NORMALIZATION),
         ),
     )
 
@@ -798,7 +889,7 @@ def _normalization_failure_transition(
     source_event_id: SourceEventId | None = None,
     source_identity_established: bool = True,
     canonical_instrument_id: str | None = None,
-) -> tuple[RawMarketDataRecord, CoverageScope, CoverageTransitionId]:
+) -> tuple[RawMarketDataRecord, CoverageScope, CoverageTransition]:
     raw_record, spec, attempt = _raw_record()
     scope = _normalization_scope(
         raw_record,
@@ -863,7 +954,7 @@ def _normalization_failure_transition(
             observed_monotonic_ns=101,
         ),
     )
-    return raw_record, scope, transition.coverage_transition_id
+    return raw_record, scope, transition
 
 
 def _source_conflict_transition(
@@ -872,7 +963,7 @@ def _source_conflict_transition(
     raw_event_index: int,
     scope_spec: SubscriptionSpecIdentity | None = None,
     canonical_instrument_id: str | None = None,
-) -> tuple[RawMarketDataRecord, CoverageScope, CoverageTransitionId]:
+) -> tuple[RawMarketDataRecord, CoverageScope, CoverageTransition]:
     raw_record, spec, attempt = _raw_record()
     selected_spec = scope_spec or spec
     selected_attempt = (
@@ -944,12 +1035,12 @@ def _source_conflict_transition(
             observed_monotonic_ns=101,
         ),
     )
-    return raw_record, scope, transition.coverage_transition_id
+    return raw_record, scope, transition
 
 
 def _unrelated_coverage_transition(
     kind: CoverageEvidenceKind,
-) -> tuple[RawMarketDataRecord, CoverageTransitionId]:
+) -> tuple[RawMarketDataRecord, CoverageTransition]:
     raw_record, spec, attempt = _raw_record()
     domain = (
         CoverageDomain.SILVER_NORMALIZATION
@@ -1032,7 +1123,191 @@ def _unrelated_coverage_transition(
             101,
         ),
     )
-    return raw_record, transition.coverage_transition_id
+    return raw_record, transition
+
+
+def _prepared_batch_for_transition(
+    transition: CoverageTransition,
+) -> CoverageMutationBatch:
+    raw_record, _spec, attempt = _raw_record()
+    snapshot = SubscriptionAttemptSnapshot(
+        attempt,
+        SubscriptionAttemptStatus.ACKNOWLEDGED,
+    )
+    initialization = CoverageInitialization(
+        transition.scope,
+        transition.epoch,
+        CoverageStatus.COMPLETE,
+        InitialCoverageReason.INITIAL_ACTIVATION,
+        CoverageEvidence(
+            CoverageEvidenceKind.INITIAL_ACTIVATION,
+            InitialActivationEvidenceSource(raw_record.connection_session, (snapshot,)),
+            transition.scope,
+            transition.epoch,
+            transition.epoch.activation_time,
+            transition.epoch.activation_monotonic_ns,
+        ),
+    )
+    current = CoverageStateReference.from_initialization(initialization)
+    catalog = CoverageTargetCatalog.from_subscription_plan(raw_record.subscription_plan)
+    source = transition.evidence.source
+    if type(source) is NormalizationFailureEvidenceSource and source.raw_event_index is None:
+        fanout = CoverageFanoutProof.all_possibly_active(
+            plan=raw_record.subscription_plan,
+            catalog=catalog,
+            complete_snapshots=(snapshot,),
+            domain=CoverageDomain.SILVER_NORMALIZATION,
+            event_family=transition.scope.event_family,
+            event_family_schema_version=transition.scope.event_family_schema_version,
+            payload_type=transition.scope.payload_type,
+        )
+    else:
+        fanout = CoverageFanoutProof.exact_routed_event(
+            plan=raw_record.subscription_plan,
+            catalog=catalog,
+            acknowledged_snapshot=snapshot,
+            canonical_instrument_id=transition.scope.canonical_instrument_ids[0],
+            event_family=transition.scope.event_family,
+            event_family_schema_version=transition.scope.event_family_schema_version,
+            payload_type=transition.scope.payload_type,
+        )
+    initial_reason = (
+        InitialCoverageReason.SOURCE_EVENT_CONFLICT
+        if transition.evidence.kind is CoverageEvidenceKind.SOURCE_EVENT_CONFLICT
+        else InitialCoverageReason.IN_SCOPE_NORMALIZATION_FAILURE
+    )
+    batch = prepare_coverage_mutation_batch(
+        fanout_proof=fanout,
+        current_state_references=(current,),
+        requests=(
+            RequestedCoverageMutation(
+                transition.scope,
+                transition.epoch,
+                transition.new_status,
+                initial_reason,
+                transition.reason,
+                transition.evidence,
+            ),
+        ),
+        raw_fanout_binding=RawCoverageFanoutBinding.from_raw_record(
+            raw_record=raw_record,
+            coverage_fanout_proof=fanout,
+        ),
+    )
+    assert batch.transitions == (transition,)
+    return batch
+
+
+def _typed_coverage_lineage(
+    transition: CoverageTransition,
+    aborts: tuple[FrameAtomicAbortEvidenceSource, ...] = (),
+) -> NormalizationCoverageLineage:
+    ordered_aborts = tuple(
+        sorted(aborts, key=lambda item: item.frame_atomic_abort_evidence_id.value)
+    )
+    conflict_bindings = (
+        (
+            NormalizationSourceConflictBinding(
+                transition.evidence,
+                NormalizationRunId("normalization-fixture"),
+            ),
+        )
+        if transition.evidence.kind is CoverageEvidenceKind.SOURCE_EVENT_CONFLICT
+        else ()
+    )
+    batch = _prepared_batch_for_transition(transition)
+    raw_fanout_binding = batch.raw_fanout_binding
+    assert type(raw_fanout_binding) is RawCoverageFanoutBinding
+    return NormalizationCoverageLineage(
+        coverage_mutation_batch=batch,
+        frame_atomic_abort_evidence=ordered_aborts,
+        raw_fanout_binding=raw_fanout_binding,
+        source_conflict_bindings=conflict_bindings,
+    )
+
+
+def _typed_rejected_frame_with_abort() -> tuple[
+    NormalizationOutcome,
+    CoverageTransition,
+    FrameAtomicAbortEvidenceSource,
+]:
+    run_id = NormalizationRunId("normalization-fixture")
+    raw_record, scope, transition = _normalization_failure_transition(
+        normalization_run_id=run_id,
+        raw_event_index=1,
+        source_event_id=SourceEventId("primary-rejected-source"),
+        category=NormalizationFailureCategory.DECODER_REJECTION,
+    )
+    aborted_source_id = SourceEventId("frame-aborted-source")
+    aborted = RawEventNormalizationOutcome(
+        ObservationKey(raw_record.raw_record_id, 0),
+        _outcome_scope_binding(0, raw_record=raw_record, scope=scope),
+        RawEventDisposition.NOT_MATERIALIZED_FRAME_ABORTED,
+        LogicalSourceKey(raw_record.feed_product.feed_product_id, aborted_source_id),
+        evidence=NormalizationEvidence.FRAME_ATOMIC_ABORT,
+    )
+    rejected = RawEventNormalizationOutcome(
+        ObservationKey(raw_record.raw_record_id, 1),
+        _outcome_scope_binding(1, raw_record=raw_record, scope=scope),
+        RawEventDisposition.REJECTED,
+        LogicalSourceKey(
+            raw_record.feed_product.feed_product_id,
+            SourceEventId("primary-rejected-source"),
+        ),
+        evidence=NormalizationEvidence.DECODER_REJECTION,
+    )
+    abort_evidence = FrameAtomicAbortEvidenceSource(
+        raw_record_id=raw_record.raw_record_id,
+        normalization_run_id=run_id,
+        raw_event_index=0,
+        source_event_id=aborted_source_id,
+        identified_coverage_scope_id=scope.coverage_scope_id,
+        primary_cause_coverage_evidence_ids=(transition.evidence.coverage_evidence_id,),
+    )
+    lineage = _typed_coverage_lineage(transition, aborts=(abort_evidence,))
+    outcome = NormalizationOutcome(
+        normalization_run_id=run_id,
+        raw_record_id=raw_record.raw_record_id,
+        normalizer_version="normalizer-v1",
+        normalizer_commit="normalizer-commit-fixture",
+        frame_status=FrameNormalizationStatus.REJECTED_AFTER_INDEXING,
+        decoded_event_count=2,
+        raw_event_outcomes=(aborted, rejected),
+        committed_materialization_keys=(),
+        evidence=(
+            NormalizationEvidence.DECODER_REJECTION,
+            NormalizationEvidence.FRAME_ATOMIC_ABORT,
+        ),
+        coverage_lineage=lineage,
+    )
+    return outcome, transition, abort_evidence
+
+
+def _materialized_outcome_for_delivery(*, item_count: int = 2) -> NormalizationOutcome:
+    raw_event_outcomes: list[RawEventNormalizationOutcome] = []
+    materializations: list[MaterializationKey] = []
+    for index in range(item_count):
+        logical, observation, materialization = _outcome_keys(index)
+        raw_event_outcomes.append(
+            RawEventNormalizationOutcome(
+                observation,
+                _outcome_scope_binding(index),
+                RawEventDisposition.MATERIALIZED_NEW,
+                logical,
+                materialization,
+            )
+        )
+        materializations.append(materialization)
+    return NormalizationOutcome.legacy_transition_empty(
+        normalization_run_id=NormalizationRunId("normalization-fixture"),
+        raw_record_id=_raw_record_id(),
+        normalizer_version="normalizer-v1",
+        normalizer_commit="normalizer-commit-fixture",
+        frame_status=FrameNormalizationStatus.MATERIALIZED,
+        decoded_event_count=item_count,
+        raw_event_outcomes=tuple(raw_event_outcomes),
+        committed_materialization_keys=tuple(materializations),
+    )
 
 
 def test_source_and_observation_provenance_have_exact_separate_fields() -> None:
@@ -1171,7 +1446,7 @@ def test_owning_v3_contracts_apply_their_configured_collection_bounds(
             ),
         )
 
-    transition_raw, transition_scope, transition_id = _normalization_failure_transition(
+    transition_raw, transition_scope, transition = _normalization_failure_transition(
         normalization_run_id=NormalizationRunId("normalization-fixture"),
         raw_event_index=None,
         category=NormalizationFailureCategory.PROTOCOL_REJECTION,
@@ -1183,16 +1458,116 @@ def test_owning_v3_contracts_apply_their_configured_collection_bounds(
             raw_record=transition_raw,
             coverage_scope=transition_scope,
         ),
-        coverage_transition_ids=(transition_id,),
+        coverage_lineage=_typed_coverage_lineage(transition),
     )
-    assert transitioned.coverage_transition_ids == (transition_id,)
+    assert transitioned.coverage_transition_ids == (transition.coverage_transition_id,)
     with pytest.raises(ValueError, match="item count"):
-        replace(transitioned, coverage_transition_ids=(transition_id, transition_id))
+        replace(
+            transitioned,
+            coverage_transition_ids=(
+                transition.coverage_transition_id,
+                transition.coverage_transition_id,
+            ),
+        )
 
     assert MAX_DECODED_EVENTS_PER_RAW_RECORD > 1
     assert MAX_NORMALIZATION_OUTCOME_ITEMS > 1
     assert MAX_NORMALIZATION_EVIDENCE_ITEMS > 1
     assert MAX_COVERAGE_TRANSITION_REFERENCES > 1
+
+
+def test_normalization_lineage_primary_and_conflict_tuples_enforce_n_plus_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    failure_transitions = tuple(
+        _normalization_failure_transition(
+            normalization_run_id=NormalizationRunId("normalization-fixture"),
+            raw_event_index=0,
+            source_event_id=SourceEventId("bounded-primary-source"),
+            category=category,
+        )[2]
+        for category in (
+            NormalizationFailureCategory.DECODER_REJECTION,
+            NormalizationFailureCategory.UNKNOWN_INSTRUMENT,
+            NormalizationFailureCategory.METADATA_UNAVAILABLE,
+        )
+    )
+    selected_failure, *additional_failures = sorted(
+        failure_transitions,
+        key=lambda item: item.evidence.coverage_evidence_id.value,
+    )
+    failure_batch = _prepared_batch_for_transition(selected_failure)
+    failure_binding = failure_batch.raw_fanout_binding
+    assert type(failure_binding) is RawCoverageFanoutBinding
+
+    monkeypatch.setattr(market_event_v3_module, "MAX_NORMALIZATION_OUTCOME_ITEMS", 1)
+    accepted_failure_lineage = NormalizationCoverageLineage(
+        coverage_mutation_batch=failure_batch,
+        frame_atomic_abort_evidence=(),
+        raw_fanout_binding=failure_binding,
+        additional_primary_evidence=(additional_failures[0].evidence,),
+    )
+    assert len(accepted_failure_lineage.additional_primary_evidence) == 1
+    with pytest.raises(ValueError, match="item count"):
+        NormalizationCoverageLineage(
+            coverage_mutation_batch=failure_batch,
+            frame_atomic_abort_evidence=(),
+            raw_fanout_binding=failure_binding,
+            additional_primary_evidence=tuple(
+                sorted(
+                    (item.evidence for item in additional_failures),
+                    key=lambda item: item.coverage_evidence_id.value,
+                )
+            ),
+        )
+
+    conflict_transitions = tuple(
+        _source_conflict_transition(
+            source_event_id=SourceEventId(f"bounded-conflict-source-{index}"),
+            raw_event_index=index,
+        )[2]
+        for index in range(2)
+    )
+    selected_conflict, additional_conflict = sorted(
+        conflict_transitions,
+        key=lambda item: item.evidence.coverage_evidence_id.value,
+    )
+    conflict_batch = _prepared_batch_for_transition(selected_conflict)
+    conflict_binding = conflict_batch.raw_fanout_binding
+    assert type(conflict_binding) is RawCoverageFanoutBinding
+    selected_run_binding = NormalizationSourceConflictBinding(
+        selected_conflict.evidence,
+        NormalizationRunId("normalization-fixture"),
+    )
+    accepted_conflict_lineage = NormalizationCoverageLineage(
+        coverage_mutation_batch=conflict_batch,
+        frame_atomic_abort_evidence=(),
+        raw_fanout_binding=conflict_binding,
+        source_conflict_bindings=(selected_run_binding,),
+    )
+    assert len(accepted_conflict_lineage.source_conflict_bindings) == 1
+    all_run_bindings = tuple(
+        sorted(
+            (
+                selected_run_binding,
+                NormalizationSourceConflictBinding(
+                    additional_conflict.evidence,
+                    NormalizationRunId("normalization-fixture"),
+                ),
+            ),
+            key=lambda item: item.normalization_source_conflict_binding_id.value,
+        )
+    )
+    with pytest.raises(ValueError, match="item count"):
+        NormalizationCoverageLineage(
+            coverage_mutation_batch=conflict_batch,
+            frame_atomic_abort_evidence=(),
+            raw_fanout_binding=conflict_binding,
+            additional_primary_evidence=(additional_conflict.evidence,),
+            source_conflict_bindings=all_run_bindings,
+        )
+
+    assert MAX_NORMALIZATION_OUTCOME_ITEMS > 1
 
 
 def test_adapter_and_key_ids_have_byte_exact_versioned_preimages() -> None:
@@ -1717,6 +2092,14 @@ def test_context_rejects_coverage_that_omits_the_subscription_spec() -> None:
         (DecodedEventSubscriptionBinding(0, spec, attempt),),
     )
     other_spec = _wire_spec("ETHUSDT")
+    other_instrument = Instrument(
+        venue=Venue.BINANCE,
+        instrument_type=InstrumentType.SPOT,
+        base_asset="ETH",
+        quote_asset="USDT",
+        venue_market_id="ETHUSDT",
+        native_symbol="ETHUSDT",
+    )
 
     with pytest.raises(ValueError, match="subscription spec"):
         NormalizationContext.from_raw_record(
@@ -1729,7 +2112,46 @@ def test_context_rejects_coverage_that_omits_the_subscription_spec() -> None:
             normalizer_version="normalizer-v1",
             normalizer_commit="normalizer-commit-fixture",
             resolved_instrument_metadata=_resolved_metadata(),
-            event_coverage=_coverage(spec=other_spec),
+            event_coverage=_coverage(spec=other_spec, instrument=other_instrument),
+        )
+
+
+def test_event_coverage_requires_committed_states_and_preserves_exact_state_ids() -> None:
+    raw_record, spec, _attempt = _raw_record()
+    coverage = _coverage(spec=spec)
+    context = _context(event_coverage=coverage)
+    envelope = MarketEventEnvelopeV3(context, _trade())
+
+    assert envelope.event_coverage is coverage
+    assert (
+        envelope.event_coverage.bronze_ingress.committed_coverage_state_id
+        == coverage.bronze_ingress.committed_coverage_state_id
+    )
+    assert (
+        envelope.event_coverage.silver_normalization.committed_coverage_state_id
+        == coverage.silver_normalization.committed_coverage_state_id
+    )
+    assert coverage.silver_normalization.state_reference.reference.scope.subscription_spec_ids == (
+        spec.subscription_spec_id,
+    )
+    assert context.observation_provenance.raw_record_id == raw_record.raw_record_id
+
+
+def test_event_coverage_rejects_legacy_and_uncommitted_candidate_references() -> None:
+    _raw_record_value, spec, _attempt = _raw_record()
+    coverage = _coverage(spec=spec)
+    candidate = coverage.bronze_ingress.state_reference
+    legacy = candidate.reference
+
+    with pytest.raises(TypeError, match="CommittedCoverageState"):
+        EventCoverage(
+            cast(CommittedCoverageState, candidate),
+            coverage.silver_normalization,
+        )
+    with pytest.raises(TypeError, match="CommittedCoverageState"):
+        EventCoverage(
+            cast(CommittedCoverageState, legacy),
+            coverage.silver_normalization,
         )
 
 
@@ -1746,11 +2168,11 @@ def test_context_rejects_coverage_epoch_from_another_collector_run() -> None:
         spec=spec,
         collector_run_id=CollectorRunId("foreign-collector-run"),
     )
-    for event_coverage in (
-        EventCoverage(foreign.bronze_ingress, local.silver_normalization),
-        EventCoverage(local.bronze_ingress, foreign.silver_normalization),
-        foreign,
-    ):
+    with pytest.raises(ValueError, match="one collector run"):
+        EventCoverage(foreign.bronze_ingress, local.silver_normalization)
+    with pytest.raises(ValueError, match="one collector run"):
+        EventCoverage(local.bronze_ingress, foreign.silver_normalization)
+    for event_coverage in (foreign,):
         with pytest.raises(ValueError, match="raw-record collector run"):
             NormalizationContext.from_raw_record(
                 raw_record=raw_record,
@@ -2134,7 +2556,7 @@ def test_conflict_and_frame_abort_evidence_remain_valid_in_indexed_matrices() ->
 
 def test_valid_preindex_failure_evidence_and_transition_remain_accepted() -> None:
     run_id = NormalizationRunId("normalization-fixture")
-    raw_record, scope, transition_id = _normalization_failure_transition(
+    raw_record, scope, transition = _normalization_failure_transition(
         normalization_run_id=run_id,
         raw_event_index=None,
         category=NormalizationFailureCategory.PROTOCOL_REJECTION,
@@ -2153,10 +2575,10 @@ def test_valid_preindex_failure_evidence_and_transition_remain_accepted() -> Non
             coverage_scope=scope,
         ),
         evidence=(NormalizationEvidence.PROTOCOL_REJECTION,),
-        coverage_transition_ids=(transition_id,),
+        coverage_lineage=_typed_coverage_lineage(transition),
     )
 
-    assert outcome.coverage_transition_ids == (transition_id,)
+    assert outcome.coverage_transition_ids == (transition.coverage_transition_id,)
 
 
 def test_normalization_outcome_accepts_mixed_new_and_duplicate_indexes() -> None:
@@ -2399,7 +2821,7 @@ def test_delivery_coverage_transition_id_is_rejected_before_normalization_outcom
 
 
 def test_normalization_outcome_rejects_coverage_transition_from_another_collector_run() -> None:
-    raw_record, spec, _ = _raw_record()
+    _raw_record_value, spec, _ = _raw_record()
     foreign_run = CollectorRunId("foreign-collector-run")
     foreign_session = ConnectionSessionIdentity(foreign_run, 0)
     foreign_attempt = SubscriptionAttemptIdentity(foreign_session, spec, 0)
@@ -2459,20 +2881,8 @@ def test_normalization_outcome_rejects_coverage_transition_from_another_collecto
         ),
     )
 
-    with pytest.raises(ValueError, match="Silver-normalization"):
-        NormalizationOutcome(
-            normalization_run_id=NormalizationRunId("normalization-fixture"),
-            raw_record_id=raw_record.raw_record_id,
-            normalizer_version="normalizer-v1",
-            normalizer_commit="normalizer-commit-fixture",
-            frame_status=FrameNormalizationStatus.REJECTED_BEFORE_INDEXING,
-            decoded_event_count=None,
-            raw_event_outcomes=(),
-            committed_materialization_keys=(),
-            preindex_scope_binding=_preindex_scope_binding(raw_record),
-            evidence=(NormalizationEvidence.PROTOCOL_REJECTION,),
-            coverage_transition_ids=(transition.coverage_transition_id,),
-        )
+    with pytest.raises(ValueError):
+        _typed_coverage_lineage(transition)
 
 
 @pytest.mark.parametrize(
@@ -2487,22 +2897,10 @@ def test_normalization_outcome_rejects_coverage_transition_from_another_collecto
 def test_normalization_outcome_rejects_unrelated_coverage_transition_kinds(
     evidence_kind: CoverageEvidenceKind,
 ) -> None:
-    raw_record, transition_id = _unrelated_coverage_transition(evidence_kind)
+    _raw_record_value, transition = _unrelated_coverage_transition(evidence_kind)
 
-    with pytest.raises(ValueError, match=r"Silver-normalization|normalization failure"):
-        NormalizationOutcome(
-            normalization_run_id=NormalizationRunId("normalization-fixture"),
-            raw_record_id=raw_record.raw_record_id,
-            normalizer_version="normalizer-v1",
-            normalizer_commit="normalizer-commit-fixture",
-            frame_status=FrameNormalizationStatus.REJECTED_BEFORE_INDEXING,
-            decoded_event_count=None,
-            raw_event_outcomes=(),
-            committed_materialization_keys=(),
-            preindex_scope_binding=_preindex_scope_binding(raw_record),
-            evidence=(NormalizationEvidence.PROTOCOL_REJECTION,),
-            coverage_transition_ids=(transition_id,),
-        )
+    with pytest.raises(ValueError):
+        _typed_coverage_lineage(transition)
 
 
 def test_normalization_outcome_rejects_failure_transition_from_another_normalization_run() -> None:
@@ -2585,13 +2983,13 @@ def test_normalization_outcome_rejects_failure_transition_from_another_normaliza
             committed_materialization_keys=(),
             preindex_scope_binding=_preindex_scope_binding(raw_record, scope=scope),
             evidence=(NormalizationEvidence.DECODER_REJECTION,),
-            coverage_transition_ids=(transition.coverage_transition_id,),
+            coverage_lineage=_typed_coverage_lineage(transition),
         )
 
 
 def test_normalization_outcome_rejects_failure_transition_for_another_raw_record() -> None:
     run_id = NormalizationRunId("normalization-fixture")
-    raw_record, _, transition_id = _normalization_failure_transition(
+    raw_record, _, transition = _normalization_failure_transition(
         normalization_run_id=run_id,
         raw_event_index=None,
         category=NormalizationFailureCategory.PROTOCOL_REJECTION,
@@ -2610,13 +3008,13 @@ def test_normalization_outcome_rejects_failure_transition_for_another_raw_record
             committed_materialization_keys=(),
             preindex_scope_binding=_preindex_scope_binding(other_raw_record),
             evidence=(NormalizationEvidence.PROTOCOL_REJECTION,),
-            coverage_transition_ids=(transition_id,),
+            coverage_lineage=_typed_coverage_lineage(transition),
         )
 
 
 def test_normalization_outcome_rejects_contradictory_transition_failure_category() -> None:
     run_id = NormalizationRunId("normalization-fixture")
-    raw_record, _, transition_id = _normalization_failure_transition(
+    raw_record, _, transition = _normalization_failure_transition(
         normalization_run_id=run_id,
         raw_event_index=None,
         category=NormalizationFailureCategory.PROTOCOL_REJECTION,
@@ -2634,13 +3032,13 @@ def test_normalization_outcome_rejects_contradictory_transition_failure_category
             committed_materialization_keys=(),
             preindex_scope_binding=_preindex_scope_binding(raw_record),
             evidence=(NormalizationEvidence.DECODER_REJECTION,),
-            coverage_transition_ids=(transition_id,),
+            coverage_lineage=_typed_coverage_lineage(transition),
         )
 
 
 def test_normalization_outcome_binds_failure_transition_to_exact_index() -> None:
     run_id = NormalizationRunId("normalization-fixture")
-    raw_record, scope, valid_transition_id = _normalization_failure_transition(
+    raw_record, scope, valid_transition = _normalization_failure_transition(
         normalization_run_id=run_id,
         raw_event_index=0,
         category=NormalizationFailureCategory.DECODER_REJECTION,
@@ -2666,32 +3064,40 @@ def test_normalization_outcome_binds_failure_transition_to_exact_index() -> None
         raw_event_outcomes=(rejected,),
         committed_materialization_keys=(),
         evidence=(NormalizationEvidence.DECODER_REJECTION,),
-        coverage_transition_ids=(valid_transition_id,),
+        coverage_lineage=_typed_coverage_lineage(valid_transition),
     )
-    assert outcome.coverage_transition_ids == (valid_transition_id,)
+    assert outcome.coverage_transition_ids == (valid_transition.coverage_transition_id,)
 
-    _, _, wrong_index_transition_id = _normalization_failure_transition(
+    _, _, wrong_index_transition = _normalization_failure_transition(
         normalization_run_id=run_id,
         raw_event_index=1,
         category=NormalizationFailureCategory.DECODER_REJECTION,
         source_event_id=SourceEventId("source-fixture"),
     )
     with pytest.raises(ValueError, match="match one rejected frame index"):
-        replace(outcome, coverage_transition_ids=(wrong_index_transition_id,))
+        replace(
+            outcome,
+            coverage_transition_ids=(),
+            coverage_lineage=_typed_coverage_lineage(wrong_index_transition),
+        )
 
-    _, _, wrong_source_transition_id = _normalization_failure_transition(
+    _, _, wrong_source_transition = _normalization_failure_transition(
         normalization_run_id=run_id,
         raw_event_index=0,
         source_event_id=SourceEventId("another-source-event"),
         category=NormalizationFailureCategory.DECODER_REJECTION,
     )
     with pytest.raises(ValueError, match="source identity must exactly match"):
-        replace(outcome, coverage_transition_ids=(wrong_source_transition_id,))
+        replace(
+            outcome,
+            coverage_transition_ids=(),
+            coverage_lineage=_typed_coverage_lineage(wrong_source_transition),
+        )
 
 
 def test_indexed_normalization_failure_without_source_identity_binds_exact_lineage() -> None:
     run_id = NormalizationRunId("normalization-fixture")
-    raw_record, scope, transition_id = _normalization_failure_transition(
+    raw_record, scope, transition = _normalization_failure_transition(
         normalization_run_id=run_id,
         raw_event_index=0,
         source_identity_established=False,
@@ -2715,10 +3121,10 @@ def test_indexed_normalization_failure_without_source_identity_binds_exact_linea
         raw_event_outcomes=(rejected,),
         committed_materialization_keys=(),
         evidence=(NormalizationEvidence.DECODER_REJECTION,),
-        coverage_transition_ids=(transition_id,),
+        coverage_lineage=_typed_coverage_lineage(transition),
     )
 
-    assert json.loads(transition_id.value)[5:7] == [
+    assert json.loads(transition.coverage_transition_id.value)[5:7] == [
         CoverageStatus.CONFIRMED_INCOMPLETE.value,
         CoverageReason.IN_SCOPE_NORMALIZATION_FAILURE.value,
     ]
@@ -2727,7 +3133,7 @@ def test_indexed_normalization_failure_without_source_identity_binds_exact_linea
 
 def test_indexed_normalization_failure_source_identity_is_nullable_but_exact() -> None:
     run_id = NormalizationRunId("normalization-fixture")
-    raw_record, scope, without_source_transition_id = _normalization_failure_transition(
+    raw_record, scope, without_source_transition = _normalization_failure_transition(
         normalization_run_id=run_id,
         raw_event_index=0,
         source_identity_established=False,
@@ -2743,7 +3149,7 @@ def test_indexed_normalization_failure_source_identity_is_nullable_but_exact() -
 
     def outcome_for(
         item: RawEventNormalizationOutcome,
-        transition_id: CoverageTransitionId,
+        transition: CoverageTransition,
     ) -> NormalizationOutcome:
         return NormalizationOutcome(
             normalization_run_id=run_id,
@@ -2755,7 +3161,7 @@ def test_indexed_normalization_failure_source_identity_is_nullable_but_exact() -
             raw_event_outcomes=(item,),
             committed_materialization_keys=(),
             evidence=(NormalizationEvidence.DECODER_REJECTION,),
-            coverage_transition_ids=(transition_id,),
+            coverage_lineage=_typed_coverage_lineage(transition),
         )
 
     known_logical_source = LogicalSourceKey(
@@ -2766,17 +3172,17 @@ def test_indexed_normalization_failure_source_identity_is_nullable_but_exact() -
     with pytest.raises(ValueError, match="source identity must exactly match"):
         outcome_for(
             replace(no_logical_source, logical_source_key=known_logical_source),
-            without_source_transition_id,
+            without_source_transition,
         )
 
-    _, _, with_source_transition_id = _normalization_failure_transition(
+    _, _, with_source_transition = _normalization_failure_transition(
         normalization_run_id=run_id,
         raw_event_index=0,
         source_event_id=SourceEventId("source-fixture"),
         category=NormalizationFailureCategory.DECODER_REJECTION,
     )
     with pytest.raises(ValueError, match="source identity must exactly match"):
-        outcome_for(no_logical_source, with_source_transition_id)
+        outcome_for(no_logical_source, with_source_transition)
 
     unequal_logical_source = LogicalSourceKey(
         raw_record.feed_product.feed_product_id,
@@ -2785,17 +3191,17 @@ def test_indexed_normalization_failure_source_identity_is_nullable_but_exact() -
     with pytest.raises(ValueError, match="source identity must exactly match"):
         outcome_for(
             replace(no_logical_source, logical_source_key=unequal_logical_source),
-            with_source_transition_id,
+            with_source_transition,
         )
 
-    _, _, wrong_index_transition_id = _normalization_failure_transition(
+    _, _, wrong_index_transition = _normalization_failure_transition(
         normalization_run_id=run_id,
         raw_event_index=1,
         source_identity_established=False,
         category=NormalizationFailureCategory.DECODER_REJECTION,
     )
     with pytest.raises(ValueError, match="match one rejected frame index"):
-        outcome_for(no_logical_source, wrong_index_transition_id)
+        outcome_for(no_logical_source, wrong_index_transition)
 
     eth_instrument = Instrument(
         Venue.BINANCE,
@@ -2805,20 +3211,20 @@ def test_indexed_normalization_failure_source_identity_is_nullable_but_exact() -
         "ETHUSDT",
         "ETHUSDT",
     )
-    _, _, wrong_scope_transition_id = _normalization_failure_transition(
+    _, _, wrong_scope_transition = _normalization_failure_transition(
         normalization_run_id=run_id,
         raw_event_index=0,
         source_identity_established=False,
         category=NormalizationFailureCategory.DECODER_REJECTION,
         canonical_instrument_id=eth_instrument.canonical_instrument_id,
     )
-    with pytest.raises(ValueError, match="match one rejected frame index"):
-        outcome_for(no_logical_source, wrong_scope_transition_id)
+    with pytest.raises(ValueError):
+        outcome_for(no_logical_source, wrong_scope_transition)
 
 
 def test_normalization_outcome_binds_source_conflict_transition_to_exact_lineage() -> None:
     source_event_id = SourceEventId("source-conflict-fixture")
-    raw_record, scope, valid_transition_id = _source_conflict_transition(
+    raw_record, scope, valid_transition = _source_conflict_transition(
         source_event_id=source_event_id,
         raw_event_index=0,
     )
@@ -2839,9 +3245,9 @@ def test_normalization_outcome_binds_source_conflict_transition_to_exact_lineage
         raw_event_outcomes=(conflict,),
         committed_materialization_keys=(),
         evidence=(NormalizationEvidence.SOURCE_EVENT_CONFLICT,),
-        coverage_transition_ids=(valid_transition_id,),
+        coverage_lineage=_typed_coverage_lineage(valid_transition),
     )
-    assert outcome.coverage_transition_ids == (valid_transition_id,)
+    assert outcome.coverage_transition_ids == (valid_transition.coverage_transition_id,)
 
     other_raw_record = replace(raw_record, ingress_ordinal=raw_record.ingress_ordinal + 1)
     other_conflict = replace(
@@ -2858,21 +3264,30 @@ def test_normalization_outcome_binds_source_conflict_transition_to_exact_lineage
             outcome,
             raw_record_id=other_raw_record.raw_record_id,
             raw_event_outcomes=(other_conflict,),
+            coverage_transition_ids=(),
         )
 
-    _, _, wrong_source_transition_id = _source_conflict_transition(
+    _, _, wrong_source_transition = _source_conflict_transition(
         source_event_id=SourceEventId("another-source-event"),
         raw_event_index=0,
     )
     with pytest.raises(ValueError, match="match one conflicting frame index"):
-        replace(outcome, coverage_transition_ids=(wrong_source_transition_id,))
+        replace(
+            outcome,
+            coverage_transition_ids=(),
+            coverage_lineage=_typed_coverage_lineage(wrong_source_transition),
+        )
 
-    _, _, wrong_index_transition_id = _source_conflict_transition(
+    _, _, wrong_index_transition = _source_conflict_transition(
         source_event_id=source_event_id,
         raw_event_index=1,
     )
     with pytest.raises(ValueError, match="match one conflicting frame index"):
-        replace(outcome, coverage_transition_ids=(wrong_index_transition_id,))
+        replace(
+            outcome,
+            coverage_transition_ids=(),
+            coverage_lineage=_typed_coverage_lineage(wrong_index_transition),
+        )
 
 
 @pytest.mark.parametrize("foreign_scope_kind", ["instrument", "subscription-spec"])
@@ -2880,7 +3295,7 @@ def test_source_conflict_transition_cannot_cross_event_scope(
     foreign_scope_kind: str,
 ) -> None:
     source_event_id = SourceEventId("scope-bound-source-conflict")
-    raw_record, scope, transition_id = _source_conflict_transition(
+    raw_record, scope, transition = _source_conflict_transition(
         source_event_id=source_event_id,
         raw_event_index=0,
     )
@@ -2901,7 +3316,7 @@ def test_source_conflict_transition_cannot_cross_event_scope(
         (conflict,),
         (),
         evidence=(NormalizationEvidence.SOURCE_EVENT_CONFLICT,),
-        coverage_transition_ids=(transition_id,),
+        coverage_lineage=_typed_coverage_lineage(transition),
     )
     eth_instrument = Instrument(
         venue=Venue.BINANCE,
@@ -2912,15 +3327,19 @@ def test_source_conflict_transition_cannot_cross_event_scope(
         native_symbol="ETHUSDT",
     )
     foreign_spec = _wire_spec("ETHUSDT") if foreign_scope_kind == "subscription-spec" else None
-    _, _, foreign_transition_id = _source_conflict_transition(
+    _, _, foreign_transition = _source_conflict_transition(
         source_event_id=source_event_id,
         raw_event_index=0,
         scope_spec=foreign_spec,
         canonical_instrument_id=eth_instrument.canonical_instrument_id,
     )
 
-    with pytest.raises(ValueError, match="match one conflicting frame index"):
-        replace(outcome, coverage_transition_ids=(foreign_transition_id,))
+    with pytest.raises(ValueError):
+        replace(
+            outcome,
+            coverage_transition_ids=(),
+            coverage_lineage=_typed_coverage_lineage(foreign_transition),
+        )
 
 
 def test_normalization_scope_bindings_are_factory_only_and_plan_bound() -> None:
@@ -3210,7 +3629,7 @@ def test_non_rejected_event_outcomes_require_acknowledged_attempt(
 
 def test_normalization_failure_transition_cannot_point_to_an_aborted_candidate() -> None:
     run_id = NormalizationRunId("normalization-fixture")
-    raw_record, scope, transition_id = _normalization_failure_transition(
+    raw_record, scope, transition = _normalization_failure_transition(
         normalization_run_id=run_id,
         raw_event_index=1,
         category=NormalizationFailureCategory.DECODER_REJECTION,
@@ -3250,7 +3669,7 @@ def test_normalization_failure_transition_cannot_point_to_an_aborted_candidate()
                 NormalizationEvidence.DECODER_REJECTION,
                 NormalizationEvidence.PROTOCOL_REJECTION,
             ),
-            coverage_transition_ids=(transition_id,),
+            coverage_lineage=_typed_coverage_lineage(transition),
         )
 
 
@@ -3336,6 +3755,2089 @@ def test_normalization_outcome_rejects_contradictory_frame_matrices(
         invalid_outcome()
 
 
+def test_frame_atomic_abort_evidence_has_byte_exact_outcome_only_identity() -> None:
+    outcome, transition, abort = _typed_rejected_frame_with_abort()
+    cause_content = _expected_identifier(
+        "frame-atomic-abort-primary-cause-content-v1",
+        (transition.evidence.coverage_evidence_id.value,),
+    )
+    cause_sha256 = hashlib.sha256(cause_content.encode()).hexdigest()
+
+    assert abort.primary_cause_content_sha256 == cause_sha256
+    assert abort.frame_atomic_abort_evidence_id.value == _expected_identifier(
+        "frame-atomic-abort-evidence-v1",
+        outcome.raw_record_id.value,
+        outcome.normalization_run_id.value,
+        0,
+        "frame-aborted-source",
+        abort.identified_coverage_scope_id.value,
+        1,
+        cause_sha256,
+    )
+    assert FrameAtomicAbortEvidenceId(abort.frame_atomic_abort_evidence_id.value) == (
+        abort.frame_atomic_abort_evidence_id
+    )
+    assert not isinstance(abort, (CoverageEvidence, CoverageTransition))
+    assert hash(abort) == hash(abort)
+    with pytest.raises(FrozenInstanceError):
+        abort.raw_event_index = 9  # type: ignore[misc]
+    assert not hasattr(abort, "__dict__")
+
+
+def test_frame_atomic_abort_rejects_invalid_primary_cause_lineage() -> None:
+    _outcome, transition, abort = _typed_rejected_frame_with_abort()
+    _raw, unrelated = _unrelated_coverage_transition(CoverageEvidenceKind.SOURCE_SEQUENCE)
+    other_raw_record = replace(_raw_record()[0], ingress_ordinal=11)
+    _preindex_raw, _preindex_scope, preindex_transition = _normalization_failure_transition(
+        normalization_run_id=abort.normalization_run_id,
+        raw_event_index=None,
+        category=NormalizationFailureCategory.DECODER_REJECTION,
+    )
+
+    with pytest.raises(ValueError, match="at least one primary cause"):
+        replace(abort, primary_cause_coverage_evidence_ids=())
+    with pytest.raises(ValueError, match="unique"):
+        replace(
+            abort,
+            primary_cause_coverage_evidence_ids=(
+                transition.evidence.coverage_evidence_id,
+                transition.evidence.coverage_evidence_id,
+            ),
+        )
+    with pytest.raises(ValueError, match="normalization failures or source conflicts"):
+        replace(
+            abort,
+            primary_cause_coverage_evidence_ids=(unrelated.evidence.coverage_evidence_id,),
+        )
+    with pytest.raises(ValueError, match="another indexed item"):
+        replace(abort, raw_event_index=1)
+    with pytest.raises(ValueError, match="another indexed item"):
+        replace(
+            abort,
+            primary_cause_coverage_evidence_ids=(
+                preindex_transition.evidence.coverage_evidence_id,
+            ),
+        )
+    with pytest.raises(ValueError, match="match the frame"):
+        replace(abort, raw_record_id=other_raw_record.raw_record_id)
+    with pytest.raises(ValueError, match="match the frame"):
+        replace(abort, normalization_run_id=NormalizationRunId("another-run"))
+
+
+def test_frame_atomic_abort_cause_set_is_sorted_unique_and_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_id = NormalizationRunId("normalization-fixture")
+    raw_record, scope, first = _normalization_failure_transition(
+        normalization_run_id=run_id,
+        raw_event_index=1,
+        source_event_id=SourceEventId("first-rejected-source"),
+        category=NormalizationFailureCategory.DECODER_REJECTION,
+    )
+    _same_raw, _same_scope, second = _normalization_failure_transition(
+        normalization_run_id=run_id,
+        raw_event_index=2,
+        source_event_id=SourceEventId("second-rejected-source"),
+        category=NormalizationFailureCategory.UNKNOWN_INSTRUMENT,
+    )
+    causes = tuple(
+        sorted(
+            (
+                first.evidence.coverage_evidence_id,
+                second.evidence.coverage_evidence_id,
+            ),
+            key=lambda item: item.value,
+        )
+    )
+    valid = FrameAtomicAbortEvidenceSource(
+        raw_record.raw_record_id,
+        run_id,
+        0,
+        SourceEventId("aborted-source"),
+        scope.coverage_scope_id,
+        causes,
+    )
+    with pytest.raises(ValueError, match="sorted"):
+        replace(valid, primary_cause_coverage_evidence_ids=tuple(reversed(causes)))
+
+    monkeypatch.setattr(market_event_v3_module, "MAX_NORMALIZATION_OUTCOME_ITEMS", 1)
+    with pytest.raises(ValueError, match="item count"):
+        replace(valid)
+
+
+def test_typed_coverage_lineage_and_outcome_have_byte_exact_content_ids() -> None:
+    outcome, transition, abort = _typed_rejected_frame_with_abort()
+    lineage = cast(NormalizationCoverageLineage, outcome.coverage_lineage)
+    batch = lineage.coverage_mutation_batch
+    expected_content = _expected_identifier(
+        "normalization-coverage-lineage-content-v2",
+        batch.coverage_mutation_batch_id.value,
+        lineage.raw_fanout_binding.raw_coverage_fanout_binding_id.value,
+        (transition.evidence.coverage_evidence_id.value,),
+        (abort.frame_atomic_abort_evidence_id.value,),
+        (),
+        (transition.coverage_transition_id.value,),
+        (),
+        tuple(
+            state.coverage_state_reference_id.value for state in batch.resulting_state_references
+        ),
+    )
+    expected_content_sha256 = hashlib.sha256(expected_content.encode()).hexdigest()
+    expected_lineage_id = _expected_identifier(
+        "normalization-coverage-lineage-v2",
+        batch.coverage_mutation_batch_id.value,
+        1,
+        1,
+        0,
+        1,
+        0,
+        1,
+        expected_content_sha256,
+    )
+    outcome_content = _expected_identifier(
+        "normalization-outcome-content-v2",
+        tuple(item.raw_event_normalization_outcome_id.value for item in outcome.raw_event_outcomes),
+        (),
+        ("decoder_rejection", "frame_atomic_abort"),
+        expected_lineage_id,
+        None,
+    )
+
+    assert lineage.canonical_content == expected_content
+    assert lineage.content_sha256 == expected_content_sha256
+    assert lineage.normalization_coverage_lineage_id.value == expected_lineage_id
+    assert NormalizationCoverageLineageId(expected_lineage_id) == (
+        lineage.normalization_coverage_lineage_id
+    )
+    assert (
+        outcome.normalization_outcome_content_sha256
+        == hashlib.sha256(outcome_content.encode()).hexdigest()
+    )
+    assert outcome.coverage_transition_ids == (transition.coverage_transition_id,)
+    assert lineage.primary_evidence == (transition.evidence,)
+    assert lineage.coverage_transitions == batch.transitions
+    assert lineage.coverage_no_ops == ()
+    assert lineage.resulting_state_references == batch.resulting_state_references
+
+
+def test_typed_lineage_and_abort_stored_verification_recompute_complete_content() -> None:
+    outcome, _transition, abort = _typed_rejected_frame_with_abort()
+    lineage = cast(NormalizationCoverageLineage, outcome.coverage_lineage)
+
+    assert (
+        FrameAtomicAbortEvidenceSource.from_stored(
+            raw_record_id=abort.raw_record_id,
+            normalization_run_id=abort.normalization_run_id,
+            raw_event_index=abort.raw_event_index,
+            source_event_id=abort.source_event_id,
+            identified_coverage_scope_id=abort.identified_coverage_scope_id,
+            primary_cause_coverage_evidence_ids=abort.primary_cause_coverage_evidence_ids,
+            expected_primary_cause_content_sha256=abort.primary_cause_content_sha256,
+            expected_evidence_id=abort.frame_atomic_abort_evidence_id,
+        )
+        == abort
+    )
+    assert (
+        NormalizationCoverageLineage.from_stored(
+            coverage_mutation_batch=lineage.coverage_mutation_batch,
+            frame_atomic_abort_evidence=lineage.frame_atomic_abort_evidence,
+            raw_fanout_binding=lineage.raw_fanout_binding,
+            additional_primary_evidence=lineage.additional_primary_evidence,
+            source_conflict_bindings=lineage.source_conflict_bindings,
+            expected_canonical_content=lineage.canonical_content,
+            expected_lineage_id=lineage.normalization_coverage_lineage_id,
+        )
+        == lineage
+    )
+    with pytest.raises(ValueError, match="does not match"):
+        FrameAtomicAbortEvidenceSource.from_stored(
+            raw_record_id=abort.raw_record_id,
+            normalization_run_id=abort.normalization_run_id,
+            raw_event_index=abort.raw_event_index,
+            source_event_id=abort.source_event_id,
+            identified_coverage_scope_id=abort.identified_coverage_scope_id,
+            primary_cause_coverage_evidence_ids=abort.primary_cause_coverage_evidence_ids,
+            expected_primary_cause_content_sha256="0" * 64,
+            expected_evidence_id=abort.frame_atomic_abort_evidence_id,
+        )
+
+
+def test_raw_coverage_fanout_binding_has_byte_exact_snapshot_and_stored_identity() -> None:
+    raw_record, spec, attempt = _raw_record()
+    _raw, _scope, transition = _normalization_failure_transition(
+        normalization_run_id=NormalizationRunId("normalization-fixture"),
+        raw_event_index=0,
+        category=NormalizationFailureCategory.DECODER_REJECTION,
+    )
+    batch = _prepared_batch_for_transition(transition)
+    binding = RawCoverageFanoutBinding.from_raw_record(
+        raw_record=raw_record,
+        coverage_fanout_proof=batch.fanout_proof,
+    )
+    snapshot_content = _expected_identifier(
+        "raw-coverage-fanout-snapshot-content-v1",
+        (
+            (
+                spec.subscription_spec_id.value,
+                attempt.subscription_attempt_id.value,
+                SubscriptionAttemptStatus.ACKNOWLEDGED.value,
+            ),
+        ),
+    )
+    snapshot_sha256 = hashlib.sha256(snapshot_content.encode()).hexdigest()
+    content = _expected_identifier(
+        "raw-coverage-fanout-binding-content-v1",
+        raw_record.raw_record_id.value,
+        raw_record.full_record_integrity_sha256,
+        raw_record.subscription_plan.subscription_plan_id.value,
+        raw_record.connection_session.connection_session_id.value,
+        batch.fanout_proof.coverage_fanout_proof_id.value,
+        snapshot_sha256,
+    )
+    content_sha256 = hashlib.sha256(content.encode()).hexdigest()
+    expected_id = _expected_identifier(
+        "raw-coverage-fanout-binding-v1",
+        raw_record.raw_record_id.value,
+        batch.fanout_proof.coverage_fanout_proof_id.value,
+        snapshot_sha256,
+        content_sha256,
+    )
+
+    assert binding.subscription_snapshot_content_sha256 == snapshot_sha256
+    assert binding.canonical_content == content
+    assert binding.content_sha256 == content_sha256
+    assert binding.raw_coverage_fanout_binding_id.value == expected_id
+    assert RawCoverageFanoutBindingId(expected_id) == binding.raw_coverage_fanout_binding_id
+    assert (
+        RawCoverageFanoutBinding.from_stored(
+            raw_record=raw_record,
+            coverage_fanout_proof=batch.fanout_proof,
+            expected_subscription_snapshot_content_sha256=snapshot_sha256,
+            expected_canonical_content=content,
+            expected_content_sha256=content_sha256,
+            expected_binding_id=binding.raw_coverage_fanout_binding_id,
+        )
+        == binding
+    )
+    assert not hasattr(binding, "application_message_bytes")
+    assert not hasattr(binding, "subscription_attempt_snapshots")
+    assert not hasattr(binding, "raw_record")
+    with pytest.raises(TypeError, match="from_raw_record"):
+        RawCoverageFanoutBinding()
+
+
+def test_raw_coverage_fanout_binding_rejects_foreign_or_incomplete_snapshot_lineage() -> None:
+    raw_record, spec, _attempt = _raw_record()
+    _raw, _scope, transition = _normalization_failure_transition(
+        normalization_run_id=NormalizationRunId("normalization-fixture"),
+        raw_event_index=0,
+        category=NormalizationFailureCategory.DECODER_REJECTION,
+    )
+    proof = _prepared_batch_for_transition(transition).fanout_proof
+    sent_raw = _raw_record(attempt_status=SubscriptionAttemptStatus.SENT)[0]
+    later_attempt_raw = _raw_record(attempt_ordinal=1)[0]
+    multi_raw = _multi_spec_raw_record()[0]
+    foreign_session = ConnectionSessionIdentity(raw_record.collector_run_id, 1)
+    foreign_attempt = SubscriptionAttemptIdentity(foreign_session, spec, 0)
+    foreign_session_raw = RawMarketDataRecord(
+        feed_product=raw_record.feed_product,
+        collector_run_id=raw_record.collector_run_id,
+        connection_session=foreign_session,
+        subscription_plan=raw_record.subscription_plan,
+        subscription_attempt_snapshots=(
+            SubscriptionAttemptSnapshot(
+                foreign_attempt,
+                SubscriptionAttemptStatus.ACKNOWLEDGED,
+            ),
+        ),
+        ingress_ordinal=raw_record.ingress_ordinal,
+        frame_kind=raw_record.frame_kind,
+        application_message_bytes=raw_record.application_message_bytes,
+        received_time=raw_record.received_time,
+        received_monotonic_ns=raw_record.received_monotonic_ns,
+        collector_version=raw_record.collector_version,
+        collector_commit=raw_record.collector_commit,
+    )
+
+    for invalid_raw in (sent_raw, later_attempt_raw, multi_raw, foreign_session_raw):
+        with pytest.raises(ValueError):
+            RawCoverageFanoutBinding.from_raw_record(
+                raw_record=invalid_raw,
+                coverage_fanout_proof=proof,
+            )
+
+
+def test_raw_coverage_fanout_binding_stored_verification_rejects_every_digest_tamper() -> None:
+    raw_record = _raw_record()[0]
+    _raw, _scope, transition = _normalization_failure_transition(
+        normalization_run_id=NormalizationRunId("normalization-fixture"),
+        raw_event_index=0,
+        category=NormalizationFailureCategory.DECODER_REJECTION,
+    )
+    proof = _prepared_batch_for_transition(transition).fanout_proof
+    binding = RawCoverageFanoutBinding.from_raw_record(
+        raw_record=raw_record,
+        coverage_fanout_proof=proof,
+    )
+
+    def verify(
+        *,
+        snapshot_sha256: str = binding.subscription_snapshot_content_sha256,
+        canonical_content: str = binding.canonical_content,
+        content_sha256: str = binding.content_sha256,
+        binding_id: RawCoverageFanoutBindingId = binding.raw_coverage_fanout_binding_id,
+    ) -> RawCoverageFanoutBinding:
+        return RawCoverageFanoutBinding.from_stored(
+            raw_record=raw_record,
+            coverage_fanout_proof=proof,
+            expected_subscription_snapshot_content_sha256=snapshot_sha256,
+            expected_canonical_content=canonical_content,
+            expected_content_sha256=content_sha256,
+            expected_binding_id=binding_id,
+        )
+
+    with pytest.raises(ValueError, match="doesn't match"):
+        verify(snapshot_sha256="f" * 64)
+    with pytest.raises(ValueError, match="doesn't match"):
+        verify(content_sha256="f" * 64)
+    with pytest.raises(ValueError, match="doesn't match"):
+        verify(canonical_content=f"{binding.canonical_content} ")
+    foreign_id = RawCoverageFanoutBindingId(
+        _expected_identifier(
+            "raw-coverage-fanout-binding-v1",
+            binding.raw_record_id.value,
+            binding.coverage_fanout_proof_id.value,
+            binding.subscription_snapshot_content_sha256,
+            "f" * 64,
+        )
+    )
+    with pytest.raises(ValueError, match="doesn't match"):
+        verify(binding_id=foreign_id)
+
+
+def test_raw_coverage_preindex_fanout_rederives_complete_possibly_active_snapshot() -> None:
+    _raw, _scope, transition = _normalization_failure_transition(
+        normalization_run_id=NormalizationRunId("normalization-fixture"),
+        raw_event_index=None,
+        category=NormalizationFailureCategory.PROTOCOL_REJECTION,
+    )
+    batch = _prepared_batch_for_transition(transition)
+    raw_record = _raw_record()[0]
+    binding = RawCoverageFanoutBinding.from_raw_record(
+        raw_record=raw_record,
+        coverage_fanout_proof=batch.fanout_proof,
+    )
+
+    assert batch.fanout_proof.kind.value == "all-possibly-active"
+    assert binding.raw_record_id == raw_record.raw_record_id
+    with pytest.raises(ValueError):
+        RawCoverageFanoutBinding.from_raw_record(
+            raw_record=_raw_record(attempt_status=SubscriptionAttemptStatus.PENDING)[0],
+            coverage_fanout_proof=batch.fanout_proof,
+        )
+
+
+def test_legacy_transition_empty_factory_preserves_exact_existing_outcome_identity() -> None:
+    direct = _materialized_outcome_for_delivery(item_count=2)
+    legacy = NormalizationOutcome.legacy_transition_empty(
+        normalization_run_id=direct.normalization_run_id,
+        raw_record_id=direct.raw_record_id,
+        normalizer_version=direct.normalizer_version,
+        normalizer_commit=direct.normalizer_commit,
+        frame_status=direct.frame_status,
+        decoded_event_count=direct.decoded_event_count,
+        raw_event_outcomes=direct.raw_event_outcomes,
+        committed_materialization_keys=direct.committed_materialization_keys,
+    )
+    reconstructed_direct = NormalizationOutcome(
+        normalization_run_id=direct.normalization_run_id,
+        raw_record_id=direct.raw_record_id,
+        normalizer_version=direct.normalizer_version,
+        normalizer_commit=direct.normalizer_commit,
+        frame_status=direct.frame_status,
+        decoded_event_count=direct.decoded_event_count,
+        raw_event_outcomes=direct.raw_event_outcomes,
+        committed_materialization_keys=direct.committed_materialization_keys,
+    )
+
+    assert legacy == reconstructed_direct
+    legacy_id = legacy.normalization_outcome_id.value
+    reconstructed_id = reconstructed_direct.normalization_outcome_id.value
+    assert legacy_id == reconstructed_id
+    assert legacy.normalization_outcome_content_sha256 == (
+        reconstructed_direct.normalization_outcome_content_sha256
+    )
+    assert legacy.coverage_transition_ids == ()
+    assert legacy.coverage_lineage is None
+
+
+def test_typed_normalization_outcome_stored_verification_is_byte_exact() -> None:
+    outcome, _transition, _abort = _typed_rejected_frame_with_abort()
+    lineage = cast(NormalizationCoverageLineage, outcome.coverage_lineage)
+
+    def verify(
+        *,
+        content_sha256: str = outcome.normalization_outcome_content_sha256,
+        outcome_id: NormalizationOutcomeId = outcome.normalization_outcome_id,
+    ) -> NormalizationOutcome:
+        return NormalizationOutcome.from_stored_typed(
+            normalization_run_id=outcome.normalization_run_id,
+            raw_record_id=outcome.raw_record_id,
+            normalizer_version=outcome.normalizer_version,
+            normalizer_commit=outcome.normalizer_commit,
+            frame_status=outcome.frame_status,
+            decoded_event_count=outcome.decoded_event_count,
+            raw_event_outcomes=outcome.raw_event_outcomes,
+            committed_materialization_keys=outcome.committed_materialization_keys,
+            coverage_lineage=lineage,
+            preindex_scope_binding=outcome.preindex_scope_binding,
+            evidence=outcome.evidence,
+            expected_content_sha256=content_sha256,
+            expected_outcome_id=outcome_id,
+        )
+
+    assert verify() == outcome
+    with pytest.raises(ValueError, match="doesn't match"):
+        verify(content_sha256="f" * 64)
+    foreign_id = NormalizationOutcome(
+        normalization_run_id=outcome.normalization_run_id,
+        raw_record_id=outcome.raw_record_id,
+        normalizer_version="foreign-normalizer",
+        normalizer_commit=outcome.normalizer_commit,
+        frame_status=outcome.frame_status,
+        decoded_event_count=outcome.decoded_event_count,
+        raw_event_outcomes=outcome.raw_event_outcomes,
+        committed_materialization_keys=outcome.committed_materialization_keys,
+        evidence=outcome.evidence,
+        coverage_lineage=lineage,
+    ).normalization_outcome_id
+    with pytest.raises(ValueError, match="doesn't match"):
+        verify(outcome_id=foreign_id)
+
+
+def test_legacy_outcome_rejects_transition_ids_without_typed_lineage() -> None:
+    legacy = _materialized_outcome_for_delivery(item_count=1)
+    _raw, transition = _unrelated_coverage_transition(CoverageEvidenceKind.SOURCE_SEQUENCE)
+
+    with pytest.raises(ValueError, match="transition-empty"):
+        replace(legacy, coverage_transition_ids=(transition.coverage_transition_id,))
+
+
+def test_typed_lineage_requires_prepared_batch_not_commit_acceptance() -> None:
+    _outcome, _transition, _abort = _typed_rejected_frame_with_abort()
+    batch = _prepared_batch_for_transition(_transition)
+    acceptance = CoverageCommitAcceptance.after_compare_and_swap(
+        batch=batch,
+        committed_state_references=batch.resulting_state_references,
+    )
+
+    with pytest.raises(TypeError, match="prepared CoverageMutationBatch"):
+        NormalizationCoverageLineage(
+            cast(CoverageMutationBatch, acceptance),
+            (),
+            cast(RawCoverageFanoutBinding, object()),
+        )
+
+
+def test_typed_lineage_derives_transition_ids_and_rejects_even_exact_supplied_ids() -> None:
+    outcome, transition, _abort = _typed_rejected_frame_with_abort()
+
+    with pytest.raises(ValueError, match="derived and cannot be supplied"):
+        replace(
+            outcome,
+            coverage_transition_ids=(transition.coverage_transition_id,),
+        )
+
+
+def test_additional_primary_evidence_requires_exact_selected_epoch_and_run() -> None:
+    _outcome, transition, _abort = _typed_rejected_frame_with_abort()
+    batch = _prepared_batch_for_transition(transition)
+    raw_record = _raw_record()[0]
+    foreign_epoch = replace(transition.epoch, epoch_ordinal=1)
+    foreign_epoch_evidence = replace(transition.evidence, epoch=foreign_epoch)
+
+    with pytest.raises(ValueError, match="selected target epoch and run"):
+        NormalizationCoverageLineage(
+            coverage_mutation_batch=batch,
+            frame_atomic_abort_evidence=(),
+            raw_fanout_binding=RawCoverageFanoutBinding.from_raw_record(
+                raw_record=raw_record,
+                coverage_fanout_proof=batch.fanout_proof,
+            ),
+            additional_primary_evidence=(foreign_epoch_evidence,),
+        )
+
+
+def test_batch_selects_canonical_lowest_primary_evidence_per_target() -> None:
+    run_id = NormalizationRunId("normalization-fixture")
+    transitions = tuple(
+        _normalization_failure_transition(
+            normalization_run_id=run_id,
+            raw_event_index=0,
+            source_event_id=SourceEventId("canonical-cause-source"),
+            category=category,
+        )[2]
+        for category in (
+            NormalizationFailureCategory.DECODER_REJECTION,
+            NormalizationFailureCategory.UNKNOWN_INSTRUMENT,
+        )
+    )
+    low, high = sorted(
+        transitions,
+        key=lambda item: item.evidence.coverage_evidence_id.value,
+    )
+    low_batch = _prepared_batch_for_transition(low)
+    high_batch = _prepared_batch_for_transition(high)
+    raw_record = _raw_record()[0]
+    lineage = NormalizationCoverageLineage(
+        coverage_mutation_batch=low_batch,
+        frame_atomic_abort_evidence=(),
+        raw_fanout_binding=RawCoverageFanoutBinding.from_raw_record(
+            raw_record=raw_record,
+            coverage_fanout_proof=low_batch.fanout_proof,
+        ),
+        additional_primary_evidence=(high.evidence,),
+    )
+
+    assert lineage.primary_evidence == (low.evidence, high.evidence)
+    with pytest.raises(ValueError, match="canonical-lowest"):
+        NormalizationCoverageLineage(
+            coverage_mutation_batch=high_batch,
+            frame_atomic_abort_evidence=(),
+            raw_fanout_binding=RawCoverageFanoutBinding.from_raw_record(
+                raw_record=raw_record,
+                coverage_fanout_proof=high_batch.fanout_proof,
+            ),
+            additional_primary_evidence=(low.evidence,),
+        )
+
+
+def test_typed_lineage_requires_exact_abort_and_primary_evidence_sets() -> None:
+    outcome, _transition, abort = _typed_rejected_frame_with_abort()
+    lineage = cast(NormalizationCoverageLineage, outcome.coverage_lineage)
+
+    with pytest.raises(ValueError, match="frame-aborted index"):
+        replace(
+            outcome,
+            coverage_transition_ids=(),
+            coverage_lineage=replace(lineage, frame_atomic_abort_evidence=()),
+        )
+    _raw, _scope, second_transition = _normalization_failure_transition(
+        normalization_run_id=outcome.normalization_run_id,
+        raw_event_index=2,
+        source_event_id=SourceEventId("second-primary-source"),
+        category=NormalizationFailureCategory.UNKNOWN_INSTRUMENT,
+    )
+    with pytest.raises(ValueError, match="complete primary cause set"):
+        NormalizationCoverageLineage(
+            coverage_mutation_batch=lineage.coverage_mutation_batch,
+            frame_atomic_abort_evidence=(abort,),
+            raw_fanout_binding=lineage.raw_fanout_binding,
+            additional_primary_evidence=(second_transition.evidence,),
+        )
+
+    foreign_abort = replace(abort, source_event_id=SourceEventId("another-aborted-source"))
+    with pytest.raises(ValueError, match="frame-aborted index"):
+        replace(
+            outcome,
+            coverage_transition_ids=(),
+            coverage_lineage=replace(
+                lineage,
+                frame_atomic_abort_evidence=(foreign_abort,),
+            ),
+        )
+
+
+def test_typed_lineage_supports_noop_primary_but_never_abort_transitions() -> None:
+    outcome, transition, abort = _typed_rejected_frame_with_abort()
+    first_batch = _prepared_batch_for_transition(transition)
+    repeated = prepare_coverage_mutation_batch(
+        fanout_proof=first_batch.fanout_proof,
+        current_state_references=first_batch.resulting_state_references,
+        requests=(
+            RequestedCoverageMutation(
+                transition.scope,
+                transition.epoch,
+                transition.new_status,
+                InitialCoverageReason.IN_SCOPE_NORMALIZATION_FAILURE,
+                transition.reason,
+                transition.evidence,
+            ),
+        ),
+        raw_fanout_binding=first_batch.raw_fanout_binding,
+    )
+    no_op_lineage = NormalizationCoverageLineage(
+        coverage_mutation_batch=repeated,
+        frame_atomic_abort_evidence=(abort,),
+        raw_fanout_binding=RawCoverageFanoutBinding.from_raw_record(
+            raw_record=_raw_record()[0],
+            coverage_fanout_proof=repeated.fanout_proof,
+        ),
+    )
+    no_op_outcome = replace(
+        outcome,
+        coverage_transition_ids=(),
+        coverage_lineage=no_op_lineage,
+    )
+
+    assert no_op_outcome.coverage_transition_ids == ()
+    assert no_op_lineage.coverage_transitions == ()
+    assert len(no_op_lineage.coverage_no_ops) == 1
+    assert no_op_lineage.primary_evidence == (transition.evidence,)
+    assert not isinstance(abort, CoverageTransition)
+
+
+def test_typed_indexed_lineage_supports_exact_multi_scope_frame_fanout() -> None:
+    raw_record, _btc_spec, _eth_spec, btc_instrument, eth_instrument = _multi_spec_raw_record()
+    snapshots_by_spec = {
+        snapshot.subscription_spec.subscription_spec_id: snapshot
+        for snapshot in raw_record.subscription_attempt_snapshots
+    }
+    instruments_by_id = {
+        btc_instrument.canonical_instrument_id: (0, NormalizationFailureCategory.DECODER_REJECTION),
+        eth_instrument.canonical_instrument_id: (
+            1,
+            NormalizationFailureCategory.UNKNOWN_INSTRUMENT,
+        ),
+    }
+    catalog = CoverageTargetCatalog.from_subscription_plan(raw_record.subscription_plan)
+    routed_targets = tuple(
+        RoutedCoverageTarget(
+            acknowledged_snapshot=snapshots_by_spec[binding.subscription_spec_id],
+            canonical_instrument_id=binding.canonical_instrument_id,
+            event_family="trade",
+            event_family_schema_version=2,
+            payload_type="trade",
+        )
+        for binding in raw_record.subscription_plan.instrument_bindings
+    )
+    fanout = CoverageFanoutProof.exact_routed_events(
+        plan=raw_record.subscription_plan,
+        catalog=catalog,
+        routed_targets=routed_targets,
+    )
+    activation_time = datetime(2026, 8, 26, 11, 0, tzinfo=UTC)
+    normalization_run_id = NormalizationRunId("normalization-fixture")
+    current_states: list[CoverageStateReference] = []
+    requests: list[RequestedCoverageMutation] = []
+    indexed_outcomes: list[RawEventNormalizationOutcome] = []
+    for scope in fanout.target_scopes:
+        index, category = instruments_by_id[scope.canonical_instrument_ids[0]]
+        snapshot = snapshots_by_spec[scope.subscription_spec_ids[0]]
+        source_event_id = SourceEventId(f"multi-scope-source-{index}")
+        epoch = CoverageEpochIdentity(
+            scope,
+            raw_record.collector_run_id,
+            0,
+            activation_time,
+            100,
+        )
+        initial_evidence = CoverageEvidence(
+            CoverageEvidenceKind.INITIAL_ACTIVATION,
+            InitialActivationEvidenceSource(raw_record.connection_session, (snapshot,)),
+            scope,
+            epoch,
+            activation_time,
+            100,
+        )
+        current_states.append(
+            CoverageStateReference.from_initialization(
+                CoverageInitialization(
+                    scope,
+                    epoch,
+                    CoverageStatus.COMPLETE,
+                    InitialCoverageReason.INITIAL_ACTIVATION,
+                    initial_evidence,
+                )
+            )
+        )
+        failure_evidence = CoverageEvidence(
+            CoverageEvidenceKind.NORMALIZATION_FAILURE,
+            NormalizationFailureEvidenceSource(
+                raw_record.raw_record_id,
+                normalization_run_id,
+                index,
+                source_event_id,
+                category,
+                scope.coverage_scope_id,
+            ),
+            scope,
+            epoch,
+            activation_time + timedelta(seconds=1),
+            101,
+        )
+        requests.append(
+            RequestedCoverageMutation(
+                scope,
+                epoch,
+                CoverageStatus.CONFIRMED_INCOMPLETE,
+                InitialCoverageReason.IN_SCOPE_NORMALIZATION_FAILURE,
+                CoverageReason.IN_SCOPE_NORMALIZATION_FAILURE,
+                failure_evidence,
+            )
+        )
+        spec = snapshot.subscription_spec
+        indexed_outcomes.append(
+            RawEventNormalizationOutcome(
+                ObservationKey(raw_record.raw_record_id, index),
+                _outcome_scope_binding(
+                    index,
+                    raw_record=raw_record,
+                    spec=spec,
+                    attempt=snapshot.subscription_attempt,
+                    scope=scope,
+                ),
+                RawEventDisposition.REJECTED,
+                LogicalSourceKey(raw_record.feed_product.feed_product_id, source_event_id),
+                evidence={
+                    NormalizationFailureCategory.DECODER_REJECTION: (
+                        NormalizationEvidence.DECODER_REJECTION
+                    ),
+                    NormalizationFailureCategory.UNKNOWN_INSTRUMENT: (
+                        NormalizationEvidence.UNKNOWN_INSTRUMENT
+                    ),
+                }[category],
+            )
+        )
+    batch = prepare_coverage_mutation_batch(
+        fanout_proof=fanout,
+        current_state_references=tuple(current_states),
+        requests=tuple(requests),
+        raw_fanout_binding=RawCoverageFanoutBinding.from_raw_record(
+            raw_record=raw_record,
+            coverage_fanout_proof=fanout,
+        ),
+    )
+    ordered_outcomes = tuple(
+        sorted(indexed_outcomes, key=lambda item: item.observation_key.raw_event_index)
+    )
+    frame_evidence = tuple(
+        sorted(
+            {cast(NormalizationEvidence, item.evidence) for item in ordered_outcomes},
+            key=lambda item: item.value,
+        )
+    )
+    outcome = NormalizationOutcome(
+        normalization_run_id=normalization_run_id,
+        raw_record_id=raw_record.raw_record_id,
+        normalizer_version="normalizer-v1",
+        normalizer_commit="normalizer-commit-fixture",
+        frame_status=FrameNormalizationStatus.REJECTED_AFTER_INDEXING,
+        decoded_event_count=2,
+        raw_event_outcomes=ordered_outcomes,
+        committed_materialization_keys=(),
+        evidence=frame_evidence,
+        coverage_lineage=NormalizationCoverageLineage(
+            batch,
+            (),
+            RawCoverageFanoutBinding.from_raw_record(
+                raw_record=raw_record,
+                coverage_fanout_proof=batch.fanout_proof,
+            ),
+        ),
+    )
+
+    assert fanout.kind.value == "exact-routed-events"
+    assert len(fanout.target_scopes) == 2
+    assert set(outcome.coverage_transition_ids) == {
+        transition.coverage_transition_id for transition in batch.transitions
+    }
+    first_snapshot, *remaining_snapshots = raw_record.subscription_attempt_snapshots
+    tampered_raw = replace(
+        raw_record,
+        subscription_attempt_snapshots=(
+            replace(first_snapshot, attempt_status=SubscriptionAttemptStatus.SENT),
+            *remaining_snapshots,
+        ),
+    )
+    with pytest.raises(ValueError):
+        RawCoverageFanoutBinding.from_raw_record(
+            raw_record=tampered_raw,
+            coverage_fanout_proof=fanout,
+        )
+
+
+def test_typed_lineage_rejects_lifecycle_fanout_for_frame_outcome() -> None:
+    raw_record, _spec, attempt = _raw_record()
+    snapshot = SubscriptionAttemptSnapshot(attempt, SubscriptionAttemptStatus.ACKNOWLEDGED)
+    catalog = CoverageTargetCatalog.from_subscription_plan(raw_record.subscription_plan)
+    fanout = CoverageFanoutProof.acknowledged_active(
+        plan=raw_record.subscription_plan,
+        catalog=catalog,
+        complete_snapshots=(snapshot,),
+        domain=CoverageDomain.SILVER_NORMALIZATION,
+    )
+    requests: list[RequestedCoverageMutation] = []
+    for scope in fanout.target_scopes:
+        epoch = CoverageEpochIdentity(
+            scope,
+            raw_record.collector_run_id,
+            0,
+            datetime(2026, 8, 26, 11, 0, tzinfo=UTC),
+            100,
+        )
+        evidence = CoverageEvidence(
+            CoverageEvidenceKind.INITIAL_ACTIVATION,
+            InitialActivationEvidenceSource(raw_record.connection_session, (snapshot,)),
+            scope,
+            epoch,
+            epoch.activation_time,
+            epoch.activation_monotonic_ns,
+        )
+        requests.append(
+            RequestedCoverageMutation(
+                scope,
+                epoch,
+                CoverageStatus.COMPLETE,
+                InitialCoverageReason.INITIAL_ACTIVATION,
+                CoverageReason.INITIAL_SCOPE,
+                evidence,
+            )
+        )
+    lifecycle_batch = prepare_coverage_mutation_batch(
+        fanout_proof=fanout,
+        current_state_references=(),
+        requests=tuple(requests),
+    )
+
+    with pytest.raises(ValueError, match="lifecycle-only"):
+        RawCoverageFanoutBinding.from_raw_record(
+            raw_record=raw_record,
+            coverage_fanout_proof=lifecycle_batch.fanout_proof,
+        )
+
+
+def test_typed_preindex_provenance_mismatch_has_exact_failure_category() -> None:
+    run_id = NormalizationRunId("normalization-fixture")
+    raw_record, scope, transition = _normalization_failure_transition(
+        normalization_run_id=run_id,
+        raw_event_index=None,
+        category=NormalizationFailureCategory.PROVENANCE_MISMATCH,
+    )
+    outcome = NormalizationOutcome(
+        normalization_run_id=run_id,
+        raw_record_id=raw_record.raw_record_id,
+        normalizer_version="normalizer-v1",
+        normalizer_commit="normalizer-commit-fixture",
+        frame_status=FrameNormalizationStatus.REJECTED_BEFORE_INDEXING,
+        decoded_event_count=None,
+        raw_event_outcomes=(),
+        committed_materialization_keys=(),
+        preindex_scope_binding=RawFrameNormalizationScopeBinding.from_raw_record(
+            raw_record=raw_record,
+            coverage_scope=scope,
+        ),
+        evidence=(NormalizationEvidence.PROVENANCE_MISMATCH,),
+        coverage_lineage=_typed_coverage_lineage(transition),
+    )
+
+    assert outcome.coverage_transition_ids == (transition.coverage_transition_id,)
+    assert cast(NormalizationFailureEvidenceSource, transition.evidence.source).category is (
+        NormalizationFailureCategory.PROVENANCE_MISMATCH
+    )
+
+
+def test_typed_preindex_lineage_rejects_same_raw_locator_with_different_full_record() -> None:
+    run_id = NormalizationRunId("normalization-fixture")
+    raw_record, scope, transition = _normalization_failure_transition(
+        normalization_run_id=run_id,
+        raw_event_index=None,
+        category=NormalizationFailureCategory.PROTOCOL_REJECTION,
+    )
+    altered_raw = replace(
+        raw_record,
+        received_monotonic_ns=raw_record.received_monotonic_ns + 1,
+    )
+    assert altered_raw.raw_record_id == raw_record.raw_record_id
+    assert altered_raw.full_record_integrity_sha256 != raw_record.full_record_integrity_sha256
+
+    with pytest.raises(ValueError, match="exact raw full-record content"):
+        NormalizationOutcome(
+            normalization_run_id=run_id,
+            raw_record_id=raw_record.raw_record_id,
+            normalizer_version="normalizer-v1",
+            normalizer_commit="normalizer-commit-fixture",
+            frame_status=FrameNormalizationStatus.REJECTED_BEFORE_INDEXING,
+            decoded_event_count=None,
+            raw_event_outcomes=(),
+            committed_materialization_keys=(),
+            preindex_scope_binding=RawFrameNormalizationScopeBinding.from_raw_record(
+                raw_record=altered_raw,
+                coverage_scope=scope,
+            ),
+            evidence=(NormalizationEvidence.PROTOCOL_REJECTION,),
+            coverage_lineage=_typed_coverage_lineage(transition),
+        )
+
+
+def test_typed_indexed_lineage_rejects_same_raw_locator_with_different_full_record() -> None:
+    run_id = NormalizationRunId("normalization-fixture")
+    source_event_id = SourceEventId("full-record-binding-source")
+    raw_record, scope, transition = _normalization_failure_transition(
+        normalization_run_id=run_id,
+        raw_event_index=0,
+        source_event_id=source_event_id,
+        category=NormalizationFailureCategory.DECODER_REJECTION,
+    )
+    altered_raw = replace(
+        raw_record,
+        received_monotonic_ns=raw_record.received_monotonic_ns + 1,
+    )
+    assert altered_raw.raw_record_id == raw_record.raw_record_id
+    assert altered_raw.full_record_integrity_sha256 != raw_record.full_record_integrity_sha256
+    rejected = RawEventNormalizationOutcome(
+        ObservationKey(raw_record.raw_record_id, 0),
+        _outcome_scope_binding(0, raw_record=altered_raw, scope=scope),
+        RawEventDisposition.REJECTED,
+        LogicalSourceKey(raw_record.feed_product.feed_product_id, source_event_id),
+        evidence=NormalizationEvidence.DECODER_REJECTION,
+    )
+
+    with pytest.raises(ValueError, match="exact raw full-record content"):
+        NormalizationOutcome(
+            normalization_run_id=run_id,
+            raw_record_id=raw_record.raw_record_id,
+            normalizer_version="normalizer-v1",
+            normalizer_commit="normalizer-commit-fixture",
+            frame_status=FrameNormalizationStatus.REJECTED_AFTER_INDEXING,
+            decoded_event_count=1,
+            raw_event_outcomes=(rejected,),
+            committed_materialization_keys=(),
+            evidence=(NormalizationEvidence.DECODER_REJECTION,),
+            coverage_lineage=_typed_coverage_lineage(transition),
+        )
+
+
+def test_typed_preindex_lineage_accepts_complete_multi_spec_leaf_fanout() -> None:
+    raw_record, btc_spec, eth_spec, btc_instrument, eth_instrument = _multi_spec_raw_record()
+    catalog = CoverageTargetCatalog.from_subscription_plan(raw_record.subscription_plan)
+    fanout = CoverageFanoutProof.all_possibly_active(
+        plan=raw_record.subscription_plan,
+        catalog=catalog,
+        complete_snapshots=raw_record.subscription_attempt_snapshots,
+        domain=CoverageDomain.SILVER_NORMALIZATION,
+        event_family="trade",
+        event_family_schema_version=2,
+        payload_type="trade",
+    )
+    normalization_run_id = NormalizationRunId("normalization-fixture")
+    activation_time = datetime(2026, 8, 26, 11, 0, tzinfo=UTC)
+    snapshots_by_spec = {
+        snapshot.subscription_spec.subscription_spec_id: snapshot
+        for snapshot in raw_record.subscription_attempt_snapshots
+    }
+    current_states: list[CoverageStateReference] = []
+    requests: list[RequestedCoverageMutation] = []
+    for scope in fanout.target_scopes:
+        snapshot = snapshots_by_spec[scope.subscription_spec_ids[0]]
+        epoch = CoverageEpochIdentity(
+            scope,
+            raw_record.collector_run_id,
+            0,
+            activation_time,
+            100,
+        )
+        initial_evidence = CoverageEvidence(
+            CoverageEvidenceKind.INITIAL_ACTIVATION,
+            InitialActivationEvidenceSource(raw_record.connection_session, (snapshot,)),
+            scope,
+            epoch,
+            activation_time,
+            100,
+        )
+        current_states.append(
+            CoverageStateReference.from_initialization(
+                CoverageInitialization(
+                    scope,
+                    epoch,
+                    CoverageStatus.COMPLETE,
+                    InitialCoverageReason.INITIAL_ACTIVATION,
+                    initial_evidence,
+                )
+            )
+        )
+        failure_evidence = CoverageEvidence(
+            CoverageEvidenceKind.NORMALIZATION_FAILURE,
+            NormalizationFailureEvidenceSource(
+                raw_record.raw_record_id,
+                normalization_run_id,
+                None,
+                None,
+                NormalizationFailureCategory.PROTOCOL_REJECTION,
+                scope.coverage_scope_id,
+            ),
+            scope,
+            epoch,
+            activation_time + timedelta(seconds=1),
+            101,
+        )
+        requests.append(
+            RequestedCoverageMutation(
+                scope,
+                epoch,
+                CoverageStatus.CONFIRMED_INCOMPLETE,
+                InitialCoverageReason.IN_SCOPE_NORMALIZATION_FAILURE,
+                CoverageReason.IN_SCOPE_NORMALIZATION_FAILURE,
+                failure_evidence,
+            )
+        )
+    batch = prepare_coverage_mutation_batch(
+        fanout_proof=fanout,
+        current_state_references=tuple(current_states),
+        requests=tuple(requests),
+        raw_fanout_binding=RawCoverageFanoutBinding.from_raw_record(
+            raw_record=raw_record,
+            coverage_fanout_proof=fanout,
+        ),
+    )
+    aggregate_scope = CoverageScope(
+        CoverageDomain.SILVER_NORMALIZATION,
+        raw_record.feed_product.feed_product_id,
+        tuple(
+            sorted(
+                (btc_spec.subscription_spec_id, eth_spec.subscription_spec_id),
+                key=lambda item: item.value,
+            )
+        ),
+        tuple(
+            sorted((btc_instrument.canonical_instrument_id, eth_instrument.canonical_instrument_id))
+        ),
+        "trade",
+        2,
+        "trade",
+    )
+    outcome = NormalizationOutcome(
+        normalization_run_id=normalization_run_id,
+        raw_record_id=raw_record.raw_record_id,
+        normalizer_version="normalizer-v1",
+        normalizer_commit="normalizer-commit-fixture",
+        frame_status=FrameNormalizationStatus.REJECTED_BEFORE_INDEXING,
+        decoded_event_count=None,
+        raw_event_outcomes=(),
+        committed_materialization_keys=(),
+        preindex_scope_binding=RawFrameNormalizationScopeBinding.from_raw_record(
+            raw_record=raw_record,
+            coverage_scope=aggregate_scope,
+        ),
+        evidence=(NormalizationEvidence.PROTOCOL_REJECTION,),
+        coverage_lineage=NormalizationCoverageLineage(
+            coverage_mutation_batch=batch,
+            frame_atomic_abort_evidence=(),
+            raw_fanout_binding=RawCoverageFanoutBinding.from_raw_record(
+                raw_record=raw_record,
+                coverage_fanout_proof=fanout,
+            ),
+        ),
+    )
+
+    assert len(fanout.target_scopes) == len(batch.transitions) == 2
+    assert aggregate_scope.coverage_scope_id not in {
+        transition.scope.coverage_scope_id for transition in batch.transitions
+    }
+    assert set(outcome.coverage_transition_ids) == {
+        transition.coverage_transition_id for transition in batch.transitions
+    }
+
+
+def test_typed_preindex_lineage_targets_only_possibly_active_multi_spec_slice() -> None:
+    base_raw, btc_spec, eth_spec, btc_instrument, eth_instrument = _multi_spec_raw_record()
+    snapshots = tuple(
+        replace(snapshot, attempt_status=SubscriptionAttemptStatus.PENDING)
+        if snapshot.subscription_spec.subscription_spec_id == eth_spec.subscription_spec_id
+        else snapshot
+        for snapshot in base_raw.subscription_attempt_snapshots
+    )
+    raw_record = replace(base_raw, subscription_attempt_snapshots=snapshots)
+    catalog = CoverageTargetCatalog.from_subscription_plan(raw_record.subscription_plan)
+    fanout = CoverageFanoutProof.all_possibly_active(
+        plan=raw_record.subscription_plan,
+        catalog=catalog,
+        complete_snapshots=raw_record.subscription_attempt_snapshots,
+        domain=CoverageDomain.SILVER_NORMALIZATION,
+        event_family="trade",
+        event_family_schema_version=2,
+        payload_type="trade",
+    )
+    assert len(fanout.target_scopes) == 1
+    target_scope = fanout.target_scopes[0]
+    assert target_scope.subscription_spec_ids == (btc_spec.subscription_spec_id,)
+
+    acknowledged = next(
+        snapshot
+        for snapshot in raw_record.subscription_attempt_snapshots
+        if snapshot.attempt_status is SubscriptionAttemptStatus.ACKNOWLEDGED
+    )
+    normalization_run_id = NormalizationRunId("normalization-fixture")
+    activation_time = datetime(2026, 8, 26, 11, 0, tzinfo=UTC)
+    epoch = CoverageEpochIdentity(
+        target_scope,
+        raw_record.collector_run_id,
+        0,
+        activation_time,
+        100,
+    )
+    initial_evidence = CoverageEvidence(
+        CoverageEvidenceKind.INITIAL_ACTIVATION,
+        InitialActivationEvidenceSource(raw_record.connection_session, (acknowledged,)),
+        target_scope,
+        epoch,
+        activation_time,
+        100,
+    )
+    current_state = CoverageStateReference.from_initialization(
+        CoverageInitialization(
+            target_scope,
+            epoch,
+            CoverageStatus.COMPLETE,
+            InitialCoverageReason.INITIAL_ACTIVATION,
+            initial_evidence,
+        )
+    )
+    failure_evidence = CoverageEvidence(
+        CoverageEvidenceKind.NORMALIZATION_FAILURE,
+        NormalizationFailureEvidenceSource(
+            raw_record.raw_record_id,
+            normalization_run_id,
+            None,
+            None,
+            NormalizationFailureCategory.PROTOCOL_REJECTION,
+            target_scope.coverage_scope_id,
+        ),
+        target_scope,
+        epoch,
+        activation_time + timedelta(seconds=1),
+        101,
+    )
+    batch = prepare_coverage_mutation_batch(
+        fanout_proof=fanout,
+        current_state_references=(current_state,),
+        requests=(
+            RequestedCoverageMutation(
+                target_scope,
+                epoch,
+                CoverageStatus.CONFIRMED_INCOMPLETE,
+                InitialCoverageReason.IN_SCOPE_NORMALIZATION_FAILURE,
+                CoverageReason.IN_SCOPE_NORMALIZATION_FAILURE,
+                failure_evidence,
+            ),
+        ),
+        raw_fanout_binding=RawCoverageFanoutBinding.from_raw_record(
+            raw_record=raw_record,
+            coverage_fanout_proof=fanout,
+        ),
+    )
+    aggregate_scope = CoverageScope(
+        CoverageDomain.SILVER_NORMALIZATION,
+        raw_record.feed_product.feed_product_id,
+        tuple(
+            sorted(
+                (btc_spec.subscription_spec_id, eth_spec.subscription_spec_id),
+                key=lambda item: item.value,
+            )
+        ),
+        tuple(
+            sorted((btc_instrument.canonical_instrument_id, eth_instrument.canonical_instrument_id))
+        ),
+        "trade",
+        2,
+        "trade",
+    )
+    outcome = NormalizationOutcome(
+        normalization_run_id=normalization_run_id,
+        raw_record_id=raw_record.raw_record_id,
+        normalizer_version="normalizer-v1",
+        normalizer_commit="normalizer-commit-fixture",
+        frame_status=FrameNormalizationStatus.REJECTED_BEFORE_INDEXING,
+        decoded_event_count=None,
+        raw_event_outcomes=(),
+        committed_materialization_keys=(),
+        preindex_scope_binding=RawFrameNormalizationScopeBinding.from_raw_record(
+            raw_record=raw_record,
+            coverage_scope=aggregate_scope,
+        ),
+        evidence=(NormalizationEvidence.PROTOCOL_REJECTION,),
+        coverage_lineage=NormalizationCoverageLineage(
+            coverage_mutation_batch=batch,
+            frame_atomic_abort_evidence=(),
+            raw_fanout_binding=RawCoverageFanoutBinding.from_raw_record(
+                raw_record=raw_record,
+                coverage_fanout_proof=fanout,
+            ),
+        ),
+    )
+
+    assert outcome.coverage_transition_ids == (batch.transitions[0].coverage_transition_id,)
+    assert eth_spec.subscription_spec_id not in {
+        spec_id for scope in fanout.target_scopes for spec_id in scope.subscription_spec_ids
+    }
+
+
+def test_source_conflict_requires_exact_upper_normalization_run_binding() -> None:
+    source_event_id = SourceEventId("strict-conflict-run")
+    raw_record, scope, transition = _source_conflict_transition(
+        source_event_id=source_event_id,
+        raw_event_index=0,
+    )
+    conflict = RawEventNormalizationOutcome(
+        ObservationKey(raw_record.raw_record_id, 0),
+        _outcome_scope_binding(0, raw_record=raw_record, scope=scope),
+        RawEventDisposition.SOURCE_EVENT_CONFLICT,
+        LogicalSourceKey(raw_record.feed_product.feed_product_id, source_event_id),
+        evidence=NormalizationEvidence.SOURCE_EVENT_CONFLICT,
+    )
+    lineage = _typed_coverage_lineage(transition)
+    binding = lineage.source_conflict_bindings[0]
+    assert (
+        NormalizationSourceConflictBinding.from_stored(
+            coverage_evidence=binding.coverage_evidence,
+            normalization_run_id=binding.normalization_run_id,
+            expected_binding_id=binding.normalization_source_conflict_binding_id,
+        )
+        == binding
+    )
+    assert (
+        NormalizationSourceConflictBindingId(binding.normalization_source_conflict_binding_id.value)
+        == binding.normalization_source_conflict_binding_id
+    )
+
+    with pytest.raises(ValueError, match="normalization run"):
+        NormalizationOutcome(
+            normalization_run_id=NormalizationRunId("foreign-normalization-run"),
+            raw_record_id=raw_record.raw_record_id,
+            normalizer_version="normalizer-v1",
+            normalizer_commit="normalizer-commit-fixture",
+            frame_status=FrameNormalizationStatus.SOURCE_EVENT_CONFLICT,
+            decoded_event_count=1,
+            raw_event_outcomes=(conflict,),
+            committed_materialization_keys=(),
+            evidence=(NormalizationEvidence.SOURCE_EVENT_CONFLICT,),
+            coverage_lineage=lineage,
+        )
+
+
+def _delivery_commitments(outcome: NormalizationOutcome) -> tuple[DeliveryItemCommitment, ...]:
+    return tuple(
+        DeliveryItemCommitment(
+            key.materialization_key_id,
+            hashlib.sha256(f"event-content-{index}".encode()).hexdigest(),
+        )
+        for index, key in enumerate(outcome.committed_materialization_keys)
+    )
+
+
+def test_outcome_delivery_attempt_binding_composes_byte_stable_legacy_locator() -> None:
+    outcome = _materialized_outcome_for_delivery(item_count=2)
+    items = _delivery_commitments(outcome)
+    batch = DeliveryBatchCommitment(outcome, items)
+    destination = DeliveryDestinationId("schema-v2-output-queue")
+    attempt = OutcomeDeliveryAttemptBinding(destination, batch, 0)
+    legacy = DeliveryAttemptIdentity(
+        destination_id=destination.value,
+        materialization_key_canonical_texts=tuple(
+            item.materialization_key_id.value for item in items
+        ),
+        attempt_ordinal=0,
+    )
+    expected = _expected_identifier(
+        "normalization-delivery-attempt-binding-v1",
+        legacy.delivery_attempt_id.value,
+        batch.delivery_batch_commitment_id.value,
+    )
+
+    assert attempt.legacy_delivery_attempt == legacy
+    assert batch.legacy_delivery_batch_id == legacy.delivery_batch_id
+    assert DeliveryBatchId(legacy.delivery_batch_id.value) == legacy.delivery_batch_id
+    assert DeliveryAttemptId(legacy.delivery_attempt_id.value) == legacy.delivery_attempt_id
+    assert attempt.outcome_delivery_attempt_binding_id.value == expected
+    assert OutcomeDeliveryAttemptBindingId(expected) == attempt.outcome_delivery_attempt_binding_id
+    assert hash(attempt) == hash(attempt)
+    assert not hasattr(attempt, "__dict__")
+    assert (
+        OutcomeDeliveryAttemptBinding.from_stored(
+            destination_id=destination,
+            delivery_batch_commitment=batch,
+            attempt_ordinal=0,
+            expected_legacy_delivery_attempt_id=legacy.delivery_attempt_id,
+            expected_binding_id=attempt.outcome_delivery_attempt_binding_id,
+        )
+        == attempt
+    )
+    with pytest.raises(ValueError, match="only attempt ordinal 0"):
+        OutcomeDeliveryAttemptBinding(destination, batch, 1)
+    with pytest.raises(TypeError, match="built-in integer"):
+        OutcomeDeliveryAttemptBinding(destination, batch, cast(int, True))
+
+
+def test_delivery_identifier_wrappers_reject_inconsistent_nested_legacy_locators() -> None:
+    outcome = _materialized_outcome_for_delivery(item_count=2)
+    items = _delivery_commitments(outcome)
+    batch = DeliveryBatchCommitment(outcome, items)
+    destination = DeliveryDestinationId("schema-v2-output-queue")
+
+    with pytest.raises(ValueError, match="locator counts disagree"):
+        DeliveryBatchCommitmentId(
+            _expected_identifier(
+                "normalization-delivery-batch-commitment-v1",
+                batch.legacy_delivery_batch_id.value,
+                outcome.normalization_outcome_id.value,
+                1,
+                batch.batch_content_sha256,
+            )
+        )
+
+    foreign_legacy_attempt = DeliveryAttemptIdentity(
+        destination_id=destination.value,
+        materialization_key_canonical_texts=(_outcome_keys(2)[2].materialization_key_id.value,),
+        attempt_ordinal=0,
+    )
+    with pytest.raises(ValueError, match="legacy locators disagree"):
+        OutcomeDeliveryAttemptBindingId(
+            _expected_identifier(
+                "normalization-delivery-attempt-binding-v1",
+                foreign_legacy_attempt.delivery_attempt_id.value,
+                batch.delivery_batch_commitment_id.value,
+            )
+        )
+
+    nonzero_legacy_attempt = DeliveryAttemptIdentity(
+        destination_id=destination.value,
+        materialization_key_canonical_texts=tuple(
+            item.materialization_key_id.value for item in items
+        ),
+        attempt_ordinal=1,
+    )
+    with pytest.raises(ValueError, match="only attempt ordinal 0"):
+        OutcomeDeliveryAttemptBindingId(
+            _expected_identifier(
+                "normalization-delivery-attempt-binding-v1",
+                nonzero_legacy_attempt.delivery_attempt_id.value,
+                batch.delivery_batch_commitment_id.value,
+            )
+        )
+
+
+def test_delivery_batch_has_byte_exact_composite_identity_and_stored_verification() -> None:
+    outcome = _materialized_outcome_for_delivery(item_count=2)
+    items = _delivery_commitments(outcome)
+    batch = DeliveryBatchCommitment(outcome, items)
+    item_rows = tuple(
+        (item.materialization_key_id.value, item.event_content_sha256) for item in items
+    )
+    ordered_item_content = _expected_identifier("delivery-item-commitments-v1", item_rows)
+    aggregate_digest = hashlib.sha256(ordered_item_content.encode()).hexdigest()
+    content = _expected_identifier(
+        "normalization-delivery-batch-content-v1",
+        outcome.normalization_outcome_id.value,
+        item_rows,
+        2,
+        aggregate_digest,
+    )
+    content_digest = hashlib.sha256(content.encode()).hexdigest()
+    legacy = DeliveryAttemptIdentity(
+        destination_id="normalization-delivery-commitment",
+        materialization_key_canonical_texts=tuple(row[0] for row in item_rows),
+        attempt_ordinal=0,
+    )
+
+    assert batch.canonical_content == content
+    assert batch.aggregate_content_sha256 == aggregate_digest
+    assert batch.batch_content_sha256 == content_digest
+    assert batch.legacy_delivery_batch_id == legacy.delivery_batch_id
+    assert batch.delivery_batch_commitment_id.value == _expected_identifier(
+        "normalization-delivery-batch-commitment-v1",
+        legacy.delivery_batch_id.value,
+        outcome.normalization_outcome_id.value,
+        2,
+        content_digest,
+    )
+    assert (
+        DeliveryBatchCommitment.from_stored(
+            normalization_outcome=outcome,
+            item_commitments=items,
+            expected_legacy_delivery_batch_id=legacy.delivery_batch_id,
+            expected_canonical_content=content,
+            expected_aggregate_content_sha256=aggregate_digest,
+            expected_batch_content_sha256=content_digest,
+            expected_commitment_id=batch.delivery_batch_commitment_id,
+        )
+        == batch
+    )
+    assert (
+        DeliveryItemCommitment.from_stored(
+            materialization_key_id=items[0].materialization_key_id,
+            event_content_sha256=items[0].event_content_sha256,
+            expected_commitment_id=items[0].delivery_item_commitment_id,
+        )
+        == items[0]
+    )
+
+
+def test_delivery_batch_content_changes_with_outcome_even_for_identical_items() -> None:
+    outcome = _materialized_outcome_for_delivery(item_count=1)
+    items = _delivery_commitments(outcome)
+    first = DeliveryBatchCommitment(outcome, items)
+    other_outcome = replace(outcome, normalizer_version="other-normalizer-v1")
+    second = DeliveryBatchCommitment(other_outcome, items)
+
+    assert first.legacy_delivery_batch_id == second.legacy_delivery_batch_id
+    assert first.aggregate_content_sha256 == second.aggregate_content_sha256
+    assert first.canonical_content != second.canonical_content
+    assert first.batch_content_sha256 != second.batch_content_sha256
+    assert first.delivery_batch_commitment_id != second.delivery_batch_commitment_id
+
+
+def test_delivery_stored_verification_rejects_content_and_locator_tampering() -> None:
+    outcome = _materialized_outcome_for_delivery(item_count=1)
+    items = _delivery_commitments(outcome)
+    batch = DeliveryBatchCommitment(outcome, items)
+    destination = DeliveryDestinationId("schema-v2-output-queue")
+    attempt = OutcomeDeliveryAttemptBinding(destination, batch)
+
+    with pytest.raises(ValueError, match="does not match"):
+        DeliveryItemCommitment.from_stored(
+            materialization_key_id=items[0].materialization_key_id,
+            event_content_sha256="f" * 64,
+            expected_commitment_id=items[0].delivery_item_commitment_id,
+        )
+    with pytest.raises(ValueError, match="does not match"):
+        DeliveryBatchCommitment.from_stored(
+            normalization_outcome=outcome,
+            item_commitments=items,
+            expected_legacy_delivery_batch_id=batch.legacy_delivery_batch_id,
+            expected_canonical_content=f"{batch.canonical_content} ",
+            expected_aggregate_content_sha256=batch.aggregate_content_sha256,
+            expected_batch_content_sha256=batch.batch_content_sha256,
+            expected_commitment_id=batch.delivery_batch_commitment_id,
+        )
+    with pytest.raises(ValueError, match="does not match"):
+        DeliveryBatchCommitment.from_stored(
+            normalization_outcome=outcome,
+            item_commitments=items,
+            expected_legacy_delivery_batch_id=batch.legacy_delivery_batch_id,
+            expected_canonical_content=batch.canonical_content,
+            expected_aggregate_content_sha256="f" * 64,
+            expected_batch_content_sha256=batch.batch_content_sha256,
+            expected_commitment_id=batch.delivery_batch_commitment_id,
+        )
+    with pytest.raises(ValueError, match="does not match"):
+        DeliveryBatchCommitment.from_stored(
+            normalization_outcome=outcome,
+            item_commitments=items,
+            expected_legacy_delivery_batch_id=batch.legacy_delivery_batch_id,
+            expected_canonical_content=batch.canonical_content,
+            expected_aggregate_content_sha256=batch.aggregate_content_sha256,
+            expected_batch_content_sha256="f" * 64,
+            expected_commitment_id=batch.delivery_batch_commitment_id,
+        )
+    foreign_legacy = DeliveryAttemptIdentity(
+        destination_id="normalization-delivery-commitment",
+        materialization_key_canonical_texts=(_outcome_keys(1)[2].materialization_key_id.value,),
+        attempt_ordinal=0,
+    )
+    with pytest.raises(ValueError, match="does not match"):
+        DeliveryBatchCommitment.from_stored(
+            normalization_outcome=outcome,
+            item_commitments=items,
+            expected_legacy_delivery_batch_id=foreign_legacy.delivery_batch_id,
+            expected_canonical_content=batch.canonical_content,
+            expected_aggregate_content_sha256=batch.aggregate_content_sha256,
+            expected_batch_content_sha256=batch.batch_content_sha256,
+            expected_commitment_id=batch.delivery_batch_commitment_id,
+        )
+    foreign_commitment_id = DeliveryBatchCommitmentId(
+        _expected_identifier(
+            "normalization-delivery-batch-commitment-v1",
+            batch.legacy_delivery_batch_id.value,
+            outcome.normalization_outcome_id.value,
+            batch.item_count,
+            "f" * 64,
+        )
+    )
+    with pytest.raises(ValueError, match="does not match"):
+        DeliveryBatchCommitment.from_stored(
+            normalization_outcome=outcome,
+            item_commitments=items,
+            expected_legacy_delivery_batch_id=batch.legacy_delivery_batch_id,
+            expected_canonical_content=batch.canonical_content,
+            expected_aggregate_content_sha256=batch.aggregate_content_sha256,
+            expected_batch_content_sha256=batch.batch_content_sha256,
+            expected_commitment_id=foreign_commitment_id,
+        )
+    with pytest.raises(ValueError, match="does not match"):
+        OutcomeDeliveryAttemptBinding.from_stored(
+            destination_id=DeliveryDestinationId("foreign-output-queue"),
+            delivery_batch_commitment=batch,
+            attempt_ordinal=0,
+            expected_legacy_delivery_attempt_id=(
+                attempt.legacy_delivery_attempt.delivery_attempt_id
+            ),
+            expected_binding_id=attempt.outcome_delivery_attempt_binding_id,
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["n-minus-one", "n-plus-one", "reordered", "duplicate", "foreign-substitution"],
+)
+def test_delivery_batch_rejects_incomplete_reordered_or_duplicate_commitments(
+    mutation: str,
+) -> None:
+    outcome = _materialized_outcome_for_delivery(item_count=2)
+    items = _delivery_commitments(outcome)
+    foreign_item = DeliveryItemCommitment(
+        _outcome_keys(2)[2].materialization_key_id,
+        "f" * 64,
+    )
+    foreign_run_item = DeliveryItemCommitment(
+        MaterializationKey(
+            NormalizationRunId("foreign-normalization-run"),
+            _outcome_keys(1)[1],
+            EventFamily.TRADE,
+            2,
+            PayloadType.TRADE,
+        ).materialization_key_id,
+        items[1].event_content_sha256,
+    )
+    invalid = {
+        "n-minus-one": items[:-1],
+        "n-plus-one": (*items, foreign_item),
+        "reordered": tuple(reversed(items)),
+        "duplicate": (items[0], items[0]),
+        "foreign-substitution": (items[0], foreign_run_item),
+    }[mutation]
+
+    with pytest.raises(ValueError, match="exactly match outcome order"):
+        DeliveryBatchCommitment(outcome, invalid)
+
+
+def test_delivery_batch_rejects_zero_materialization_and_non_success_outcomes() -> None:
+    empty = NormalizationOutcome.legacy_transition_empty(
+        normalization_run_id=NormalizationRunId("normalization-fixture"),
+        raw_record_id=_raw_record_id(),
+        normalizer_version="normalizer-v1",
+        normalizer_commit="normalizer-commit-fixture",
+        frame_status=FrameNormalizationStatus.VALID_EMPTY_MARKET_FRAME,
+        decoded_event_count=0,
+        raw_event_outcomes=(),
+        committed_materialization_keys=(),
+    )
+    with pytest.raises(ValueError, match="successful materializing outcome"):
+        DeliveryBatchCommitment(empty, ())
+
+
+def test_delivery_specific_collection_destination_and_monotonic_bounds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    outcome = _materialized_outcome_for_delivery(item_count=2)
+    items = _delivery_commitments(outcome)
+    extra_item = DeliveryItemCommitment(
+        _outcome_keys(2)[2].materialization_key_id,
+        "f" * 64,
+    )
+    monkeypatch.setattr(market_event_v3_module, "MAX_NORMALIZATION_OUTCOME_ITEMS", 2)
+
+    batch = DeliveryBatchCommitment(outcome, items)
+    assert batch.item_count == 2
+    with pytest.raises(ValueError, match="item count"):
+        DeliveryBatchCommitment(outcome, (*items, extra_item))
+    assert MAX_NORMALIZATION_OUTCOME_ITEMS > 2
+
+    destination = DeliveryDestinationId("d" * 128)
+    with pytest.raises(ValueError, match="maximum length"):
+        DeliveryDestinationId("d" * 129)
+    attempt = OutcomeDeliveryAttemptBinding(destination, batch)
+    accepted = DeliveryCommitAcceptance.from_linearized(
+        attempt=attempt,
+        observed_at=_RECEIVED_TIME,
+        observed_monotonic_ns=MAX_UNSIGNED_64,
+    )
+    assert accepted.delivery_outcome.observed_monotonic_ns == MAX_UNSIGNED_64
+    with pytest.raises(ValueError, match="unsigned-64"):
+        DeliveryCommitFailure.from_attempt(
+            attempt=attempt,
+            knowledge_status=DeliveryKnowledgeStatus.DEFINITELY_NOT_ACCEPTED,
+            reason=DeliveryOutcomeReason.EXPLICIT_REJECTION,
+            observed_at=_RECEIVED_TIME,
+            observed_monotonic_ns=MAX_UNSIGNED_64 + 1,
+        )
+
+
+@pytest.mark.parametrize(
+    ("status", "reason"),
+    [
+        (
+            DeliveryKnowledgeStatus.ACCEPTED,
+            DeliveryOutcomeReason.OUTPUT_QUEUE_ACCEPTANCE,
+        ),
+        (
+            DeliveryKnowledgeStatus.DEFINITELY_NOT_ACCEPTED,
+            DeliveryOutcomeReason.EXPLICIT_REJECTION,
+        ),
+        (
+            DeliveryKnowledgeStatus.DEFINITELY_NOT_ACCEPTED,
+            DeliveryOutcomeReason.CANCELLATION_BEFORE_LINEARIZATION,
+        ),
+        (
+            DeliveryKnowledgeStatus.DEFINITELY_NOT_ACCEPTED,
+            DeliveryOutcomeReason.QUEUE_CAPACITY_TIMEOUT,
+        ),
+        (
+            DeliveryKnowledgeStatus.DEFINITELY_NOT_ACCEPTED,
+            DeliveryOutcomeReason.LOCAL_CONTRACT_FAILURE,
+        ),
+        (
+            DeliveryKnowledgeStatus.ACCEPTANCE_UNCERTAIN,
+            DeliveryOutcomeReason.AMBIGUOUS_COMPLETION,
+        ),
+    ],
+)
+def test_outcome_delivery_result_has_truthful_byte_exact_commit_semantics(
+    status: DeliveryKnowledgeStatus,
+    reason: DeliveryOutcomeReason,
+) -> None:
+    outcome = _materialized_outcome_for_delivery(item_count=1)
+    batch = DeliveryBatchCommitment(outcome, _delivery_commitments(outcome))
+    attempt = OutcomeDeliveryAttemptBinding(
+        DeliveryDestinationId("schema-v2-output-queue"),
+        batch,
+    )
+    if status is DeliveryKnowledgeStatus.ACCEPTED:
+        proof: DeliveryCommitAcceptance | DeliveryCommitFailure = (
+            DeliveryCommitAcceptance.from_linearized(
+                attempt=attempt,
+                observed_at=_RECEIVED_TIME,
+                observed_monotonic_ns=123,
+            )
+        )
+    else:
+        proof = DeliveryCommitFailure.from_attempt(
+            attempt=attempt,
+            knowledge_status=status,
+            reason=reason,
+            observed_at=_RECEIVED_TIME,
+            observed_monotonic_ns=123,
+        )
+    result = proof.delivery_outcome
+    expected = _expected_identifier(
+        "normalization-delivery-outcome-v1",
+        attempt.outcome_delivery_attempt_binding_id.value,
+        status.value,
+        reason.value,
+        "2026-08-26T12:00:00.123456Z",
+        123,
+    )
+
+    assert result.delivery_outcome_id.value == expected
+    assert DeliveryOutcomeId(expected) == result.delivery_outcome_id
+    assert hash(result) == hash(result)
+    assert not hasattr(result, "__dict__")
+    with pytest.raises(TypeError, match="commit result factories"):
+        OutcomeDeliveryResult()
+
+
+@pytest.mark.parametrize("status", tuple(DeliveryKnowledgeStatus))
+@pytest.mark.parametrize("reason", tuple(DeliveryOutcomeReason))
+def test_delivery_outcome_status_reason_matrix_is_exhaustive(
+    status: DeliveryKnowledgeStatus,
+    reason: DeliveryOutcomeReason,
+) -> None:
+    outcome = _materialized_outcome_for_delivery(item_count=1)
+    batch = DeliveryBatchCommitment(outcome, _delivery_commitments(outcome))
+    attempt = OutcomeDeliveryAttemptBinding(
+        DeliveryDestinationId("schema-v2-output-queue"),
+        batch,
+    )
+    canonical = _expected_identifier(
+        "normalization-delivery-outcome-v1",
+        attempt.outcome_delivery_attempt_binding_id.value,
+        status.value,
+        reason.value,
+        "2026-08-26T12:00:00.123456Z",
+        123,
+    )
+    valid = {
+        (
+            DeliveryKnowledgeStatus.ACCEPTED,
+            DeliveryOutcomeReason.OUTPUT_QUEUE_ACCEPTANCE,
+        ),
+        *(
+            (DeliveryKnowledgeStatus.DEFINITELY_NOT_ACCEPTED, allowed_reason)
+            for allowed_reason in (
+                DeliveryOutcomeReason.QUEUE_CAPACITY_TIMEOUT,
+                DeliveryOutcomeReason.CANCELLATION_BEFORE_LINEARIZATION,
+                DeliveryOutcomeReason.EXPLICIT_REJECTION,
+                DeliveryOutcomeReason.LOCAL_CONTRACT_FAILURE,
+            )
+        ),
+        (
+            DeliveryKnowledgeStatus.ACCEPTANCE_UNCERTAIN,
+            DeliveryOutcomeReason.AMBIGUOUS_COMPLETION,
+        ),
+    }
+
+    if (status, reason) in valid:
+        assert DeliveryOutcomeId(canonical).value == canonical
+    else:
+        with pytest.raises(ValueError, match="inconsistent"):
+            DeliveryOutcomeId(canonical)
+
+
+@pytest.mark.parametrize(
+    ("observed_at", "monotonic", "expected_error"),
+    [
+        (datetime(2026, 8, 26, 12, 0), 1, ValueError),
+        (datetime(2026, 8, 26, 12, 0, tzinfo=timezone(timedelta(hours=1))), 1, ValueError),
+        (cast(datetime, "2026-08-26T12:00:00Z"), 1, TypeError),
+        (_RECEIVED_TIME, True, TypeError),
+        (_RECEIVED_TIME, -1, ValueError),
+    ],
+)
+def test_delivery_factories_reject_noncanonical_time_and_monotonic_values(
+    observed_at: datetime,
+    monotonic: int,
+    expected_error: type[Exception],
+) -> None:
+    outcome = _materialized_outcome_for_delivery(item_count=1)
+    batch = DeliveryBatchCommitment(outcome, _delivery_commitments(outcome))
+    attempt = OutcomeDeliveryAttemptBinding(
+        DeliveryDestinationId("schema-v2-output-queue"),
+        batch,
+    )
+
+    with pytest.raises(expected_error):
+        DeliveryCommitFailure.from_attempt(
+            attempt=attempt,
+            knowledge_status=DeliveryKnowledgeStatus.DEFINITELY_NOT_ACCEPTED,
+            reason=DeliveryOutcomeReason.EXPLICIT_REJECTION,
+            observed_at=observed_at,
+            observed_monotonic_ns=monotonic,
+        )
+
+
+def test_delivery_outcome_id_rejects_boolean_monotonic_value() -> None:
+    outcome = _materialized_outcome_for_delivery(item_count=1)
+    batch = DeliveryBatchCommitment(outcome, _delivery_commitments(outcome))
+    attempt = OutcomeDeliveryAttemptBinding(
+        DeliveryDestinationId("schema-v2-output-queue"),
+        batch,
+    )
+
+    with pytest.raises(ValueError, match="invalid components"):
+        DeliveryOutcomeId(
+            _expected_identifier(
+                "normalization-delivery-outcome-v1",
+                attempt.outcome_delivery_attempt_binding_id.value,
+                DeliveryKnowledgeStatus.ACCEPTED.value,
+                DeliveryOutcomeReason.OUTPUT_QUEUE_ACCEPTANCE.value,
+                "2026-08-26T12:00:00.123456Z",
+                True,
+            )
+        )
+
+
+def test_delivery_commit_acceptance_is_only_positive_proof_and_binds_exact_batch() -> None:
+    outcome = _materialized_outcome_for_delivery(item_count=1)
+    batch = DeliveryBatchCommitment(outcome, _delivery_commitments(outcome))
+    attempt = OutcomeDeliveryAttemptBinding(
+        DeliveryDestinationId("schema-v2-output-queue"),
+        batch,
+    )
+    acceptance = DeliveryCommitAcceptance.from_linearized(
+        attempt=attempt,
+        observed_at=_RECEIVED_TIME,
+        observed_monotonic_ns=123,
+    )
+    accepted = acceptance.delivery_outcome
+
+    assert (
+        DeliveryCommitAcceptance.from_stored(
+            attempt=attempt,
+            observed_at=_RECEIVED_TIME,
+            observed_monotonic_ns=123,
+            expected_outcome_id=accepted.delivery_outcome_id,
+            expected_acceptance_id=acceptance.delivery_commit_acceptance_id,
+        )
+        == acceptance
+    )
+    assert (
+        DeliveryCommitAcceptanceId(acceptance.delivery_commit_acceptance_id.value)
+        == acceptance.delivery_commit_acceptance_id
+    )
+
+    foreign_outcome = replace(outcome, normalizer_version="foreign-normalizer")
+    foreign_batch = DeliveryBatchCommitment(
+        foreign_outcome,
+        _delivery_commitments(foreign_outcome),
+    )
+    foreign_attempt = OutcomeDeliveryAttemptBinding(
+        DeliveryDestinationId("schema-v2-output-queue"),
+        foreign_batch,
+    )
+    with pytest.raises(ValueError, match="does not match"):
+        DeliveryCommitAcceptance.from_stored(
+            attempt=foreign_attempt,
+            observed_at=_RECEIVED_TIME,
+            observed_monotonic_ns=123,
+            expected_outcome_id=accepted.delivery_outcome_id,
+            expected_acceptance_id=acceptance.delivery_commit_acceptance_id,
+        )
+    with pytest.raises(TypeError, match="from_linearized"):
+        DeliveryCommitAcceptance()
+    with pytest.raises(ValueError, match="requires commit acceptance"):
+        DeliveryCommitFailure.from_attempt(
+            attempt=attempt,
+            knowledge_status=DeliveryKnowledgeStatus.ACCEPTED,
+            reason=DeliveryOutcomeReason.OUTPUT_QUEUE_ACCEPTANCE,
+            observed_at=_RECEIVED_TIME,
+            observed_monotonic_ns=123,
+        )
+    with pytest.raises(TypeError):
+        replace(accepted, reason=DeliveryOutcomeReason.EXPLICIT_REJECTION)
+
+
+def test_nonaccepted_delivery_helper_rejects_accepted_knowledge() -> None:
+    outcome = _materialized_outcome_for_delivery(item_count=1)
+    batch = DeliveryBatchCommitment(outcome, _delivery_commitments(outcome))
+    attempt = OutcomeDeliveryAttemptBinding(
+        DeliveryDestinationId("schema-v2-output-queue"),
+        batch,
+    )
+    factory = market_event_v3_module._construct_nonaccepted_delivery_outcome
+
+    with pytest.raises(ValueError, match="requires commit acceptance"):
+        factory(
+            attempt=attempt,
+            knowledge_status=DeliveryKnowledgeStatus.ACCEPTED,
+            reason=DeliveryOutcomeReason.OUTPUT_QUEUE_ACCEPTANCE,
+            observed_at=_RECEIVED_TIME,
+            observed_monotonic_ns=123,
+        )
+
+
+def test_delivery_failure_rejects_inconsistent_knowledge_and_reason() -> None:
+    outcome = _materialized_outcome_for_delivery(item_count=1)
+    batch = DeliveryBatchCommitment(outcome, _delivery_commitments(outcome))
+    attempt = OutcomeDeliveryAttemptBinding(
+        DeliveryDestinationId("schema-v2-output-queue"),
+        batch,
+    )
+
+    with pytest.raises(ValueError, match="inconsistent"):
+        DeliveryCommitFailure.from_attempt(
+            attempt=attempt,
+            knowledge_status=DeliveryKnowledgeStatus.DEFINITELY_NOT_ACCEPTED,
+            reason=DeliveryOutcomeReason.AMBIGUOUS_COMPLETION,
+            observed_at=_RECEIVED_TIME,
+            observed_monotonic_ns=123,
+        )
+
+
+@pytest.mark.parametrize(
+    ("status", "reason"),
+    [
+        (
+            DeliveryKnowledgeStatus.DEFINITELY_NOT_ACCEPTED,
+            DeliveryOutcomeReason.EXPLICIT_REJECTION,
+        ),
+        (
+            DeliveryKnowledgeStatus.ACCEPTANCE_UNCERTAIN,
+            DeliveryOutcomeReason.AMBIGUOUS_COMPLETION,
+        ),
+    ],
+)
+def test_delivery_commit_failure_has_no_event_batch(
+    status: DeliveryKnowledgeStatus,
+    reason: DeliveryOutcomeReason,
+) -> None:
+    outcome = _materialized_outcome_for_delivery(item_count=1)
+    batch = DeliveryBatchCommitment(outcome, _delivery_commitments(outcome))
+    attempt = OutcomeDeliveryAttemptBinding(
+        DeliveryDestinationId("schema-v2-output-queue"),
+        batch,
+    )
+    failure = DeliveryCommitFailure.from_attempt(
+        attempt=attempt,
+        knowledge_status=status,
+        reason=reason,
+        observed_at=_RECEIVED_TIME,
+        observed_monotonic_ns=123,
+    )
+    result = failure.delivery_outcome
+
+    assert {
+        "delivery_batch",
+        "delivery_batch_commitment",
+        "item_commitments",
+    }.isdisjoint({item.name for item in fields(DeliveryCommitFailure)})
+    assert (
+        DeliveryCommitFailure.from_stored(
+            attempt=attempt,
+            knowledge_status=status,
+            reason=reason,
+            observed_at=_RECEIVED_TIME,
+            observed_monotonic_ns=123,
+            expected_outcome_id=result.delivery_outcome_id,
+            expected_failure_id=failure.delivery_commit_failure_id,
+        )
+        == failure
+    )
+    assert (
+        DeliveryCommitFailureId(failure.delivery_commit_failure_id.value)
+        == failure.delivery_commit_failure_id
+    )
+    with pytest.raises(TypeError, match="from_attempt"):
+        DeliveryCommitFailure()
+
+
+def test_new_outcome_lineage_and_delivery_identifiers_reject_malformed_values() -> None:
+    outcome, _transition, abort = _typed_rejected_frame_with_abort()
+    lineage = cast(NormalizationCoverageLineage, outcome.coverage_lineage)
+
+    malformed_values: tuple[tuple[Callable[[str], object], str], ...] = (
+        (
+            FrameAtomicAbortEvidenceId,
+            _expected_identifier(
+                "frame-atomic-abort-evidence-v1",
+                outcome.raw_record_id.value,
+                outcome.normalization_run_id.value,
+                True,
+                "source",
+                abort.identified_coverage_scope_id.value,
+                1,
+                "0" * 64,
+            ),
+        ),
+        (
+            NormalizationCoverageLineageId,
+            _expected_identifier(
+                "normalization-coverage-lineage-v2",
+                lineage.coverage_mutation_batch.coverage_mutation_batch_id.value,
+                1,
+                1,
+                0,
+                True,
+                0,
+                1,
+                "0" * 64,
+            ),
+        ),
+        (
+            RawCoverageFanoutBindingId,
+            _expected_identifier(
+                "raw-coverage-fanout-binding-v1",
+                "not-a-raw-record",
+                "not-a-fanout-proof",
+                "0" * 64,
+                "0" * 64,
+            ),
+        ),
+        (
+            OutcomeDeliveryAttemptBindingId,
+            _expected_identifier(
+                "normalization-delivery-attempt-binding-v1",
+                "not-a-delivery-attempt",
+                "not-a-delivery-batch-commitment",
+            ),
+        ),
+        (
+            DeliveryItemCommitmentId,
+            _expected_identifier(
+                "delivery-item-commitment-v1",
+                "not-a-materialization-key",
+                "0" * 64,
+            ),
+        ),
+        (
+            DeliveryBatchCommitmentId,
+            _expected_identifier(
+                "normalization-delivery-batch-commitment-v1",
+                "not-a-delivery-batch",
+                "not-a-normalization-outcome",
+                1,
+                "0" * 64,
+            ),
+        ),
+        (
+            DeliveryOutcomeId,
+            _expected_identifier(
+                "normalization-delivery-outcome-v1",
+                "not-an-attempt",
+                DeliveryKnowledgeStatus.ACCEPTED.value,
+                DeliveryOutcomeReason.OUTPUT_QUEUE_ACCEPTANCE.value,
+                "2026-08-26T12:00:00.123456Z",
+                1,
+            ),
+        ),
+    )
+    for identifier_type, malformed in malformed_values:
+        with pytest.raises(ValueError):
+            identifier_type(malformed)
+
+
+def test_outcome_only_abort_and_delivery_repr_hide_private_source_marker() -> None:
+    marker = "private-source-marker"
+    _outcome, transition, abort = _typed_rejected_frame_with_abort()
+    marked_abort = replace(abort, source_event_id=SourceEventId(marker))
+    batch = _prepared_batch_for_transition(transition)
+    lineage = NormalizationCoverageLineage(
+        coverage_mutation_batch=batch,
+        frame_atomic_abort_evidence=(marked_abort,),
+        raw_fanout_binding=RawCoverageFanoutBinding.from_raw_record(
+            raw_record=_raw_record()[0],
+            coverage_fanout_proof=batch.fanout_proof,
+        ),
+    )
+
+    assert marker not in repr(marked_abort)
+    assert marker not in repr(lineage)
+    assert marker not in repr(lineage.normalization_coverage_lineage_id)
+
+    materialized = _materialized_outcome_for_delivery(item_count=1)
+    marked_logical_source = LogicalSourceKey(
+        BINANCE_MAINNET_SPOT_JSON_STREAMS.feed_product_id,
+        SourceEventId(marker),
+    )
+    marked_index = replace(
+        materialized.raw_event_outcomes[0],
+        logical_source_key=marked_logical_source,
+    )
+    marked_outcome = replace(materialized, raw_event_outcomes=(marked_index,))
+    delivery_batch = DeliveryBatchCommitment(
+        marked_outcome,
+        (
+            DeliveryItemCommitment(
+                marked_outcome.committed_materialization_keys[0].materialization_key_id,
+                hashlib.sha256(marker.encode()).hexdigest(),
+            ),
+        ),
+    )
+    delivery_attempt = OutcomeDeliveryAttemptBinding(
+        DeliveryDestinationId("schema-v2-output-queue"),
+        delivery_batch,
+    )
+    acceptance = DeliveryCommitAcceptance.from_linearized(
+        attempt=delivery_attempt,
+        observed_at=_RECEIVED_TIME,
+        observed_monotonic_ns=123,
+    )
+    failure = DeliveryCommitFailure.from_attempt(
+        attempt=delivery_attempt,
+        knowledge_status=DeliveryKnowledgeStatus.DEFINITELY_NOT_ACCEPTED,
+        reason=DeliveryOutcomeReason.EXPLICIT_REJECTION,
+        observed_at=_RECEIVED_TIME,
+        observed_monotonic_ns=123,
+    )
+    for private_delivery_value in (
+        delivery_batch,
+        delivery_attempt,
+        acceptance,
+        acceptance.delivery_outcome,
+        failure,
+        failure.delivery_outcome,
+    ):
+        assert marker not in repr(private_delivery_value)
+
+
 def test_index_outcome_rejects_committed_materialization_for_other_observation() -> None:
     logical, observation, _ = _outcome_keys(0)
     other_materialization = _outcome_keys(1)[2]
@@ -3378,5 +5880,29 @@ def test_new_contracts_perform_no_runtime_io(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr("time.time", forbidden)
 
     envelope = MarketEventEnvelopeV3(_context(), _trade())
+    outcome = _materialized_outcome_for_delivery(item_count=1)
+    delivery_batch = DeliveryBatchCommitment(outcome, _delivery_commitments(outcome))
+    delivery_attempt = OutcomeDeliveryAttemptBinding(
+        DeliveryDestinationId("schema-v2-output-queue"),
+        delivery_batch,
+    )
+    delivery_acceptance = DeliveryCommitAcceptance.from_linearized(
+        attempt=delivery_attempt,
+        observed_at=_RECEIVED_TIME,
+        observed_monotonic_ns=123,
+    )
+    delivery_failure = DeliveryCommitFailure.from_attempt(
+        attempt=delivery_attempt,
+        knowledge_status=DeliveryKnowledgeStatus.ACCEPTANCE_UNCERTAIN,
+        reason=DeliveryOutcomeReason.AMBIGUOUS_COMPLETION,
+        observed_at=_RECEIVED_TIME,
+        observed_monotonic_ns=123,
+    )
 
     assert envelope.envelope_schema_version == 3
+    assert delivery_acceptance.delivery_outcome.knowledge_status is (
+        DeliveryKnowledgeStatus.ACCEPTED
+    )
+    assert delivery_failure.delivery_outcome.knowledge_status is (
+        DeliveryKnowledgeStatus.ACCEPTANCE_UNCERTAIN
+    )

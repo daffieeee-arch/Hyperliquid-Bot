@@ -225,7 +225,8 @@ envelope contracts remain dormant; no runtime producer constructs or emits
 `NormalizationOutcome` for Hyperliquid public trades: mandatory bounded sinks accept the raw
 application-message record before parsing and the one frame outcome before any runtime commit.
 Acceptance means ownership at the storage-neutral sink boundary, not durable persistence. No
-operational coverage tracker, delivery outcome or deterministic replay exists yet. The producer
+operational coverage tracker, delivery linearization/composite queue item or deterministic replay
+exists yet. The producer
 and collector cutover occurs atomically only in Phase 1A-3B1D. ClickHouse storage,
 Grafana/Alloy/OpenTelemetry observability, FastAPI services and the Bloomberg/EMS-inspired cockpit
 remain downstream. Nothing was deployed, and SHADOW/LIVE remain disabled.
@@ -376,8 +377,9 @@ These v3 envelope contracts are defined and tested but dormant. No runtime produ
 emits `MarketEventEnvelopeV3`; v2 remains the only active Silver envelope. Hyperliquid now performs
 storage-neutral raw
 and normalization-outcome acceptance, but there is no concrete persistence, operational coverage
-tracker, delivery outcome or deterministic replay. The atomic producer and collector cutover
-happens only in 3B1D. Nothing was deployed, and SHADOW/LIVE remain disabled.
+tracker, delivery linearization/composite queue item or deterministic replay. Pure delivery-
+knowledge contracts are defined but dormant. The atomic producer and collector cutover happens
+only in 3B1D. Nothing was deployed, and SHADOW/LIVE remain disabled.
 
 Subscription state changes retain the exact immutable transition produced by the pure reducer in
 an append-only current-session journal. Its finite limit is three state-changing transitions per
@@ -486,8 +488,64 @@ gap repair exists in this phase.
 
 Normalization-outcome acceptance is the current normalization commit boundary, not the delivery
 boundary. A subsequent schema-v2 queue timeout can therefore leave an accepted outcome without a
-successful delivery record. Phase 1A-3B1C will add separate `DeliveryOutcome` and operational
-coverage transitions; Phase 1A-3B1B deliberately creates neither.
+successful delivery record. Phase 1A-3B1C-1 defines only dormant delivery-knowledge and coverage-
+commit contracts; 3B1C-2 and 3B1C-3 will add operational coverage and atomic delivery. Phase
+1A-3B1B deliberately creates neither runtime boundary.
+
+#### Phase 1A-3B1C contract closure
+
+The coverage/delivery audit found five representation gaps, so 3B1C is split into pure contract
+closure (3B1C-1), operational coverage (3B1C-2) and atomic output delivery (3B1C-3). The first step
+adds only immutable, deterministic values and validators. It performs no async work and changes no
+collector, sink, queue, health or consumer behavior.
+
+Ordinal-zero coverage has its own versioned initialization identity. Initializations and prepared
+transitions are exposed through one tagged state-reference identity, while a prepared mutation
+batch binds the complete expected pre-state, cause-derived plan membership, proposed changes,
+already-current no-ops and complete resulting state-reference set. The prepared batch is only a
+compare-and-swap proposal. A matching `CoverageCommitAcceptance`, not a transition or batch ID by
+itself, is the future proof of an atomic state commit. A repeated failure on a scope already at or
+beyond the requested degraded state preserves its state reference and ordinal while retaining the
+new typed evidence in an explicit no-op.
+
+Prepared state references are candidate tokens, including their exact predecessor chain. They
+cannot be cited as committed event or upstream coverage on their own. `CommittedCoverageState`
+binds one candidate to a content-addressed commit acceptance whose complete result set contains
+that exact state; `EventCoverage` and upstream-state evidence accept only this committed binding.
+The Bronze and Silver event states must belong to the same collector run. An upstream-derived
+Silver state must cite the exact committed Bronze state paired with it, not merely another state
+with the same scope or status.
+
+Fan-out membership is derived from an immutable subscription plan and attempt snapshot rather than
+a caller-selected scope list. It distinguishes configured, possibly delivered, acknowledged,
+exactly routed and unclassifiable-possibly-active populations. A failure before any send targets no
+scope; one ambiguous sent spec cannot degrade unrelated specs; an indexed item selects its exact
+spec and instrument; and an unclassifiable returned market message can select only the complete
+relevant possibly-active slice. Mutation evidence must bind that fan-out's exact connection session
+and selected attempt where applicable. Every raw-backed mutation also binds the raw record's exact
+full-record digest and complete attempt-status snapshot; that snapshot must reproduce the prepared
+fan-out, so sharing only a collector-run or connection-session ID is insufficient.
+
+Frame-atomic abort evidence identifies each otherwise valid new candidate that was prevented from
+materializing by canonical primary failure/conflict causes elsewhere in the same raw frame. It
+never creates its own coverage transition or materialization. The strict normalization-outcome
+path accepts typed prepared coverage lineage and distinguishes it from later commit acceptance.
+Its raw-fan-out binding and every indexed or pre-index scope binding must carry the same exact
+full-record integrity SHA-256; sharing only the lower raw-record locator is insufficient. The
+existing active 3B1B factory remains transition-empty and byte-compatible.
+
+Delivery contracts bind one non-empty successful `NormalizationOutcome`, its complete ordered
+materialization set, a per-item event-content SHA-256 and a derived aggregate digest. Knowledge is
+one of accepted, definitely not accepted or acceptance uncertain; bounded reasons do not masquerade
+as knowledge. Accepted delivery requires a matching commit-acceptance value. A non-acceptance result
+cannot contain an event batch, and control, empty, duplicate-only, rejected and conflicting frames
+cannot create a delivery batch. Actual v2-event serialization and a composite audited queue item
+remain 3B1C-3 work. Queue acceptance will mean bounded collector-output-queue acceptance only, not
+dequeue, downstream processing or persistence.
+
+All 3B1C-1 values remain dormant. Existing 3B1B raw capture still emits normalization outcomes with
+empty coverage lineage; v2 remains the only active Silver envelope and operational `is_gap` remains
+unchanged. No coverage runtime, delivery linearization, raw persistence or replay exists yet.
 
 ## ClickHouse environments
 

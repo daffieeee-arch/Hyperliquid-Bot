@@ -156,12 +156,40 @@ fail-stop decision that does not await child-cancellation completion. A late res
 ignored and privately consumed. In-process sinks must nevertheless cooperate with cancellation:
 Python cannot forcibly terminate hostile coroutine code, so an absolute kill boundary requires a
 future isolated worker or process. There is still no concrete storage, operational coverage
-tracker, `DeliveryOutcome` or deterministic replay. A normalization outcome may therefore be
-committed even when later v2 queue publication times out; Phase 1A-3B1C adds the separate delivery
-boundary and coverage transitions. Only 3B1D atomically moves both normalizers and the collector
+tracker, delivery linearization/composite queue item or deterministic replay. A normalization
+outcome may therefore be committed even when later v2 queue publication times out; 3B1C-1 defines
+only the pure delivery-knowledge and coverage-commit contracts, while 3B1C-2 and 3B1C-3 add their
+separate runtime boundaries. Only 3B1D atomically moves both normalizers and the collector
 to the mandatory v3 envelope and removes outer v2 plus `is_gap`. No dual writer or permanent v2
 wrapper is planned. Nothing is deployed, and SHADOW/LIVE remain disabled. ADR-022 records the
 complete decision and canonical identity rules.
+
+The 3B1C audit split that work into three reviewable steps. Phase 1A-3B1C-1 defines only pure,
+dormant contracts that make coverage initialization, prepared multi-scope compare-and-swap
+mutation, repeated-degradation no-ops, frame-atomic abort lineage and destination-specific delivery
+knowledge exactly representable. A prepared coverage mutation is not committed state;
+`CoverageCommitAcceptance` is the separate proof that its complete resulting state-reference set
+was accepted atomically. A prepared state reference is only a candidate token; downstream
+provenance uses `CommittedCoverageState`, which binds that token to an acceptance whose complete
+result set contains it. Cause-specific fan-out also binds the exact connection session and selected
+subscription attempts; evidence from another session in the same run is invalid. A raw-backed
+mutation additionally requires a content-addressed binding to the raw record's full-record digest
+and complete attempt-status snapshot, which must reproduce the same fan-out exactly. Strict typed
+outcomes require their indexed or pre-index scope bindings to carry that identical full-record
+digest, rather than accepting only the lower raw-record locator.
+`EventCoverage` requires one collector run and exact committed Bronze provenance for an
+upstream-derived Silver state. Phase 1A-3B1C-2 will own the operational coverage state and temporary
+lossy v2 `is_gap` projection. Phase 1A-3B1C-3 will bind one non-empty normalization outcome to one
+audited output-queue delivery item. Neither later runtime step is implemented by 3B1C-1.
+
+Repeated evidence for a scope already at or beyond the required degraded state retains the exact
+current state reference and transition ordinal. It is represented as a prepared no-op beside the
+new typed evidence instead of manufacturing a transition; its bounded initial reason, transition
+reason and evidence kind must still describe one exact cause. Delivery knowledge is closed and
+separate from event coverage: accepted, definitely not accepted, or acceptance uncertain. Queue
+acceptance means only acceptance by the bounded collector output queue, not dequeue, consumer
+processing or durable persistence. Existing 3B1B capture remains transition-empty, schema v2 and
+`is_gap` remain active, and `MarketEventEnvelopeV3` plus `NormalizationContext` remain dormant.
 
 ### Research Plane
 

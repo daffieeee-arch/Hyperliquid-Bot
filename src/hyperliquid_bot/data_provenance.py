@@ -1,8 +1,9 @@
-"""Dormant pure provenance contracts for future market-event schema v3.
+"""Pure market-data provenance and coverage contracts.
 
-Nothing in this module captures data or produces a schema-v3 event.  The
-contracts validate only caller-supplied values and deterministic derivations.
-Every computed identifier documents its complete versioned JSON-array preimage.
+The Bronze records and subscription identities in this module are used by the
+active schema-v2 capture path.  The coverage-mutation contracts remain dormant
+until Phase 1A-3B1C-2.  Nothing here performs I/O or produces a schema-v3 event;
+all values come from callers or pure deterministic derivation.
 """
 
 import hashlib
@@ -54,11 +55,16 @@ MAX_DECODED_EVENTS_PER_RAW_RECORD: Final = 4_096
 MAX_NORMALIZATION_OUTCOME_ITEMS: Final = 4_096
 MAX_NORMALIZATION_EVIDENCE_ITEMS: Final = 8
 MAX_COVERAGE_TRANSITION_REFERENCES: Final = 1_024
+MAX_COVERAGE_MUTATION_TARGETS: Final = 4_096
 MAX_RAW_APPLICATION_MESSAGE_BYTES: Final = 1_048_576
 MAX_CANONICAL_NESTING_DEPTH: Final = 32
 MAX_CANONICAL_VALUE_NODES: Final = 100_000
 MAX_UNSIGNED_64: Final = (1 << 64) - 1
 MAX_COLLECTION_BOUND: Final = 65_536
+
+_RAW_COVERAGE_FANOUT_BINDING_ID_VERSION: Final = "raw-coverage-fanout-binding-v1"
+_RAW_COVERAGE_FANOUT_BINDING_CONTENT_VERSION: Final = "raw-coverage-fanout-binding-content-v1"
+_RAW_COVERAGE_SNAPSHOT_CONTENT_VERSION: Final = "raw-coverage-fanout-snapshot-content-v1"
 
 _JSON_LOAD_FAILED: Final = object()
 
@@ -1150,6 +1156,23 @@ class CoverageTransitionId(_CanonicalIdentifier):
                 _component_text(evidence_components[4], field_name="coverage_evidence_kind")
             ),
         )
+        if evidence_components[4] == CoverageEvidenceKind.UPSTREAM_COVERAGE_TRANSITION.value:
+            source = _component_tuple(
+                evidence_components[5], field_name="upstream_transition_source"
+            )
+            committed = CommittedCoverageStateId(
+                _component_text(source[1], field_name="committed_coverage_state_id")
+            )
+            upstream_details = _committed_coverage_state_id_details(committed)
+            if current is not upstream_details[3]:
+                raise ValueError("downstream transition status must match upstream status.")
+            if (
+                _component_nonnegative_int(
+                    evidence_components[7], field_name="evidence_observed_monotonic_ns"
+                )
+                < upstream_details[6]
+            ):
+                raise ValueError("downstream transition cannot precede upstream evidence.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -3169,6 +3192,7 @@ class CoverageEvidenceKind(StrEnum):
     RAW_SINK_ACCEPTANCE_AMBIGUITY = "raw-sink-acceptance-ambiguity"
     RAW_RECORD_REJECTION = "raw-record-rejection"
     UPSTREAM_COVERAGE_TRANSITION = "upstream-coverage-transition"
+    UPSTREAM_COVERAGE_STATE = "upstream-coverage-state"
     NORMALIZATION_FAILURE = "normalization-failure"
     SOURCE_SEQUENCE = "source-sequence"
     EXPLICIT_BACKFILL_PROOF = "explicit-backfill-proof"
@@ -3333,16 +3357,58 @@ class RawRecordEvidenceSource:
 
 @dataclass(frozen=True, slots=True)
 class UpstreamCoverageTransitionEvidenceSource:
-    """Typed reference to an upstream coverage transition."""
+    """Typed reference to a committed upstream coverage transition."""
 
-    coverage_transition_id: CoverageTransitionId = field(repr=False)
+    committed_state: "CommittedCoverageState" = field(repr=False)
 
     def __post_init__(self) -> None:
-        if type(self.coverage_transition_id) is not CoverageTransitionId:
-            raise TypeError("coverage_transition_id must be a CoverageTransitionId.")
+        if type(self.committed_state) is not CommittedCoverageState:
+            raise TypeError("committed_state must be a CommittedCoverageState.")
+        if self.committed_state.state_reference.latest_transition is None:
+            raise ValueError("upstream transition evidence requires a transitioned state.")
+
+    @property
+    def coverage_transition_id(self) -> CoverageTransitionId:
+        transition = self.committed_state.state_reference.latest_transition
+        if transition is None:  # pragma: no cover - closed by construction
+            raise AssertionError("transitioned committed state lost its transition")
+        return transition.coverage_transition_id
 
     def canonical_components(self) -> tuple[str, str]:
-        return ("upstream-coverage-transition-evidence-v1", self.coverage_transition_id.value)
+        return (
+            "upstream-coverage-transition-evidence-v1",
+            self.committed_state.committed_coverage_state_id.value,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class UpstreamCoverageStateEvidenceSource:
+    """Typed reference to a committed initial or transitioned upstream state.
+
+    This source exists so Silver can cite an initially degraded Bronze state
+    without fabricating a Bronze transition.  Its canonical components are::
+
+        ["upstream-coverage-state-evidence-v1", committed_coverage_state_id]
+    """
+
+    committed_state: "CommittedCoverageState" = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if type(self.committed_state) is not CommittedCoverageState:
+            raise TypeError("committed_state must be a CommittedCoverageState.")
+        _upstream_coverage_state_details(
+            self.committed_state.state_reference.coverage_state_reference_id
+        )
+
+    @property
+    def coverage_state_reference_id(self) -> "CoverageStateReferenceId":
+        return self.committed_state.state_reference.coverage_state_reference_id
+
+    def canonical_components(self) -> tuple[str, str]:
+        return (
+            "upstream-coverage-state-evidence-v1",
+            self.committed_state.committed_coverage_state_id.value,
+        )
 
 
 class NormalizationFailureCategory(StrEnum):
@@ -3352,6 +3418,7 @@ class NormalizationFailureCategory(StrEnum):
     DECODER_REJECTION = "decoder-rejection"
     UNKNOWN_INSTRUMENT = "unknown-instrument"
     METADATA_UNAVAILABLE = "metadata-unavailable"
+    PROVENANCE_MISMATCH = "provenance-mismatch"
     LOCAL_CONTRACT_FAILURE = "local-contract-failure"
 
 
@@ -3544,6 +3611,7 @@ type CoverageEvidenceSource = (
     | TransportAmbiguityEvidenceSource
     | RawRecordEvidenceSource
     | UpstreamCoverageTransitionEvidenceSource
+    | UpstreamCoverageStateEvidenceSource
     | NormalizationFailureEvidenceSource
     | SourceSequenceBreakEvidenceSource
     | SourceEventConflictEvidenceSource
@@ -3875,12 +3943,20 @@ def _coverage_source_components(source: CoverageEvidenceSource) -> tuple[object,
     return source.canonical_components()
 
 
-def _raw_record_feed_run(raw_record_id: RawRecordId) -> tuple[FeedProductId, CollectorRunId]:
+def _raw_record_feed_run_session(
+    raw_record_id: RawRecordId,
+) -> tuple[FeedProductId, CollectorRunId, ConnectionSessionId]:
     components = parse_canonical_json_array(raw_record_id.value, field_name="raw_record_id")
     return (
         FeedProductId(_component_text(components[1], field_name="feed_product_id")),
         CollectorRunId(_component_text(components[2], field_name="collector_run_id")),
+        ConnectionSessionId(_component_text(components[3], field_name="connection_session_id")),
     )
+
+
+def _raw_record_feed_run(raw_record_id: RawRecordId) -> tuple[FeedProductId, CollectorRunId]:
+    feed, run, _session = _raw_record_feed_run_session(raw_record_id)
+    return feed, run
 
 
 def _same_event_scope(left: CoverageScopeId, right: CoverageScopeId) -> bool:
@@ -3904,6 +3980,7 @@ def _validate_coverage_evidence_source(
         CoverageEvidenceKind.UPSTREAM_COVERAGE_TRANSITION: (
             UpstreamCoverageTransitionEvidenceSource
         ),
+        CoverageEvidenceKind.UPSTREAM_COVERAGE_STATE: UpstreamCoverageStateEvidenceSource,
         CoverageEvidenceKind.NORMALIZATION_FAILURE: NormalizationFailureEvidenceSource,
         CoverageEvidenceKind.SOURCE_SEQUENCE: SourceSequenceBreakEvidenceSource,
         CoverageEvidenceKind.AUTHORITATIVE_STATE_SNAPSHOT: (
@@ -3925,6 +4002,7 @@ def _validate_coverage_evidence_source(
         CoverageEvidenceKind.RAW_SINK_ACCEPTANCE_AMBIGUITY: {CoverageDomain.BRONZE_INGRESS},
         CoverageEvidenceKind.RAW_RECORD_REJECTION: {CoverageDomain.BRONZE_INGRESS},
         CoverageEvidenceKind.UPSTREAM_COVERAGE_TRANSITION: {CoverageDomain.SILVER_NORMALIZATION},
+        CoverageEvidenceKind.UPSTREAM_COVERAGE_STATE: {CoverageDomain.SILVER_NORMALIZATION},
         CoverageEvidenceKind.NORMALIZATION_FAILURE: {CoverageDomain.SILVER_NORMALIZATION},
         CoverageEvidenceKind.SOURCE_SEQUENCE: {
             CoverageDomain.BRONZE_INGRESS,
@@ -3991,31 +4069,37 @@ def _validate_coverage_evidence_source(
             raise ValueError("raw evidence must belong to the coverage feed and collector run.")
         return
     if type(source) is UpstreamCoverageTransitionEvidenceSource:
-        transition_components = parse_canonical_json_array(
-            source.coverage_transition_id.value,
-            field_name="upstream_coverage_transition_id",
-        )
-        upstream_scope_id = CoverageScopeId(
-            _component_text(transition_components[1], field_name="upstream_coverage_scope_id")
-        )
-        upstream_epoch_id = CoverageEpochId(
-            _component_text(transition_components[2], field_name="upstream_coverage_epoch_id")
-        )
+        upstream_state = source.committed_state.state_reference
+        upstream_scope_id = upstream_state.reference.scope.coverage_scope_id
         upstream_scope_components = parse_canonical_json_array(
             upstream_scope_id.value,
             field_name="upstream_coverage_scope_id",
-        )
-        upstream_epoch_components = parse_canonical_json_array(
-            upstream_epoch_id.value,
-            field_name="upstream_coverage_epoch_id",
         )
         if (
             scope.domain is not CoverageDomain.SILVER_NORMALIZATION
             or upstream_scope_components[1] != CoverageDomain.BRONZE_INGRESS.value
             or not _same_event_scope(upstream_scope_id, scope.coverage_scope_id)
-            or upstream_epoch_components[2] != run.value
+            or upstream_state.reference.epoch.collector_run_id != run
+            or upstream_state.reference.status is CoverageStatus.COMPLETE
         ):
             raise ValueError("upstream transition must match the Bronze event scope and run.")
+        return
+    if type(source) is UpstreamCoverageStateEvidenceSource:
+        upstream_scope_id, upstream_run_id, upstream_status = _upstream_coverage_state_details(
+            source.coverage_state_reference_id
+        )
+        upstream_scope_components = parse_canonical_json_array(
+            upstream_scope_id.value,
+            field_name="upstream_coverage_scope_id",
+        )
+        if (
+            scope.domain is not CoverageDomain.SILVER_NORMALIZATION
+            or upstream_scope_components[1] != CoverageDomain.BRONZE_INGRESS.value
+            or not _same_event_scope(upstream_scope_id, scope.coverage_scope_id)
+            or upstream_run_id != run
+            or upstream_status is CoverageStatus.COMPLETE
+        ):
+            raise ValueError("upstream state must be degraded matching Bronze coverage.")
         return
     if type(source) is NormalizationFailureEvidenceSource:
         raw_feed, raw_run = _raw_record_feed_run(source.raw_record_id)
@@ -4082,6 +4166,7 @@ def _validate_coverage_evidence_id_components(
         CoverageEvidenceKind.UPSTREAM_COVERAGE_TRANSITION: (
             "upstream-coverage-transition-evidence-v1"
         ),
+        CoverageEvidenceKind.UPSTREAM_COVERAGE_STATE: "upstream-coverage-state-evidence-v1",
         CoverageEvidenceKind.NORMALIZATION_FAILURE: ("normalization-failure-evidence-reference-v1"),
         CoverageEvidenceKind.SOURCE_SEQUENCE: "source-sequence-break-evidence-v1",
         CoverageEvidenceKind.AUTHORITATIVE_STATE_SNAPSHOT: (
@@ -4111,6 +4196,7 @@ def _validate_coverage_evidence_id_components(
         CoverageEvidenceKind.RAW_SINK_ACCEPTANCE_AMBIGUITY: {CoverageDomain.BRONZE_INGRESS},
         CoverageEvidenceKind.RAW_RECORD_REJECTION: {CoverageDomain.BRONZE_INGRESS},
         CoverageEvidenceKind.UPSTREAM_COVERAGE_TRANSITION: {CoverageDomain.SILVER_NORMALIZATION},
+        CoverageEvidenceKind.UPSTREAM_COVERAGE_STATE: {CoverageDomain.SILVER_NORMALIZATION},
         CoverageEvidenceKind.NORMALIZATION_FAILURE: {CoverageDomain.SILVER_NORMALIZATION},
         CoverageEvidenceKind.SOURCE_SEQUENCE: {
             CoverageDomain.BRONZE_INGRESS,
@@ -4266,34 +4352,50 @@ def _validate_coverage_evidence_id_components(
             raise ValueError("raw evidence must bind the exact coverage scope.")
     elif kind is CoverageEvidenceKind.UPSTREAM_COVERAGE_TRANSITION:
         _require_component_count(source, 2, identifier_name="upstream transition source")
-        transition = CoverageTransitionId(
-            _component_text(source[1], field_name="coverage_transition_id")
+        committed = CommittedCoverageStateId(
+            _component_text(source[1], field_name="committed_coverage_state_id")
         )
-        transition_components = parse_canonical_json_array(
-            transition.value,
-            field_name="coverage_transition_id",
+        committed_details = _committed_coverage_state_id_details(committed)
+        state_components = parse_canonical_json_array(
+            committed_details[0].value,
+            field_name="coverage_state_reference_id",
         )
-        upstream_scope = CoverageScopeId(
-            _component_text(transition_components[1], field_name="upstream_scope_id")
-        )
-        upstream_epoch = CoverageEpochId(
-            _component_text(transition_components[2], field_name="upstream_epoch_id")
-        )
+        if state_components[1] != "transition":
+            raise ValueError("upstream transition evidence requires a transitioned state.")
+        upstream_scope = committed_details[1]
         upstream_scope_components = parse_canonical_json_array(
             upstream_scope.value,
             field_name="upstream_scope_id",
-        )
-        upstream_epoch_components = parse_canonical_json_array(
-            upstream_epoch.value,
-            field_name="upstream_epoch_id",
         )
         if (
             scope_components[1] != CoverageDomain.SILVER_NORMALIZATION.value
             or upstream_scope_components[1] != CoverageDomain.BRONZE_INGRESS.value
             or not _same_event_scope(upstream_scope, scope)
-            or upstream_epoch_components[2] != run.value
+            or committed_details[2] != run
+            or committed_details[3] is CoverageStatus.COMPLETE
         ):
             raise ValueError("upstream coverage evidence must match Bronze scope and run.")
+    elif kind is CoverageEvidenceKind.UPSTREAM_COVERAGE_STATE:
+        _require_component_count(source, 2, identifier_name="upstream state source")
+        committed = CommittedCoverageStateId(
+            _component_text(source[1], field_name="committed_coverage_state_id")
+        )
+        committed_details = _committed_coverage_state_id_details(committed)
+        upstream_scope = committed_details[1]
+        upstream_run = committed_details[2]
+        upstream_status = committed_details[3]
+        upstream_scope_components = parse_canonical_json_array(
+            upstream_scope.value,
+            field_name="upstream_scope_id",
+        )
+        if (
+            scope_components[1] != CoverageDomain.SILVER_NORMALIZATION.value
+            or upstream_scope_components[1] != CoverageDomain.BRONZE_INGRESS.value
+            or not _same_event_scope(upstream_scope, scope)
+            or upstream_run != run
+            or upstream_status is CoverageStatus.COMPLETE
+        ):
+            raise ValueError("upstream state evidence must match degraded Bronze scope and run.")
     elif kind is CoverageEvidenceKind.NORMALIZATION_FAILURE:
         _require_component_count(source, 2, identifier_name="normalization evidence source")
         failure = NormalizationFailureEvidenceId(
@@ -4360,6 +4462,16 @@ def _validate_coverage_evidence_id_components(
     )
     if observed_monotonic_ns < epoch_activation_monotonic_ns:
         raise ValueError("coverage evidence cannot precede epoch activation.")
+    if kind in {
+        CoverageEvidenceKind.UPSTREAM_COVERAGE_TRANSITION,
+        CoverageEvidenceKind.UPSTREAM_COVERAGE_STATE,
+    }:
+        committed = CommittedCoverageStateId(
+            _component_text(source[1], field_name="committed_coverage_state_id")
+        )
+        upstream_details = _committed_coverage_state_id_details(committed)
+        if observed_monotonic_ns < upstream_details[6]:
+            raise ValueError("downstream evidence cannot precede upstream monotonic evidence.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -4396,6 +4508,16 @@ class CoverageEvidence:
             scope=self.scope,
             epoch=self.epoch,
         )
+        if isinstance(
+            self.source,
+            (UpstreamCoverageTransitionEvidenceSource, UpstreamCoverageStateEvidenceSource),
+        ):
+            upstream_state = self.source.committed_state.state_reference
+            upstream_details = _coverage_state_reference_details(
+                upstream_state.coverage_state_reference_id
+            )
+            if monotonic < upstream_details[6]:
+                raise ValueError("downstream evidence cannot precede upstream monotonic evidence.")
         object.__setattr__(
             self,
             "observed_at",
@@ -4463,7 +4585,13 @@ _INITIAL_COVERAGE_MATRIX: Final = frozenset(
             CoverageDomain.SILVER_NORMALIZATION,
             CoverageStatus.UNCERTAIN,
             InitialCoverageReason.UPSTREAM_COVERAGE_DEGRADED,
-            CoverageEvidenceKind.UPSTREAM_COVERAGE_TRANSITION,
+            CoverageEvidenceKind.UPSTREAM_COVERAGE_STATE,
+        ),
+        (
+            CoverageDomain.SILVER_NORMALIZATION,
+            CoverageStatus.CONFIRMED_INCOMPLETE,
+            InitialCoverageReason.UPSTREAM_COVERAGE_DEGRADED,
+            CoverageEvidenceKind.UPSTREAM_COVERAGE_STATE,
         ),
         (
             CoverageDomain.SILVER_NORMALIZATION,
@@ -4576,7 +4704,42 @@ class CoverageReference:
             and row[2] is self.initial_reason
             and row[3] is self.initial_evidence.kind
         )
-        if len(initial_matches) != 1 or (ordinal == 0 and initial_matches[0][1] is not self.status):
+        if type(self.initial_evidence.source) is UpstreamCoverageStateEvidenceSource:
+            upstream_details = _coverage_state_reference_details(
+                self.initial_evidence.source.coverage_state_reference_id
+            )
+            if (
+                self.scope.domain,
+                upstream_details[3],
+                self.initial_reason,
+                self.initial_evidence.kind,
+            ) not in _INITIAL_COVERAGE_MATRIX or (
+                ordinal == 0 and upstream_details[3] is not self.status
+            ):
+                raise ValueError(
+                    "initial Silver status must exactly match its degraded Bronze state."
+                )
+            if ordinal == 0 and (
+                canonical_utc_datetime(
+                    self.initial_evidence.observed_at,
+                    field_name="initial_evidence.observed_at",
+                )
+                != upstream_details[5]
+                or self.initial_evidence.observed_monotonic_ns != upstream_details[6]
+            ):
+                raise ValueError(
+                    "initial Silver boundary must exactly copy its upstream Bronze boundary."
+                )
+        elif (
+            ordinal == 0
+            and self.initial_evidence.kind is CoverageEvidenceKind.TRANSPORT_FAILURE
+            and type(self.initial_evidence.source) is TransportAmbiguityEvidenceSource
+            and self.initial_evidence.source.subscription_attempt is None
+        ):
+            raise ValueError("transport failure before any send cannot initialize coverage.")
+        elif len(initial_matches) != 1 or (
+            ordinal == 0 and initial_matches[0][1] is not self.status
+        ):
             raise ValueError("initial coverage status, reason and evidence are incompatible.")
         if self.transition_id is not None:
             transition_components = json.loads(self.transition_id.value)
@@ -4692,6 +4855,11 @@ _CONFIRMED_INCOMPLETE_TRANSITION_EVIDENCE: Final = frozenset(
         ),
         (
             CoverageDomain.SILVER_NORMALIZATION,
+            CoverageReason.UPSTREAM_COVERAGE_DEGRADED,
+            CoverageEvidenceKind.UPSTREAM_COVERAGE_TRANSITION,
+        ),
+        (
+            CoverageDomain.SILVER_NORMALIZATION,
             CoverageReason.IN_SCOPE_NORMALIZATION_FAILURE,
             CoverageEvidenceKind.NORMALIZATION_FAILURE,
         ),
@@ -4725,7 +4893,7 @@ def _validate_coverage_transition_semantics(
     """Validate the closed evidence matrix for one requested status change."""
 
     if domain is CoverageDomain.SILVER_DELIVERY:
-        raise ValueError("silver delivery is represented by DeliveryOutcome, not event coverage.")
+        raise ValueError("silver delivery is represented by separate delivery contracts.")
 
     severity = {
         CoverageStatus.COMPLETE: 0,
@@ -4751,6 +4919,25 @@ def _validate_coverage_transition_semantics(
             )
         return
     raise ValueError("the requested coverage transition is not allowed.")
+
+
+def _validate_upstream_transition_status(
+    *,
+    requested_status: CoverageStatus,
+    evidence: CoverageEvidence,
+) -> None:
+    """Require exact status propagation and same-run monotonic causality."""
+
+    if evidence.kind is not CoverageEvidenceKind.UPSTREAM_COVERAGE_TRANSITION:
+        return
+    if type(evidence.source) is not UpstreamCoverageTransitionEvidenceSource:
+        raise ValueError("upstream transition evidence requires its committed source.")
+    upstream = evidence.source.committed_state.state_reference
+    if requested_status is not upstream.reference.status:
+        raise ValueError("downstream coverage status must exactly match upstream status.")
+    upstream_details = _coverage_state_reference_details(upstream.coverage_state_reference_id)
+    if evidence.observed_monotonic_ns < upstream_details[6]:
+        raise ValueError("downstream coverage evidence cannot precede upstream evidence.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -4823,6 +5010,10 @@ class CoverageTransition:
             reason=self.reason,
             evidence_kind=self.evidence.kind,
         )
+        _validate_upstream_transition_status(
+            requested_status=self.new_status,
+            evidence=self.evidence,
+        )
 
 
 def reduce_coverage(
@@ -4870,6 +5061,10 @@ def reduce_coverage(
         reason=requested.reason,
         evidence_kind=evidence.kind,
     )
+    _validate_upstream_transition_status(
+        requested_status=requested.requested_status,
+        evidence=evidence,
+    )
 
     transition_id = CoverageTransitionId(
         canonical_json_array(
@@ -4907,23 +5102,2430 @@ def reduce_coverage(
 
 
 @dataclass(frozen=True, slots=True)
+class CoverageInitializationId(_CanonicalIdentifier):
+    """Canonical ``coverage-initialization-v1`` identity text."""
+
+    VERSION_TAG: ClassVar = "coverage-initialization-v1"
+
+    def _validate_components(self, components: tuple[CanonicalValue, ...]) -> None:
+        _require_component_count(components, 11, identifier_name=type(self).__name__)
+        run = CollectorRunId(_component_text(components[1], field_name="collector_run_id"))
+        scope = CoverageScopeId(_component_text(components[2], field_name="coverage_scope_id"))
+        epoch = CoverageEpochId(_component_text(components[3], field_name="coverage_epoch_id"))
+        epoch_components = parse_canonical_json_array(epoch.value, field_name="coverage_epoch_id")
+        if epoch_components[1] != scope.value or epoch_components[2] != run.value:
+            raise ValueError("coverage initialization scope, epoch and collector run disagree.")
+        try:
+            status = CoverageStatus(_component_text(components[4], field_name="coverage_status"))
+            reason = InitialCoverageReason(
+                _component_text(components[5], field_name="initial_coverage_reason")
+            )
+        except ValueError:
+            raise ValueError(
+                "coverage initialization contains an unsupported enum value."
+            ) from None
+        activation = _canonical_utc_component(components[6], field_name="activation_time")
+        activation_monotonic = _component_nonnegative_int(
+            components[7], field_name="activation_monotonic_ns"
+        )
+        evidence = CoverageEvidenceId(
+            _component_text(components[8], field_name="coverage_evidence_id")
+        )
+        evidence_components = parse_canonical_json_array(
+            evidence.value, field_name="coverage_evidence_id"
+        )
+        scope_components = parse_canonical_json_array(scope.value, field_name="coverage_scope_id")
+        try:
+            domain = CoverageDomain(
+                _component_text(scope_components[1], field_name="coverage_domain")
+            )
+            evidence_kind = CoverageEvidenceKind(
+                _component_text(evidence_components[4], field_name="coverage_evidence_kind")
+            )
+        except ValueError:
+            raise ValueError(
+                "coverage initialization contains an unsupported coverage binding."
+            ) from None
+        if (domain, status, reason, evidence_kind) not in _INITIAL_COVERAGE_MATRIX:
+            raise ValueError("coverage initialization violates the closed initial matrix.")
+        observed = _canonical_utc_component(components[9], field_name="evidence_observed_at")
+        observed_monotonic = _component_nonnegative_int(
+            components[10], field_name="evidence_observed_monotonic_ns"
+        )
+        if (
+            epoch_components[4] != activation
+            or epoch_components[5] != activation_monotonic
+            or evidence_components[1] != scope.value
+            or evidence_components[2] != epoch.value
+            or evidence_components[3] != run.value
+            or evidence_components[6] != observed
+            or evidence_components[7] != observed_monotonic
+            or observed != activation
+            or observed_monotonic != activation_monotonic
+        ):
+            raise ValueError("coverage initialization does not bind one exact activation boundary.")
+        source = _component_tuple(evidence_components[5], field_name="coverage_evidence_source")
+        if evidence_kind is CoverageEvidenceKind.TRANSPORT_FAILURE:
+            _require_component_count(source, 5, identifier_name="transport ambiguity source")
+            if source[3] is None:
+                raise ValueError("transport failure before any send cannot initialize coverage.")
+        if evidence_kind is CoverageEvidenceKind.UPSTREAM_COVERAGE_STATE:
+            _require_component_count(source, 2, identifier_name="upstream state source")
+            committed = CommittedCoverageStateId(
+                _component_text(source[1], field_name="committed_coverage_state_id")
+            )
+            upstream_details = _committed_coverage_state_id_details(committed)
+            if (
+                status is not upstream_details[3]
+                or observed != upstream_details[5]
+                or observed_monotonic != upstream_details[6]
+            ):
+                raise ValueError(
+                    "initial downstream coverage must copy exact upstream status and boundary."
+                )
+
+
+@dataclass(frozen=True, slots=True)
+class CoverageStateReferenceId(_CanonicalIdentifier):
+    """Canonical candidate-state token retaining its complete predecessor chain."""
+
+    VERSION_TAG: ClassVar = "coverage-state-reference-v1"
+
+    def _validate_components(self, components: tuple[CanonicalValue, ...]) -> None:
+        if len(components) not in {3, 5}:
+            raise ValueError("CoverageStateReferenceId has an invalid component count.")
+        tag = _component_text(components[1], field_name="coverage_state_reference_kind")
+        initialization = CoverageInitializationId(
+            _component_text(components[2], field_name="coverage_initialization_id")
+        )
+        if tag == "initialization":
+            if len(components) != 3:
+                raise ValueError("initial coverage state reference has invalid components.")
+            return
+        if tag != "transition" or len(components) != 5:
+            raise ValueError("coverage state reference has an unsupported kind.")
+        predecessor = CoverageStateReferenceId(
+            _component_text(components[3], field_name="previous_state_reference_id")
+        )
+        transition = CoverageTransitionId(
+            _component_text(components[4], field_name="coverage_transition_id")
+        )
+        initialization_components = parse_canonical_json_array(
+            initialization.value, field_name="coverage_initialization_id"
+        )
+        transition_components = parse_canonical_json_array(
+            transition.value, field_name="coverage_transition_id"
+        )
+        predecessor_details = _coverage_state_reference_details(predecessor)
+        if (
+            predecessor_details[0] != initialization
+            or predecessor_details[1]
+            != CoverageScopeId(
+                _component_text(initialization_components[2], field_name="coverage_scope_id")
+            )
+            or transition_components[1] != initialization_components[2]
+            or transition_components[2] != initialization_components[3]
+            or transition_components[3] != predecessor_details[4] + 1
+            or transition_components[4] != predecessor_details[3].value
+        ):
+            raise ValueError("coverage state transition must retain its exact predecessor history.")
+        evidence_components = parse_canonical_json_array(
+            _component_text(transition_components[7], field_name="coverage_evidence_id"),
+            field_name="coverage_evidence_id",
+        )
+        transition_monotonic = _component_nonnegative_int(
+            evidence_components[7],
+            field_name="transition_observed_monotonic_ns",
+        )
+        if transition_monotonic < predecessor_details[6]:
+            raise ValueError("coverage state history cannot move backwards in monotonic time.")
+
+
+def _coverage_state_reference_details(
+    state_reference_id: CoverageStateReferenceId,
+) -> tuple[
+    CoverageInitializationId,
+    CoverageScopeId,
+    CollectorRunId,
+    CoverageStatus,
+    int,
+    str,
+    int,
+]:
+    """Return validated initialization, scope, run, status, ordinal and boundary."""
+
+    if type(state_reference_id) is not CoverageStateReferenceId:
+        raise TypeError("state_reference_id must be a CoverageStateReferenceId.")
+    state_components = parse_canonical_json_array(
+        state_reference_id.value,
+        field_name="coverage_state_reference_id",
+    )
+    initialization = CoverageInitializationId(
+        _component_text(state_components[2], field_name="coverage_initialization_id")
+    )
+    initialization_components = parse_canonical_json_array(
+        initialization.value,
+        field_name="coverage_initialization_id",
+    )
+    scope = CoverageScopeId(
+        _component_text(initialization_components[2], field_name="coverage_scope_id")
+    )
+    run = CollectorRunId(
+        _component_text(initialization_components[1], field_name="collector_run_id")
+    )
+    if state_components[1] == "initialization":
+        return (
+            initialization,
+            scope,
+            run,
+            CoverageStatus(
+                _component_text(initialization_components[4], field_name="coverage_status")
+            ),
+            0,
+            _canonical_utc_component(
+                initialization_components[9], field_name="evidence_observed_at"
+            ),
+            _component_nonnegative_int(
+                initialization_components[10],
+                field_name="evidence_observed_monotonic_ns",
+            ),
+        )
+    transition = CoverageTransitionId(
+        _component_text(state_components[4], field_name="coverage_transition_id")
+    )
+    transition_components = parse_canonical_json_array(
+        transition.value,
+        field_name="coverage_transition_id",
+    )
+    evidence_components = parse_canonical_json_array(
+        _component_text(transition_components[7], field_name="coverage_evidence_id"),
+        field_name="coverage_evidence_id",
+    )
+    return (
+        initialization,
+        scope,
+        run,
+        CoverageStatus(_component_text(transition_components[5], field_name="coverage_status")),
+        _component_nonnegative_int(transition_components[3], field_name="transition_ordinal"),
+        _canonical_utc_component(evidence_components[6], field_name="evidence_observed_at"),
+        _component_nonnegative_int(
+            evidence_components[7], field_name="evidence_observed_monotonic_ns"
+        ),
+    )
+
+
+def _upstream_coverage_state_details(
+    state_reference_id: CoverageStateReferenceId,
+) -> tuple[CoverageScopeId, CollectorRunId, CoverageStatus]:
+    """Return the exact upstream scope, run and status represented by a state token."""
+
+    details = _coverage_state_reference_details(state_reference_id)
+    return details[1], details[2], details[3]
+
+
+def _committed_coverage_state_id_details(
+    committed_state_id: "CommittedCoverageStateId",
+) -> tuple[
+    CoverageStateReferenceId,
+    CoverageScopeId,
+    CollectorRunId,
+    CoverageStatus,
+    int,
+    str,
+    int,
+]:
+    """Return the state facts cryptographically bound by a committed-state ID."""
+
+    if type(committed_state_id) is not CommittedCoverageStateId:
+        raise TypeError("committed_state_id must be a CommittedCoverageStateId.")
+    components = parse_canonical_json_array(
+        committed_state_id.value,
+        field_name="committed_coverage_state_id",
+    )
+    state_id = CoverageStateReferenceId(
+        _component_text(components[1], field_name="coverage_state_reference_id")
+    )
+    CoverageCommitAcceptanceId(
+        _component_text(components[2], field_name="coverage_commit_acceptance_id")
+    )
+    state_details = _coverage_state_reference_details(state_id)
+    return (
+        state_id,
+        state_details[1],
+        state_details[2],
+        state_details[3],
+        state_details[4],
+        state_details[5],
+        state_details[6],
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class CoverageTargetCatalogId(_CanonicalIdentifier):
+    """Bounded content-addressed identity for one plan-derived leaf-scope catalogue."""
+
+    VERSION_TAG: ClassVar = "coverage-target-catalog-v1"
+
+    def _validate_components(self, components: tuple[CanonicalValue, ...]) -> None:
+        _require_component_count(components, 4, identifier_name=type(self).__name__)
+        SubscriptionPlanId(_component_text(components[1], field_name="subscription_plan_id"))
+        count = _component_nonnegative_int(components[2], field_name="target_count")
+        if count == 0 or count > MAX_COVERAGE_MUTATION_TARGETS:
+            raise ValueError("coverage target count is outside its finite bound.")
+        require_sha256(
+            _component_text(components[3], field_name="coverage_target_catalog_sha256"),
+            field_name="coverage_target_catalog_sha256",
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CoverageFanoutProofId(_CanonicalIdentifier):
+    """Bounded content-addressed identity for one cause-specific target proof."""
+
+    VERSION_TAG: ClassVar = "coverage-fanout-proof-v1"
+
+    def _validate_components(self, components: tuple[CanonicalValue, ...]) -> None:
+        _require_component_count(components, 6, identifier_name=type(self).__name__)
+        try:
+            kind = CoverageFanoutKind(
+                _component_text(components[1], field_name="coverage_fanout_kind")
+            )
+        except ValueError:
+            raise ValueError("coverage fanout proof has an unsupported kind.") from None
+        plan = SubscriptionPlanId(_component_text(components[2], field_name="subscription_plan_id"))
+        catalog = CoverageTargetCatalogId(
+            _component_text(components[3], field_name="coverage_target_catalog_id")
+        )
+        catalog_components = parse_canonical_json_array(
+            catalog.value, field_name="coverage_target_catalog_id"
+        )
+        if catalog_components[1] != plan.value:
+            raise ValueError("coverage fanout plan and target catalogue disagree.")
+        count = _component_nonnegative_int(components[4], field_name="target_count")
+        if count > MAX_COVERAGE_MUTATION_TARGETS:
+            raise ValueError("coverage fanout target count is outside its finite bound.")
+        if (kind is CoverageFanoutKind.HANDSHAKE_BEFORE_SEND) is (count != 0):
+            raise ValueError("only handshake-before-send fanout may have zero targets.")
+        require_sha256(
+            _component_text(components[5], field_name="coverage_fanout_content_sha256"),
+            field_name="coverage_fanout_content_sha256",
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RawCoverageFanoutBindingId(_CanonicalIdentifier):
+    """Canonical binding of one fanout proof to one exact raw snapshot."""
+
+    VERSION_TAG: ClassVar = _RAW_COVERAGE_FANOUT_BINDING_ID_VERSION
+
+    def _validate_components(self, components: tuple[CanonicalValue, ...]) -> None:
+        _require_component_count(components, 5, identifier_name=type(self).__name__)
+        RawRecordId(_component_text(components[1], field_name="raw_record_id"))
+        CoverageFanoutProofId(_component_text(components[2], field_name="coverage_fanout_proof_id"))
+        require_sha256(
+            _component_text(
+                components[3],
+                field_name="subscription_snapshot_content_sha256",
+            ),
+            field_name="subscription_snapshot_content_sha256",
+        )
+        require_sha256(
+            _component_text(
+                components[4],
+                field_name="raw_coverage_fanout_binding_content_sha256",
+            ),
+            field_name="raw_coverage_fanout_binding_content_sha256",
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CoverageMutationBatchId(_CanonicalIdentifier):
+    """Bounded content-addressed identity for one prepared all-target CAS batch."""
+
+    VERSION_TAG: ClassVar = "coverage-mutation-batch-v1"
+
+    def _validate_components(self, components: tuple[CanonicalValue, ...]) -> None:
+        _require_component_count(components, 4, identifier_name=type(self).__name__)
+        fanout = CoverageFanoutProofId(
+            _component_text(components[1], field_name="coverage_fanout_proof_id")
+        )
+        count = _component_nonnegative_int(components[2], field_name="target_count")
+        if count > MAX_COVERAGE_MUTATION_TARGETS:
+            raise ValueError("coverage mutation target count is outside its finite bound.")
+        fanout_components = parse_canonical_json_array(
+            fanout.value, field_name="coverage_fanout_proof_id"
+        )
+        if fanout_components[4] != count:
+            raise ValueError("coverage mutation and fanout target counts disagree.")
+        require_sha256(
+            _component_text(components[3], field_name="coverage_mutation_content_sha256"),
+            field_name="coverage_mutation_content_sha256",
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CoverageCommitAcceptanceId(_CanonicalIdentifier):
+    """Bounded content-addressed proof identity created only after a successful CAS.
+
+    Exact preimage::
+
+        ["coverage-commit-acceptance-v1", coverage_mutation_batch_id,
+         resulting_state_count, SHA256(canonical_acceptance_content)]
+    """
+
+    VERSION_TAG: ClassVar = "coverage-commit-acceptance-v1"
+
+    def _validate_components(self, components: tuple[CanonicalValue, ...]) -> None:
+        _require_component_count(components, 4, identifier_name=type(self).__name__)
+        batch = CoverageMutationBatchId(
+            _component_text(components[1], field_name="coverage_mutation_batch_id")
+        )
+        count = _component_nonnegative_int(components[2], field_name="resulting_state_count")
+        if count > MAX_COVERAGE_MUTATION_TARGETS:
+            raise ValueError("coverage acceptance result count is outside its finite bound.")
+        batch_components = parse_canonical_json_array(
+            batch.value, field_name="coverage_mutation_batch_id"
+        )
+        if batch_components[2] != count:
+            raise ValueError("coverage acceptance count must match its mutation batch.")
+        require_sha256(
+            _component_text(components[3], field_name="coverage_acceptance_content_sha256"),
+            field_name="coverage_acceptance_content_sha256",
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CommittedCoverageStateId(_CanonicalIdentifier):
+    """Canonical binding of one candidate state token to its CAS acceptance."""
+
+    VERSION_TAG: ClassVar = "committed-coverage-state-v1"
+
+    def _validate_components(self, components: tuple[CanonicalValue, ...]) -> None:
+        _require_component_count(components, 3, identifier_name=type(self).__name__)
+        CoverageStateReferenceId(
+            _component_text(components[1], field_name="coverage_state_reference_id")
+        )
+        CoverageCommitAcceptanceId(
+            _component_text(components[2], field_name="coverage_commit_acceptance_id")
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CoverageInitialization:
+    """Immutable ordinal-zero state decision with an independently verifiable ID.
+
+    ID preimage, in exact order::
+
+        ["coverage-initialization-v1", collector_run_id, coverage_scope_id,
+         coverage_epoch_id, initial_status, initial_reason, activation_utc,
+         activation_monotonic_ns, evidence_id, evidence_utc,
+         evidence_monotonic_ns]
+    """
+
+    scope: CoverageScope
+    epoch: CoverageEpochIdentity
+    status: CoverageStatus
+    initial_reason: InitialCoverageReason
+    initial_evidence: CoverageEvidence
+    reference: CoverageReference = field(init=False, repr=False)
+    coverage_initialization_id: CoverageInitializationId = field(init=False)
+
+    def __post_init__(self) -> None:
+        reference = CoverageReference.initial(
+            scope=self.scope,
+            epoch=self.epoch,
+            status=self.status,
+            initial_reason=self.initial_reason,
+            initial_evidence=self.initial_evidence,
+        )
+        initialization_id = CoverageInitializationId(
+            canonical_json_array(
+                (
+                    "coverage-initialization-v1",
+                    self.epoch.collector_run_id,
+                    self.scope.coverage_scope_id,
+                    self.epoch.coverage_epoch_id,
+                    self.status.value,
+                    self.initial_reason.value,
+                    canonical_utc_datetime(
+                        self.epoch.activation_time,
+                        field_name="activation_time",
+                    ),
+                    self.epoch.activation_monotonic_ns,
+                    self.initial_evidence.coverage_evidence_id,
+                    canonical_utc_datetime(
+                        self.initial_evidence.observed_at,
+                        field_name="evidence_observed_at",
+                    ),
+                    self.initial_evidence.observed_monotonic_ns,
+                )
+            )
+        )
+        object.__setattr__(self, "reference", reference)
+        object.__setattr__(self, "coverage_initialization_id", initialization_id)
+
+    @classmethod
+    def from_stored(
+        cls,
+        *,
+        scope: CoverageScope,
+        epoch: CoverageEpochIdentity,
+        status: CoverageStatus,
+        initial_reason: InitialCoverageReason,
+        initial_evidence: CoverageEvidence,
+        expected_initialization_id: CoverageInitializationId,
+    ) -> Self:
+        """Recompute a stored initialization and reject an ID mismatch."""
+
+        if type(expected_initialization_id) is not CoverageInitializationId:
+            raise TypeError("expected_initialization_id must be a CoverageInitializationId.")
+        value = cls(scope, epoch, status, initial_reason, initial_evidence)
+        if value.coverage_initialization_id != expected_initialization_id:
+            raise ValueError("stored coverage initialization ID does not match its content.")
+        return value
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class CoverageStateReference:
+    """CAS token created only from initialization or a reducer-produced transition.
+
+    Initial ID preimage::
+
+        ["coverage-state-reference-v1", "initialization",
+         coverage_initialization_id]
+
+    Transitioned ID preimage::
+
+        ["coverage-state-reference-v1", "transition",
+         coverage_initialization_id, previous_coverage_state_reference_id,
+         latest_coverage_transition_id]
+
+    A transitioned reference is a prepared candidate CAS token.  Only a
+    matching :class:`CoverageCommitAcceptance` establishes runtime commit.
+    """
+
+    initialization: CoverageInitialization = field(repr=False)
+    reference: CoverageReference = field(repr=False)
+    previous_state_reference_id: CoverageStateReferenceId | None = field(repr=False)
+    latest_transition: CoverageTransition | None = field(repr=False)
+    coverage_state_reference_id: CoverageStateReferenceId
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        raise TypeError("use CoverageStateReference.from_initialization() or .from_transition().")
+
+    @classmethod
+    def from_initialization(
+        cls, initialization: CoverageInitialization
+    ) -> "CoverageStateReference":
+        if cls is not CoverageStateReference:
+            raise TypeError("coverage state references do not support subclass construction.")
+        if type(initialization) is not CoverageInitialization:
+            raise TypeError("initialization must be a CoverageInitialization.")
+        return _construct_coverage_state_reference(
+            initialization,
+            initialization.reference,
+            None,
+            None,
+        )
+
+    @classmethod
+    def from_transition(
+        cls,
+        *,
+        previous: Self,
+        transition: CoverageTransition,
+        resulting_reference: CoverageReference,
+    ) -> "CoverageStateReference":
+        if cls is not CoverageStateReference:
+            raise TypeError("coverage state references do not support subclass construction.")
+        if type(previous) is not CoverageStateReference:
+            raise TypeError("previous must be a CoverageStateReference.")
+        if type(transition) is not CoverageTransition:
+            raise TypeError("transition must be a CoverageTransition.")
+        if type(resulting_reference) is not CoverageReference:
+            raise TypeError("resulting_reference must be a CoverageReference.")
+        if (
+            transition.scope != previous.reference.scope
+            or transition.epoch != previous.reference.epoch
+        ):
+            raise ValueError("coverage transition must belong to the previous state.")
+        if transition.previous_status is not previous.reference.status:
+            raise ValueError("coverage transition must start at the previous state status.")
+        if transition.transition_ordinal != previous.reference.transition_ordinal + 1:
+            raise ValueError("coverage transition must be exactly the next state ordinal.")
+        if (
+            resulting_reference.scope != transition.scope
+            or resulting_reference.epoch != transition.epoch
+            or resulting_reference.transition_ordinal != transition.transition_ordinal
+            or resulting_reference.status is not transition.new_status
+            or resulting_reference.transition_id != transition.coverage_transition_id
+        ):
+            raise ValueError("resulting coverage reference must match the prepared transition.")
+        return _construct_coverage_state_reference(
+            previous.initialization,
+            resulting_reference,
+            previous.coverage_state_reference_id,
+            transition,
+        )
+
+    @classmethod
+    def from_stored(
+        cls,
+        *,
+        initialization: CoverageInitialization,
+        reference: CoverageReference,
+        latest_transition: CoverageTransition | None,
+        previous_state: Self | None = None,
+        expected_state_reference_id: CoverageStateReferenceId,
+    ) -> "CoverageStateReference":
+        """Recompute a stored tagged reference and fail closed on mismatch."""
+
+        if type(expected_state_reference_id) is not CoverageStateReferenceId:
+            raise TypeError("expected_state_reference_id must be a CoverageStateReferenceId.")
+        if latest_transition is None:
+            if previous_state is not None:
+                raise ValueError("stored initial state reference cannot have a previous state.")
+            value = cls.from_initialization(initialization)
+            if reference != initialization.reference:
+                raise ValueError("stored initial state reference does not match initialization.")
+        else:
+            if type(previous_state) is not CoverageStateReference:
+                raise TypeError(
+                    "previous_state must be a CoverageStateReference for stored transitions."
+                )
+            if previous_state.initialization != initialization:
+                raise ValueError("stored previous state must retain the same initialization.")
+            value = cls.from_transition(
+                previous=previous_state,
+                transition=latest_transition,
+                resulting_reference=reference,
+            )
+        if value.coverage_state_reference_id != expected_state_reference_id:
+            raise ValueError("stored coverage state reference ID does not match its content.")
+        return value
+
+
+def _construct_coverage_state_reference(
+    initialization: CoverageInitialization,
+    reference: CoverageReference,
+    previous_state_reference_id: CoverageStateReferenceId | None,
+    transition: CoverageTransition | None,
+) -> CoverageStateReference:
+    if reference.scope != initialization.scope or reference.epoch != initialization.epoch:
+        raise ValueError("coverage state reference must retain its initialization scope and epoch.")
+    if transition is None:
+        if previous_state_reference_id is not None:
+            raise ValueError("initial state cannot retain a predecessor state.")
+        state_id = CoverageStateReferenceId(
+            canonical_json_array(
+                (
+                    "coverage-state-reference-v1",
+                    "initialization",
+                    initialization.coverage_initialization_id,
+                )
+            )
+        )
+    else:
+        if type(previous_state_reference_id) is not CoverageStateReferenceId:
+            raise TypeError("transitioned state requires a previous state reference ID.")
+        state_id = CoverageStateReferenceId(
+            canonical_json_array(
+                (
+                    "coverage-state-reference-v1",
+                    "transition",
+                    initialization.coverage_initialization_id,
+                    previous_state_reference_id,
+                    transition.coverage_transition_id,
+                )
+            )
+        )
+    value = object.__new__(CoverageStateReference)
+    object.__setattr__(value, "initialization", initialization)
+    object.__setattr__(value, "reference", reference)
+    object.__setattr__(value, "previous_state_reference_id", previous_state_reference_id)
+    object.__setattr__(value, "latest_transition", transition)
+    object.__setattr__(value, "coverage_state_reference_id", state_id)
+    return value
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class CoverageTargetCatalog:
+    """Complete immutable leaf-scope catalogue derived from one subscription plan.
+
+    Content preimage::
+
+        ["coverage-target-catalog-content-v1", subscription_plan_id,
+         sorted_coverage_scope_ids]
+
+    Bounded ID preimage::
+
+        ["coverage-target-catalog-v1", subscription_plan_id, target_count,
+         SHA256(canonical_content)]
+    """
+
+    subscription_plan: SubscriptionPlanIdentity = field(repr=False)
+    scopes: tuple[CoverageScope, ...] = field(repr=False)
+    canonical_content: str = field(repr=False)
+    content_sha256: str
+    coverage_target_catalog_id: CoverageTargetCatalogId
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        raise TypeError("use CoverageTargetCatalog.from_subscription_plan().")
+
+    @classmethod
+    def from_subscription_plan(cls, plan: SubscriptionPlanIdentity) -> Self:
+        if cls is not CoverageTargetCatalog:
+            raise TypeError("coverage target catalogues do not support subclass construction.")
+        if type(plan) is not SubscriptionPlanIdentity:
+            raise TypeError("plan must be a SubscriptionPlanIdentity.")
+        scopes: list[CoverageScope] = []
+        for normalization in plan.normalization_bindings:
+            for instrument_binding in plan.instrument_bindings:
+                if instrument_binding.subscription_spec_id != normalization.subscription_spec_id:
+                    continue
+                for domain in (
+                    CoverageDomain.BRONZE_INGRESS,
+                    CoverageDomain.SILVER_NORMALIZATION,
+                ):
+                    scopes.append(
+                        CoverageScope(
+                            domain=domain,
+                            feed_product_id=plan.feed_product_id,
+                            subscription_spec_ids=(normalization.subscription_spec_id,),
+                            canonical_instrument_ids=(instrument_binding.canonical_instrument_id,),
+                            event_family=normalization.event_family,
+                            event_family_schema_version=normalization.event_family_schema_version,
+                            payload_type=normalization.payload_type,
+                        )
+                    )
+                    if len(scopes) > MAX_COVERAGE_MUTATION_TARGETS:
+                        raise ValueError("plan-derived coverage targets exceed their finite bound.")
+        ordered = tuple(sorted(scopes, key=lambda item: item.coverage_scope_id.value))
+        if not ordered or len({item.coverage_scope_id for item in ordered}) != len(ordered):
+            raise ValueError("plan-derived coverage targets must be non-empty and unique.")
+        content = canonical_json_array(
+            (
+                "coverage-target-catalog-content-v1",
+                plan.subscription_plan_id,
+                tuple(scope.coverage_scope_id.value for scope in ordered),
+            ),
+            maximum_length=MAX_SUBSCRIPTION_PLAN_CONTENT_LENGTH,
+        )
+        digest = sha256_hex(content.encode("utf-8"), field_name="coverage target catalog")
+        catalog_id = CoverageTargetCatalogId(
+            canonical_json_array(
+                ("coverage-target-catalog-v1", plan.subscription_plan_id, len(ordered), digest)
+            )
+        )
+        value = object.__new__(cls)
+        object.__setattr__(value, "subscription_plan", plan)
+        object.__setattr__(value, "scopes", ordered)
+        object.__setattr__(value, "canonical_content", content)
+        object.__setattr__(value, "content_sha256", digest)
+        object.__setattr__(value, "coverage_target_catalog_id", catalog_id)
+        return value
+
+    @classmethod
+    def from_stored(
+        cls,
+        *,
+        plan: SubscriptionPlanIdentity,
+        expected_canonical_content: str,
+        expected_catalog_id: CoverageTargetCatalogId,
+    ) -> "CoverageTargetCatalog":
+        value = cls.from_subscription_plan(plan)
+        if type(expected_canonical_content) is not str:
+            raise TypeError("expected_canonical_content must be a built-in string.")
+        if type(expected_catalog_id) is not CoverageTargetCatalogId:
+            raise TypeError("expected_catalog_id must be a CoverageTargetCatalogId.")
+        if (
+            value.canonical_content != expected_canonical_content
+            or value.coverage_target_catalog_id != expected_catalog_id
+        ):
+            raise ValueError("stored coverage target catalogue does not match its plan.")
+        return value
+
+
+class CoverageFanoutKind(StrEnum):
+    """Closed route proofs for one coverage cause."""
+
+    HANDSHAKE_BEFORE_SEND = "handshake-before-send"
+    ONE_POSSIBLY_DELIVERED_SPEC = "one-possibly-delivered-spec"
+    POSSIBLY_DELIVERED_SPECS = "possibly-delivered-specs"
+    ACKNOWLEDGED_ACTIVE = "acknowledged-active"
+    EXACT_ROUTED_EVENT = "exact-routed-event"
+    EXACT_ROUTED_EVENTS = "exact-routed-events"
+    ALL_POSSIBLY_ACTIVE = "all-possibly-active"
+
+
+def _validate_fanout_parent(
+    plan: SubscriptionPlanIdentity,
+    catalog: CoverageTargetCatalog,
+) -> None:
+    if type(plan) is not SubscriptionPlanIdentity:
+        raise TypeError("plan must be a SubscriptionPlanIdentity.")
+    if type(catalog) is not CoverageTargetCatalog:
+        raise TypeError("catalog must be a CoverageTargetCatalog.")
+    if catalog.subscription_plan.subscription_plan_id != plan.subscription_plan_id:
+        raise ValueError("coverage target catalogue must belong to the supplied plan.")
+
+
+def _validate_complete_attempt_snapshot_set(
+    plan: SubscriptionPlanIdentity,
+    snapshots: tuple[SubscriptionAttemptSnapshot, ...],
+) -> ConnectionSessionIdentity:
+    if type(snapshots) is not tuple:
+        raise TypeError("snapshots must be a built-in tuple.")
+    require_collection_size(
+        snapshots,
+        field_name="snapshots",
+        maximum_items=MAX_SUBSCRIPTION_SPECS,
+        minimum_items=1,
+    )
+    if any(type(item) is not SubscriptionAttemptSnapshot for item in snapshots):
+        raise TypeError("snapshots contain an invalid value.")
+    sessions = {item.subscription_attempt.connection_session for item in snapshots}
+    if len(sessions) != 1:
+        raise ValueError("coverage fanout snapshots must belong to one connection session.")
+    session = next(iter(sessions))
+    expected_specs = tuple(spec.subscription_spec_id for spec in plan.subscription_specs)
+    actual_specs = tuple(item.subscription_spec.subscription_spec_id for item in snapshots)
+    if actual_specs != expected_specs:
+        raise ValueError("coverage fanout requires the complete sorted plan attempt set.")
+    for item in snapshots:
+        if item.subscription_attempt.connection_session != session:
+            raise ValueError("coverage fanout snapshots must belong to one connection session.")
+        if item.subscription_spec.feed_product_id != plan.feed_product_id:
+            raise ValueError("coverage fanout snapshots must belong to the plan feed.")
+    return session
+
+
+@dataclass(frozen=True, slots=True)
+class RoutedCoverageTarget:
+    """One exact acknowledged wire route and its normalized event binding."""
+
+    acknowledged_snapshot: SubscriptionAttemptSnapshot = field(repr=False)
+    canonical_instrument_id: str = field(repr=False)
+    event_family: str
+    event_family_schema_version: int
+    payload_type: str
+
+    def __post_init__(self) -> None:
+        if type(self.acknowledged_snapshot) is not SubscriptionAttemptSnapshot:
+            raise TypeError("acknowledged_snapshot must be a SubscriptionAttemptSnapshot.")
+        if self.acknowledged_snapshot.attempt_status is not SubscriptionAttemptStatus.ACKNOWLEDGED:
+            raise ValueError("routed market data requires an acknowledged subscription attempt.")
+        object.__setattr__(
+            self,
+            "canonical_instrument_id",
+            validate_canonical_instrument_id(self.canonical_instrument_id),
+        )
+        object.__setattr__(
+            self,
+            "event_family",
+            require_code(self.event_family, field_name="event_family"),
+        )
+        family_version = require_nonnegative_int(
+            self.event_family_schema_version,
+            field_name="event_family_schema_version",
+        )
+        if family_version == 0:
+            raise ValueError("event_family_schema_version must be positive.")
+        object.__setattr__(
+            self,
+            "payload_type",
+            require_code(self.payload_type, field_name="payload_type"),
+        )
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class CoverageFanoutProof:
+    """Factory-derived proof of the complete cause-specific leaf-scope slice.
+
+    Content preimage::
+
+        ["coverage-fanout-proof-content-v1", fanout_kind,
+         subscription_plan_id, target_catalog_id, connection_session_id,
+         kind_specific_source_row, sorted_target_scope_ids]
+
+    Bounded ID preimage::
+
+        ["coverage-fanout-proof-v1", fanout_kind, subscription_plan_id,
+         target_catalog_id, target_count, SHA256(canonical_content)]
+    """
+
+    kind: CoverageFanoutKind
+    subscription_plan_id: SubscriptionPlanId
+    coverage_target_catalog_id: CoverageTargetCatalogId
+    connection_session_id: ConnectionSessionId
+    source_canonical_row: tuple[object, ...] = field(repr=False)
+    source_attempt_snapshots: tuple[SubscriptionAttemptSnapshot, ...] = field(repr=False)
+    selected_attempt_ids: tuple[SubscriptionAttemptId, ...] = field(repr=False)
+    target_scopes: tuple[CoverageScope, ...] = field(repr=False)
+    canonical_content: str = field(repr=False)
+    content_sha256: str
+    coverage_fanout_proof_id: CoverageFanoutProofId
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        raise TypeError("use a CoverageFanoutProof cause-specific factory.")
+
+    @classmethod
+    def handshake_before_send(
+        cls,
+        *,
+        plan: SubscriptionPlanIdentity,
+        catalog: CoverageTargetCatalog,
+        connection_session: ConnectionSessionIdentity,
+    ) -> "CoverageFanoutProof":
+        _validate_fanout_parent(plan, catalog)
+        if type(connection_session) is not ConnectionSessionIdentity:
+            raise TypeError("connection_session must be a ConnectionSessionIdentity.")
+        return _construct_coverage_fanout(
+            kind=CoverageFanoutKind.HANDSHAKE_BEFORE_SEND,
+            plan=plan,
+            catalog=catalog,
+            connection_session=connection_session,
+            source_row=("handshake-before-send-v1", connection_session.connection_session_id),
+            source_attempt_snapshots=(),
+            selected_attempt_ids=(),
+            target_scopes=(),
+        )
+
+    @classmethod
+    def one_possibly_delivered_spec(
+        cls,
+        *,
+        plan: SubscriptionPlanIdentity,
+        catalog: CoverageTargetCatalog,
+        snapshot: SubscriptionAttemptSnapshot,
+    ) -> "CoverageFanoutProof":
+        _validate_fanout_parent(plan, catalog)
+        if type(snapshot) is not SubscriptionAttemptSnapshot:
+            raise TypeError("snapshot must be a SubscriptionAttemptSnapshot.")
+        if len(plan.subscription_specs) != 1:
+            raise ValueError("single-spec ambiguity requires a complete one-spec plan snapshot.")
+        proof = cls.possibly_delivered_specs(
+            plan=plan,
+            catalog=catalog,
+            complete_snapshots=(snapshot,),
+            selected_attempt_ids=(snapshot.subscription_attempt.subscription_attempt_id,),
+        )
+        return _construct_coverage_fanout(
+            kind=CoverageFanoutKind.ONE_POSSIBLY_DELIVERED_SPEC,
+            plan=plan,
+            catalog=catalog,
+            connection_session=snapshot.subscription_attempt.connection_session,
+            source_row=("one-possibly-delivered-spec-v1", proof.source_canonical_row),
+            source_attempt_snapshots=(snapshot,),
+            selected_attempt_ids=(snapshot.subscription_attempt.subscription_attempt_id,),
+            target_scopes=proof.target_scopes,
+        )
+
+    @classmethod
+    def possibly_delivered_specs(
+        cls,
+        *,
+        plan: SubscriptionPlanIdentity,
+        catalog: CoverageTargetCatalog,
+        complete_snapshots: tuple[SubscriptionAttemptSnapshot, ...],
+        selected_attempt_ids: tuple[SubscriptionAttemptId, ...],
+    ) -> "CoverageFanoutProof":
+        """Prove the exact SEND_STARTED/SENT subset from a complete plan snapshot."""
+
+        _validate_fanout_parent(plan, catalog)
+        session = _validate_complete_attempt_snapshot_set(plan, complete_snapshots)
+        if type(selected_attempt_ids) is not tuple or any(
+            type(item) is not SubscriptionAttemptId for item in selected_attempt_ids
+        ):
+            raise TypeError("selected_attempt_ids must be a tuple of SubscriptionAttemptId.")
+        require_collection_size(
+            selected_attempt_ids,
+            field_name="selected_attempt_ids",
+            maximum_items=MAX_SUBSCRIPTION_SPECS,
+            minimum_items=1,
+        )
+        expected_selected = tuple(sorted(set(selected_attempt_ids), key=lambda item: item.value))
+        if selected_attempt_ids != expected_selected:
+            raise ValueError("selected attempt IDs must be sorted and unique.")
+        snapshots_by_attempt = {
+            item.subscription_attempt.subscription_attempt_id: item for item in complete_snapshots
+        }
+        if any(item not in snapshots_by_attempt for item in selected_attempt_ids):
+            raise ValueError("selected attempt must belong to the complete plan snapshot.")
+        selected = tuple(snapshots_by_attempt[item] for item in selected_attempt_ids)
+        if any(
+            item.attempt_status
+            not in {SubscriptionAttemptStatus.SEND_STARTED, SubscriptionAttemptStatus.SENT}
+            for item in selected
+        ):
+            raise ValueError("possibly delivered subset permits only SEND_STARTED or SENT.")
+        spec_ids = {
+            item.subscription_attempt.subscription_spec.subscription_spec_id for item in selected
+        }
+        targets = tuple(
+            scope
+            for scope in catalog.scopes
+            if scope.domain is CoverageDomain.BRONZE_INGRESS
+            and scope.subscription_spec_ids[0] in spec_ids
+        )
+        snapshot_rows = tuple(
+            (
+                item.subscription_attempt.subscription_attempt_id.value,
+                item.attempt_status.value,
+            )
+            for item in complete_snapshots
+        )
+        return _construct_coverage_fanout(
+            kind=CoverageFanoutKind.POSSIBLY_DELIVERED_SPECS,
+            plan=plan,
+            catalog=catalog,
+            connection_session=session,
+            source_row=(
+                "possibly-delivered-specs-v1",
+                snapshot_rows,
+                tuple(item.value for item in selected_attempt_ids),
+            ),
+            source_attempt_snapshots=complete_snapshots,
+            selected_attempt_ids=selected_attempt_ids,
+            target_scopes=targets,
+        )
+
+    @classmethod
+    def acknowledged_active(
+        cls,
+        *,
+        plan: SubscriptionPlanIdentity,
+        catalog: CoverageTargetCatalog,
+        complete_snapshots: tuple[SubscriptionAttemptSnapshot, ...],
+        domain: CoverageDomain,
+    ) -> "CoverageFanoutProof":
+        _validate_fanout_parent(plan, catalog)
+        if type(domain) is not CoverageDomain or domain is CoverageDomain.SILVER_DELIVERY:
+            raise ValueError("activation fanout requires an ingress or normalization domain.")
+        session = _validate_complete_attempt_snapshot_set(plan, complete_snapshots)
+        acknowledged = tuple(
+            item
+            for item in complete_snapshots
+            if item.attempt_status is SubscriptionAttemptStatus.ACKNOWLEDGED
+        )
+        if not acknowledged:
+            raise ValueError("acknowledged-active fanout requires at least one acknowledged spec.")
+        spec_ids = {item.subscription_spec.subscription_spec_id for item in acknowledged}
+        targets = tuple(
+            scope
+            for scope in catalog.scopes
+            if scope.domain is domain and scope.subscription_spec_ids[0] in spec_ids
+        )
+        return _construct_coverage_fanout(
+            kind=CoverageFanoutKind.ACKNOWLEDGED_ACTIVE,
+            plan=plan,
+            catalog=catalog,
+            connection_session=session,
+            source_row=(
+                "acknowledged-active-v1",
+                domain.value,
+                tuple(
+                    (
+                        item.subscription_attempt.subscription_attempt_id.value,
+                        item.attempt_status.value,
+                    )
+                    for item in complete_snapshots
+                ),
+                tuple(
+                    item.subscription_attempt.subscription_attempt_id.value for item in acknowledged
+                ),
+            ),
+            source_attempt_snapshots=complete_snapshots,
+            selected_attempt_ids=tuple(
+                item.subscription_attempt.subscription_attempt_id for item in acknowledged
+            ),
+            target_scopes=targets,
+        )
+
+    @classmethod
+    def exact_routed_event(
+        cls,
+        *,
+        plan: SubscriptionPlanIdentity,
+        catalog: CoverageTargetCatalog,
+        acknowledged_snapshot: SubscriptionAttemptSnapshot,
+        canonical_instrument_id: str,
+        event_family: str,
+        event_family_schema_version: int,
+        payload_type: str,
+    ) -> "CoverageFanoutProof":
+        return cls.exact_routed_events(
+            plan=plan,
+            catalog=catalog,
+            routed_targets=(
+                RoutedCoverageTarget(
+                    acknowledged_snapshot,
+                    canonical_instrument_id,
+                    event_family,
+                    event_family_schema_version,
+                    payload_type,
+                ),
+            ),
+        )
+
+    @classmethod
+    def exact_routed_events(
+        cls,
+        *,
+        plan: SubscriptionPlanIdentity,
+        catalog: CoverageTargetCatalog,
+        routed_targets: tuple[RoutedCoverageTarget, ...],
+    ) -> "CoverageFanoutProof":
+        """Prove the exact unique Silver leaf-scope union for indexed frame items."""
+
+        _validate_fanout_parent(plan, catalog)
+        if type(routed_targets) is not tuple or any(
+            type(item) is not RoutedCoverageTarget for item in routed_targets
+        ):
+            raise TypeError("routed_targets must be a tuple of RoutedCoverageTarget values.")
+        require_collection_size(
+            routed_targets,
+            field_name="routed_targets",
+            maximum_items=MAX_COVERAGE_MUTATION_TARGETS,
+            minimum_items=1,
+        )
+        resolved: list[tuple[CoverageScope, RoutedCoverageTarget]] = []
+        for routed in routed_targets:
+            spec_id = routed.acknowledged_snapshot.subscription_spec.subscription_spec_id
+            matches = tuple(
+                scope
+                for scope in catalog.scopes
+                if scope.domain is CoverageDomain.SILVER_NORMALIZATION
+                and scope.subscription_spec_ids == (spec_id,)
+                and scope.canonical_instrument_ids == (routed.canonical_instrument_id,)
+                and scope.event_family == routed.event_family
+                and scope.event_family_schema_version == routed.event_family_schema_version
+                and scope.payload_type == routed.payload_type
+            )
+            if len(matches) != 1:
+                raise ValueError(
+                    "every routed event must identify exactly one plan-derived Silver scope."
+                )
+            resolved.append((matches[0], routed))
+        ordered = tuple(sorted(resolved, key=lambda item: item[0].coverage_scope_id.value))
+        scopes = tuple(item[0] for item in ordered)
+        if len({scope.coverage_scope_id for scope in scopes}) != len(scopes):
+            raise ValueError("routed event coverage targets must be unique by exact scope.")
+        sessions = {
+            item[1].acknowledged_snapshot.subscription_attempt.connection_session
+            for item in ordered
+        }
+        if len(sessions) != 1:
+            raise ValueError("routed frame targets must belong to one connection session.")
+        source_rows = tuple(
+            (
+                routed.acknowledged_snapshot.subscription_attempt.subscription_attempt_id.value,
+                routed.acknowledged_snapshot.subscription_spec.subscription_spec_id.value,
+                routed.canonical_instrument_id,
+                routed.event_family,
+                routed.event_family_schema_version,
+                routed.payload_type,
+            )
+            for _scope, routed in ordered
+        )
+        snapshots_by_attempt = {
+            routed.acknowledged_snapshot.subscription_attempt.subscription_attempt_id: (
+                routed.acknowledged_snapshot
+            )
+            for _scope, routed in ordered
+        }
+        source_snapshots = tuple(
+            snapshots_by_attempt[item]
+            for item in sorted(snapshots_by_attempt, key=lambda attempt_id: attempt_id.value)
+        )
+        selected_attempt_ids = tuple(
+            item.subscription_attempt.subscription_attempt_id for item in source_snapshots
+        )
+        return _construct_coverage_fanout(
+            kind=(
+                CoverageFanoutKind.EXACT_ROUTED_EVENT
+                if len(scopes) == 1
+                else CoverageFanoutKind.EXACT_ROUTED_EVENTS
+            ),
+            plan=plan,
+            catalog=catalog,
+            connection_session=next(iter(sessions)),
+            source_row=("exact-routed-events-v1", source_rows),
+            source_attempt_snapshots=source_snapshots,
+            selected_attempt_ids=selected_attempt_ids,
+            target_scopes=scopes,
+        )
+
+    @classmethod
+    def all_possibly_active(
+        cls,
+        *,
+        plan: SubscriptionPlanIdentity,
+        catalog: CoverageTargetCatalog,
+        complete_snapshots: tuple[SubscriptionAttemptSnapshot, ...],
+        domain: CoverageDomain,
+        event_family: str | None = None,
+        event_family_schema_version: int | None = None,
+        payload_type: str | None = None,
+    ) -> "CoverageFanoutProof":
+        _validate_fanout_parent(plan, catalog)
+        if type(domain) is not CoverageDomain or domain is CoverageDomain.SILVER_DELIVERY:
+            raise ValueError("possibly-active fanout requires an ingress or normalization domain.")
+        session = _validate_complete_attempt_snapshot_set(plan, complete_snapshots)
+        possible = tuple(
+            item
+            for item in complete_snapshots
+            if item.attempt_status is not SubscriptionAttemptStatus.PENDING
+        )
+        if not possible:
+            raise ValueError(
+                "all-possibly-active fanout requires at least one possibly active spec."
+            )
+        spec_ids = {item.subscription_spec.subscription_spec_id for item in possible}
+        if domain is CoverageDomain.SILVER_NORMALIZATION:
+            if type(event_family) is not str or type(payload_type) is not str:
+                raise TypeError("Silver possibly-active fanout requires family and payload.")
+            event_family = require_code(event_family, field_name="event_family")
+            payload_type = require_code(payload_type, field_name="payload_type")
+            if type(event_family_schema_version) is not int:
+                raise TypeError("event_family_schema_version must be a built-in integer.")
+            if event_family_schema_version <= 0:
+                raise ValueError("event_family_schema_version must be positive.")
+        elif any(
+            value is not None for value in (event_family, event_family_schema_version, payload_type)
+        ):
+            raise ValueError("Bronze possibly-active fanout has no normalized binding filter.")
+        targets = tuple(
+            scope
+            for scope in catalog.scopes
+            if scope.domain is domain
+            and scope.subscription_spec_ids[0] in spec_ids
+            and (
+                domain is CoverageDomain.BRONZE_INGRESS
+                or (
+                    scope.event_family == event_family
+                    and scope.event_family_schema_version == event_family_schema_version
+                    and scope.payload_type == payload_type
+                )
+            )
+        )
+        if not targets:
+            raise ValueError("possibly-active binding selects no plan-derived coverage scopes.")
+        return _construct_coverage_fanout(
+            kind=CoverageFanoutKind.ALL_POSSIBLY_ACTIVE,
+            plan=plan,
+            catalog=catalog,
+            connection_session=session,
+            source_row=(
+                "all-possibly-active-v1",
+                domain.value,
+                event_family,
+                event_family_schema_version,
+                payload_type,
+                tuple(
+                    (
+                        item.subscription_attempt.subscription_attempt_id.value,
+                        item.attempt_status.value,
+                    )
+                    for item in complete_snapshots
+                ),
+            ),
+            source_attempt_snapshots=complete_snapshots,
+            selected_attempt_ids=tuple(
+                item.subscription_attempt.subscription_attempt_id for item in possible
+            ),
+            target_scopes=targets,
+        )
+
+    def verify_stored(
+        self,
+        *,
+        expected_canonical_content: str,
+        expected_proof_id: CoverageFanoutProofId,
+    ) -> None:
+        """Reject any persisted fanout content or bounded-ID mismatch."""
+
+        if type(expected_canonical_content) is not str:
+            raise TypeError("expected_canonical_content must be a built-in string.")
+        if type(expected_proof_id) is not CoverageFanoutProofId:
+            raise TypeError("expected_proof_id must be a CoverageFanoutProofId.")
+        if (
+            self.canonical_content != expected_canonical_content
+            or self.coverage_fanout_proof_id != expected_proof_id
+        ):
+            raise ValueError("stored coverage fanout proof does not match its content.")
+
+
+def _construct_coverage_fanout(
+    *,
+    kind: CoverageFanoutKind,
+    plan: SubscriptionPlanIdentity,
+    catalog: CoverageTargetCatalog,
+    connection_session: ConnectionSessionIdentity,
+    source_row: tuple[object, ...],
+    source_attempt_snapshots: tuple[SubscriptionAttemptSnapshot, ...],
+    selected_attempt_ids: tuple[SubscriptionAttemptId, ...],
+    target_scopes: tuple[CoverageScope, ...],
+) -> CoverageFanoutProof:
+    if connection_session.collector_run_id.value == "":
+        raise ValueError("coverage fanout connection session must have a collector run.")
+    ordered = tuple(sorted(target_scopes, key=lambda item: item.coverage_scope_id.value))
+    if ordered != target_scopes or len({item.coverage_scope_id for item in ordered}) != len(
+        ordered
+    ):
+        raise ValueError("coverage fanout targets must be sorted and unique.")
+    if ordered and len({item.domain for item in ordered}) != 1:
+        raise ValueError("one coverage fanout proof must target exactly one coverage domain.")
+    require_collection_size(
+        ordered,
+        field_name="target_scopes",
+        maximum_items=MAX_COVERAGE_MUTATION_TARGETS,
+    )
+    catalog_ids = {item.coverage_scope_id for item in catalog.scopes}
+    if any(item.coverage_scope_id not in catalog_ids for item in ordered):
+        raise ValueError("coverage fanout target must belong to its immutable catalogue.")
+    if type(source_attempt_snapshots) is not tuple or any(
+        type(item) is not SubscriptionAttemptSnapshot for item in source_attempt_snapshots
+    ):
+        raise TypeError("source_attempt_snapshots must contain exact snapshot values.")
+    source_attempt_ids = tuple(
+        item.subscription_attempt.subscription_attempt_id for item in source_attempt_snapshots
+    )
+    if source_attempt_ids != tuple(sorted(set(source_attempt_ids), key=lambda item: item.value)):
+        raise ValueError("source attempt snapshots must be sorted and unique by attempt ID.")
+    if any(
+        item.subscription_attempt.connection_session != connection_session
+        for item in source_attempt_snapshots
+    ):
+        raise ValueError("source attempt snapshots must belong to the fanout session.")
+    if type(selected_attempt_ids) is not tuple or any(
+        type(item) is not SubscriptionAttemptId for item in selected_attempt_ids
+    ):
+        raise TypeError("selected_attempt_ids must contain exact attempt IDs.")
+    if selected_attempt_ids != tuple(
+        sorted(set(selected_attempt_ids), key=lambda item: item.value)
+    ):
+        raise ValueError("selected fanout attempt IDs must be sorted and unique.")
+    if any(item not in source_attempt_ids for item in selected_attempt_ids):
+        raise ValueError("selected fanout attempts must belong to its source snapshot.")
+    content = canonical_json_array(
+        (
+            "coverage-fanout-proof-content-v1",
+            kind.value,
+            plan.subscription_plan_id,
+            catalog.coverage_target_catalog_id,
+            connection_session.connection_session_id,
+            source_row,
+            tuple(item.coverage_scope_id.value for item in ordered),
+        ),
+        maximum_length=MAX_SUBSCRIPTION_PLAN_CONTENT_LENGTH,
+    )
+    digest = sha256_hex(content.encode("utf-8"), field_name="coverage fanout proof")
+    proof_id = CoverageFanoutProofId(
+        canonical_json_array(
+            (
+                "coverage-fanout-proof-v1",
+                kind.value,
+                plan.subscription_plan_id,
+                catalog.coverage_target_catalog_id,
+                len(ordered),
+                digest,
+            )
+        )
+    )
+    value = object.__new__(CoverageFanoutProof)
+    object.__setattr__(value, "kind", kind)
+    object.__setattr__(value, "subscription_plan_id", plan.subscription_plan_id)
+    object.__setattr__(value, "coverage_target_catalog_id", catalog.coverage_target_catalog_id)
+    object.__setattr__(value, "connection_session_id", connection_session.connection_session_id)
+    object.__setattr__(value, "source_canonical_row", source_row)
+    object.__setattr__(value, "source_attempt_snapshots", source_attempt_snapshots)
+    object.__setattr__(value, "selected_attempt_ids", selected_attempt_ids)
+    object.__setattr__(value, "target_scopes", ordered)
+    object.__setattr__(value, "canonical_content", content)
+    object.__setattr__(value, "content_sha256", digest)
+    object.__setattr__(value, "coverage_fanout_proof_id", proof_id)
+    return value
+
+
+def _rederive_raw_coverage_fanout(
+    raw_record: RawMarketDataRecord,
+    fanout_proof: CoverageFanoutProof,
+) -> CoverageFanoutProof:
+    """Rebuild a strict frame fanout from the raw record's complete snapshot."""
+
+    plan = raw_record.subscription_plan
+    catalog = CoverageTargetCatalog.from_subscription_plan(plan)
+    snapshots = raw_record.subscription_attempt_snapshots
+    if fanout_proof.kind in {
+        CoverageFanoutKind.EXACT_ROUTED_EVENT,
+        CoverageFanoutKind.EXACT_ROUTED_EVENTS,
+    }:
+        source_row = fanout_proof.source_canonical_row
+        if (
+            len(source_row) != 2
+            or source_row[0] != "exact-routed-events-v1"
+            or type(source_row[1]) is not tuple
+        ):
+            raise ValueError("exact-routed fanout has an invalid source snapshot.")
+        snapshots_by_attempt = {
+            item.subscription_attempt.subscription_attempt_id: item for item in snapshots
+        }
+        routed: list[RoutedCoverageTarget] = []
+        for row in source_row[1]:
+            if type(row) is not tuple or len(row) != 6:
+                raise ValueError("exact-routed fanout has an invalid routed row.")
+            attempt_id = SubscriptionAttemptId(row[0])
+            spec_id = SubscriptionSpecId(row[1])
+            snapshot = snapshots_by_attempt.get(attempt_id)
+            if (
+                snapshot is None
+                or snapshot.subscription_attempt.subscription_spec.subscription_spec_id != spec_id
+                or snapshot.attempt_status is not SubscriptionAttemptStatus.ACKNOWLEDGED
+            ):
+                raise ValueError("exact-routed fanout isn't present in the raw snapshot.")
+            routed.append(
+                RoutedCoverageTarget(
+                    acknowledged_snapshot=snapshot,
+                    canonical_instrument_id=row[2],
+                    event_family=row[3],
+                    event_family_schema_version=row[4],
+                    payload_type=row[5],
+                )
+            )
+        return CoverageFanoutProof.exact_routed_events(
+            plan=plan,
+            catalog=catalog,
+            routed_targets=tuple(routed),
+        )
+    if fanout_proof.kind is CoverageFanoutKind.ALL_POSSIBLY_ACTIVE:
+        if not fanout_proof.target_scopes:
+            raise ValueError("possibly-active frame fanout requires target scopes.")
+        first_scope = fanout_proof.target_scopes[0]
+        if first_scope.domain is CoverageDomain.SILVER_NORMALIZATION:
+            return CoverageFanoutProof.all_possibly_active(
+                plan=plan,
+                catalog=catalog,
+                complete_snapshots=snapshots,
+                domain=first_scope.domain,
+                event_family=first_scope.event_family,
+                event_family_schema_version=first_scope.event_family_schema_version,
+                payload_type=first_scope.payload_type,
+            )
+        return CoverageFanoutProof.all_possibly_active(
+            plan=plan,
+            catalog=catalog,
+            complete_snapshots=snapshots,
+            domain=first_scope.domain,
+        )
+    raise ValueError("raw frame binding rejects lifecycle-only coverage fanout.")
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class RawCoverageFanoutBinding:
+    """Bind a strict fanout proof to one raw record's complete attempt snapshot.
+
+    Snapshot digest preimage::
+
+        ["raw-coverage-fanout-snapshot-content-v1",
+         [[subscription_spec_id, subscription_attempt_id, attempt_status], ...]]
+
+    Content preimage::
+
+        ["raw-coverage-fanout-binding-content-v1", raw_record_id,
+         full_record_integrity_sha256, subscription_plan_id,
+         connection_session_id, coverage_fanout_proof_id,
+         subscription_snapshot_content_sha256]
+
+    ID preimage::
+
+        ["raw-coverage-fanout-binding-v1", raw_record_id,
+         coverage_fanout_proof_id, subscription_snapshot_content_sha256,
+         SHA256(canonical_content)]
+
+    No raw record, application bytes, or snapshot object is retained.
+    """
+
+    raw_record_id: RawRecordId
+    full_record_integrity_sha256: str
+    subscription_plan_id: SubscriptionPlanId
+    connection_session_id: ConnectionSessionId
+    coverage_fanout_proof_id: CoverageFanoutProofId
+    subscription_snapshot_content_sha256: str
+    canonical_content: str = field(repr=False)
+    content_sha256: str
+    raw_coverage_fanout_binding_id: RawCoverageFanoutBindingId
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        raise TypeError("use RawCoverageFanoutBinding.from_raw_record() or .from_stored().")
+
+    @classmethod
+    def from_raw_record(
+        cls,
+        *,
+        raw_record: RawMarketDataRecord,
+        coverage_fanout_proof: CoverageFanoutProof,
+    ) -> Self:
+        if cls is not RawCoverageFanoutBinding:
+            raise TypeError("raw coverage fanout bindings don't support subclass factories.")
+        if type(raw_record) is not RawMarketDataRecord:
+            raise TypeError("raw_record must be a RawMarketDataRecord.")
+        if type(coverage_fanout_proof) is not CoverageFanoutProof:
+            raise TypeError("coverage_fanout_proof must be a CoverageFanoutProof.")
+        if (
+            coverage_fanout_proof.subscription_plan_id
+            != raw_record.subscription_plan.subscription_plan_id
+            or coverage_fanout_proof.connection_session_id
+            != raw_record.connection_session.connection_session_id
+        ):
+            raise ValueError("coverage fanout must belong to the raw plan and session.")
+        rederived = _rederive_raw_coverage_fanout(raw_record, coverage_fanout_proof)
+        if rederived != coverage_fanout_proof:
+            raise ValueError("coverage fanout isn't exactly reproducible from the raw snapshot.")
+        snapshot_rows = _attempt_snapshot_rows(raw_record.subscription_attempt_snapshots)
+        snapshot_content = canonical_json_array(
+            (_RAW_COVERAGE_SNAPSHOT_CONTENT_VERSION, snapshot_rows),
+            maximum_length=MAX_SUBSCRIPTION_PLAN_CONTENT_LENGTH,
+        )
+        snapshot_digest = sha256_hex(
+            snapshot_content.encode("utf-8"),
+            field_name="subscription_snapshot_content",
+        )
+        content = canonical_json_array(
+            (
+                _RAW_COVERAGE_FANOUT_BINDING_CONTENT_VERSION,
+                raw_record.raw_record_id.value,
+                raw_record.full_record_integrity_sha256,
+                raw_record.subscription_plan.subscription_plan_id.value,
+                raw_record.connection_session.connection_session_id.value,
+                coverage_fanout_proof.coverage_fanout_proof_id.value,
+                snapshot_digest,
+            )
+        )
+        content_digest = sha256_hex(
+            content.encode("utf-8"),
+            field_name="raw_coverage_fanout_binding_content",
+        )
+        identifier = RawCoverageFanoutBindingId(
+            canonical_json_array(
+                (
+                    _RAW_COVERAGE_FANOUT_BINDING_ID_VERSION,
+                    raw_record.raw_record_id.value,
+                    coverage_fanout_proof.coverage_fanout_proof_id.value,
+                    snapshot_digest,
+                    content_digest,
+                )
+            )
+        )
+        value = object.__new__(cls)
+        object.__setattr__(value, "raw_record_id", raw_record.raw_record_id)
+        object.__setattr__(
+            value,
+            "full_record_integrity_sha256",
+            raw_record.full_record_integrity_sha256,
+        )
+        object.__setattr__(
+            value,
+            "subscription_plan_id",
+            raw_record.subscription_plan.subscription_plan_id,
+        )
+        object.__setattr__(
+            value,
+            "connection_session_id",
+            raw_record.connection_session.connection_session_id,
+        )
+        object.__setattr__(
+            value,
+            "coverage_fanout_proof_id",
+            coverage_fanout_proof.coverage_fanout_proof_id,
+        )
+        object.__setattr__(value, "subscription_snapshot_content_sha256", snapshot_digest)
+        object.__setattr__(value, "canonical_content", content)
+        object.__setattr__(value, "content_sha256", content_digest)
+        object.__setattr__(value, "raw_coverage_fanout_binding_id", identifier)
+        return value
+
+    @classmethod
+    def from_stored(
+        cls,
+        *,
+        raw_record: RawMarketDataRecord,
+        coverage_fanout_proof: CoverageFanoutProof,
+        expected_subscription_snapshot_content_sha256: str,
+        expected_canonical_content: str,
+        expected_content_sha256: str,
+        expected_binding_id: RawCoverageFanoutBindingId,
+    ) -> Self:
+        require_sha256(
+            expected_subscription_snapshot_content_sha256,
+            field_name="expected_subscription_snapshot_content_sha256",
+        )
+        if type(expected_canonical_content) is not str:
+            raise TypeError("expected_canonical_content must be a built-in string.")
+        require_sha256(expected_content_sha256, field_name="expected_content_sha256")
+        if type(expected_binding_id) is not RawCoverageFanoutBindingId:
+            raise TypeError("expected_binding_id must be a RawCoverageFanoutBindingId.")
+        value = cls.from_raw_record(
+            raw_record=raw_record,
+            coverage_fanout_proof=coverage_fanout_proof,
+        )
+        if (
+            value.subscription_snapshot_content_sha256
+            != expected_subscription_snapshot_content_sha256
+            or value.canonical_content != expected_canonical_content
+            or value.content_sha256 != expected_content_sha256
+            or value.raw_coverage_fanout_binding_id != expected_binding_id
+        ):
+            raise ValueError("stored raw coverage fanout binding doesn't match its source.")
+        return value
+
+
+@dataclass(frozen=True, slots=True)
+class RequestedCoverageMutation:
+    """One target's requested evidence-backed status within an atomic CAS batch."""
+
+    scope: CoverageScope
+    epoch: CoverageEpochIdentity
+    requested_status: CoverageStatus
+    initial_reason: InitialCoverageReason
+    transition_reason: CoverageReason
+    evidence: CoverageEvidence
+
+    def __post_init__(self) -> None:
+        if type(self.scope) is not CoverageScope:
+            raise TypeError("scope must be a CoverageScope.")
+        if type(self.epoch) is not CoverageEpochIdentity or self.epoch.scope != self.scope:
+            raise ValueError("epoch must belong to the requested mutation scope.")
+        if type(self.requested_status) is not CoverageStatus:
+            raise TypeError("requested_status must be a CoverageStatus.")
+        if type(self.initial_reason) is not InitialCoverageReason:
+            raise TypeError("initial_reason must be an InitialCoverageReason.")
+        if type(self.transition_reason) is not CoverageReason:
+            raise TypeError("transition_reason must be a CoverageReason.")
+        if type(self.evidence) is not CoverageEvidence:
+            raise TypeError("evidence must be a CoverageEvidence.")
+        if self.evidence.scope != self.scope or self.evidence.epoch != self.epoch:
+            raise ValueError("mutation evidence must belong to its exact scope and epoch.")
+
+
+@dataclass(frozen=True, slots=True)
+class CoverageMutationNoOp:
+    """Audit lineage for repeated degradation without state or ordinal change.
+
+    Canonical row::
+
+        ["coverage-mutation-no-op-v1", scope_id, current_state_reference_id,
+         requested_status, initial_reason, transition_reason, evidence_id,
+         "already-at-or-beyond-requested-severity"]
+    """
+
+    current_state: CoverageStateReference = field(repr=False)
+    request: RequestedCoverageMutation = field(repr=False)
+    canonical_row: tuple[object, ...] = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if type(self.current_state) is not CoverageStateReference:
+            raise TypeError("current_state must be a CoverageStateReference.")
+        if type(self.request) is not RequestedCoverageMutation:
+            raise TypeError("request must be a RequestedCoverageMutation.")
+        if self.request.scope != self.current_state.reference.scope:
+            raise ValueError("coverage no-op request must match its current scope.")
+        if self.request.epoch != self.current_state.reference.epoch:
+            raise ValueError("coverage no-op request must match its current epoch.")
+        current_boundary = (
+            self.current_state.latest_transition.evidence.observed_monotonic_ns
+            if self.current_state.latest_transition is not None
+            else self.current_state.reference.initial_evidence.observed_monotonic_ns
+        )
+        if self.request.evidence.observed_monotonic_ns < current_boundary:
+            raise ValueError("coverage no-op evidence cannot precede the current state boundary.")
+        current_severity = _coverage_status_severity(self.current_state.reference.status)
+        requested_severity = _coverage_status_severity(self.request.requested_status)
+        if requested_severity > current_severity:
+            raise ValueError("a stricter requested status requires a coverage transition.")
+        if (
+            self.request.requested_status is CoverageStatus.COMPLETE
+            and self.current_state.reference.status is not CoverageStatus.COMPLETE
+        ):
+            raise ValueError("coverage recovery cannot be represented as a no-op.")
+        _validate_mutation_request_semantics(self.request)
+        object.__setattr__(
+            self,
+            "canonical_row",
+            (
+                "coverage-mutation-no-op-v1",
+                self.request.scope.coverage_scope_id.value,
+                self.current_state.coverage_state_reference_id.value,
+                self.request.requested_status.value,
+                self.request.initial_reason.value,
+                self.request.transition_reason.value,
+                self.request.evidence.coverage_evidence_id.value,
+                "already-at-or-beyond-requested-severity",
+            ),
+        )
+
+
+def _coverage_status_severity(status: CoverageStatus) -> int:
+    return {
+        CoverageStatus.COMPLETE: 0,
+        CoverageStatus.UNCERTAIN: 1,
+        CoverageStatus.CONFIRMED_INCOMPLETE: 2,
+    }[status]
+
+
+def _validate_mutation_request_semantics(request: RequestedCoverageMutation) -> None:
+    expected_initial_reason = {
+        CoverageReason.INITIAL_SCOPE: InitialCoverageReason.INITIAL_ACTIVATION,
+        CoverageReason.TRANSPORT_AMBIGUITY: InitialCoverageReason.TRANSPORT_AMBIGUITY,
+        CoverageReason.RAW_ACCEPTANCE_UNCERTAIN: (InitialCoverageReason.RAW_ACCEPTANCE_UNCERTAIN),
+        CoverageReason.RAW_DEFINITE_REJECTION: InitialCoverageReason.RAW_DEFINITE_REJECTION,
+        CoverageReason.UPSTREAM_COVERAGE_DEGRADED: (
+            InitialCoverageReason.UPSTREAM_COVERAGE_DEGRADED
+        ),
+        CoverageReason.IN_SCOPE_NORMALIZATION_FAILURE: (
+            InitialCoverageReason.IN_SCOPE_NORMALIZATION_FAILURE
+        ),
+        CoverageReason.SOURCE_SEQUENCE_BREAK: InitialCoverageReason.SOURCE_SEQUENCE_BREAK,
+        CoverageReason.SOURCE_EVENT_CONFLICT: InitialCoverageReason.SOURCE_EVENT_CONFLICT,
+    }.get(request.transition_reason)
+    if expected_initial_reason is None or request.initial_reason is not expected_initial_reason:
+        raise ValueError("coverage mutation initial and transition reasons are incompatible.")
+    initial_row = (
+        request.scope.domain,
+        request.requested_status,
+        request.initial_reason,
+        request.evidence.kind,
+    )
+    if request.requested_status is CoverageStatus.COMPLETE:
+        if initial_row not in _INITIAL_COVERAGE_MATRIX:
+            raise ValueError("complete coverage mutation requires exact activation evidence.")
+        return
+    if request.requested_status is CoverageStatus.UNCERTAIN:
+        allowed = _UNCERTAIN_TRANSITION_EVIDENCE
+    else:
+        allowed = _CONFIRMED_INCOMPLETE_TRANSITION_EVIDENCE
+    transition_row = (
+        request.scope.domain,
+        request.transition_reason,
+        request.evidence.kind,
+    )
+    if initial_row not in _INITIAL_COVERAGE_MATRIX and transition_row not in allowed:
+        raise ValueError("coverage mutation status, reason and evidence are incompatible.")
+    _validate_upstream_transition_status(
+        requested_status=request.requested_status,
+        evidence=request.evidence,
+    )
+
+
+def _fanout_attempt_ids_for_scope(
+    fanout: CoverageFanoutProof,
+    scope: CoverageScope,
+) -> tuple[SubscriptionAttemptId, ...]:
+    snapshots_by_attempt = {
+        item.subscription_attempt.subscription_attempt_id: item
+        for item in fanout.source_attempt_snapshots
+    }
+    return tuple(
+        attempt_id
+        for attempt_id in fanout.selected_attempt_ids
+        if snapshots_by_attempt[attempt_id].subscription_spec.subscription_spec_id
+        in scope.subscription_spec_ids
+    )
+
+
+def _validate_fanout_evidence_lineage(
+    fanout: CoverageFanoutProof,
+    requests: tuple[RequestedCoverageMutation, ...],
+) -> None:
+    """Require every cause-specific evidence source to match the fanout session."""
+
+    for request in requests:
+        source = request.evidence.source
+        expected_attempt_ids = _fanout_attempt_ids_for_scope(fanout, request.scope)
+        if type(source) is InitialActivationEvidenceSource:
+            if source.connection_session.connection_session_id != fanout.connection_session_id:
+                raise ValueError("activation evidence must belong to the exact fanout session.")
+            evidence_attempt_ids = tuple(
+                item.subscription_attempt.subscription_attempt_id
+                for item in source.acknowledged_attempts
+            )
+            if evidence_attempt_ids != expected_attempt_ids:
+                raise ValueError("activation evidence must match exact fanout attempts.")
+            continue
+        if type(source) is TransportAmbiguityEvidenceSource:
+            if source.connection_session.connection_session_id != fanout.connection_session_id:
+                raise ValueError("transport evidence must belong to the exact fanout session.")
+            if fanout.kind in {
+                CoverageFanoutKind.ONE_POSSIBLY_DELIVERED_SPEC,
+                CoverageFanoutKind.POSSIBLY_DELIVERED_SPECS,
+                CoverageFanoutKind.ALL_POSSIBLY_ACTIVE,
+            }:
+                if (
+                    source.subscription_attempt is None
+                    or (source.subscription_attempt.subscription_attempt_id,)
+                    != expected_attempt_ids
+                ):
+                    raise ValueError("transport evidence must bind the exact fanout attempt.")
+            continue
+        raw_record_id: RawRecordId | None = None
+        if isinstance(
+            source,
+            (
+                RawRecordEvidenceSource,
+                NormalizationFailureEvidenceSource,
+                SourceEventConflictEvidenceSource,
+                AuthoritativeStateSnapshotEvidenceSource,
+            ),
+        ):
+            raw_record_id = source.raw_record_id
+        if raw_record_id is not None:
+            _feed, _run, raw_session_id = _raw_record_feed_run_session(raw_record_id)
+            if raw_session_id != fanout.connection_session_id:
+                raise ValueError("raw evidence must belong to the exact fanout session.")
+
+
+def _raw_record_ids_for_requests(
+    requests: tuple[RequestedCoverageMutation, ...],
+) -> tuple[RawRecordId, ...]:
+    """Return the canonical unique raw-record IDs cited by mutation evidence."""
+
+    raw_record_ids: list[RawRecordId] = []
+    for request in requests:
+        source = request.evidence.source
+        raw_record_id: RawRecordId | None = None
+        if type(source) is RawRecordEvidenceSource:
+            raw_record_id = source.raw_record_id
+        elif type(source) is NormalizationFailureEvidenceSource:
+            raw_record_id = source.raw_record_id
+        elif type(source) is SourceEventConflictEvidenceSource:
+            raw_record_id = source.raw_record_id
+        elif type(source) is AuthoritativeStateSnapshotEvidenceSource:
+            raw_record_id = source.raw_record_id
+        if raw_record_id is not None:
+            raw_record_ids.append(raw_record_id)
+    return tuple(sorted(set(raw_record_ids), key=lambda item: item.value))
+
+
+def _validate_raw_fanout_binding(
+    *,
+    fanout: CoverageFanoutProof,
+    requests: tuple[RequestedCoverageMutation, ...],
+    raw_fanout_binding: RawCoverageFanoutBinding | None,
+) -> None:
+    """Bind raw-backed evidence to the exact full attempt snapshot used by fanout."""
+
+    if raw_fanout_binding is not None and type(raw_fanout_binding) is not RawCoverageFanoutBinding:
+        raise TypeError("raw_fanout_binding must be a RawCoverageFanoutBinding or None.")
+    raw_record_ids = _raw_record_ids_for_requests(requests)
+    if raw_record_ids and raw_fanout_binding is None:
+        raise ValueError("raw-backed coverage evidence requires an exact raw fanout binding.")
+    if raw_fanout_binding is None:
+        return
+    if (
+        raw_fanout_binding.coverage_fanout_proof_id != fanout.coverage_fanout_proof_id
+        or raw_fanout_binding.subscription_plan_id != fanout.subscription_plan_id
+        or raw_fanout_binding.connection_session_id != fanout.connection_session_id
+    ):
+        raise ValueError("raw fanout binding must match the prepared coverage fanout.")
+    if raw_record_ids and raw_record_ids != (raw_fanout_binding.raw_record_id,):
+        raise ValueError("all raw-backed coverage evidence must cite the bound raw record.")
+
+
+def _validate_fanout_request_semantics(
+    fanout: CoverageFanoutProof,
+    requests: tuple[RequestedCoverageMutation, ...],
+) -> None:
+    """Close cause-to-status semantics without deriving runtime evidence."""
+
+    if fanout.kind is CoverageFanoutKind.HANDSHAKE_BEFORE_SEND:
+        if requests:
+            raise ValueError("handshake-before-send cannot mutate coverage.")
+        return
+    if fanout.kind is CoverageFanoutKind.ACKNOWLEDGED_ACTIVE:
+        if any(
+            request.requested_status is not CoverageStatus.COMPLETE
+            or request.initial_reason is not InitialCoverageReason.INITIAL_ACTIVATION
+            or request.evidence.kind is not CoverageEvidenceKind.INITIAL_ACTIVATION
+            for request in requests
+        ):
+            raise ValueError("acknowledged-active fanout permits only exact initial activation.")
+        return
+    if fanout.kind in {
+        CoverageFanoutKind.EXACT_ROUTED_EVENT,
+        CoverageFanoutKind.EXACT_ROUTED_EVENTS,
+    }:
+        if any(
+            request.requested_status is not CoverageStatus.CONFIRMED_INCOMPLETE
+            or request.evidence.kind
+            not in {
+                CoverageEvidenceKind.NORMALIZATION_FAILURE,
+                CoverageEvidenceKind.SOURCE_EVENT_CONFLICT,
+                CoverageEvidenceKind.SOURCE_SEQUENCE,
+            }
+            for request in requests
+        ):
+            raise ValueError("exact-routed-event fanout requires exact in-scope failure evidence.")
+        return
+    if fanout.kind in {
+        CoverageFanoutKind.ONE_POSSIBLY_DELIVERED_SPEC,
+        CoverageFanoutKind.POSSIBLY_DELIVERED_SPECS,
+    }:
+        if any(
+            request.scope.domain is not CoverageDomain.BRONZE_INGRESS
+            or request.requested_status is not CoverageStatus.UNCERTAIN
+            or request.transition_reason is not CoverageReason.TRANSPORT_AMBIGUITY
+            or request.evidence.kind is not CoverageEvidenceKind.TRANSPORT_FAILURE
+            for request in requests
+        ):
+            raise ValueError("possibly-delivered fanout permits only Bronze transport uncertainty.")
+        return
+    if fanout.kind is CoverageFanoutKind.ALL_POSSIBLY_ACTIVE:
+        allowed_rows = {
+            (
+                CoverageDomain.BRONZE_INGRESS,
+                CoverageStatus.UNCERTAIN,
+                CoverageReason.TRANSPORT_AMBIGUITY,
+                CoverageEvidenceKind.TRANSPORT_FAILURE,
+            ),
+            (
+                CoverageDomain.BRONZE_INGRESS,
+                CoverageStatus.UNCERTAIN,
+                CoverageReason.RAW_ACCEPTANCE_UNCERTAIN,
+                CoverageEvidenceKind.RAW_SINK_ACCEPTANCE_AMBIGUITY,
+            ),
+            (
+                CoverageDomain.BRONZE_INGRESS,
+                CoverageStatus.CONFIRMED_INCOMPLETE,
+                CoverageReason.RAW_DEFINITE_REJECTION,
+                CoverageEvidenceKind.RAW_RECORD_REJECTION,
+            ),
+            (
+                CoverageDomain.BRONZE_INGRESS,
+                CoverageStatus.CONFIRMED_INCOMPLETE,
+                CoverageReason.SOURCE_SEQUENCE_BREAK,
+                CoverageEvidenceKind.SOURCE_SEQUENCE,
+            ),
+            (
+                CoverageDomain.SILVER_NORMALIZATION,
+                CoverageStatus.CONFIRMED_INCOMPLETE,
+                CoverageReason.IN_SCOPE_NORMALIZATION_FAILURE,
+                CoverageEvidenceKind.NORMALIZATION_FAILURE,
+            ),
+            (
+                CoverageDomain.SILVER_NORMALIZATION,
+                CoverageStatus.CONFIRMED_INCOMPLETE,
+                CoverageReason.SOURCE_SEQUENCE_BREAK,
+                CoverageEvidenceKind.SOURCE_SEQUENCE,
+            ),
+            (
+                CoverageDomain.SILVER_NORMALIZATION,
+                CoverageStatus.UNCERTAIN,
+                CoverageReason.UPSTREAM_COVERAGE_DEGRADED,
+                CoverageEvidenceKind.UPSTREAM_COVERAGE_TRANSITION,
+            ),
+            (
+                CoverageDomain.SILVER_NORMALIZATION,
+                CoverageStatus.CONFIRMED_INCOMPLETE,
+                CoverageReason.UPSTREAM_COVERAGE_DEGRADED,
+                CoverageEvidenceKind.UPSTREAM_COVERAGE_TRANSITION,
+            ),
+            (
+                CoverageDomain.SILVER_NORMALIZATION,
+                CoverageStatus.UNCERTAIN,
+                CoverageReason.UPSTREAM_COVERAGE_DEGRADED,
+                CoverageEvidenceKind.UPSTREAM_COVERAGE_STATE,
+            ),
+            (
+                CoverageDomain.SILVER_NORMALIZATION,
+                CoverageStatus.CONFIRMED_INCOMPLETE,
+                CoverageReason.UPSTREAM_COVERAGE_DEGRADED,
+                CoverageEvidenceKind.UPSTREAM_COVERAGE_STATE,
+            ),
+        }
+        if any(
+            (
+                request.scope.domain,
+                request.requested_status,
+                request.transition_reason,
+                request.evidence.kind,
+            )
+            not in allowed_rows
+            for request in requests
+        ):
+            raise ValueError("possibly-active fanout has an incompatible cause/status matrix.")
+        return
+    raise ValueError("coverage fanout kind has no closed mutation semantics.")
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class CoverageMutationBatch:
+    """Prepared all-target compare-and-swap mutation with no partial representation.
+
+    Content preimage::
+
+        ["coverage-mutation-batch-content-v1", fanout_proof_id,
+         raw-coverage-fanout-binding-id-or-null,
+         sorted_expected_pre-state_rows, sorted_initialization_ids,
+         sorted_transition_ids, sorted_no-op_rows,
+         sorted_resulting_state-reference_ids]
+
+    Bounded ID preimage::
+
+        ["coverage-mutation-batch-v1", fanout_proof_id, target_count,
+         SHA256(canonical_content)]
+    """
+
+    fanout_proof: CoverageFanoutProof = field(repr=False)
+    raw_fanout_binding: RawCoverageFanoutBinding | None = field(repr=False)
+    expected_pre_state_rows: tuple[tuple[str, str | None], ...] = field(repr=False)
+    initializations: tuple[CoverageInitialization, ...] = field(repr=False)
+    transitions: tuple[CoverageTransition, ...] = field(repr=False)
+    no_ops: tuple[CoverageMutationNoOp, ...] = field(repr=False)
+    resulting_state_references: tuple[CoverageStateReference, ...] = field(repr=False)
+    canonical_content: str = field(repr=False)
+    content_sha256: str
+    coverage_mutation_batch_id: CoverageMutationBatchId
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        raise TypeError("use prepare_coverage_mutation_batch().")
+
+    def verify_compare_and_swap(
+        self,
+        current_state_references: tuple[CoverageStateReference, ...],
+    ) -> tuple[CoverageStateReference, ...]:
+        """Return prepared results only when every current CAS token still matches."""
+
+        rows = _coverage_pre_state_rows(self.fanout_proof, current_state_references)
+        if rows != self.expected_pre_state_rows:
+            raise ValueError(
+                "coverage compare-and-swap pre-state does not match the prepared batch."
+            )
+        return self.resulting_state_references
+
+    def verify_stored(
+        self,
+        *,
+        expected_canonical_content: str,
+        expected_batch_id: CoverageMutationBatchId,
+    ) -> None:
+        """Reject any persisted prepared-batch content or bounded-ID mismatch."""
+
+        if type(expected_canonical_content) is not str:
+            raise TypeError("expected_canonical_content must be a built-in string.")
+        if type(expected_batch_id) is not CoverageMutationBatchId:
+            raise TypeError("expected_batch_id must be a CoverageMutationBatchId.")
+        if (
+            self.canonical_content != expected_canonical_content
+            or self.coverage_mutation_batch_id != expected_batch_id
+        ):
+            raise ValueError("stored coverage mutation batch does not match its content.")
+
+
+def _coverage_pre_state_rows(
+    fanout: CoverageFanoutProof,
+    states: tuple[CoverageStateReference, ...],
+) -> tuple[tuple[str, str | None], ...]:
+    if type(states) is not tuple:
+        raise TypeError("current_state_references must be a built-in tuple.")
+    if any(type(item) is not CoverageStateReference for item in states):
+        raise TypeError("current_state_references contain an invalid value.")
+    by_scope = {item.reference.scope.coverage_scope_id: item for item in states}
+    if len(by_scope) != len(states):
+        raise ValueError("current coverage state references must be unique by scope.")
+    target_ids = {item.coverage_scope_id for item in fanout.target_scopes}
+    if any(item not in target_ids for item in by_scope):
+        raise ValueError("current coverage state contains a scope outside the fanout proof.")
+    return tuple(
+        (
+            scope.coverage_scope_id.value,
+            (
+                by_scope[scope.coverage_scope_id].coverage_state_reference_id.value
+                if scope.coverage_scope_id in by_scope
+                else None
+            ),
+        )
+        for scope in fanout.target_scopes
+    )
+
+
+def prepare_coverage_mutation_batch(
+    *,
+    fanout_proof: CoverageFanoutProof,
+    current_state_references: tuple[CoverageStateReference, ...],
+    requests: tuple[RequestedCoverageMutation, ...],
+    raw_fanout_binding: RawCoverageFanoutBinding | None = None,
+) -> CoverageMutationBatch:
+    """Prepare one complete deterministic CAS batch for a cause-derived target slice."""
+
+    if type(fanout_proof) is not CoverageFanoutProof:
+        raise TypeError("fanout_proof must be a CoverageFanoutProof.")
+    if type(requests) is not tuple:
+        raise TypeError("requests must be a built-in tuple.")
+    if any(type(item) is not RequestedCoverageMutation for item in requests):
+        raise TypeError("requests contain an invalid value.")
+    require_collection_size(
+        requests,
+        field_name="requests",
+        maximum_items=MAX_COVERAGE_MUTATION_TARGETS,
+    )
+    expected_scope_ids = tuple(item.coverage_scope_id for item in fanout_proof.target_scopes)
+    request_scope_ids = tuple(item.scope.coverage_scope_id for item in requests)
+    if request_scope_ids != expected_scope_ids:
+        raise ValueError(
+            "coverage mutation requests must cover every fanout target in exact order."
+        )
+    session_components = parse_canonical_json_array(
+        fanout_proof.connection_session_id.value,
+        field_name="connection_session_id",
+    )
+    fanout_run_id = CollectorRunId(
+        _component_text(session_components[1], field_name="collector_run_id")
+    )
+    if any(request.epoch.collector_run_id != fanout_run_id for request in requests):
+        raise ValueError("coverage mutation epochs must belong to the fanout collector run.")
+    for request in requests:
+        _validate_mutation_request_semantics(request)
+    _validate_fanout_request_semantics(fanout_proof, requests)
+    _validate_fanout_evidence_lineage(fanout_proof, requests)
+    _validate_raw_fanout_binding(
+        fanout=fanout_proof,
+        requests=requests,
+        raw_fanout_binding=raw_fanout_binding,
+    )
+    pre_rows = _coverage_pre_state_rows(fanout_proof, current_state_references)
+    states_by_scope = {
+        item.reference.scope.coverage_scope_id: item for item in current_state_references
+    }
+    initializations: list[CoverageInitialization] = []
+    transitions: list[CoverageTransition] = []
+    no_ops: list[CoverageMutationNoOp] = []
+    resulting: list[CoverageStateReference] = []
+    for request in requests:
+        current = states_by_scope.get(request.scope.coverage_scope_id)
+        if current is None:
+            initialization = CoverageInitialization(
+                request.scope,
+                request.epoch,
+                request.requested_status,
+                request.initial_reason,
+                request.evidence,
+            )
+            initializations.append(initialization)
+            resulting.append(CoverageStateReference.from_initialization(initialization))
+            continue
+        if current.reference.epoch != request.epoch:
+            raise ValueError("coverage mutation cannot cross a state epoch.")
+        current_severity = _coverage_status_severity(current.reference.status)
+        requested_severity = _coverage_status_severity(request.requested_status)
+        if requested_severity <= current_severity:
+            no_op = CoverageMutationNoOp(current, request)
+            no_ops.append(no_op)
+            resulting.append(current)
+            continue
+        transition, updated = reduce_coverage(
+            current.reference,
+            RequestedCoverageTransition(
+                scope=request.scope,
+                epoch=request.epoch,
+                previous_status=current.reference.status,
+                next_transition_ordinal=current.reference.transition_ordinal + 1,
+                requested_status=request.requested_status,
+                reason=request.transition_reason,
+            ),
+            request.evidence,
+        )
+        transitions.append(transition)
+        resulting.append(
+            CoverageStateReference.from_transition(
+                previous=current,
+                transition=transition,
+                resulting_reference=updated,
+            )
+        )
+    ordered_initializations = tuple(
+        sorted(initializations, key=lambda item: item.scope.coverage_scope_id.value)
+    )
+    ordered_transitions = tuple(
+        sorted(transitions, key=lambda item: item.scope.coverage_scope_id.value)
+    )
+    ordered_no_ops = tuple(
+        sorted(no_ops, key=lambda item: item.request.scope.coverage_scope_id.value)
+    )
+    ordered_results = tuple(
+        sorted(resulting, key=lambda item: item.reference.scope.coverage_scope_id.value)
+    )
+    content = canonical_json_array(
+        (
+            "coverage-mutation-batch-content-v1",
+            fanout_proof.coverage_fanout_proof_id,
+            (
+                raw_fanout_binding.raw_coverage_fanout_binding_id
+                if raw_fanout_binding is not None
+                else None
+            ),
+            pre_rows,
+            tuple(item.coverage_initialization_id.value for item in ordered_initializations),
+            tuple(item.coverage_transition_id.value for item in ordered_transitions),
+            tuple(item.canonical_row for item in ordered_no_ops),
+            tuple(item.coverage_state_reference_id.value for item in ordered_results),
+        ),
+        maximum_length=MAX_SUBSCRIPTION_PLAN_CONTENT_LENGTH,
+    )
+    digest = sha256_hex(content.encode("utf-8"), field_name="coverage mutation batch")
+    batch_id = CoverageMutationBatchId(
+        canonical_json_array(
+            (
+                "coverage-mutation-batch-v1",
+                fanout_proof.coverage_fanout_proof_id,
+                len(fanout_proof.target_scopes),
+                digest,
+            )
+        )
+    )
+    batch = object.__new__(CoverageMutationBatch)
+    object.__setattr__(batch, "fanout_proof", fanout_proof)
+    object.__setattr__(batch, "raw_fanout_binding", raw_fanout_binding)
+    object.__setattr__(batch, "expected_pre_state_rows", pre_rows)
+    object.__setattr__(batch, "initializations", ordered_initializations)
+    object.__setattr__(batch, "transitions", ordered_transitions)
+    object.__setattr__(batch, "no_ops", ordered_no_ops)
+    object.__setattr__(batch, "resulting_state_references", ordered_results)
+    object.__setattr__(batch, "canonical_content", content)
+    object.__setattr__(batch, "content_sha256", digest)
+    object.__setattr__(batch, "coverage_mutation_batch_id", batch_id)
+    return batch
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class CoverageCommitAcceptance:
+    """Content-addressed proof that one complete prepared CAS was committed.
+
+    Canonical content::
+
+        ["coverage-commit-acceptance-content-v1", mutation_batch_id,
+         sorted_resulting_state_reference_ids]
+
+    The factory name is intentionally post-CAS: a prepared batch or candidate
+    state reference alone is never proof of runtime commit.
+    """
+
+    coverage_mutation_batch_id: CoverageMutationBatchId
+    resulting_state_reference_ids: tuple[CoverageStateReferenceId, ...]
+    canonical_content: str = field(repr=False)
+    content_sha256: str
+    coverage_commit_acceptance_id: CoverageCommitAcceptanceId
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        raise TypeError("use CoverageCommitAcceptance.after_compare_and_swap() or .from_stored().")
+
+    @classmethod
+    def _verified_value(
+        cls,
+        coverage_mutation_batch_id: CoverageMutationBatchId,
+        resulting_state_reference_ids: tuple[CoverageStateReferenceId, ...],
+    ) -> Self:
+        if type(coverage_mutation_batch_id) is not CoverageMutationBatchId:
+            raise TypeError("coverage_mutation_batch_id must be a CoverageMutationBatchId.")
+        if type(resulting_state_reference_ids) is not tuple or any(
+            type(item) is not CoverageStateReferenceId for item in resulting_state_reference_ids
+        ):
+            raise TypeError("resulting_state_reference_ids contain an invalid value.")
+        require_collection_size(
+            resulting_state_reference_ids,
+            field_name="resulting_state_reference_ids",
+            maximum_items=MAX_COVERAGE_MUTATION_TARGETS,
+        )
+        expected = tuple(sorted(set(resulting_state_reference_ids), key=lambda item: item.value))
+        if resulting_state_reference_ids != expected:
+            raise ValueError("resulting state reference IDs must be sorted and unique.")
+        content = canonical_json_array(
+            (
+                "coverage-commit-acceptance-content-v1",
+                coverage_mutation_batch_id,
+                tuple(item.value for item in resulting_state_reference_ids),
+            ),
+            maximum_length=MAX_SUBSCRIPTION_PLAN_CONTENT_LENGTH,
+        )
+        digest = sha256_hex(content.encode("utf-8"), field_name="coverage commit acceptance")
+        acceptance_id = CoverageCommitAcceptanceId(
+            canonical_json_array(
+                (
+                    "coverage-commit-acceptance-v1",
+                    coverage_mutation_batch_id,
+                    len(resulting_state_reference_ids),
+                    digest,
+                )
+            )
+        )
+        value = object.__new__(cls)
+        object.__setattr__(value, "coverage_mutation_batch_id", coverage_mutation_batch_id)
+        object.__setattr__(value, "resulting_state_reference_ids", resulting_state_reference_ids)
+        object.__setattr__(value, "canonical_content", content)
+        object.__setattr__(value, "content_sha256", digest)
+        object.__setattr__(value, "coverage_commit_acceptance_id", acceptance_id)
+        return value
+
+    @classmethod
+    def after_compare_and_swap(
+        cls,
+        *,
+        batch: CoverageMutationBatch,
+        committed_state_references: tuple[CoverageStateReference, ...],
+    ) -> Self:
+        """Create commit proof only after CAS returned the exact prepared results."""
+
+        if type(batch) is not CoverageMutationBatch:
+            raise TypeError("batch must be a CoverageMutationBatch.")
+        if type(committed_state_references) is not tuple or any(
+            type(item) is not CoverageStateReference for item in committed_state_references
+        ):
+            raise TypeError("committed_state_references contain an invalid value.")
+        if committed_state_references != batch.resulting_state_references:
+            raise ValueError("committed states must exactly match the prepared CAS results.")
+        return cls._verified_value(
+            batch.coverage_mutation_batch_id,
+            tuple(
+                sorted(
+                    (item.coverage_state_reference_id for item in committed_state_references),
+                    key=lambda item: item.value,
+                )
+            ),
+        )
+
+    @classmethod
+    def from_stored(
+        cls,
+        *,
+        batch: CoverageMutationBatch,
+        coverage_mutation_batch_id: CoverageMutationBatchId,
+        resulting_state_reference_ids: tuple[CoverageStateReferenceId, ...],
+        expected_canonical_content: str,
+        expected_acceptance_id: CoverageCommitAcceptanceId,
+    ) -> Self:
+        """Verify a persisted acceptance against the complete prepared result set."""
+
+        value = cls._verified_value(
+            coverage_mutation_batch_id,
+            resulting_state_reference_ids,
+        )
+        value.verify_for(batch)
+        if type(expected_canonical_content) is not str:
+            raise TypeError("expected_canonical_content must be a built-in string.")
+        if type(expected_acceptance_id) is not CoverageCommitAcceptanceId:
+            raise TypeError("expected_acceptance_id must be a CoverageCommitAcceptanceId.")
+        if (
+            value.canonical_content != expected_canonical_content
+            or value.coverage_commit_acceptance_id != expected_acceptance_id
+        ):
+            raise ValueError("stored coverage commit acceptance does not match its content.")
+        return value
+
+    def verify_for(self, batch: CoverageMutationBatch) -> None:
+        if type(batch) is not CoverageMutationBatch:
+            raise TypeError("batch must be a CoverageMutationBatch.")
+        expected_ids = tuple(
+            sorted(
+                (item.coverage_state_reference_id for item in batch.resulting_state_references),
+                key=lambda item: item.value,
+            )
+        )
+        if (
+            self.coverage_mutation_batch_id != batch.coverage_mutation_batch_id
+            or self.resulting_state_reference_ids != expected_ids
+        ):
+            raise ValueError("coverage mutation acceptance does not echo the exact batch results.")
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class CommittedCoverageState:
+    """One exact state reference proven present in a CAS commit acceptance."""
+
+    state_reference: CoverageStateReference = field(repr=False)
+    commit_acceptance: CoverageCommitAcceptance = field(repr=False)
+    committed_coverage_state_id: CommittedCoverageStateId
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        raise TypeError("use CommittedCoverageState.from_commit() or .from_stored().")
+
+    @classmethod
+    def from_commit(
+        cls,
+        *,
+        state_reference: CoverageStateReference,
+        commit_acceptance: CoverageCommitAcceptance,
+    ) -> Self:
+        if type(state_reference) is not CoverageStateReference:
+            raise TypeError("state_reference must be a CoverageStateReference.")
+        if type(commit_acceptance) is not CoverageCommitAcceptance:
+            raise TypeError("commit_acceptance must be a CoverageCommitAcceptance.")
+        if (
+            state_reference.coverage_state_reference_id
+            not in commit_acceptance.resulting_state_reference_ids
+        ):
+            raise ValueError("coverage state was not committed by the supplied acceptance.")
+        committed_id = CommittedCoverageStateId(
+            canonical_json_array(
+                (
+                    "committed-coverage-state-v1",
+                    state_reference.coverage_state_reference_id,
+                    commit_acceptance.coverage_commit_acceptance_id,
+                )
+            )
+        )
+        value = object.__new__(cls)
+        object.__setattr__(value, "state_reference", state_reference)
+        object.__setattr__(value, "commit_acceptance", commit_acceptance)
+        object.__setattr__(value, "committed_coverage_state_id", committed_id)
+        return value
+
+    @classmethod
+    def from_stored(
+        cls,
+        *,
+        state_reference: CoverageStateReference,
+        commit_acceptance: CoverageCommitAcceptance,
+        expected_committed_state_id: CommittedCoverageStateId,
+    ) -> Self:
+        value = cls.from_commit(
+            state_reference=state_reference,
+            commit_acceptance=commit_acceptance,
+        )
+        if type(expected_committed_state_id) is not CommittedCoverageStateId:
+            raise TypeError("expected_committed_state_id must be a CommittedCoverageStateId.")
+        if value.committed_coverage_state_id != expected_committed_state_id:
+            raise ValueError("stored committed coverage state does not match its commit proof.")
+        return value
+
+
+# Backward-compatible draft name retained for collaborating modules written in parallel.
+CoverageMutationCommitAcceptance = CoverageCommitAcceptance
+
+
+@dataclass(frozen=True, slots=True)
 class EventCoverage:
     """Exactly ingress and normalization coverage known at materialization."""
 
-    bronze_ingress: CoverageReference
-    silver_normalization: CoverageReference
+    bronze_ingress: CommittedCoverageState
+    silver_normalization: CommittedCoverageState
 
     def __post_init__(self) -> None:
-        if type(self.bronze_ingress) is not CoverageReference:
-            raise TypeError("bronze_ingress must be a CoverageReference.")
-        if type(self.silver_normalization) is not CoverageReference:
-            raise TypeError("silver_normalization must be a CoverageReference.")
-        if self.bronze_ingress.scope.domain is not CoverageDomain.BRONZE_INGRESS:
+        if type(self.bronze_ingress) is not CommittedCoverageState:
+            raise TypeError("bronze_ingress must be a CommittedCoverageState.")
+        if type(self.silver_normalization) is not CommittedCoverageState:
+            raise TypeError("silver_normalization must be a CommittedCoverageState.")
+        ingress_reference = self.bronze_ingress.state_reference.reference
+        normalization_reference = self.silver_normalization.state_reference.reference
+        if ingress_reference.scope.domain is not CoverageDomain.BRONZE_INGRESS:
             raise ValueError("bronze_ingress must reference BRONZE_INGRESS coverage.")
-        if self.silver_normalization.scope.domain is not CoverageDomain.SILVER_NORMALIZATION:
+        if normalization_reference.scope.domain is not CoverageDomain.SILVER_NORMALIZATION:
             raise ValueError("silver_normalization must reference SILVER_NORMALIZATION coverage.")
-        ingress_scope = self.bronze_ingress.scope
-        normalization_scope = self.silver_normalization.scope
+        ingress_scope = ingress_reference.scope
+        normalization_scope = normalization_reference.scope
+        if (
+            ingress_reference.epoch.collector_run_id
+            != normalization_reference.epoch.collector_run_id
+        ):
+            raise ValueError("event coverage references must belong to one collector run.")
         if (
             ingress_scope.feed_product_id,
             ingress_scope.subscription_spec_ids,
@@ -4940,30 +7542,41 @@ class EventCoverage:
             normalization_scope.payload_type,
         ):
             raise ValueError("event coverage references must describe the same event scope.")
-
-
-class DeliveryStatus(StrEnum):
-    """Outcome at one explicit bounded delivery boundary."""
-
-    ACCEPTED = "accepted"
-    DEFINITE_REJECTION = "definite-rejection"
-    TIMED_OUT = "timed-out"
-    ACCEPTANCE_UNCERTAIN = "acceptance-uncertain"
-    CANCELLED = "cancelled"
-
-
-class DeliveryReason(StrEnum):
-    """Sanitized bounded delivery evidence."""
-
-    OUTPUT_QUEUE_ACCEPTANCE = "output-queue-acceptance"
-    OUTPUT_QUEUE_REJECTION = "output-queue-rejection"
-    OUTPUT_QUEUE_TIMEOUT = "output-queue-timeout"
-    LOCAL_LIFECYCLE_CANCELLATION = "local-lifecycle-cancellation"
+        if _coverage_status_severity(normalization_reference.status) < _coverage_status_severity(
+            ingress_reference.status
+        ):
+            raise ValueError("Silver event coverage cannot be better than its Bronze ingress.")
+        if (
+            normalization_reference.transition_ordinal == 0
+            and type(normalization_reference.initial_evidence.source)
+            is UpstreamCoverageStateEvidenceSource
+            and normalization_reference.initial_evidence.source.committed_state
+            != self.bronze_ingress
+        ):
+            raise ValueError(
+                "initial Silver degradation must cite the exact committed Bronze ingress."
+            )
+        latest_normalization_transition = (
+            self.silver_normalization.state_reference.latest_transition
+        )
+        if (
+            latest_normalization_transition is not None
+            and type(latest_normalization_transition.evidence.source)
+            is UpstreamCoverageTransitionEvidenceSource
+            and latest_normalization_transition.evidence.source.committed_state
+            != self.bronze_ingress
+        ):
+            raise ValueError(
+                "Silver upstream transition must cite the exact committed Bronze ingress."
+            )
 
 
 @dataclass(frozen=True, slots=True)
 class DeliveryAttemptIdentity:
-    """One delivery attempt for one ordered materialization batch.
+    """Legacy v1 locators for one proposed delivery attempt and ordered key batch.
+
+    These byte-stable locators prove neither queue acceptance nor a delivery
+    outcome.  The closed commit/failure contracts live in ``market_event_v3``.
 
     Batch-content preimage: ``["delivery-batch-content-v1", [materialization texts]]``.
     Bounded batch ID preimage: ``["delivery-batch-v1", item_count, content_sha256]``.
@@ -5021,38 +7634,3 @@ class DeliveryAttemptIdentity:
                 canonical_json_array(("delivery-attempt-v1", destination, batch_id, ordinal))
             ),
         )
-
-
-@dataclass(frozen=True, slots=True)
-class DeliveryOutcome:
-    """Immutable queue-boundary result; never consumer or durability status."""
-
-    attempt: DeliveryAttemptIdentity
-    status: DeliveryStatus
-    reason: DeliveryReason
-    observed_at: datetime
-    observed_monotonic_ns: int
-
-    def __post_init__(self) -> None:
-        if type(self.attempt) is not DeliveryAttemptIdentity:
-            raise TypeError("attempt must be a DeliveryAttemptIdentity.")
-        if type(self.status) is not DeliveryStatus:
-            raise TypeError("status must be a DeliveryStatus.")
-        if type(self.reason) is not DeliveryReason:
-            raise TypeError("reason must be a DeliveryReason.")
-        observed = canonical_utc_datetime(self.observed_at, field_name="observed_at")
-        object.__setattr__(
-            self,
-            "observed_at",
-            datetime.fromisoformat(observed.replace("Z", "+00:00")),
-        )
-        require_nonnegative_int(self.observed_monotonic_ns, field_name="observed_monotonic_ns")
-        expected_reason = {
-            DeliveryStatus.ACCEPTED: DeliveryReason.OUTPUT_QUEUE_ACCEPTANCE,
-            DeliveryStatus.DEFINITE_REJECTION: DeliveryReason.OUTPUT_QUEUE_REJECTION,
-            DeliveryStatus.TIMED_OUT: DeliveryReason.OUTPUT_QUEUE_TIMEOUT,
-            DeliveryStatus.ACCEPTANCE_UNCERTAIN: DeliveryReason.OUTPUT_QUEUE_TIMEOUT,
-            DeliveryStatus.CANCELLED: DeliveryReason.LOCAL_LIFECYCLE_CANCELLATION,
-        }[self.status]
-        if self.reason is not expected_reason:
-            raise ValueError("delivery status and reason are inconsistent.")

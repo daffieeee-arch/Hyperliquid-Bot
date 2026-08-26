@@ -224,3 +224,346 @@ This register records current high-level decisions and the conditions under whic
 **Decision:** TrueNAS 26 BETA.3 may host research and PAPER services with backups and monitoring. Material live capital should use a stable runtime release or require explicit documented risk acceptance and repeated soak/recovery testing.
 
 **Why:** Operating-system maturity is part of execution risk, not merely infrastructure preference.
+
+---
+
+## ADR-022 — One provenance-complete market-event envelope, introduced atomically
+
+**Decision:** The final Silver boundary uses one mandatory `MarketEventEnvelopeV3`. Phase
+1A-3B1A defines its pure contract spine, but the contracts remain dormant. Existing Hyperliquid
+and Binance producers continue to emit only `MarketEventEnvelope` schema v2 through Phase
+1A-3B1C. Phase 1A-3B1D atomically migrates both normalizers and the Hyperliquid collector, removes
+the outer-v2 constant and `is_gap`, and leaves no permanent wrapper, dual writer or v2 producer.
+
+The dependency direction is one-way:
+
+```text
+contracts.py <- data_provenance.py <- instrument_metadata.py <- market_event_v3.py
+```
+
+Lower layers never import `market_event_v3.py`; none of these modules imports a venue DTO,
+normalizer or collector. Constructors validate caller-supplied values, deterministic derivations
+and explicitly supplied finite catalogues only. They do not prove capture order, sink acceptance,
+runtime coverage, reconnect behavior, run completeness or server-side catalogue uniqueness.
+
+### Canonical encoding and identities
+
+Computed IDs use compact ASCII JSON arrays, never mappings, unordered collections, object
+representations, Python hashes or `native_symbol` where canonical instrument identity is required.
+Every ID wrapper validates its exact tag, component types, nested shape and canonical re-encoding.
+Caller-supplied opaque `CollectorRunId`, `NormalizationRunId`, `MetadataAuthorityId`,
+`SourceEventId`, `SourceTransactionId` and `CorrelationId` values remain distinct validated value
+objects and are never silently regenerated. Existing Hyperliquid and Binance source-event strings
+remain byte-for-byte unchanged.
+
+The exact computed preimages are:
+
+| Tag | Ordered components after the tag |
+| --- | --- |
+| `feed-product-v1` | venue, source environment, source network, opaque product code, access requirement, entitlement class, transport, wire encoding |
+| `feed-capability-set-v1` | feed-product ID, sorted unique bounded capability-code array |
+| `feed-capabilities-observation-v1` | capability-set ID, effective-from UTC, boundary basis, optional source-declared ending, observed-at UTC |
+| `connection-session-v1` | collector-run ID, non-negative connection ordinal |
+| `adapter-feed-binding-v1` | adapter code, feed-product ID, venue, event-activation requirement |
+| `subscription-spec-content-v1` | feed-product ID, exact allowed wire method, exact allowed subscription type, Hyperliquid `["coin",coin]` or Binance sorted `["id",request ID]` and `["params",[sorted unique streams]]` rows |
+| `subscription-spec-v1` | feed-product ID, exact allowed wire method, exact allowed subscription type, parameter count, SHA-256 of exact `subscription-spec-content-v1` text |
+| `subscription-plan-content-v1` | feed-product ID, adapter-binding ID, sorted `[spec ID,full spec content]` rows, sorted `[canonical instrument ID,native symbol,["public-source-selector-v1",selector kind,selector value],spec ID]` rows, sorted `[spec ID,adapter profile,event family,family version,payload type]` rows, sorted `[connection-option kind,public endpoint-profile value]` rows |
+| `subscription-plan-v1` | feed-product ID, adapter-binding ID, SHA-256 of exact `subscription-plan-content-v1` text |
+| `subscription-attempt-v1` | connection-session ID, subscription-spec ID, non-negative attempt ordinal |
+| `raw-record-v1` | feed-product ID, collector-run ID, connection-session ID, ingress ordinal, frame kind, payload SHA-256 |
+| `raw-record-content-v1` | raw schema version, raw-record ID, subscription-plan ID, sorted attempt-snapshot rows, receive UTC, receive monotonic ns, collector version, collector commit, payload length, payload SHA-256 |
+| `instrument-specification-content-v1` | canonical instrument ID, quantity unit, contract form, canonical multiplier, multiplier asset, settlement asset, instrument expiry, last-trading UTC, settlement UTC, sorted `[price-reference role,reference ID]` rows |
+| `instrument-specification-v1` | SHA-256 of canonical instrument ID, exact canonical-content length, SHA-256 of exact `instrument-specification-content-v1` text |
+| `instrument-metadata-observation-v1` | canonical instrument ID, specification ID, metadata-authority ID, effective-from UTC, boundary basis, optional source-declared ending, observed-at UTC, optional raw-record ID |
+| `coverage-scope-content-v1` | feed-product ID, sorted spec IDs, sorted canonical instrument IDs, event family, family schema version, payload type |
+| `coverage-scope-v1` | coverage domain, feed-product ID, event family, family schema version, payload type, spec count, instrument count, Merkle root of sorted spec IDs, SHA-256 of sorted instrument IDs |
+| `subscription-spec-membership-proof-v1` | coverage-scope ID, subscription-spec ID, member index, member count, ordered Merkle sibling SHA-256 values |
+| `coverage-epoch-v1` | coverage-scope ID, collector-run ID, non-negative epoch ordinal, activation UTC, activation monotonic ns |
+| `coverage-evidence-v1` | scope ID, epoch ID, collector-run ID, evidence kind, exact typed source reference, observed UTC, observed monotonic ns |
+| `normalization-failure-evidence-v1` | raw-record ID, normalization-run ID, raw-event index or null, source-event ID when established or null otherwise (always null before indexing), bounded failure category, exact coverage-scope ID |
+| `coverage-transition-v1` | scope ID, epoch ID, positive transition ordinal, previous status, next status, reason, coverage-evidence ID |
+| `delivery-batch-content-v1` | ordered materialization-key texts |
+| `delivery-batch-v1` | item count, SHA-256 of exact `delivery-batch-content-v1` text |
+| `delivery-attempt-v1` | destination ID, delivery-batch ID, non-negative attempt ordinal |
+| `logical-source-key-v1` | feed-product ID, source-event ID |
+| `observation-key-v1` | raw-record ID, non-negative raw-event index |
+| `materialization-key-v1` | normalization-run ID, observation-key ID, event family, family version, payload type |
+| `raw-event-normalization-scope-binding-v1` | raw-record ID, full-record integrity SHA-256, subscription-plan ID, raw-event index, subscription-spec ID, subscription-attempt ID, attempt status, canonical-instrument-ID SHA-256, complete `public-source-selector-v1` row, coverage-scope ID |
+| `raw-frame-normalization-scope-binding-v1` | raw-record ID, full-record integrity SHA-256, subscription-plan ID, coverage-scope ID |
+| `raw-event-normalization-outcome-v1` | observation-key ID, complete `raw-event-normalization-scope-binding-v1` row, disposition, optional logical-source-key ID, optional materialization-key ID, optional bounded evidence |
+| `normalization-outcome-content-v1` | ordered index-outcome IDs, ordered committed-materialization IDs, sorted evidence, sorted coverage-transition IDs, optional pre-index `raw-frame-normalization-scope-binding-v1` row |
+| `normalization-outcome-v1` | normalization-run ID, raw-record ID, normalizer version, normalizer commit, frame status, optional decoded count, normalization-outcome-content SHA-256 |
+
+Nested typed identifiers are encoded in these arrays as their canonical JSON text string, not as
+nested identity arrays. Genuine nested component collections use JSON arrays. Public wire
+identity uses closed typed semantics rather than arbitrary names or mappings: the current
+Hyperliquid product admits only `subscribe`/`trades` plus exact `coin`, while the Binance Spot
+product admits only `SUBSCRIBE`/`@trade` plus exact public `id` and sorted stream names. The only
+current connection option is a closed non-secret public endpoint-profile catalogue value.
+
+The spec-member root in `coverage-scope-v1` is reproducible rather than an opaque set hash. Sort
+unique spec IDs by canonical text; SHA-256 hash each leaf as
+`["coverage-scope-spec-member-leaf-v1",spec ID]`; pad to the next power of two with position-bound
+leaves `["coverage-scope-spec-padding-leaf-v1",position]`, where `position` is the zero-based
+padded-leaf index; and SHA-256 hash each ordered pair as
+`["coverage-scope-spec-member-node-v1",left digest,right digest]` until one root remains. Padding
+leaves are SHA-256 hashes too. The
+instrument-members digest is SHA-256 over
+`["coverage-scope-instrument-members-v1",sorted canonical instrument IDs]`. Every JSON array in
+this paragraph uses the same compact ASCII canonical encoder.
+
+Coverage evidence embeds exactly one closed typed source row:
+
+| Source tag | Ordered components after the tag |
+| --- | --- |
+| `initial-activation-evidence-v1` | connection-session ID, acknowledged-attempt count, spec-member Merkle root, SHA-256 of `["initial-activation-attempts-v1",sorted [attempt ID,"acknowledged"] rows]` |
+| `transport-ambiguity-evidence-v1` | feed-product ID, connection-session ID, optional subscription-attempt ID, optional complete `subscription-spec-membership-proof-v1` row |
+| `raw-record-evidence-v1` | raw-record ID, identified coverage-scope ID |
+| `upstream-coverage-transition-evidence-v1` | upstream coverage-transition ID |
+| `normalization-failure-evidence-reference-v1` | exact `normalization-failure-evidence-v1` ID |
+| `source-sequence-break-evidence-v1` | feed-product ID, sequence role, namespace/domain, non-negative first and last values, identified coverage-scope ID |
+| `source-event-conflict-evidence-v1` | feed-product ID, source-event ID, raw-record ID, raw-event index, identified coverage-scope ID |
+| `acknowledgement-evidence-v1` | subscription-attempt ID, `acknowledged`, complete `subscription-spec-membership-proof-v1` row |
+| `reconnect-evidence-v1` | feed-product ID, connection-session ID |
+| `authoritative-state-snapshot-evidence-v1` | raw-record ID |
+
+The outer `coverage-evidence-v1` row additionally binds scope ID, epoch ID, collector-run ID,
+evidence kind and injected UTC/monotonic observation boundaries. Thus none of these rows is a free
+label, and membership-bearing evidence can be checked against the exact high-cardinality scope.
+
+`raw-record-content-v1`, `instrument-specification-content-v1`,
+`subscription-spec-content-v1`, `subscription-plan-content-v1`,
+`coverage-scope-content-v1`, `delivery-batch-content-v1` and
+`normalization-outcome-content-v1` remain independently validated beside their bounded digest
+identities where applicable. Their SHA-256 values are integrity/content commitments, not a
+substitute for retaining the full canonical content. UTC input is an exact built-in,
+timezone-aware `datetime` with zero offset and serializes with a four-digit year and exactly six
+fractional digits. Decimal text uses `Decimal.as_tuple()` only: finite values, at most 128
+coefficient digits, exponent in `[-128,128]`, signed zero as `0`, fixed-point output of at most 256
+characters, and no rounding, `normalize()`, `quantize()` or active-context dependence. Canonical
+instrument IDs are instead structurally reconstructed against the existing `Instrument` contract
+and do not inherit the generic 256-character metadata-text bound.
+
+Every copied or canonicalized value has a finite resource ceiling. Opaque caller IDs are at most
+4,096 characters; canonical ID wrappers at most 8,388,608 serialized characters; canonical
+`Instrument` IDs at most 1,048,576; instrument-specification content at most 4,194,304;
+subscription-spec content at most 2,097,152; and plan/scope high-cardinality content at most
+16,777,216. Raw application messages are at most 1,048,576 bytes. Canonical arrays allow at most
+65,536 items per array, depth 32 and 100,000 canonical value nodes. More specific repeated-field
+ceilings are:
+
+| Repeated value | Maximum items |
+| --- | ---: |
+| feed capabilities | 7 |
+| Binance Spot streams | 1,024 |
+| public wire parameters | 2 |
+| subscription specs, instrument bindings and normalization bindings | 1,024 each |
+| public connection options | 1 |
+| raw attempt snapshots | 4,096 |
+| supplied attempt or raw-record validation sequences | 65,536 each |
+| coverage spec members or instrument members | 1,024 each |
+| subscription membership-proof siblings | 10 |
+| acknowledged activation attempts | 1,024 |
+| delivery batch members | 4,096 |
+| instrument price references | 32 |
+| supplied metadata specifications or observations | 65,536 each |
+| source-time facts or source-sequence ranges | 32 each |
+| decoded event bindings, normalization index outcomes or committed materialization keys | 4,096 each |
+| normalization evidence values | 8 |
+| normalization coverage-transition references | 1,024 |
+
+Literal boundary and boundary-plus-one tests bind every numeric ceiling through the shared
+validator. Owner-level tests also prove that each owning constructor or finite-sequence validator
+applies its N/N+1 boundary, directly at manageable literal ceilings or with a lower test-local
+module ceiling for high-cardinality fields. Closed semantic catalogues may impose a smaller
+maximum than the generic storage ceiling.
+
+### Feed, subscription and raw-observation boundaries
+
+Feed identity records a product's access requirement, not the caller's credentials or authority.
+Capabilities are sorted, bounded, append-only point-in-time catalogue observations and never grant
+authorization or contain account or credential state. Initial exact catalogue products are
+Hyperliquid production/mainnet public WebSocket market data and Binance production/mainnet Spot
+JSON market streams; Bitvavo Standard, Bitvavo Market Data Pro and Binance USDⓈ-M require distinct
+future product identities.
+
+`SubscriptionPlanIdentity` validates the complete desired configuration as independently
+testable canonical content, then exposes a bounded versioned SHA-256 content-addressed plan ID.
+Any semantic content change changes that ID, while realistic multi-instrument plans do not inflate
+the strongly typed ID. One exact outbound wire request is a `SubscriptionSpecIdentity`; family and
+payload semantics are deliberately outside its ID. Adapter profile bindings must match the plan's
+structured adapter/feed binding. API keys, tokens, signatures, account or credential state,
+authorization state, secret endpoint text, timeouts and retry controls have no representable
+public-semantic field and fail before canonical content or an ID can be produced. Secret-bearing
+values are also excluded from representations and errors.
+
+Each instrument binding includes the exact existing `Instrument`, canonical instrument ID,
+adapter-native symbol, closed public source selector and exact wire-spec ID. Hyperliquid `coin`
+must equal the native symbol; Binance Spot selectors are exact lowercase
+`<native-symbol>@trade` streams present once in that spec. A selector binds exactly one canonical
+market, each spec selector must be bound, and Binance request IDs are unique within one plan so
+acknowledgements cannot create ambiguous lineage.
+
+A `SubscriptionAttemptIdentity` binds one session, spec and zero-based attempt ordinal. The
+ACK-race-safe transitions are `PENDING -> SEND_STARTED`, `SEND_STARTED -> SENT`,
+`SEND_STARTED -> ACKNOWLEDGED`, `SENT -> ACKNOWLEDGED` and idempotent
+`ACKNOWLEDGED -> ACKNOWLEDGED`; regressions fail closed. A raw ACK observation keeps the pre-parse
+snapshot (normally `SENT`, possibly `SEND_STARTED`); a later transition is a separate immutable
+record and never mutates Bronze.
+
+For a successfully returned `websockets` 17 application message, Bronze bytes are exactly
+`message.encode("utf-8")` for `str` TEXT and the unchanged value for `bytes` BINARY. They are
+post-extension, reassembled application-message bytes. They do not represent invalid UTF-8
+rejected before `recv()` returns, control/close frames, fragment boundaries, compression wire
+bytes, TCP segments or TLS records. Internal protocol rejection without a returned application
+message produces typed failure/coverage evidence without inventing a raw record. `recv(decode=False)`
+is not used as a substitute because it removes the TEXT/BINARY distinction required by Bronze.
+
+`RawMarketDataRecord` permits empty exact bytes, strictly decodes TEXT as UTF-8, hides payload
+bytes from `repr`, and derives payload length, payload digest, raw ID and full digest. Attempt
+snapshots use exact rows `[subscription_spec_id,subscription_attempt_id,attempt_status]`, sorted by
+the first two canonical texts and unique on that pair. Changing only attempt status leaves the raw
+ID unchanged but changes the full digest. Stored verification recomputes every derived field.
+Individual construction proves only `ingress_ordinal >= 0`; a pure finite-sequence validator can
+prove zero-based contiguous supplied records, but only a sealed run manifest in 3B2 can detect a
+missing tail. Later annotations never mutate Bronze.
+
+Phase 1A-3B1B must require an injected asynchronous `RawRecordSink` with the exact operation
+`await sink.accept(record: RawMarketDataRecord) -> RawRecordAcceptance`. Acceptance echoes the
+exact raw-record ID and a bounded non-secret destination ID. It means ownership at that sink
+boundary, not durable persistence. A separate bounded `NormalizationOutcomeSink` accepts dormant
+frame outcomes through
+`await outcome_sink.accept(outcome: NormalizationOutcome) -> NormalizationOutcomeAcceptance`;
+that typed result likewise echoes the exact outcome ID and bounded destination ID. Neither sink
+may silently substitute a null implementation. The collector owns finite positive accept
+timeouts and owns each injected sink for exactly one collector run. In `finally`, it invokes each
+sink's bounded `aclose()` at most once. Cancellation remains cancellation; a sanitized bounded
+close failure cannot mask the primary failure or extend shutdown without limit. Raw and outcome
+sinks remain separate, and failures expose only bounded categories—never payloads, exception
+objects, credentials or destination secrets. Deterministic test sinks expose accepted immutable
+values to their caller.
+
+Internal validation exceptions are private implementation details, not observable contract
+values. Their traceback frames may retain rejected constructor inputs in frame locals even when
+bounded exception arguments, `__cause__` and `__context__` contain none. Phase 1A-3B1B must catch
+them inside its private validation boundary, classify them to the closed
+`ValidationFailureCategory`, leave the catch block, discard the caught exception, and expose only
+the frozen/slotted category-only `SanitizedValidationFailure`. It must never log, store, export or
+attach the internal exception, traceback, frame locals, free-form text, input value or `exc_info`.
+Intentional cancellation remains cancellation and is not reclassified as validation failure.
+
+With `H` heartbeat interval, `P` pong timeout, `R` raw acceptance timeout, `O` outcome acceptance
+timeout, `Q` normalized-output publish timeout and `S` send timeout, validation must require:
+
+```text
+max(H, P + 2 * (R + O) + Q) + (R + O + Q) + S < 60 seconds
+```
+
+No raw sink or collector integration is implemented in 3B1A.
+
+### Metadata, provenance, coverage and outcomes
+
+`InstrumentSpecification` retains full independently verified canonical content and uses a
+bounded digest ID that also commits to the canonical-instrument digest and content length; stored
+reconstruction recomputes both before returning a value. Expiry comes only from `Instrument`.
+Dated contracts add explicit last-trading and settlement UTC timestamps rather than parsing
+symbols, and settlement may equal or follow—but never precede—the last-trading time. Stored
+verification rechecks the same rule. Observations are append-only and
+conflicts are scoped by
+`(canonical_instrument_id, metadata_authority_id, effective_from)`. Identical re-observations of
+specification, basis and ending are allowed; differing assertions at that authority/boundary fail.
+`FIRST_OBSERVED` requires `effective_from == observed_at`; `SOURCE_DECLARED` may predate
+observation. Selection first restricts the supplied observations to the requested instrument and
+authority with `observed_at <= raw.received_time`; only that visible slice is validated and used
+to construct the effective half-open interval. The separate full-catalogue validator remains
+available when whole-catalogue proof is required. The selector is the sole supported constructor
+of `ResolvedInstrumentMetadata`; future or unrelated-authority observations cannot invalidate a
+historical selection, and current metadata may never be applied retroactively through look-ahead.
+
+`SourceProvenance` contains only source-event ID, optional transaction ID, source-time facts and
+source-sequence ranges. `ObservationProvenance` contains feed, run, session, plan, spec, attempt,
+raw-record/index, receive clocks, collector build, normalization run and normalizer build.
+`NormalizationContext.from_raw_record(...)` derives every capture-side value and validates feed,
+adapter, instrument, metadata, collector-run-consistent coverage epochs and event-specific
+subscription lineage. Mixed Hyperliquid frames
+therefore retain the correct coin-specific spec and attempt at every index. The current trade-v2
+binding requires exactly one `TRADE_EXECUTION_TIME` source fact; its derived UTC instant must equal
+both the selected metadata event time and outer-v3 event time. An `EXCHANGE_EVENT_TIME` may coexist
+without replacing it. The current Hyperliquid public-trades binding materializes events only from
+an `ACKNOWLEDGED` attempt snapshot; pre-ACK raw control observations remain valid Bronze facts but
+cannot authorize a trade event.
+
+The logical source key is `(feed_product_id, source_event_id)`; the observation key is
+`(raw_record_id, raw_event_index)`; the materialization key is `(normalization_run_id,
+observation_key,event_family,event_family_version,payload_type)`. Run identity is stable across
+sessions; session and attempt identities change at their explicit ordinals; plan/spec identities
+stay stable while desired/wire configuration stays unchanged. The same source event seen through
+two feed products is two logical source keys.
+
+Coverage is separate for Bronze ingress, Silver normalization and Silver delivery. An event embeds
+exactly ingress and normalization references known at construction. Delivery is a separate
+immutable `DeliveryOutcome`; Silver delivery means bounded collector-output-queue acceptance, not
+consumer processing or persistence. The pure reducer enforces scope/epoch continuity, the next
+ordinal, bounded transitions and recovery evidence. ACK or reconnect alone never improves degraded
+coverage. Epoch identity binds scope, collector run, ordinal and an explicit UTC/monotonic
+activation boundary. Initial `COMPLETE` requires typed initial-activation evidence at exactly that
+boundary. Later evidence carries injected UTC and monotonic observation boundaries and cannot move
+backward in process-local monotonic time. A definitively rejected successfully received raw record
+makes Bronze ingress `CONFIRMED_INCOMPLETE`; ambiguous raw-sink acceptance remains `UNCERTAIN`.
+Only positively identified in-scope market data can prove confirmed incompleteness; unclassified
+terminal ambiguity yields uncertainty. ACK, reconnect and authoritative-state snapshots cannot
+repair degraded historical trade coverage. Because no interval-bound sequence/backfill proof
+exists in 3B1A, every improvement transition is rejected. Source-event conflict remains distinct
+integrity evidence. A Silver-normalization source-event conflict establishes
+`CONFIRMED_INCOMPLETE`, initially or through the reducer; it is never an `UNCERTAIN` conflict
+state, and ACK, reconnect or unrelated evidence cannot clear it.
+
+`NormalizationOutcome` binds the normalization build and is frame-atomic. Control and valid-empty
+frames have no index or materialization outcomes. Successful indexes are unique and increasing;
+new and exact-duplicate dispositions may coexist. Pre-index rejection invents no indexes. On an
+indexed rejection or conflict, prior candidates become `NOT_MATERIALIZED_FRAME_ABORTED` and no
+materialization key is committed. For every indexed frame, frame-level evidence must equal the
+sorted unique canonical union of all per-index evidence; missing, extra, contradictory, partial,
+differently ordered or duplicate evidence fails closed. The contract proves consistency only for
+explicitly supplied decoded context, not that an index existed in raw bytes. Attached
+normalization-failure and source-conflict coverage transitions are the only permitted transition
+kinds and must use Silver-normalization scope, the same feed, collector run, raw record and
+normalization run. Each indexed outcome carries a factory-derived raw/spec/attempt/public-selector/
+canonical-instrument/scope binding; an attached transition must match that exact scope, event
+index and nullable source-event identity: the evidence and logical source key must either contain
+the same established source-event ID or both omit it. A generic rejected index cannot carry
+source-conflict evidence, and every conflict index requires a non-null exact source-event ID plus
+the dedicated conflict disposition and frame status. Pre-index failure uses an exact
+factory-derived raw-frame scope containing every plan spec with the matching
+family/version/payload binding and every instrument bound to those specs. Without typed route
+evidence it cannot choose a strict subset or fabricate an event index. Pre-index evidence uses a
+positive closed allowlist: protocol rejection, decoder rejection, unknown instrument, metadata
+unavailable, provenance mismatch or local contract failure. Source-event conflict and
+frame-atomic abort are indexed-only, and every future evidence enum member remains pre-index
+invalid until explicitly classified.
+Transport, reconnect, raw-sink, delivery, foreign-scope or unrelated pre-existing transitions
+cannot be attached. Delivery state never appears in `NormalizationOutcome`.
+
+### Activation sequence
+
+- **3B1A — dormant pure contract spine:** define and test these value objects, selectors, reducers,
+  envelope and outcomes; no producer imports or emits v3.
+- **3B1B — Bronze raw capture:** integrate mandatory bounded `RawRecordSink` acceptance before
+  parsing and separate bounded `NormalizationOutcomeSink` acceptance after each frame's
+  processing/materialization decision; v2 remains the only Silver envelope.
+- **3B1C — coverage engine:** emit immutable coverage transitions/outcomes with destination-specific
+  delivery evidence; v2 remains the only Silver envelope.
+- **3B1D — atomic cutover:** migrate both normalizers and the collector together to the one mandatory
+  v3 envelope, preserve existing source-event bytes, and remove outer v2 and `is_gap`.
+- **3B2 — deterministic replay:** verify digests and sealed run manifests, preserve ingress order,
+  never silently sort/repair/deduplicate raw history, and retain one-to-many Bronze-to-Silver
+  lineage.
+
+**Current status:** The v3 contracts are defined and tested but dormant. No existing producer
+imports or emits v3; v2 remains the only active Silver envelope. No raw sink or raw capture,
+operational coverage tracker, deterministic replay or deployment exists. The atomic producer and
+collector cutover occurs only in 3B1D. SHADOW and LIVE remain disabled.
+
+**Why:** No deployed dataset or ClickHouse schema depends on v2, so one atomic migration provides a
+clean long-term boundary without permanent compatibility complexity while preserving reviewable,
+bounded implementation slices.

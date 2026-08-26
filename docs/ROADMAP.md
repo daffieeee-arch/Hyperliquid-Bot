@@ -63,6 +63,12 @@ PR #5. It remains undeployed and does not enable LIVE.
 Phase 1A-3A defines and locally validates a pure offline Binance Spot raw `@trade` decoder and
 schema-v2 normalization boundary with a deterministic synthetic fixture. It is not a WebSocket
 collector, authenticated integration, storage path, deployment or LIVE capability.
+Phase 1A-3B1A defines and tests the additive pure feed-provenance, raw-record, instrument-metadata,
+coverage, event-family, v3-envelope and normalization-outcome contracts. They are dormant: no
+existing producer imports or emits v3, and v2 remains the only active Silver envelope.
+The dormant outcome contracts bind conflict/failure transitions to exact raw and event scope;
+future runtime code must expose only category-only sanitized validation failures, never internal
+exceptions or tracebacks.
 
 Target: useful local output within approximately the first 1-2 weeks of active development.
 
@@ -84,13 +90,24 @@ Deliverables:
 
 Redis and PostgreSQL are not mandatory for this thin slice. They are introduced when multi-process shared state and durable control-plane requirements justify them.
 
-The next multi-venue data architecture slice is expected to separate feed product identity,
-capabilities and entitlement from venue/instrument identity; define immutable raw capture,
-feed/session/subscription identity, coverage/gap states, versioned event families and deterministic
-replay; and establish Bronze/Silver/Gold storage boundaries. Later work includes simultaneous
-Bitvavo Standard/Market Data Pro comparison, other approved advanced feeds, ClickHouse persistence,
-Grafana/Alloy/OpenTelemetry forensics and the Bloomberg/EMS-inspired cockpit. None of those systems
-is implemented by Phase 1A-3A.
+The multi-venue data-contract spine proceeds in bounded steps:
+
+1. **Phase 1A-3B1A — dormant pure contract spine:** definitions and deterministic tests only;
+2. **Phase 1A-3B1B — Bronze raw capture:** separate mandatory bounded acceptance for raw records
+   before parsing and normalization outcomes after processing; acceptance is not yet durable
+   persistence;
+3. **Phase 1A-3B1C — coverage engine:** operational immutable coverage transitions and separate
+   delivery outcomes;
+4. **Phase 1A-3B1D — atomic cutover:** both normalizers and the collector move together to the one
+   mandatory outer-v3 envelope; outer v2 and `is_gap` are removed without dual writing;
+5. **Phase 1A-3B2 — deterministic replay:** digest verification, sealed run manifests and exact
+   Bronze-to-Silver lineage.
+
+Phase 1A-3B1A implements no raw sink or raw capture, operational coverage tracker or deterministic
+replay. Later work includes simultaneous Bitvavo Standard/Market Data Pro comparison, approved
+advanced feeds, ClickHouse persistence, Grafana/Alloy/OpenTelemetry forensics and the
+Bloomberg/EMS-inspired cockpit. None is deployed by this slice; SHADOW/LIVE remain disabled. Phase
+1A remains started, not complete.
 
 ## Phase 1B — TrueNAS 24/7 PAPER deployment
 

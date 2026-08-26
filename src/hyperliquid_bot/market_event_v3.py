@@ -32,6 +32,7 @@ from hyperliquid_bot.data_provenance import (
     CoverageEvidenceId,
     CoverageEvidenceKind,
     CoverageFanoutKind,
+    CoverageFanoutProof,
     CoverageMutationBatch,
     CoverageMutationBatchId,
     CoverageMutationNoOp,
@@ -53,10 +54,12 @@ from hyperliquid_bot.data_provenance import (
     InstrumentSpecificationId,
     NormalizationFailureCategory,
     NormalizationFailureEvidenceSource,
+    NormalizationOutcomeEvidenceSource,
     NormalizationRunId,
     PublicSourceSelector,
     PublicSourceSelectorKind,
     RawCoverageFanoutBinding,
+    RawCoverageFanoutBindingId,
     RawMarketDataRecord,
     RawRecordId,
     SourceEventConflictEvidenceSource,
@@ -79,6 +82,9 @@ from hyperliquid_bot.data_provenance import (
     require_sha256,
     sha256_hex,
 )
+from hyperliquid_bot.data_provenance import (
+    NormalizationOutcomeId as NormalizationOutcomeId,
+)
 from hyperliquid_bot.instrument_metadata import ResolvedInstrumentMetadata
 
 MARKET_EVENT_ENVELOPE_SCHEMA_VERSION: Final = 3
@@ -93,7 +99,9 @@ _RAW_FRAME_NORMALIZATION_SCOPE_BINDING_VERSION: Final = "raw-frame-normalization
 _RAW_EVENT_NORMALIZATION_OUTCOME_ID_VERSION: Final = "raw-event-normalization-outcome-v1"
 _NORMALIZATION_OUTCOME_CONTENT_VERSION: Final = "normalization-outcome-content-v1"
 _TYPED_NORMALIZATION_OUTCOME_CONTENT_VERSION: Final = "normalization-outcome-content-v2"
-_NORMALIZATION_OUTCOME_ID_VERSION: Final = "normalization-outcome-v1"
+_NORMALIZATION_OUTCOME_SINK_FAILURE_COVERAGE_BINDING_VERSION: Final = (
+    "normalization-outcome-sink-failure-coverage-binding-v1"
+)
 _FRAME_ATOMIC_ABORT_EVIDENCE_ID_VERSION: Final = "frame-atomic-abort-evidence-v1"
 _FRAME_ATOMIC_ABORT_CAUSE_CONTENT_VERSION: Final = "frame-atomic-abort-primary-cause-content-v1"
 _NORMALIZATION_SOURCE_CONFLICT_BINDING_ID_VERSION: Final = (
@@ -355,39 +363,42 @@ class RawEventNormalizationOutcomeId:
 
 
 @dataclass(frozen=True, slots=True)
-class NormalizationOutcomeId:
-    """Canonical identifier for one complete frame-normalization outcome."""
+class NormalizationOutcomeSinkFailureCoverageBindingId:
+    """Bound one concrete outcome to one exact prepared sink-failure mutation.
+
+    Exact preimage::
+
+        ["normalization-outcome-sink-failure-coverage-binding-v1",
+         normalization_outcome_id, coverage_mutation_batch_id,
+         raw_coverage_fanout_binding_id, coverage_evidence_kind]
+
+    High-cardinality scope and event membership remains content-addressed by
+    the referenced outcome, mutation batch and raw fan-out binding.
+    """
 
     value: str
 
     def __post_init__(self) -> None:
         components = _parse_canonical_identifier(
             self.value,
-            field_name="normalization_outcome_id",
-            version_tag=_NORMALIZATION_OUTCOME_ID_VERSION,
+            field_name="normalization_outcome_sink_failure_coverage_binding_id",
+            version_tag=_NORMALIZATION_OUTCOME_SINK_FAILURE_COVERAGE_BINDING_VERSION,
         )
-        if (
-            len(components) != 8
-            or type(components[1]) is not str
-            or type(components[2]) is not str
-            or type(components[3]) is not str
-            or type(components[4]) is not str
-            or type(components[5]) is not str
-            or (components[6] is not None and type(components[6]) is not int)
-            or type(components[7]) is not str
-        ):
-            raise ValueError("normalization_outcome_id has invalid components.")
-        if components[6] is not None and (
-            components[6] < 0 or components[6] > MAX_DECODED_EVENTS_PER_RAW_RECORD
-        ):
-            raise ValueError("normalization_outcome_id decoded count is outside its bound.")
-        NormalizationRunId(components[1])
-        RawRecordId(components[2])
-        _require_text(components[3], field_name="normalizer_version")
-        _require_text(components[4], field_name="normalizer_commit")
-        if components[5] not in {item.value for item in FrameNormalizationStatus}:
-            raise ValueError("normalization_outcome_id has an unsupported frame status.")
-        require_sha256(components[7], field_name="normalization_outcome_content_sha256")
+        if len(components) != 5 or any(type(components[index]) is not str for index in range(1, 5)):
+            raise ValueError("outcome sink-failure coverage binding ID has invalid components.")
+        assert type(components[1]) is str
+        assert type(components[2]) is str
+        assert type(components[3]) is str
+        assert type(components[4]) is str
+        NormalizationOutcomeId(components[1])
+        CoverageMutationBatchId(components[2])
+        RawCoverageFanoutBindingId(components[3])
+        kind = CoverageEvidenceKind(components[4])
+        if kind not in {
+            CoverageEvidenceKind.NORMALIZATION_OUTCOME_REJECTION,
+            CoverageEvidenceKind.NORMALIZATION_OUTCOME_SINK_ACCEPTANCE_AMBIGUITY,
+        }:
+            raise ValueError("outcome sink-failure binding has an unsupported evidence kind.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -2664,7 +2675,7 @@ class NormalizationOutcome:
         )
         canonical = canonical_json_array(
             (
-                _NORMALIZATION_OUTCOME_ID_VERSION,
+                NormalizationOutcomeId.VERSION_TAG,
                 self.normalization_run_id.value,
                 self.raw_record_id.value,
                 normalizer_version,
@@ -3063,6 +3074,232 @@ class NormalizationOutcome:
                 raise ValueError("source-conflict frame violates the closed outcome matrix.")
             return
         raise AssertionError("unhandled frame normalization status")
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class NormalizationOutcomeSinkFailureCoverageBinding:
+    """Verified aggregate binding of one outcome to its post-sink-failure batch.
+
+    A lower-layer :class:`CoverageMutationBatch` and its individual evidence
+    rows don't expose the concrete outcome's decoded scope bindings.  This
+    upper-layer aggregate is therefore the sole complete proof that an outcome
+    sink failure targets exactly the scopes and subscription attempts identified
+    by that outcome.  It remains dormant until Phase 1A-3B1C-2.
+    """
+
+    normalization_outcome: NormalizationOutcome = field(repr=False)
+    coverage_mutation_batch: CoverageMutationBatch = field(repr=False)
+    evidence_kind: CoverageEvidenceKind
+    normalization_outcome_sink_failure_coverage_binding_id: (
+        NormalizationOutcomeSinkFailureCoverageBindingId
+    )
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        raise TypeError(
+            "use NormalizationOutcomeSinkFailureCoverageBinding.from_outcome_and_batch()."
+        )
+
+    @classmethod
+    def from_outcome_and_batch(
+        cls,
+        *,
+        normalization_outcome: NormalizationOutcome,
+        coverage_mutation_batch: CoverageMutationBatch,
+    ) -> Self:
+        """Validate exact concrete-outcome, fan-out and raw-record lineage."""
+
+        if cls is not NormalizationOutcomeSinkFailureCoverageBinding:
+            raise TypeError("outcome sink-failure coverage bindings don't support subclassing.")
+        if type(normalization_outcome) is not NormalizationOutcome:
+            raise TypeError("normalization_outcome must be a NormalizationOutcome.")
+        if type(coverage_mutation_batch) is not CoverageMutationBatch:
+            raise TypeError("coverage_mutation_batch must be a CoverageMutationBatch.")
+        raw_binding = coverage_mutation_batch.raw_fanout_binding
+        if type(raw_binding) is not RawCoverageFanoutBinding:
+            raise ValueError("outcome sink-failure coverage requires exact raw fan-out binding.")
+        fanout = coverage_mutation_batch.fanout_proof
+        if raw_binding.raw_record_id != normalization_outcome.raw_record_id:
+            raise ValueError("outcome sink-failure coverage must bind the exact raw record.")
+
+        target_scope_ids = tuple(scope.coverage_scope_id for scope in fanout.target_scopes)
+        evidence_by_scope = _outcome_sink_failure_evidence_by_scope(coverage_mutation_batch)
+        if tuple(evidence_by_scope) != target_scope_ids:
+            raise ValueError("outcome sink-failure evidence must cover every exact fan-out target.")
+        sources = tuple(evidence.source for evidence in evidence_by_scope.values())
+        if any(type(source) is not NormalizationOutcomeEvidenceSource for source in sources):
+            raise ValueError("outcome sink-failure batch requires its exact typed evidence source.")
+        typed_sources = tuple(
+            source for source in sources if type(source) is NormalizationOutcomeEvidenceSource
+        )
+        if len(typed_sources) != len(sources):  # pragma: no cover - guarded above
+            raise AssertionError("unhandled outcome sink-failure evidence source")
+        if any(
+            source.normalization_outcome_id != normalization_outcome.normalization_outcome_id
+            for source in typed_sources
+        ):
+            raise ValueError("outcome sink-failure evidence must cite the concrete outcome.")
+        evidence_kinds = {evidence.kind for evidence in evidence_by_scope.values()}
+        if len(evidence_kinds) != 1:
+            raise ValueError("outcome sink-failure batch requires one exact failure knowledge.")
+        evidence_kind = next(iter(evidence_kinds))
+        if evidence_kind not in {
+            CoverageEvidenceKind.NORMALIZATION_OUTCOME_REJECTION,
+            CoverageEvidenceKind.NORMALIZATION_OUTCOME_SINK_ACCEPTANCE_AMBIGUITY,
+        }:
+            raise ValueError("outcome sink-failure batch has an unsupported evidence kind.")
+
+        _validate_concrete_outcome_fanout(
+            normalization_outcome=normalization_outcome,
+            fanout=fanout,
+            raw_binding=raw_binding,
+        )
+        identifier = NormalizationOutcomeSinkFailureCoverageBindingId(
+            canonical_json_array(
+                (
+                    _NORMALIZATION_OUTCOME_SINK_FAILURE_COVERAGE_BINDING_VERSION,
+                    normalization_outcome.normalization_outcome_id.value,
+                    coverage_mutation_batch.coverage_mutation_batch_id.value,
+                    raw_binding.raw_coverage_fanout_binding_id.value,
+                    evidence_kind.value,
+                )
+            )
+        )
+        value = object.__new__(cls)
+        object.__setattr__(value, "normalization_outcome", normalization_outcome)
+        object.__setattr__(value, "coverage_mutation_batch", coverage_mutation_batch)
+        object.__setattr__(value, "evidence_kind", evidence_kind)
+        object.__setattr__(
+            value,
+            "normalization_outcome_sink_failure_coverage_binding_id",
+            identifier,
+        )
+        return value
+
+    @classmethod
+    def from_stored(
+        cls,
+        *,
+        normalization_outcome: NormalizationOutcome,
+        coverage_mutation_batch: CoverageMutationBatch,
+        expected_binding_id: NormalizationOutcomeSinkFailureCoverageBindingId,
+    ) -> Self:
+        """Recompute the complete binding and reject a persisted ID mismatch."""
+
+        if type(expected_binding_id) is not NormalizationOutcomeSinkFailureCoverageBindingId:
+            raise TypeError(
+                "expected_binding_id must be a NormalizationOutcomeSinkFailureCoverageBindingId."
+            )
+        value = cls.from_outcome_and_batch(
+            normalization_outcome=normalization_outcome,
+            coverage_mutation_batch=coverage_mutation_batch,
+        )
+        if value.normalization_outcome_sink_failure_coverage_binding_id != expected_binding_id:
+            raise ValueError("stored outcome sink-failure coverage binding doesn't match.")
+        return value
+
+
+def _outcome_sink_failure_evidence_by_scope(
+    batch: CoverageMutationBatch,
+) -> dict[CoverageScopeId, CoverageEvidence]:
+    evidence = (
+        tuple(initialization.initial_evidence for initialization in batch.initializations)
+        + tuple(transition.evidence for transition in batch.transitions)
+        + tuple(no_op.request.evidence for no_op in batch.no_ops)
+    )
+    if len(evidence) != len(batch.fanout_proof.target_scopes):
+        raise ValueError("outcome sink-failure batch must decide every fan-out target once.")
+    by_scope = {item.coverage_scope_id: item for item in evidence}
+    if len(by_scope) != len(evidence):
+        raise ValueError("outcome sink-failure evidence must be unique by target scope.")
+    return {
+        scope.coverage_scope_id: by_scope[scope.coverage_scope_id]
+        for scope in batch.fanout_proof.target_scopes
+        if scope.coverage_scope_id in by_scope
+    }
+
+
+def _validate_concrete_outcome_fanout(
+    *,
+    normalization_outcome: NormalizationOutcome,
+    fanout: CoverageFanoutProof,
+    raw_binding: RawCoverageFanoutBinding,
+) -> None:
+    status = normalization_outcome.frame_status
+    if status in {
+        FrameNormalizationStatus.CONTROL_NO_EVENT,
+        FrameNormalizationStatus.VALID_EMPTY_MARKET_FRAME,
+    }:
+        raise ValueError("control and valid-empty outcomes cannot degrade market coverage.")
+    if status is FrameNormalizationStatus.REJECTED_BEFORE_INDEXING:
+        if fanout.kind is not CoverageFanoutKind.ALL_POSSIBLY_ACTIVE:
+            raise ValueError(
+                "pre-index outcome sink failure requires complete active-plan fan-out."
+            )
+        preindex = normalization_outcome.preindex_scope_binding
+        if type(preindex) is not RawFrameNormalizationScopeBinding:
+            raise ValueError("pre-index outcome requires its exact frame-scope binding.")
+        if (
+            preindex.raw_record_id != raw_binding.raw_record_id
+            or preindex.full_record_integrity_sha256 != raw_binding.full_record_integrity_sha256
+            or preindex.subscription_plan_id != fanout.subscription_plan_id
+        ):
+            raise ValueError("pre-index outcome scope must match the exact raw fan-out binding.")
+        aggregate = preindex.coverage_scope
+        for target in fanout.target_scopes:
+            if (
+                target.domain is not CoverageDomain.SILVER_NORMALIZATION
+                or (
+                    target.feed_product_id,
+                    target.event_family,
+                    target.event_family_schema_version,
+                    target.payload_type,
+                )
+                != (
+                    aggregate.feed_product_id,
+                    aggregate.event_family,
+                    aggregate.event_family_schema_version,
+                    aggregate.payload_type,
+                )
+                or not set(target.subscription_spec_ids).issubset(aggregate.subscription_spec_ids)
+                or not set(target.canonical_instrument_ids).issubset(
+                    aggregate.canonical_instrument_ids
+                )
+            ):
+                raise ValueError("pre-index outcome fan-out is outside its complete frame scope.")
+        return
+
+    if fanout.kind not in {
+        CoverageFanoutKind.EXACT_ROUTED_EVENT,
+        CoverageFanoutKind.EXACT_ROUTED_EVENTS,
+    }:
+        raise ValueError("indexed outcome sink failure requires exact routed-event fan-out.")
+    scope_bindings = tuple(
+        outcome.normalization_scope_binding for outcome in normalization_outcome.raw_event_outcomes
+    )
+    if any(
+        binding.raw_record_id != raw_binding.raw_record_id
+        or binding.full_record_integrity_sha256 != raw_binding.full_record_integrity_sha256
+        or binding.subscription_plan_id != fanout.subscription_plan_id
+        for binding in scope_bindings
+    ):
+        raise ValueError("indexed outcome scopes must match the exact raw fan-out binding.")
+    expected_scope_ids = tuple(
+        sorted(
+            {binding.coverage_scope_id for binding in scope_bindings},
+            key=lambda item: item.value,
+        )
+    )
+    actual_scope_ids = tuple(scope.coverage_scope_id for scope in fanout.target_scopes)
+    if actual_scope_ids != expected_scope_ids:
+        raise ValueError("indexed outcome fan-out must equal its exact decoded scope union.")
+    expected_attempt_ids = tuple(
+        sorted(
+            {binding.subscription_attempt_id for binding in scope_bindings},
+            key=lambda item: item.value,
+        )
+    )
+    if fanout.selected_attempt_ids != expected_attempt_ids:
+        raise ValueError("indexed outcome fan-out must equal its exact decoded attempt union.")
 
 
 def _validate_delivery_status_reason(

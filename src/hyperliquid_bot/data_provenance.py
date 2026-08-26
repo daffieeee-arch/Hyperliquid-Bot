@@ -65,6 +65,30 @@ MAX_COLLECTION_BOUND: Final = 65_536
 _RAW_COVERAGE_FANOUT_BINDING_ID_VERSION: Final = "raw-coverage-fanout-binding-v1"
 _RAW_COVERAGE_FANOUT_BINDING_CONTENT_VERSION: Final = "raw-coverage-fanout-binding-content-v1"
 _RAW_COVERAGE_SNAPSHOT_CONTENT_VERSION: Final = "raw-coverage-fanout-snapshot-content-v1"
+_NORMALIZATION_OUTCOME_FRAME_STATUS_CODES: Final = frozenset(
+    {
+        "control_no_event",
+        "valid_empty_market_frame",
+        "materialized",
+        "duplicates_only",
+        "mixed_success",
+        "rejected_before_indexing",
+        "rejected_after_indexing",
+        "source_event_conflict",
+    }
+)
+_EXACT_ROUTED_NORMALIZATION_OUTCOME_FRAME_STATUS_CODES: Final = frozenset(
+    {
+        "materialized",
+        "duplicates_only",
+        "mixed_success",
+        "rejected_after_indexing",
+        "source_event_conflict",
+    }
+)
+_PLAN_SLICE_NORMALIZATION_OUTCOME_FRAME_STATUS_CODES: Final = frozenset(
+    {"rejected_before_indexing"}
+)
 
 _JSON_LOAD_FAILED: Final = object()
 
@@ -935,6 +959,62 @@ class RawRecordId(_CanonicalIdentifier):
 @dataclass(frozen=True, slots=True)
 class NormalizationRunId(_Identifier):
     """Caller-supplied opaque identity for one normalization run."""
+
+
+@dataclass(frozen=True, slots=True)
+class NormalizationOutcomeId(_CanonicalIdentifier):
+    """Canonical identity for one complete frame-normalization outcome.
+
+    Exact preimage::
+
+        ["normalization-outcome-v1", normalization_run_id, raw_record_id,
+         normalizer_version, normalizer_commit, frame_status,
+         decoded_event_count_or_null, normalization_outcome_content_sha256]
+
+    The identity lives in the lower provenance module so post-outcome sink
+    evidence can reference the exact attempted outcome without reversing the
+    module import direction.  ``market_event_v3`` re-exports this same type.
+    """
+
+    VERSION_TAG: ClassVar = "normalization-outcome-v1"
+
+    def _validate_components(self, components: tuple[CanonicalValue, ...]) -> None:
+        _require_component_count(components, 8, identifier_name=type(self).__name__)
+        NormalizationRunId(_component_text(components[1], field_name="normalization_run_id"))
+        RawRecordId(_component_text(components[2], field_name="raw_record_id"))
+        require_text(components[3], field_name="normalizer_version")
+        require_text(components[4], field_name="normalizer_commit")
+        frame_status = _component_text(components[5], field_name="frame_status")
+        if frame_status not in _NORMALIZATION_OUTCOME_FRAME_STATUS_CODES:
+            raise ValueError("normalization outcome has an unsupported frame status.")
+        if components[6] is not None:
+            decoded_count = _component_nonnegative_int(
+                components[6],
+                field_name="decoded_event_count",
+            )
+            if decoded_count > MAX_DECODED_EVENTS_PER_RAW_RECORD:
+                raise ValueError("normalization outcome decoded count is outside its bound.")
+        require_sha256(
+            _component_text(
+                components[7],
+                field_name="normalization_outcome_content_sha256",
+            ),
+            field_name="normalization_outcome_content_sha256",
+        )
+
+
+def _normalization_outcome_id_details(
+    normalization_outcome_id: NormalizationOutcomeId,
+) -> tuple[NormalizationRunId, RawRecordId, str]:
+    components = parse_canonical_json_array(
+        normalization_outcome_id.value,
+        field_name="normalization_outcome_id",
+    )
+    return (
+        NormalizationRunId(_component_text(components[1], field_name="normalization_run_id")),
+        RawRecordId(_component_text(components[2], field_name="raw_record_id")),
+        _component_text(components[5], field_name="frame_status"),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -3165,6 +3245,8 @@ class CoverageReason(StrEnum):
     RAW_DEFINITE_REJECTION = "raw-definite-rejection"
     UPSTREAM_COVERAGE_DEGRADED = "upstream-coverage-degraded"
     IN_SCOPE_NORMALIZATION_FAILURE = "in-scope-normalization-failure"
+    NORMALIZATION_OUTCOME_ACCEPTANCE_UNCERTAIN = "normalization-outcome-acceptance-uncertain"
+    NORMALIZATION_OUTCOME_DEFINITE_REJECTION = "normalization-outcome-definite-rejection"
     SOURCE_SEQUENCE_BREAK = "source-sequence-break"
     EXPLICIT_RECOVERY_PROOF = "explicit-recovery-proof"
     AUTHORITATIVE_STATE_BOUNDARY = "authoritative-state-boundary"
@@ -3180,6 +3262,8 @@ class InitialCoverageReason(StrEnum):
     RAW_DEFINITE_REJECTION = "raw-definite-rejection"
     UPSTREAM_COVERAGE_DEGRADED = "upstream-coverage-degraded"
     IN_SCOPE_NORMALIZATION_FAILURE = "in-scope-normalization-failure"
+    NORMALIZATION_OUTCOME_ACCEPTANCE_UNCERTAIN = "normalization-outcome-acceptance-uncertain"
+    NORMALIZATION_OUTCOME_DEFINITE_REJECTION = "normalization-outcome-definite-rejection"
     SOURCE_SEQUENCE_BREAK = "source-sequence-break"
     SOURCE_EVENT_CONFLICT = "source-event-conflict"
 
@@ -3194,6 +3278,10 @@ class CoverageEvidenceKind(StrEnum):
     UPSTREAM_COVERAGE_TRANSITION = "upstream-coverage-transition"
     UPSTREAM_COVERAGE_STATE = "upstream-coverage-state"
     NORMALIZATION_FAILURE = "normalization-failure"
+    NORMALIZATION_OUTCOME_SINK_ACCEPTANCE_AMBIGUITY = (
+        "normalization-outcome-sink-acceptance-ambiguity"
+    )
+    NORMALIZATION_OUTCOME_REJECTION = "normalization-outcome-rejection"
     SOURCE_SEQUENCE = "source-sequence"
     EXPLICIT_BACKFILL_PROOF = "explicit-backfill-proof"
     AUTHORITATIVE_STATE_SNAPSHOT = "authoritative-state-snapshot"
@@ -3483,6 +3571,46 @@ class NormalizationFailureEvidenceSource:
 
 
 @dataclass(frozen=True, slots=True)
+class NormalizationOutcomeEvidenceSource:
+    """Exact attempted outcome and Silver scope for post-outcome sink failure.
+
+    Canonical source row::
+
+        ["normalization-outcome-evidence-v1", normalization_outcome_id,
+         identified_coverage_scope_id]
+
+    The outer ``CoverageEvidenceKind`` distinguishes explicit rejection from
+    acceptance ambiguity.  This evidence is created only after the referenced
+    outcome exists and therefore can never be part of that same outcome's
+    prepared normalization lineage.
+    """
+
+    normalization_outcome_id: NormalizationOutcomeId = field(repr=False)
+    identified_coverage_scope_id: CoverageScopeId
+
+    def __post_init__(self) -> None:
+        if type(self.normalization_outcome_id) is not NormalizationOutcomeId:
+            raise TypeError("normalization_outcome_id must be a NormalizationOutcomeId.")
+        if type(self.identified_coverage_scope_id) is not CoverageScopeId:
+            raise TypeError("identified_coverage_scope_id must be a CoverageScopeId.")
+
+    @property
+    def raw_record_id(self) -> RawRecordId:
+        return _normalization_outcome_id_details(self.normalization_outcome_id)[1]
+
+    @property
+    def frame_status(self) -> str:
+        return _normalization_outcome_id_details(self.normalization_outcome_id)[2]
+
+    def canonical_components(self) -> tuple[str, str, str]:
+        return (
+            "normalization-outcome-evidence-v1",
+            self.normalization_outcome_id.value,
+            self.identified_coverage_scope_id.value,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class SourceSequenceBreakEvidenceSource:
     """Exact feed-scoped source sequence range establishing a break."""
 
@@ -3613,6 +3741,7 @@ type CoverageEvidenceSource = (
     | UpstreamCoverageTransitionEvidenceSource
     | UpstreamCoverageStateEvidenceSource
     | NormalizationFailureEvidenceSource
+    | NormalizationOutcomeEvidenceSource
     | SourceSequenceBreakEvidenceSource
     | SourceEventConflictEvidenceSource
     | AcknowledgementEvidenceSource
@@ -3982,6 +4111,10 @@ def _validate_coverage_evidence_source(
         ),
         CoverageEvidenceKind.UPSTREAM_COVERAGE_STATE: UpstreamCoverageStateEvidenceSource,
         CoverageEvidenceKind.NORMALIZATION_FAILURE: NormalizationFailureEvidenceSource,
+        CoverageEvidenceKind.NORMALIZATION_OUTCOME_SINK_ACCEPTANCE_AMBIGUITY: (
+            NormalizationOutcomeEvidenceSource
+        ),
+        CoverageEvidenceKind.NORMALIZATION_OUTCOME_REJECTION: (NormalizationOutcomeEvidenceSource),
         CoverageEvidenceKind.SOURCE_SEQUENCE: SourceSequenceBreakEvidenceSource,
         CoverageEvidenceKind.AUTHORITATIVE_STATE_SNAPSHOT: (
             AuthoritativeStateSnapshotEvidenceSource
@@ -4004,6 +4137,10 @@ def _validate_coverage_evidence_source(
         CoverageEvidenceKind.UPSTREAM_COVERAGE_TRANSITION: {CoverageDomain.SILVER_NORMALIZATION},
         CoverageEvidenceKind.UPSTREAM_COVERAGE_STATE: {CoverageDomain.SILVER_NORMALIZATION},
         CoverageEvidenceKind.NORMALIZATION_FAILURE: {CoverageDomain.SILVER_NORMALIZATION},
+        CoverageEvidenceKind.NORMALIZATION_OUTCOME_SINK_ACCEPTANCE_AMBIGUITY: {
+            CoverageDomain.SILVER_NORMALIZATION
+        },
+        CoverageEvidenceKind.NORMALIZATION_OUTCOME_REJECTION: {CoverageDomain.SILVER_NORMALIZATION},
         CoverageEvidenceKind.SOURCE_SEQUENCE: {
             CoverageDomain.BRONZE_INGRESS,
             CoverageDomain.SILVER_NORMALIZATION,
@@ -4111,6 +4248,21 @@ def _validate_coverage_evidence_source(
         ):
             raise ValueError("normalization evidence must match the exact Silver scope and run.")
         return
+    if type(source) is NormalizationOutcomeEvidenceSource:
+        _normalization_run, raw_record_id, _frame_status = _normalization_outcome_id_details(
+            source.normalization_outcome_id
+        )
+        raw_feed, raw_run = _raw_record_feed_run(raw_record_id)
+        if (
+            scope.domain is not CoverageDomain.SILVER_NORMALIZATION
+            or raw_feed != feed
+            or raw_run != run
+            or source.identified_coverage_scope_id != scope.coverage_scope_id
+        ):
+            raise ValueError(
+                "normalization outcome evidence must match the exact Silver scope and run."
+            )
+        return
     if type(source) is SourceSequenceBreakEvidenceSource:
         if (
             source.feed_product_id != feed
@@ -4168,6 +4320,10 @@ def _validate_coverage_evidence_id_components(
         ),
         CoverageEvidenceKind.UPSTREAM_COVERAGE_STATE: "upstream-coverage-state-evidence-v1",
         CoverageEvidenceKind.NORMALIZATION_FAILURE: ("normalization-failure-evidence-reference-v1"),
+        CoverageEvidenceKind.NORMALIZATION_OUTCOME_SINK_ACCEPTANCE_AMBIGUITY: (
+            "normalization-outcome-evidence-v1"
+        ),
+        CoverageEvidenceKind.NORMALIZATION_OUTCOME_REJECTION: ("normalization-outcome-evidence-v1"),
         CoverageEvidenceKind.SOURCE_SEQUENCE: "source-sequence-break-evidence-v1",
         CoverageEvidenceKind.AUTHORITATIVE_STATE_SNAPSHOT: (
             "authoritative-state-snapshot-evidence-v1"
@@ -4198,6 +4354,10 @@ def _validate_coverage_evidence_id_components(
         CoverageEvidenceKind.UPSTREAM_COVERAGE_TRANSITION: {CoverageDomain.SILVER_NORMALIZATION},
         CoverageEvidenceKind.UPSTREAM_COVERAGE_STATE: {CoverageDomain.SILVER_NORMALIZATION},
         CoverageEvidenceKind.NORMALIZATION_FAILURE: {CoverageDomain.SILVER_NORMALIZATION},
+        CoverageEvidenceKind.NORMALIZATION_OUTCOME_SINK_ACCEPTANCE_AMBIGUITY: {
+            CoverageDomain.SILVER_NORMALIZATION
+        },
+        CoverageEvidenceKind.NORMALIZATION_OUTCOME_REJECTION: {CoverageDomain.SILVER_NORMALIZATION},
         CoverageEvidenceKind.SOURCE_SEQUENCE: {
             CoverageDomain.BRONZE_INGRESS,
             CoverageDomain.SILVER_NORMALIZATION,
@@ -4411,6 +4571,25 @@ def _validate_coverage_evidence_id_components(
             or failure_components[6] != scope.value
         ):
             raise ValueError("normalization evidence must bind exact Silver-normalization scope.")
+    elif kind in {
+        CoverageEvidenceKind.NORMALIZATION_OUTCOME_SINK_ACCEPTANCE_AMBIGUITY,
+        CoverageEvidenceKind.NORMALIZATION_OUTCOME_REJECTION,
+    }:
+        _require_component_count(source, 3, identifier_name="normalization outcome evidence")
+        outcome_id = NormalizationOutcomeId(
+            _component_text(source[1], field_name="normalization_outcome_id")
+        )
+        _normalization_run, raw_record_id, _frame_status = _normalization_outcome_id_details(
+            outcome_id
+        )
+        validate_raw(raw_record_id.value)
+        if (
+            scope_components[1] != CoverageDomain.SILVER_NORMALIZATION.value
+            or source[2] != scope.value
+        ):
+            raise ValueError(
+                "normalization outcome evidence must bind exact Silver-normalization scope."
+            )
     elif kind is CoverageEvidenceKind.SOURCE_SEQUENCE:
         _require_component_count(source, 7, identifier_name="source sequence evidence")
         if source[1] != scope_feed.value:
@@ -4610,6 +4789,18 @@ _INITIAL_COVERAGE_MATRIX: Final = frozenset(
             CoverageStatus.CONFIRMED_INCOMPLETE,
             InitialCoverageReason.IN_SCOPE_NORMALIZATION_FAILURE,
             CoverageEvidenceKind.NORMALIZATION_FAILURE,
+        ),
+        (
+            CoverageDomain.SILVER_NORMALIZATION,
+            CoverageStatus.UNCERTAIN,
+            InitialCoverageReason.NORMALIZATION_OUTCOME_ACCEPTANCE_UNCERTAIN,
+            CoverageEvidenceKind.NORMALIZATION_OUTCOME_SINK_ACCEPTANCE_AMBIGUITY,
+        ),
+        (
+            CoverageDomain.SILVER_NORMALIZATION,
+            CoverageStatus.CONFIRMED_INCOMPLETE,
+            InitialCoverageReason.NORMALIZATION_OUTCOME_DEFINITE_REJECTION,
+            CoverageEvidenceKind.NORMALIZATION_OUTCOME_REJECTION,
         ),
         (
             CoverageDomain.BRONZE_INGRESS,
@@ -4843,6 +5034,11 @@ _UNCERTAIN_TRANSITION_EVIDENCE: Final = frozenset(
             CoverageReason.UPSTREAM_COVERAGE_DEGRADED,
             CoverageEvidenceKind.UPSTREAM_COVERAGE_TRANSITION,
         ),
+        (
+            CoverageDomain.SILVER_NORMALIZATION,
+            CoverageReason.NORMALIZATION_OUTCOME_ACCEPTANCE_UNCERTAIN,
+            CoverageEvidenceKind.NORMALIZATION_OUTCOME_SINK_ACCEPTANCE_AMBIGUITY,
+        ),
     }
 )
 
@@ -4862,6 +5058,11 @@ _CONFIRMED_INCOMPLETE_TRANSITION_EVIDENCE: Final = frozenset(
             CoverageDomain.SILVER_NORMALIZATION,
             CoverageReason.IN_SCOPE_NORMALIZATION_FAILURE,
             CoverageEvidenceKind.NORMALIZATION_FAILURE,
+        ),
+        (
+            CoverageDomain.SILVER_NORMALIZATION,
+            CoverageReason.NORMALIZATION_OUTCOME_DEFINITE_REJECTION,
+            CoverageEvidenceKind.NORMALIZATION_OUTCOME_REJECTION,
         ),
         (
             CoverageDomain.SILVER_NORMALIZATION,
@@ -6097,20 +6298,39 @@ class CoverageFanoutProof:
         plan: SubscriptionPlanIdentity,
         catalog: CoverageTargetCatalog,
         complete_snapshots: tuple[SubscriptionAttemptSnapshot, ...],
+        selected_attempt_ids: tuple[SubscriptionAttemptId, ...],
         domain: CoverageDomain,
     ) -> "CoverageFanoutProof":
+        """Select current ACKs intended to initialize leaves from a complete snapshot."""
+
         _validate_fanout_parent(plan, catalog)
         if type(domain) is not CoverageDomain or domain is CoverageDomain.SILVER_DELIVERY:
             raise ValueError("activation fanout requires an ingress or normalization domain.")
         session = _validate_complete_attempt_snapshot_set(plan, complete_snapshots)
-        acknowledged = tuple(
-            item
-            for item in complete_snapshots
-            if item.attempt_status is SubscriptionAttemptStatus.ACKNOWLEDGED
+        if type(selected_attempt_ids) is not tuple or any(
+            type(item) is not SubscriptionAttemptId for item in selected_attempt_ids
+        ):
+            raise TypeError("selected_attempt_ids must be a tuple of SubscriptionAttemptId.")
+        require_collection_size(
+            selected_attempt_ids,
+            field_name="selected_attempt_ids",
+            maximum_items=MAX_SUBSCRIPTION_SPECS,
+            minimum_items=1,
         )
-        if not acknowledged:
-            raise ValueError("acknowledged-active fanout requires at least one acknowledged spec.")
-        spec_ids = {item.subscription_spec.subscription_spec_id for item in acknowledged}
+        expected_selected = tuple(sorted(set(selected_attempt_ids), key=lambda item: item.value))
+        if selected_attempt_ids != expected_selected:
+            raise ValueError("selected attempt IDs must be sorted and unique.")
+        snapshots_by_attempt = {
+            item.subscription_attempt.subscription_attempt_id: item for item in complete_snapshots
+        }
+        if any(item not in snapshots_by_attempt for item in selected_attempt_ids):
+            raise ValueError("selected attempt must belong to the complete plan snapshot.")
+        selected = tuple(snapshots_by_attempt[item] for item in selected_attempt_ids)
+        if any(
+            item.attempt_status is not SubscriptionAttemptStatus.ACKNOWLEDGED for item in selected
+        ):
+            raise ValueError("activation selection permits only ACKNOWLEDGED attempts.")
+        spec_ids = {item.subscription_spec.subscription_spec_id for item in selected}
         targets = tuple(
             scope
             for scope in catalog.scopes
@@ -6131,14 +6351,10 @@ class CoverageFanoutProof:
                     )
                     for item in complete_snapshots
                 ),
-                tuple(
-                    item.subscription_attempt.subscription_attempt_id.value for item in acknowledged
-                ),
+                tuple(item.value for item in selected_attempt_ids),
             ),
             source_attempt_snapshots=complete_snapshots,
-            selected_attempt_ids=tuple(
-                item.subscription_attempt.subscription_attempt_id for item in acknowledged
-            ),
+            selected_attempt_ids=selected_attempt_ids,
             target_scopes=targets,
         )
 
@@ -6785,6 +7001,12 @@ def _validate_mutation_request_semantics(request: RequestedCoverageMutation) -> 
         CoverageReason.IN_SCOPE_NORMALIZATION_FAILURE: (
             InitialCoverageReason.IN_SCOPE_NORMALIZATION_FAILURE
         ),
+        CoverageReason.NORMALIZATION_OUTCOME_ACCEPTANCE_UNCERTAIN: (
+            InitialCoverageReason.NORMALIZATION_OUTCOME_ACCEPTANCE_UNCERTAIN
+        ),
+        CoverageReason.NORMALIZATION_OUTCOME_DEFINITE_REJECTION: (
+            InitialCoverageReason.NORMALIZATION_OUTCOME_DEFINITE_REJECTION
+        ),
         CoverageReason.SOURCE_SEQUENCE_BREAK: InitialCoverageReason.SOURCE_SEQUENCE_BREAK,
         CoverageReason.SOURCE_EVENT_CONFLICT: InitialCoverageReason.SOURCE_EVENT_CONFLICT,
     }.get(request.transition_reason)
@@ -6873,6 +7095,7 @@ def _validate_fanout_evidence_lineage(
             (
                 RawRecordEvidenceSource,
                 NormalizationFailureEvidenceSource,
+                NormalizationOutcomeEvidenceSource,
                 SourceEventConflictEvidenceSource,
                 AuthoritativeStateSnapshotEvidenceSource,
             ),
@@ -6896,6 +7119,8 @@ def _raw_record_ids_for_requests(
         if type(source) is RawRecordEvidenceSource:
             raw_record_id = source.raw_record_id
         elif type(source) is NormalizationFailureEvidenceSource:
+            raw_record_id = source.raw_record_id
+        elif type(source) is NormalizationOutcomeEvidenceSource:
             raw_record_id = source.raw_record_id
         elif type(source) is SourceEventConflictEvidenceSource:
             raw_record_id = source.raw_record_id
@@ -6937,6 +7162,45 @@ def _validate_fanout_request_semantics(
 ) -> None:
     """Close cause-to-status semantics without deriving runtime evidence."""
 
+    outcome_sink_requests = tuple(
+        request
+        for request in requests
+        if type(request.evidence.source) is NormalizationOutcomeEvidenceSource
+    )
+    if outcome_sink_requests:
+        if len(outcome_sink_requests) != len(requests):
+            raise ValueError("one fanout cannot mix outcome-sink failure with other causes.")
+        outcome_keys = {
+            (
+                request.evidence.source.normalization_outcome_id,
+                request.evidence.kind,
+            )
+            for request in outcome_sink_requests
+            if type(request.evidence.source) is NormalizationOutcomeEvidenceSource
+        }
+        if len(outcome_keys) != 1:
+            raise ValueError(
+                "outcome-sink failure fanout requires one exact outcome and failure knowledge."
+            )
+        outcome_source = outcome_sink_requests[0].evidence.source
+        assert type(outcome_source) is NormalizationOutcomeEvidenceSource
+        outcome_status = outcome_source.frame_status
+        if fanout.kind in {
+            CoverageFanoutKind.EXACT_ROUTED_EVENT,
+            CoverageFanoutKind.EXACT_ROUTED_EVENTS,
+        }:
+            if outcome_status not in _EXACT_ROUTED_NORMALIZATION_OUTCOME_FRAME_STATUS_CODES:
+                raise ValueError(
+                    "outcome-sink failure status requires its exact indexed fanout kind."
+                )
+        elif fanout.kind is CoverageFanoutKind.ALL_POSSIBLY_ACTIVE:
+            if outcome_status not in _PLAN_SLICE_NORMALIZATION_OUTCOME_FRAME_STATUS_CODES:
+                raise ValueError(
+                    "outcome-sink failure status requires its complete pre-index plan slice."
+                )
+        else:
+            raise ValueError("outcome-sink failure evidence has no compatible fanout kind.")
+
     if fanout.kind is CoverageFanoutKind.HANDSHAKE_BEFORE_SEND:
         if requests:
             raise ValueError("handshake-before-send cannot mutate coverage.")
@@ -6954,14 +7218,40 @@ def _validate_fanout_request_semantics(
         CoverageFanoutKind.EXACT_ROUTED_EVENT,
         CoverageFanoutKind.EXACT_ROUTED_EVENTS,
     }:
-        if any(
-            request.requested_status is not CoverageStatus.CONFIRMED_INCOMPLETE
-            or request.evidence.kind
-            not in {
+        exact_routed_allowed_rows = {
+            (
+                CoverageStatus.CONFIRMED_INCOMPLETE,
+                CoverageReason.IN_SCOPE_NORMALIZATION_FAILURE,
                 CoverageEvidenceKind.NORMALIZATION_FAILURE,
+            ),
+            (
+                CoverageStatus.CONFIRMED_INCOMPLETE,
+                CoverageReason.SOURCE_EVENT_CONFLICT,
                 CoverageEvidenceKind.SOURCE_EVENT_CONFLICT,
+            ),
+            (
+                CoverageStatus.CONFIRMED_INCOMPLETE,
+                CoverageReason.SOURCE_SEQUENCE_BREAK,
                 CoverageEvidenceKind.SOURCE_SEQUENCE,
-            }
+            ),
+            (
+                CoverageStatus.UNCERTAIN,
+                CoverageReason.NORMALIZATION_OUTCOME_ACCEPTANCE_UNCERTAIN,
+                CoverageEvidenceKind.NORMALIZATION_OUTCOME_SINK_ACCEPTANCE_AMBIGUITY,
+            ),
+            (
+                CoverageStatus.CONFIRMED_INCOMPLETE,
+                CoverageReason.NORMALIZATION_OUTCOME_DEFINITE_REJECTION,
+                CoverageEvidenceKind.NORMALIZATION_OUTCOME_REJECTION,
+            ),
+        }
+        if any(
+            (
+                request.requested_status,
+                request.transition_reason,
+                request.evidence.kind,
+            )
+            not in exact_routed_allowed_rows
             for request in requests
         ):
             raise ValueError("exact-routed-event fanout requires exact in-scope failure evidence.")
@@ -6980,7 +7270,7 @@ def _validate_fanout_request_semantics(
             raise ValueError("possibly-delivered fanout permits only Bronze transport uncertainty.")
         return
     if fanout.kind is CoverageFanoutKind.ALL_POSSIBLY_ACTIVE:
-        allowed_rows = {
+        possibly_active_allowed_rows = {
             (
                 CoverageDomain.BRONZE_INGRESS,
                 CoverageStatus.UNCERTAIN,
@@ -7010,6 +7300,18 @@ def _validate_fanout_request_semantics(
                 CoverageStatus.CONFIRMED_INCOMPLETE,
                 CoverageReason.IN_SCOPE_NORMALIZATION_FAILURE,
                 CoverageEvidenceKind.NORMALIZATION_FAILURE,
+            ),
+            (
+                CoverageDomain.SILVER_NORMALIZATION,
+                CoverageStatus.UNCERTAIN,
+                CoverageReason.NORMALIZATION_OUTCOME_ACCEPTANCE_UNCERTAIN,
+                CoverageEvidenceKind.NORMALIZATION_OUTCOME_SINK_ACCEPTANCE_AMBIGUITY,
+            ),
+            (
+                CoverageDomain.SILVER_NORMALIZATION,
+                CoverageStatus.CONFIRMED_INCOMPLETE,
+                CoverageReason.NORMALIZATION_OUTCOME_DEFINITE_REJECTION,
+                CoverageEvidenceKind.NORMALIZATION_OUTCOME_REJECTION,
             ),
             (
                 CoverageDomain.SILVER_NORMALIZATION,
@@ -7049,7 +7351,7 @@ def _validate_fanout_request_semantics(
                 request.transition_reason,
                 request.evidence.kind,
             )
-            not in allowed_rows
+            not in possibly_active_allowed_rows
             for request in requests
         ):
             raise ValueError("possibly-active fanout has an incompatible cause/status matrix.")

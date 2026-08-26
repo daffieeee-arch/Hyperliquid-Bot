@@ -164,7 +164,8 @@ to the mandatory v3 envelope and removes outer v2 plus `is_gap`. No dual writer 
 wrapper is planned. Nothing is deployed, and SHADOW/LIVE remain disabled. ADR-022 records the
 complete decision and canonical identity rules.
 
-The 3B1C audit split that work into three reviewable steps. Phase 1A-3B1C-1 defines only pure,
+The 3B1C audit split that work into three reviewable phases, with 3B1C-1A as one bounded pure
+correction between contract closure and runtime activation. Phase 1A-3B1C-1 defines only pure,
 dormant contracts that make coverage initialization, prepared multi-scope compare-and-swap
 mutation, repeated-degradation no-ops, frame-atomic abort lineage and destination-specific delivery
 knowledge exactly representable. A prepared coverage mutation is not committed state;
@@ -177,6 +178,32 @@ mutation additionally requires a content-addressed binding to the raw record's f
 and complete attempt-status snapshot, which must reproduce the same fan-out exactly. Strict typed
 outcomes require their indexed or pre-index scope bindings to carry that identical full-record
 digest, rather than accepting only the lower raw-record locator.
+
+Phase 1A-3B1C-1A closes two additional pure runtime-binding gaps without activating coverage.
+Acknowledgement fan-out retains the complete current attempt snapshot but requires an explicit
+non-empty, sorted and unique selection of attempts that are currently `ACKNOWLEDGED`; only all
+plan-derived leaves for those selected specs enter the initialization batch. The proof validates
+current state and selection, not the historical ACK transition; earlier ACKs are excluded only when
+the caller leaves them unselected. Post-outcome sink failure has one
+typed source row binding the exact `NormalizationOutcomeId` and exact Silver-normalization scope.
+An explicit typed rejection is definite and maps to `CONFIRMED_INCOMPLETE`; timeout, arbitrary
+failure or an invalid acceptance echo leaves acceptance `UNCERTAIN`. Cancellation creates neither
+kind of evidence. This evidence is causally later than the attempted outcome and can never be
+inserted into that same outcome's prepared lineage. Indexed outcome statuses use exact routed
+fan-out; `rejected_before_indexing` uses the complete possibly-active slice. Control/no-event and
+valid-empty outcomes cannot create a coverage mutation through this evidence path. Every permitted
+case requires the exact raw fan-out binding. The lower evidence row and prepared mutation are not
+by themselves proof that the selected fan-out belongs to the concrete decoded outcome.
+`NormalizationOutcomeSinkFailureCoverageBinding` is the sole dormant aggregate that checks that
+relationship: it binds the concrete outcome, complete prepared batch, raw fan-out binding, exact
+decoded scope/attempt union (or exact pre-index aggregate), and one failure-knowledge kind. It
+accepts initializations, transitions and already-degraded no-ops only when every target is decided
+exactly once. Phase 1A-3B1C-2 must consume this aggregate rather than a loose lower-layer batch or
+evidence source. For a genuinely pre-index, family-filtered failure, the fan-out retains the full
+possibly-active attempt population from the raw snapshot while its target scopes contain only the
+matching family/version/payload slice. This is aggregate uncertainty, not a claim that every
+retained attempt produced that event family.
+
 `EventCoverage` requires one collector run and exact committed Bronze provenance for an
 upstream-derived Silver state. Phase 1A-3B1C-2 will own the operational coverage state and temporary
 lossy v2 `is_gap` projection. Phase 1A-3B1C-3 will bind one non-empty normalization outcome to one
@@ -190,6 +217,8 @@ separate from event coverage: accepted, definitely not accepted, or acceptance u
 acceptance means only acceptance by the bounded collector output queue, not dequeue, consumer
 processing or durable persistence. Existing 3B1B capture remains transition-empty, schema v2 and
 `is_gap` remain active, and `MarketEventEnvelopeV3` plus `NormalizationContext` remain dormant.
+The active collector does not yet construct either new 3B1C-1A contract path; that remains
+Phase 1A-3B1C-2 work.
 
 ### Research Plane
 

@@ -409,7 +409,9 @@ ACK-race-safe transitions are `PENDING -> SEND_STARTED`, `SEND_STARTED -> SENT`,
 `SEND_STARTED -> ACKNOWLEDGED`, `SENT -> ACKNOWLEDGED` and idempotent
 `ACKNOWLEDGED -> ACKNOWLEDGED`; regressions fail closed. A raw ACK observation keeps the pre-parse
 snapshot (normally `SENT`, possibly `SEND_STARTED`); a later transition is a separate immutable
-record and never mutates Bronze.
+record and never mutates Bronze. The collector retains the reducer-produced transition objects in
+a bounded append-only current-session journal with at most three state-changing transitions per
+wire spec; duplicate acknowledgements do not grow it. A new session starts its own bounded journal.
 
 For a successfully returned `websockets` 17 application message, Bronze bytes are exactly
 `message.encode("utf-8")` for `str` TEXT and the unchanged value for `bytes` BINARY. They are
@@ -428,29 +430,55 @@ Individual construction proves only `ingress_ordinal >= 0`; a pure finite-sequen
 prove zero-based contiguous supplied records, but only a sealed run manifest in 3B2 can detect a
 missing tail. Later annotations never mutate Bronze.
 
-Phase 1A-3B1B must require an injected asynchronous `RawRecordSink` with the exact operation
+Phase 1A-3B1B requires an injected asynchronous `RawRecordSink` with the exact operation
 `await sink.accept(record: RawMarketDataRecord) -> RawRecordAcceptance`. Acceptance echoes the
-exact raw-record ID and a bounded non-secret destination ID. It means ownership at that sink
-boundary, not durable persistence. A separate bounded `NormalizationOutcomeSink` accepts dormant
+exact raw-record ID, the exact full-record integrity SHA-256 and a bounded non-secret destination
+ID. The full digest is required because the locator ID deliberately does not bind changing attempt
+status snapshots. Acceptance means ownership at that sink boundary, not durable persistence. A
+separate bounded `NormalizationOutcomeSink` accepts active
 frame outcomes through
 `await outcome_sink.accept(outcome: NormalizationOutcome) -> NormalizationOutcomeAcceptance`;
 that typed result likewise echoes the exact outcome ID and bounded destination ID. Neither sink
-may silently substitute a null implementation. The collector owns finite positive accept
-timeouts and owns each injected sink for exactly one collector run. In `finally`, it invokes each
-sink's bounded `aclose()` at most once. Cancellation remains cancellation; a sanitized bounded
-close failure cannot mask the primary failure or extend shutdown without limit. Raw and outcome
-sinks remain separate, and failures expose only bounded categories—never payloads, exception
-objects, credentials or destination secrets. Deterministic test sinks expose accepted immutable
-values to their caller.
+may silently substitute a null implementation, and the two sink objects must be distinct. The
+collector owns finite positive accept timeouts and owns each injected sink for exactly one
+collector run. In its outermost `finally`, it first attempts the outcome sink's bounded `aclose()`
+and then the raw sink's bounded `aclose()`, each at most once. Each close uses that sink's acceptance
+timeout. Both are attempted even if the first fails. Cancellation remains cancellation; a
+sanitized bounded close failure cannot mask the primary failure. Sink implementations must be
+cancellation-cooperative. The collector's deadline race makes its fail-stop decision without
+waiting for child-cancellation completion, invalidates every late return and privately consumes any
+eventual result or exception. Python cannot forcibly terminate a hostile in-process coroutine that
+suppresses cancellation; such a violation may require process teardown, and sinks needing an
+absolute kill boundary must later run in an isolated worker or process. Raw and outcome sinks
+remain separate, and failures expose only bounded categories—never payloads, exception objects,
+credentials or destination secrets. Deterministic test sinks expose accepted immutable values to
+their caller.
+
+For every application message successfully returned by ordinary `recv()`, the collector captures
+the receive clocks once, reserves one run-wide ingress ordinal and snapshots the complete sorted
+session attempt table. Raw acceptance occurs before routing or parsing. Pure processing then
+constructs exactly one frame-level `NormalizationOutcome`; its separate acceptance is the commit
+boundary before ACK/pong state, deduplication state, ordinary message counters or the existing v2
+output queue may change. Two acceptance counters deliberately advance earlier and independently:
+verified raw acceptance increments the raw counter immediately, and verified outcome acceptance
+increments the outcome counter immediately, with `0 <= outcome <= raw`. Exact replay messages
+remain distinct Bronze records even when their v2 events are suppressed. Timeout or arbitrary sink
+failure is acceptance-ambiguous, terminal and never retried; explicit typed rejection is terminal
+and known not to be accepted. No runtime coverage transition or `DeliveryOutcome` is constructed
+in 3B1B. Consequently an accepted normalization outcome may precede a later v2 output-queue
+timeout; 3B1C adds separate delivery auditability.
 
 Internal validation exceptions are private implementation details, not observable contract
 values. Their traceback frames may retain rejected constructor inputs in frame locals even when
 bounded exception arguments, `__cause__` and `__context__` contain none. Phase 1A-3B1B must catch
-them inside its private validation boundary, classify them to the closed
-`ValidationFailureCategory`, leave the catch block, discard the caught exception, and expose only
-the frozen/slotted category-only `SanitizedValidationFailure`. It must never log, store, export or
-attach the internal exception, traceback, frame locals, free-form text, input value or `exc_info`.
-Intentional cancellation remains cancellation and is not reclassified as validation failure.
+them inside its private validation boundary and classify them to the closed
+`ValidationFailureCategory`. Standalone module-level producer and consumer coroutine boundaries
+discard the private coroutine, original exception and traceback before creating a fresh public
+category-only error. No library traceback frame exported from those operations may retain a
+collector, connection, sink, queue item, frame local, input value or destination value. The runtime
+must never log, store, export or attach the original exception, traceback, free-form text or
+`exc_info`. Intentional cancellation remains cancellation and is not reclassified as validation
+failure.
 
 With `H` heartbeat interval, `P` pong timeout, `R` raw acceptance timeout, `O` outcome acceptance
 timeout, `Q` normalized-output publish timeout and `S` send timeout, validation must require:
@@ -459,7 +487,11 @@ timeout, `Q` normalized-output publish timeout and `S` send timeout, validation 
 max(H, P + 2 * (R + O) + Q) + (R + O + Q) + S < 60 seconds
 ```
 
-No raw sink or collector integration is implemented in 3B1A.
+Defaults `H=45`, `P=10`, `R=1`, `O=1`, `Q=5` and `S=4` produce exactly 56 seconds. Equality at
+60 seconds is rejected. This is the collector scheduling/fail-stop bound for conforming
+cancellation-cooperative sinks; it is not a claim that arbitrary hostile in-process Python can be
+forcibly killed. Raw sink and outcome sink coordination are active in 3B1B, but the v3 envelope,
+operational coverage and delivery boundaries remain dormant.
 
 ### Metadata, provenance, coverage and outcomes
 
@@ -547,7 +579,7 @@ cannot be attached. Delivery state never appears in `NormalizationOutcome`.
 ### Activation sequence
 
 - **3B1A — dormant pure contract spine:** define and test these value objects, selectors, reducers,
-  envelope and outcomes; no producer imports or emits v3.
+  envelope and outcomes; no producer constructs or emits `MarketEventEnvelopeV3`.
 - **3B1B — Bronze raw capture:** integrate mandatory bounded `RawRecordSink` acceptance before
   parsing and separate bounded `NormalizationOutcomeSink` acceptance after each frame's
   processing/materialization decision; v2 remains the only Silver envelope.
@@ -559,10 +591,13 @@ cannot be attached. Delivery state never appears in `NormalizationOutcome`.
   never silently sort/repair/deduplicate raw history, and retain one-to-many Bronze-to-Silver
   lineage.
 
-**Current status:** The v3 contracts are defined and tested but dormant. No existing producer
-imports or emits v3; v2 remains the only active Silver envelope. No raw sink or raw capture,
-operational coverage tracker, deterministic replay or deployment exists. The atomic producer and
-collector cutover occurs only in 3B1D. SHADOW and LIVE remain disabled.
+**Current status:** The v3 envelope contracts are defined and tested but dormant. No runtime
+producer constructs or emits `MarketEventEnvelopeV3`; v2 remains the only active Silver envelope.
+Phase 1A-3B1B activates
+mandatory storage-neutral raw-record and normalization-outcome acceptance in the Hyperliquid
+collector, without claiming persistence. No operational coverage tracker, delivery outcome,
+deterministic replay or deployment exists. The atomic producer and collector cutover occurs only
+in 3B1D. SHADOW and LIVE remain disabled.
 
 **Why:** No deployed dataset or ClickHouse schema depends on v2, so one atomic migration provides a
 clean long-term boundary without permanent compatibility complexity while preserving reviewable,

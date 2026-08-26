@@ -29,6 +29,7 @@ from hyperliquid_bot.contracts import (
 from hyperliquid_bot.hyperliquid_trades import (
     HyperliquidWsTrade,
     decode_hyperliquid_trades_frame,
+    hyperliquid_trade_source_event_id,
     normalize_hyperliquid_trade,
     normalize_hyperliquid_trades_frame,
 )
@@ -203,6 +204,24 @@ def test_source_event_id_is_deterministic_and_uses_only_official_identity_tuple(
     assert hash(normalized) == hash(normalized_duplicate)
     assert all(item.source_event_id != normalized.source_event_id for item in variants)
     assert normalized_non_identity.source_event_id == normalized.source_event_id
+
+
+@pytest.mark.parametrize("coin", ("BTC", "xyz:XYZ100", "@107"))
+def test_public_source_event_id_helper_preserves_exact_existing_serialization(coin: str) -> None:
+    payload = _trade_payload()
+    payload["coin"] = coin
+    trade = HyperliquidWsTrade.from_payload(payload)
+
+    expected = json.dumps(
+        ["hyperliquid-trade-v1", trade.time, coin, trade.tid],
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
+    assert hyperliquid_trade_source_event_id(trade) == expected
+    assert hyperliquid_trade_source_event_id(trade) == expected
+
+    with pytest.raises(TypeError, match="HyperliquidWsTrade"):
+        hyperliquid_trade_source_event_id(object())  # type: ignore[arg-type]
 
 
 def test_exact_registry_lookup_preserves_hip3_coin_without_inference() -> None:

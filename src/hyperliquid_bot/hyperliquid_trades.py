@@ -102,7 +102,11 @@ def _required_value(payload: dict[object, object], field_name: str) -> object:
     return payload[field_name]
 
 
-def _source_event_id(trade: "HyperliquidWsTrade") -> str:
+def hyperliquid_trade_source_event_id(trade: "HyperliquidWsTrade") -> str:
+    """Return the existing byte-exact versioned source identity for one trade."""
+
+    if type(trade) is not HyperliquidWsTrade:
+        raise TypeError("trade must be a HyperliquidWsTrade.")
     return json.dumps(
         [_SOURCE_EVENT_ID_VERSION, trade.time, trade.coin, trade.tid],
         ensure_ascii=True,
@@ -243,7 +247,7 @@ def normalize_hyperliquid_trade(
         collector_version=collector_version,
         collector_commit=collector_commit,
         is_gap=is_gap,
-        source_event_id=_source_event_id(trade),
+        source_event_id=hyperliquid_trade_source_event_id(trade),
         source_transaction_id=trade.hash,
         source_sequence=None,
         correlation_id=None,

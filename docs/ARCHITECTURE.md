@@ -121,8 +121,9 @@ Phase 1A-3B1A defines pure, frozen contracts for feed products, collection/subsc
 raw application-message records, point-in-time instrument metadata, explicit coverage, event
 families and a provenance-complete `MarketEventEnvelopeV3`. These v3 contracts are defined and
 tested but dormant. Their import direction is
-`contracts.py <- data_provenance.py <- instrument_metadata.py <- market_event_v3.py`. No existing
-producer imports or emits v3, and schema v2 remains the only active Silver envelope.
+`contracts.py <- data_provenance.py <- instrument_metadata.py <- market_event_v3.py`. No runtime
+producer constructs or emits `MarketEventEnvelopeV3`, and schema v2 remains the only active Silver
+envelope.
 
 The eventual storage-neutral responsibilities are:
 
@@ -133,16 +134,34 @@ The eventual storage-neutral responsibilities are:
 - Gold contains reproducible point-in-time features and aggregates derived from identified Silver
   inputs.
 
-There is no raw sink or raw capture, operational coverage tracker or deterministic replay yet.
-Phase 1A-3B1B adds separate mandatory bounded acceptance for immutable Bronze records and
-normalization outcomes; successful acceptance means sink-boundary ownership, not durable storage.
-Internal constructor exceptions and traceback frames are private implementation details. The
-3B1B runtime boundary must catch, classify and discard them without logging or retaining
-`exc_info`; only a frozen bounded validation-failure category value may leave that boundary.
-Phase 1A-3B1C activates coverage transitions, and only 3B1D atomically moves both normalizers and
-the collector to the mandatory v3 envelope and removes outer v2 plus `is_gap`. No dual writer or
-permanent v2 wrapper is planned. Nothing in this contract slice is deployed, and SHADOW/LIVE
-remain disabled. ADR-022 records the complete decision and canonical identity rules.
+Phase 1A-3B1B activates this Bronze boundary only in the Hyperliquid public-trades collector.
+Every application message successfully returned by `recv()` is represented once with exact TEXT
+or BINARY application-message bytes and accepted by a mandatory bounded `RawRecordSink` before
+routing or parsing. A separate mandatory bounded `NormalizationOutcomeSink` then accepts exactly
+one frame decision before acknowledgement, pong, deduplication, ordinary message counters or the
+existing v2 queue can become visible. The raw-acceptance counter advances immediately after the raw
+acceptance echo is verified; the outcome-acceptance counter advances independently after its echo
+is verified, with `outcome <= raw` at all times. Those two telemetry mutations are the only state
+changes allowed at their respective pre-commit boundaries. Acceptance transfers ownership of the
+complete immutable value at the sink boundary; it is not a durability claim. The collector owns
+the two distinct sinks for one run and closes the outcome sink before the raw sink, with both
+closes bounded and attempted at most once.
+
+Internal constructor and sink exceptions and their traceback frames remain private implementation
+details. Standalone module-level producer and consumer coroutine boundaries catch and classify
+private failures, release the payload-bearing coroutine graph, and only then create a fresh bounded
+public error. Their library traceback frames therefore retain no collector, connection, sink,
+queue or payload-bearing state; nothing logs or retains `exc_info`. A sink deadline is a collector
+fail-stop decision that does not await child-cancellation completion. A late result is invalid,
+ignored and privately consumed. In-process sinks must nevertheless cooperate with cancellation:
+Python cannot forcibly terminate hostile coroutine code, so an absolute kill boundary requires a
+future isolated worker or process. There is still no concrete storage, operational coverage
+tracker, `DeliveryOutcome` or deterministic replay. A normalization outcome may therefore be
+committed even when later v2 queue publication times out; Phase 1A-3B1C adds the separate delivery
+boundary and coverage transitions. Only 3B1D atomically moves both normalizers and the collector
+to the mandatory v3 envelope and removes outer v2 plus `is_gap`. No dual writer or permanent v2
+wrapper is planned. Nothing is deployed, and SHADOW/LIVE remain disabled. ADR-022 records the
+complete decision and canonical identity rules.
 
 ### Research Plane
 

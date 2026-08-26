@@ -98,10 +98,13 @@ assertions cannot change a historical selection. Derivative settlement may not p
 trading. Coverage begins at an explicit activation boundary and cannot be repaired by ACK,
 reconnect or an authoritative snapshot alone.
 
-The v3 contracts are defined and tested but dormant. No existing producer imports or emits v3;
-v2 remains the only active Silver envelope. No raw sink or raw capture, operational coverage
-tracker or deterministic replay exists. The atomic producer and collector cutover happens only in
-Phase 1A-3B1D. Nothing was deployed, and SHADOW/LIVE remain disabled.
+The v3 envelope contracts are defined and tested but dormant. No runtime producer constructs or
+emits `MarketEventEnvelopeV3`; v2 remains the only active Silver envelope. Phase 1A-3B1B activates
+storage-neutral
+Bronze raw-record and normalization-outcome acceptance only for the Hyperliquid public-trades
+collector. No concrete storage, operational coverage tracker, delivery outcome or deterministic
+replay exists. The atomic producer and collector cutover happens only in Phase 1A-3B1D. Nothing
+was deployed, and SHADOW/LIVE remain disabled.
 
 ## Phased rollout
 
@@ -300,6 +303,16 @@ exact `native_symbol`, enforces the documented 1,000-subscription ceiling before
 sends one `trades` subscription per configured symbol. Names are neither inferred nor rewritten:
 regular names, HIP-3 `{dex}:{coin}` names and spot identifiers such as `@107` stay exact.
 
+Before networking, the collector derives one stable feed/plan identity with exactly one wire spec
+per configured coin. The caller supplies the collector-run and normalization-run identities plus
+normalizer build identity. Every connection attempt, including a failed open, receives a new
+zero-based session ordinal; each session/spec send uses attempt ordinal zero. All PENDING attempts
+exist before receiving starts. A raw record snapshots the complete sorted attempt table before its
+message is parsed, so a mixed-coin trade outcome can retain the exact coin-specific spec and
+attempt for every wire index. An ACK record therefore contains the pre-parse state (normally SENT,
+or SEND_STARTED during a race); only accepted outcome publication permits the runtime ACKNOWLEDGED
+transition.
+
 An application-message router separates the official-SDK greeting, `subscriptionResponse`, `pong`
 and `trades` before the trade decoder. It accepts text frames only, rejects malformed JSON,
 duplicate object keys and non-finite JSON numbers, and fails closed on unknown channels or invalid
@@ -319,9 +332,11 @@ failures are retried with capped exponential backoff and injected bounded jitter
 protocol, decoder, schema and publisher failures are terminal.
 
 After each completed application-ping send, the next heartbeat interval runs concurrently with pong
-processing. The conservative bound between completed sends is
-`max(heartbeat_interval, pong_timeout + publish_timeout) + publish_timeout + send_timeout`, which
-must remain below 60 seconds and is 54 seconds with the defaults. Normal, going-away, abnormal,
+processing. Raw acceptance (`R`), outcome acceptance (`O`) and schema-v2 queue publication (`Q`)
+all coordinate with the single receiver. The conservative bound between completed sends is
+`max(H, P + 2 * (R + O) + Q) + (R + O + Q) + S`, which must be strictly below 60 seconds and is
+exactly 56 seconds with defaults `H=45`, `P=10`, `R=1`, `O=1`, `Q=5` and `S=4`. Normal,
+going-away, abnormal,
 server-error, restart, temporary and bad-gateway close conditions reconnect. Protocol,
 unsupported-data, invalid-payload, policy, oversized-message, incompatible-extension and unknown
 close codes fail closed. Raw close reasons are never retained or exposed.
@@ -330,10 +345,12 @@ Each decoded frame becomes one immutable queue item, so a validated frame is eit
 wire order as a whole or not published. The in-process queue, the WebSocket frame buffers and the
 source-event-ID LRU cache all have finite positive capacities. A full application queue applies
 bounded backpressure; expiry is terminal, emits no partial prefix, and marks gap state. The LRU
-maps each source event ID to its exact source-trade semantic fingerprint. Exact replays within
+maps each source event ID to a bounded SHA-256 digest of its exact source-trade semantic
+fingerprint; users and transaction hashes themselves are not retained in the cache. Exact replays within
 frames, across frames and across reconnect overlap are suppressed and refresh recency; conflicting
-reuse of an ID fails the complete frame atomically. It is process-local only: restart or eviction
-removes that protection, so this is not durable exactly-once delivery.
+reuse of an ID fails the complete frame atomically. Frame-local identity remains available for the
+whole frame even when candidate LRU insertion would evict it. The cache is process-local only:
+restart or eviction removes that protection, so this is not durable exactly-once delivery.
 
 The first session begins with `is_gap=false` while coverage is certain. Once a subscription send is
 attempted, delivery may be ambiguous; a later retryable disconnect, send/receive/subscription timeout
@@ -348,6 +365,18 @@ health stores raw frames, exception objects, users, hashes or close reasons. Dep
 WebSocket frame logging uses an isolated disabled logger and remains suppressed even when
 application-wide or root DEBUG logging is enabled. The collector has no private stream, credential,
 wallet, order, HTTP metadata, storage or trading capability.
+
+Every successful TEXT or BINARY application-message return is accepted as one exact immutable raw
+record by a mandatory bounded sink before routing. A distinct bounded outcome sink then accepts
+exactly one control, empty, materialized, duplicate, mixed, rejected or conflict decision before
+ACK/pong state, cache, counters or the v2 queue can change. Raw acceptance echoes the locator ID,
+full-record integrity digest and destination; outcome acceptance echoes its outcome ID and
+destination. Explicit rejection is terminal; timeout or arbitrary
+failure is acceptance-ambiguous, terminal and never retried. The collector owns both sinks for one
+run and closes the outcome sink before the raw sink, each at most once and within its acceptance
+timeout. Acceptance is not a persistence claim. There are no runtime coverage transitions or
+delivery outcomes in 3B1B, so a later queue timeout can follow an already accepted normalization
+outcome; 3B1C closes that separate delivery-audit gap.
 
 ## Security boundaries
 

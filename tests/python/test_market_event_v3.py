@@ -775,6 +775,21 @@ def _raw_record_id() -> RawRecordId:
     return _raw_record()[0].raw_record_id
 
 
+def _preindex_scope_binding(
+    raw_record: RawMarketDataRecord | None = None,
+    *,
+    scope: CoverageScope | None = None,
+) -> RawFrameNormalizationScopeBinding:
+    if raw_record is None:
+        raw_record, spec, _attempt = _raw_record()
+    else:
+        spec = raw_record.subscription_plan.subscription_specs[0]
+    return RawFrameNormalizationScopeBinding.from_raw_record(
+        raw_record=raw_record,
+        coverage_scope=scope or _normalization_scope(raw_record, spec),
+    )
+
+
 def _normalization_failure_transition(
     *,
     normalization_run_id: NormalizationRunId,
@@ -1143,6 +1158,7 @@ def test_owning_v3_contracts_apply_their_configured_collection_bounds(
         None,
         (),
         (),
+        preindex_scope_binding=_preindex_scope_binding(raw_record),
         evidence=(NormalizationEvidence.PROTOCOL_REJECTION,),
     )
     assert len(rejected.evidence) == 1
@@ -1896,12 +1912,105 @@ def test_normalization_outcome_accepts_control_empty_and_success_matrices() -> N
     rejected_before = replace(
         control,
         frame_status=FrameNormalizationStatus.REJECTED_BEFORE_INDEXING,
+        preindex_scope_binding=_preindex_scope_binding(),
         evidence=(NormalizationEvidence.PROTOCOL_REJECTION,),
     )
 
     assert control.raw_event_outcomes == ()
     assert empty.decoded_event_count == 0
     assert rejected_before.evidence == (NormalizationEvidence.PROTOCOL_REJECTION,)
+
+
+def test_preindex_scope_is_mandatory_plan_bound_and_transition_free() -> None:
+    raw_record, _spec, _attempt = _raw_record()
+    binding = _preindex_scope_binding(raw_record)
+    outcome = NormalizationOutcome(
+        NormalizationRunId("normalization-fixture"),
+        raw_record.raw_record_id,
+        "normalizer-v1",
+        "normalizer-commit-fixture",
+        FrameNormalizationStatus.REJECTED_BEFORE_INDEXING,
+        None,
+        (),
+        (),
+        preindex_scope_binding=binding,
+        evidence=(NormalizationEvidence.PROTOCOL_REJECTION,),
+    )
+
+    assert outcome.preindex_scope_binding is binding
+    assert outcome.coverage_transition_ids == ()
+    with pytest.raises(ValueError, match="complete raw-frame scope"):
+        replace(outcome, preindex_scope_binding=None)
+
+    other_raw = replace(raw_record, ingress_ordinal=raw_record.ingress_ordinal + 1)
+    with pytest.raises(ValueError, match="outcome raw record"):
+        replace(outcome, preindex_scope_binding=_preindex_scope_binding(other_raw))
+    with pytest.raises(TypeError, match="RawFrameNormalizationScopeBinding"):
+        replace(outcome, preindex_scope_binding=object())  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "status",
+    tuple(
+        status
+        for status in FrameNormalizationStatus
+        if status is not FrameNormalizationStatus.REJECTED_BEFORE_INDEXING
+    ),
+)
+def test_preindex_scope_binding_is_forbidden_for_every_other_frame_status(
+    status: FrameNormalizationStatus,
+) -> None:
+    with pytest.raises(ValueError, match="only for pre-index rejection"):
+        NormalizationOutcome(
+            NormalizationRunId("normalization-fixture"),
+            _raw_record_id(),
+            "normalizer-v1",
+            "normalizer-commit-fixture",
+            status,
+            None,
+            (),
+            (),
+            preindex_scope_binding=_preindex_scope_binding(),
+        )
+
+
+def test_preindex_scope_binding_is_byte_exact_in_outcome_content_identity() -> None:
+    raw_record, _spec, _attempt = _raw_record()
+    binding = _preindex_scope_binding(raw_record)
+    outcome = NormalizationOutcome(
+        NormalizationRunId("normalization-fixture"),
+        raw_record.raw_record_id,
+        "normalizer-v1",
+        "normalizer-commit-fixture",
+        FrameNormalizationStatus.REJECTED_BEFORE_INDEXING,
+        None,
+        (),
+        (),
+        preindex_scope_binding=binding,
+        evidence=(NormalizationEvidence.PROTOCOL_REJECTION,),
+    )
+    expected_content = _expected_identifier(
+        "normalization-outcome-content-v1",
+        (),
+        (),
+        (NormalizationEvidence.PROTOCOL_REJECTION.value,),
+        (),
+        binding.canonical_components(),
+    )
+    expected_digest = hashlib.sha256(expected_content.encode()).hexdigest()
+
+    assert outcome.normalization_outcome_content_sha256 == expected_digest
+    assert outcome.normalization_outcome_id.value == _expected_identifier(
+        "normalization-outcome-v1",
+        "normalization-fixture",
+        raw_record.raw_record_id.value,
+        "normalizer-v1",
+        "normalizer-commit-fixture",
+        FrameNormalizationStatus.REJECTED_BEFORE_INDEXING.value,
+        None,
+        expected_digest,
+    )
+    assert replace(outcome) == outcome
 
 
 @pytest.mark.parametrize(
@@ -1933,6 +2042,7 @@ def test_preindex_rejection_evidence_uses_an_exhaustive_positive_allowlist(
             None,
             (),
             (),
+            preindex_scope_binding=_preindex_scope_binding(),
             evidence=(evidence,),
         )
 
@@ -1963,6 +2073,7 @@ def test_index_only_evidence_is_explicitly_rejected_before_indexing(
             None,
             (),
             (),
+            preindex_scope_binding=_preindex_scope_binding(),
             evidence=(evidence,),
         )
 
@@ -2358,6 +2469,7 @@ def test_normalization_outcome_rejects_coverage_transition_from_another_collecto
             decoded_event_count=None,
             raw_event_outcomes=(),
             committed_materialization_keys=(),
+            preindex_scope_binding=_preindex_scope_binding(raw_record),
             evidence=(NormalizationEvidence.PROTOCOL_REJECTION,),
             coverage_transition_ids=(transition.coverage_transition_id,),
         )
@@ -2387,6 +2499,7 @@ def test_normalization_outcome_rejects_unrelated_coverage_transition_kinds(
             decoded_event_count=None,
             raw_event_outcomes=(),
             committed_materialization_keys=(),
+            preindex_scope_binding=_preindex_scope_binding(raw_record),
             evidence=(NormalizationEvidence.PROTOCOL_REJECTION,),
             coverage_transition_ids=(transition_id,),
         )
@@ -2470,6 +2583,7 @@ def test_normalization_outcome_rejects_failure_transition_from_another_normaliza
             decoded_event_count=None,
             raw_event_outcomes=(),
             committed_materialization_keys=(),
+            preindex_scope_binding=_preindex_scope_binding(raw_record, scope=scope),
             evidence=(NormalizationEvidence.DECODER_REJECTION,),
             coverage_transition_ids=(transition.coverage_transition_id,),
         )
@@ -2494,6 +2608,7 @@ def test_normalization_outcome_rejects_failure_transition_for_another_raw_record
             decoded_event_count=None,
             raw_event_outcomes=(),
             committed_materialization_keys=(),
+            preindex_scope_binding=_preindex_scope_binding(other_raw_record),
             evidence=(NormalizationEvidence.PROTOCOL_REJECTION,),
             coverage_transition_ids=(transition_id,),
         )
@@ -2517,6 +2632,7 @@ def test_normalization_outcome_rejects_contradictory_transition_failure_category
             decoded_event_count=None,
             raw_event_outcomes=(),
             committed_materialization_keys=(),
+            preindex_scope_binding=_preindex_scope_binding(raw_record),
             evidence=(NormalizationEvidence.DECODER_REJECTION,),
             coverage_transition_ids=(transition_id,),
         )
@@ -3164,6 +3280,7 @@ def test_normalization_failure_transition_cannot_point_to_an_aborted_candidate()
                 None,
                 (),
                 (),
+                preindex_scope_binding=_preindex_scope_binding(),
             ),
             id="rejection-without-evidence",
         ),

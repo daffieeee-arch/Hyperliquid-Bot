@@ -495,9 +495,10 @@ commit contracts; 3B1C-2 and 3B1C-3 will add operational coverage and atomic del
 #### Phase 1A-3B1C contract closure
 
 The coverage/delivery audit found five representation gaps, so 3B1C is split into pure contract
-closure (3B1C-1), operational coverage (3B1C-2) and atomic output delivery (3B1C-3). The first step
-adds only immutable, deterministic values and validators. It performs no async work and changes no
-collector, sink, queue, health or consumer behavior.
+closure (3B1C-1), its bounded runtime-binding contract correction (3B1C-1A), operational coverage
+(3B1C-2) and atomic output delivery (3B1C-3). The first two slices add only immutable,
+deterministic values and validators. They perform no async work and change no collector, sink,
+queue, health or consumer behavior.
 
 Ordinal-zero coverage has its own versioned initialization identity. Initializations and prepared
 transitions are exposed through one tagged state-reference identity, while a prepared mutation
@@ -526,6 +527,34 @@ and selected attempt where applicable. Every raw-backed mutation also binds the 
 full-record digest and complete attempt-status snapshot; that snapshot must reproduce the prepared
 fan-out, so sharing only a collector-run or connection-session ID is insufficient.
 
+The 3B1C-1A correction makes acknowledgement selection explicit. The proof retains the complete
+current snapshot, including earlier acknowledgements, while a separate non-empty sorted/unique
+attempt-ID tuple selects only attempts whose current status is exactly `ACKNOWLEDGED`. The target
+set is all and only the requested-domain leaf scopes belonging to those selected specs. Selection
+is an explicit caller fact for the intended leaf initialization; the proof does not reconstruct ACK
+transition history from one current snapshot.
+
+Normalization-outcome sink failure is represented by the exact canonical
+`["normalization-outcome-evidence-v1",normalization_outcome_id,coverage_scope_id]` source row.
+Only explicit typed rejection establishes definite non-acceptance and Silver-normalization
+`CONFIRMED_INCOMPLETE`. Timeout, arbitrary exception, wrong result type or wrong ID/destination
+echo leaves sink acceptance ambiguous and therefore Silver normalization `UNCERTAIN`. Intentional
+cancellation creates no failure evidence. Every such source is bound to the outcome's raw record,
+feed, collector run and exact Silver scope, and requires the raw record's full fan-out binding.
+All targets in one mutation cite the same outcome and the same failure knowledge. This evidence is
+created after the outcome exists, so it is never written back into that failed outcome's own
+normalization lineage. `materialized`, `duplicates_only`, `mixed_success`,
+`rejected_after_indexing` and `source_event_conflict` require exact routed fan-out;
+`rejected_before_indexing` requires the complete possibly-active plan slice. `control_no_event` and
+`valid_empty_market_frame` cannot create a coverage mutation through this post-outcome evidence.
+The lower evidence source and prepared mutation alone do not prove that this target selection
+belongs to the concrete decoded outcome. The dormant
+`NormalizationOutcomeSinkFailureCoverageBinding` supplies that upper-layer proof by validating the
+exact indexed scope/attempt union or pre-index aggregate against the raw binding. It covers each
+target exactly once across initializations, transitions and already-degraded no-ops. The 3B1C-2
+runtime must accept this complete aggregate and may not treat a loose lower-layer batch as the
+outcome-to-coverage proof.
+
 Frame-atomic abort evidence identifies each otherwise valid new candidate that was prevented from
 materializing by canonical primary failure/conflict causes elsewhere in the same raw frame. It
 never creates its own coverage transition or materialization. The strict normalization-outcome
@@ -543,9 +572,10 @@ cannot create a delivery batch. Actual v2-event serialization and a composite au
 remain 3B1C-3 work. Queue acceptance will mean bounded collector-output-queue acceptance only, not
 dequeue, downstream processing or persistence.
 
-All 3B1C-1 values remain dormant. Existing 3B1B raw capture still emits normalization outcomes with
-empty coverage lineage; v2 remains the only active Silver envelope and operational `is_gap` remains
-unchanged. No coverage runtime, delivery linearization, raw persistence or replay exists yet.
+All 3B1C-1 and 3B1C-1A values remain dormant. Existing 3B1B raw capture still emits normalization
+outcomes with empty coverage lineage; v2 remains the only active Silver envelope and operational
+`is_gap` remains unchanged. No coverage runtime, delivery linearization, raw persistence or replay
+exists yet.
 
 ## ClickHouse environments
 

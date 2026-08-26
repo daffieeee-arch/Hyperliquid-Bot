@@ -79,6 +79,11 @@ Phase 1A-3B1C-1 closes the pure representation gaps for coverage initialization,
 fan-out, prepared atomic mutation and no-op lineage, frame-atomic abort evidence, and exact delivery
 knowledge. These contracts are dormant: 3B1B still publishes transition-empty outcomes, and no
 coverage state, queue linearization, sink, consumer or health behavior changes in this slice.
+Phase 1A-3B1C-1A adds the remaining pure runtime-binding rules: an ACK initialization explicitly
+selects currently acknowledged attempts whose leaf scopes are to be initialized, while
+normalization-outcome sink rejection versus acceptance ambiguity has exact typed Silver-coverage
+evidence plus one aggregate proof binding the concrete outcome to its exact scope/attempt fan-out.
+Runtime coverage is still not active; v2 and `is_gap` remain operational and v3 remains dormant.
 
 Target: useful local output within approximately the first 1-2 weeks of active development.
 
@@ -108,13 +113,15 @@ The multi-venue data-contract spine proceeds in bounded steps:
    persistence;
 3. **Phase 1A-3B1C-1 — contract closure:** pure coverage initialization/mutation and delivery
    knowledge contracts only;
-4. **Phase 1A-3B1C-2 — coverage runtime:** operational immutable coverage state and temporary v2
+4. **Phase 1A-3B1C-1A — runtime-binding correction:** pure selected-ACK fan-out and typed
+   normalization-outcome sink-failure evidence only;
+5. **Phase 1A-3B1C-2 — coverage runtime:** operational immutable coverage state and temporary v2
    `is_gap` projection;
-5. **Phase 1A-3B1C-3 — atomic delivery:** one audited composite output-queue item per delivered
+6. **Phase 1A-3B1C-3 — atomic delivery:** one audited composite output-queue item per delivered
    non-empty normalization outcome;
-6. **Phase 1A-3B1D — atomic cutover:** both normalizers and the collector move together to the one
+7. **Phase 1A-3B1D — atomic cutover:** both normalizers and the collector move together to the one
    mandatory outer-v3 envelope; outer v2 and `is_gap` are removed without dual writing;
-7. **Phase 1A-3B2 — deterministic replay:** digest verification, sealed run manifests and exact
+8. **Phase 1A-3B2 — deterministic replay:** digest verification, sealed run manifests and exact
    Bronze-to-Silver lineage.
 
 Phase 1A-3B1B implements no concrete persistence, operational coverage tracker, delivery outcome

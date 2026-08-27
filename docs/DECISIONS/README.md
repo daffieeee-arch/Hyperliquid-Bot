@@ -816,6 +816,70 @@ one derivation per leaf and cap canonical-parse growth from 512 to 1,024 targets
 adds no runtime import, coverage mutation, delivery linearization or deployment; schema v2 and
 `is_gap` remain active and the v3 envelope remains dormant. Phase 3B1C-2 resumes only after merge.
 
+**3B1C-1E bulk-derivation performance closure.** The sealed bulk factory remained semantically
+correct and O(N), but its historical warm, setup-excluded 1,024-target median was 1.148715 seconds.
+That mandatory inner call could not fit inside the future complete-runtime median gate of 1.0
+second. Profiling showed repeated nested canonical parsing and serialization during the one shared
+verification, not superlinear leaf lookup. The correction therefore keeps every existing public
+API, preimage, byte, digest, ID and version while building one private call-local transcript of
+fully rederived typed facts. The transcript is discarded with the call; it is not a verification
+token, alternate proof, mutable/global cache or cross-call cache. Batch decisions, acceptance item
+and aggregate commitments and every ordered state result are still recomputed in full. Retained
+raw-fan-out values are format-checked and rebound into their content, digest and outer ID, with
+feed/run/session lineage cross-checked; the retained-only verifier cannot reconstruct the
+factory-computed full-record or complete-snapshot digest preimages because neither source value is
+retained. Exactly one batch verification, one acceptance verification, N leaf derivations and N-1
+result/operation-order comparisons are deterministic regression gates. Independent fan-out
+snapshot, scope, selection and route order checks are separate bounded O(N) adjacent passes.
+
+The binding pure-contract `from_commit` budget is 0.800000 seconds at 1,024 targets, with a maximum
+of 1.000000 seconds and a 1,024/512 median ratio no greater than 2.5. At least 0.2 seconds is
+consequently allocated inside the later full-path `C=1` budget. The pinned TerraPC measurement built
+every plan, batch, acceptance and result tuple before timing, measured each complete
+`BatchVerifiedCoverageDerivation.from_commit(...)` call with `perf_counter_ns` and left garbage
+collection enabled.
+
+One preliminary launcher invocation exited before fixture construction, warm-up or timing because
+the repository `src` path was missing from that launcher's import path. It executed zero warm-ups
+and produced zero samples, so it was not a benchmark measurement series. After correcting the
+launcher path, exactly one valid measurement series was executed: three unreported warm-ups followed
+by nine reported complete `from_commit(...)` runs for every scenario/cardinality combination. No
+reported sample was discarded, replaced or selectively rerun, and no second valid measurement
+series was executed.
+
+All binding gates passed in that one valid measurement series. The ordered ledger is:
+
+- initialization, 512: `samples_s=[0.148724019,0.148351854,0.148233575,0.161710064,0.149504862,0.148696052,0.147115030,0.156337790,0.148410392]`; `median_s=0.148696052`; `max_s=0.161710064`;
+- initialization, 1,024: `samples_s=[0.279684863,0.283136466,0.276422147,0.278448813,0.286420407,0.287097495,0.302709014,0.281350437,0.288575808]`; `median_s=0.283136466`; `max_s=0.302709014`; `median_ratio_1024_512=1.904129008`;
+- `COMPLETE -> UNCERTAIN`, 512: `samples_s=[0.297152155,0.302009816,0.296064591,0.287185938,0.304965925,0.286829596,0.310995542,0.291249474,0.304835876]`; `median_s=0.297152155`; `max_s=0.310995542`;
+- `COMPLETE -> UNCERTAIN`, 1,024: `samples_s=[0.587829245,0.566387276,0.582801299,0.562257234,0.570218779,0.567087433,0.569355146,0.566632970,0.574538141]`; `median_s=0.569355146`; `max_s=0.587829245`; `median_ratio_1024_512=1.916039095`;
+- full no-op, 512: `samples_s=[0.378645320,0.375446032,0.379661460,0.366737291,0.378510346,0.358678720,0.366148833,0.360407344,0.377142482]`; `median_s=0.375446032`; `max_s=0.379661460`;
+- full no-op, 1,024: `samples_s=[0.714588626,0.693932575,0.721643903,0.702718279,0.723139806,0.707491559,0.707791138,0.708760046,0.703391107]`; `median_s=0.707791138`; `max_s=0.723139806`; `median_ratio_1024_512=1.885200742`.
+
+These results are host- and fixture-bound and do not claim an absolute worst case. They cover only
+`from_commit`. A separate diagnostic serial
+construction of 1,024 ordinary upstream evidence values took 18.257364 seconds and about 739
+canonical parses per leaf. Therefore the remaining 0.2 seconds is a binding 3B1C-2 allocation, not
+proof of a working Bronze-to-Silver runtime path. 3B1C-2 must optimize that path or request a
+separate contract closure, then prove its complete warm prepare/commit/propagation/snapshot path
+has a median no greater than 1.0 second. Its unchanged heartbeat budget is:
+
+```text
+max(45, 10 + 2 * (1 + 1 + 1) + 5) + (1 + 1 + 1 + 5) + 4
+= 57 seconds
+< 60 seconds
+```
+
+This correction remains pure contract code. It activates neither 3B1C-2 runtime coverage nor
+3B1C-3 delivery; schema v2 and `is_gap` remain active and v3 remains dormant.
+
+The retained-only fan-out verifier also cannot independently reconstruct plan-wide completeness or
+catalog membership from content-addressed plan/catalog IDs alone; public fan-out factories prove
+those properties from their full typed plan and catalog inputs. This limitation predates 1E and is
+neither weakened nor hidden by the call-local optimization. Closing it for independently persisted
+fan-out proofs requires a later versioned contract that retains typed parents or an equivalent
+cryptographic completeness witness; 1E does not change canonical identities to do so.
+
 **Why:** No deployed dataset or ClickHouse schema depends on v2, so one atomic migration provides a
 clean long-term boundary without permanent compatibility complexity while preserving reviewable,
 bounded implementation slices.

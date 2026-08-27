@@ -90,6 +90,7 @@ from hyperliquid_bot.data_provenance import (
     DeliveryBatchId,
     EffectiveBoundaryBasis,
     EventCoverage,
+    ExactIdentifiedRejectionTarget,
     FeedAccessRequirement,
     FeedCapabilitiesObservation,
     FeedCapabilitiesObservationId,
@@ -6222,6 +6223,354 @@ def test_event_coverage_accepts_exactly_ingress_and_normalization() -> None:
         EventCoverage(normalization, normalization)
     with pytest.raises(ValueError):
         EventCoverage(ingress, ingress)
+
+
+def _identified_rejection_target(
+    plan: SubscriptionPlanIdentity,
+    snapshot: SubscriptionAttemptSnapshot,
+) -> ExactIdentifiedRejectionTarget:
+    binding = next(
+        item
+        for item in plan.instrument_bindings
+        if item.subscription_spec_id == snapshot.subscription_spec.subscription_spec_id
+    )
+    normalization = next(
+        item
+        for item in plan.normalization_bindings
+        if item.subscription_spec_id == snapshot.subscription_spec.subscription_spec_id
+        and item.event_family == "trade"
+    )
+    return ExactIdentifiedRejectionTarget(
+        attempt_snapshot=snapshot,
+        source_selector=binding.source_selector,
+        canonical_instrument_id=binding.canonical_instrument_id,
+        adapter_profile=binding.adapter_profile,
+        event_family=normalization.event_family,
+        event_family_schema_version=normalization.event_family_schema_version,
+        payload_type=normalization.payload_type,
+    )
+
+
+@pytest.mark.parametrize(
+    "status",
+    (
+        SubscriptionAttemptStatus.PENDING,
+        SubscriptionAttemptStatus.SEND_STARTED,
+        SubscriptionAttemptStatus.SENT,
+    ),
+)
+@pytest.mark.parametrize("coin", ("BTC", "xyz:XYZ100", "@107"))
+def test_identified_rejection_target_binds_exact_non_ack_route_and_raw_snapshot(
+    status: SubscriptionAttemptStatus,
+    coin: str,
+) -> None:
+    raw = _raw_record(status=status)
+    if coin != "BTC":
+        spec = _spec(coin)
+        plan = _plan(spec)
+        snapshot = _attempt_snapshot(status=status, spec=spec)
+        raw = replace(
+            raw,
+            subscription_plan=plan,
+            subscription_attempt_snapshots=(snapshot,),
+        )
+    plan = raw.subscription_plan
+    snapshot = raw.subscription_attempt_snapshots[0]
+    target = _identified_rejection_target(plan, snapshot)
+    catalog = CoverageTargetCatalog.from_subscription_plan(plan)
+    proof = CoverageFanoutProof.exact_identified_rejection(
+        plan=plan,
+        catalog=catalog,
+        attempt_snapshot=target.attempt_snapshot,
+        source_selector=target.source_selector,
+        canonical_instrument_id=target.canonical_instrument_id,
+        adapter_profile=target.adapter_profile,
+        event_family=target.event_family,
+        event_family_schema_version=target.event_family_schema_version,
+        payload_type=target.payload_type,
+    )
+    binding = RawCoverageFanoutBinding.from_raw_record(
+        raw_record=raw,
+        coverage_fanout_proof=proof,
+    )
+
+    assert proof.kind is CoverageFanoutKind.EXACT_IDENTIFIED_REJECTION
+    assert json.loads(proof.coverage_fanout_proof_id.value)[0] == "coverage-fanout-proof-v2"
+    assert json.loads(proof.canonical_content)[0] == "coverage-fanout-proof-content-v2"
+    assert proof.source_canonical_row[0] == "exact-identified-rejections-v1"
+    rejected_rows = cast(
+        tuple[tuple[object, ...], ...],
+        proof.source_canonical_row[1],
+    )
+    rejected_row = rejected_rows[0]
+    assert rejected_row[0] == "exact-identified-rejection-target-v1"
+    assert rejected_row[5] == status.value
+    assert rejected_row[6] == target.source_selector.canonical_components()
+    assert proof.target_scopes[0].domain is CoverageDomain.SILVER_NORMALIZATION
+    assert binding.raw_record_id == raw.raw_record_id
+
+    changed_raw = replace(
+        raw,
+        subscription_attempt_snapshots=(
+            replace(
+                snapshot,
+                attempt_status=(
+                    SubscriptionAttemptStatus.SENT
+                    if status is not SubscriptionAttemptStatus.SENT
+                    else SubscriptionAttemptStatus.SEND_STARTED
+                ),
+            ),
+        ),
+    )
+    with pytest.raises(ValueError, match=r"reproducible|raw snapshot"):
+        RawCoverageFanoutBinding.from_raw_record(
+            raw_record=changed_raw,
+            coverage_fanout_proof=proof,
+        )
+
+
+def test_identified_rejection_target_rejects_ack_and_foreign_route_components() -> None:
+    plan = _plan()
+    acknowledged = _attempt_snapshot(status=SubscriptionAttemptStatus.ACKNOWLEDGED)
+    with pytest.raises(ValueError, match="non-acknowledged"):
+        _identified_rejection_target(plan, acknowledged)
+
+    sent = _attempt_snapshot(status=SubscriptionAttemptStatus.SENT)
+    target = _identified_rejection_target(plan, sent)
+    catalog = CoverageTargetCatalog.from_subscription_plan(plan)
+    foreign_cases = (
+        replace(
+            target,
+            attempt_snapshot=_attempt_snapshot(
+                status=SubscriptionAttemptStatus.SENT,
+                spec=_spec("ETH"),
+            ),
+        ),
+        replace(
+            target,
+            source_selector=PublicSourceSelector(
+                PublicSourceSelectorKind.HYPERLIQUID_COIN,
+                "ETH",
+            ),
+        ),
+        replace(target, canonical_instrument_id=_instrument("ETH").canonical_instrument_id),
+        replace(target, adapter_profile="foreign-adapter"),
+        replace(target, event_family="bbo"),
+    )
+    for foreign in foreign_cases:
+        with pytest.raises(ValueError, match="identified route"):
+            CoverageFanoutProof.exact_identified_rejections(
+                plan=plan,
+                catalog=catalog,
+                rejection_targets=(foreign,),
+            )
+
+
+@pytest.mark.parametrize(
+    ("connection_ordinal", "attempt_ordinal"),
+    ((1, 0), (0, 1)),
+)
+def test_identified_rejection_raw_binding_rejects_foreign_session_or_attempt(
+    connection_ordinal: int,
+    attempt_ordinal: int,
+) -> None:
+    raw = _raw_record(status=SubscriptionAttemptStatus.SENT)
+    snapshot = _attempt_snapshot(
+        status=SubscriptionAttemptStatus.SENT,
+        connection_ordinal=connection_ordinal,
+        attempt_ordinal=attempt_ordinal,
+    )
+    target = _identified_rejection_target(raw.subscription_plan, snapshot)
+    proof = CoverageFanoutProof.exact_identified_rejections(
+        plan=raw.subscription_plan,
+        catalog=CoverageTargetCatalog.from_subscription_plan(raw.subscription_plan),
+        rejection_targets=(target,),
+    )
+
+    with pytest.raises(ValueError, match=r"raw plan and session|raw snapshot"):
+        RawCoverageFanoutBinding.from_raw_record(
+            raw_record=raw,
+            coverage_fanout_proof=proof,
+        )
+
+
+@pytest.mark.parametrize("plan_size", (1, 4, 50))
+def test_identified_rejection_fanout_is_bounded_deterministic_and_content_addressed(
+    plan_size: int,
+) -> None:
+    plan = _multi_hyperliquid_plan(plan_size)
+    catalog = CoverageTargetCatalog.from_subscription_plan(plan)
+    snapshots = tuple(
+        SubscriptionAttemptSnapshot(
+            SubscriptionAttemptIdentity(_session(), spec, 0),
+            (
+                SubscriptionAttemptStatus.SEND_STARTED
+                if index % 2 == 0
+                else SubscriptionAttemptStatus.SENT
+            ),
+        )
+        for index, spec in enumerate(plan.subscription_specs)
+    )
+    targets = tuple(_identified_rejection_target(plan, snapshot) for snapshot in snapshots)
+    forward = CoverageFanoutProof.exact_identified_rejections(
+        plan=plan,
+        catalog=catalog,
+        rejection_targets=targets,
+    )
+    reversed_proof = CoverageFanoutProof.exact_identified_rejections(
+        plan=plan,
+        catalog=catalog,
+        rejection_targets=tuple(reversed(targets)),
+    )
+
+    assert forward.coverage_fanout_proof_id == reversed_proof.coverage_fanout_proof_id
+    assert forward.canonical_content == reversed_proof.canonical_content
+    assert len(forward.target_scopes) == plan_size
+    assert forward.kind is (
+        CoverageFanoutKind.EXACT_IDENTIFIED_REJECTION
+        if plan_size == 1
+        else CoverageFanoutKind.EXACT_IDENTIFIED_REJECTIONS
+    )
+    with pytest.raises(ValueError, match="unique by exact Silver scope"):
+        CoverageFanoutProof.exact_identified_rejections(
+            plan=plan,
+            catalog=catalog,
+            rejection_targets=(targets[0], targets[0]),
+        )
+
+
+def test_identified_rejection_mutation_matrix_is_provenance_only_and_silver_only() -> None:
+    raw = _raw_record(status=SubscriptionAttemptStatus.SENT)
+    plan = raw.subscription_plan
+    target = _identified_rejection_target(plan, raw.subscription_attempt_snapshots[0])
+    catalog = CoverageTargetCatalog.from_subscription_plan(plan)
+    proof = CoverageFanoutProof.exact_identified_rejections(
+        plan=plan,
+        catalog=catalog,
+        rejection_targets=(target,),
+    )
+    scope = proof.target_scopes[0]
+    epoch = CoverageEpochIdentity(
+        scope,
+        raw.collector_run_id,
+        0,
+        raw.received_time,
+        raw.received_monotonic_ns,
+    )
+
+    def request(
+        category: NormalizationFailureCategory,
+        *,
+        raw_event_index: int | None = 0,
+    ) -> RequestedCoverageMutation:
+        evidence = CoverageEvidence(
+            CoverageEvidenceKind.NORMALIZATION_FAILURE,
+            NormalizationFailureEvidenceSource(
+                raw.raw_record_id,
+                NormalizationRunId("preack-normalization-run"),
+                raw_event_index,
+                (SourceEventId("preack-source-event") if raw_event_index is not None else None),
+                category,
+                scope.coverage_scope_id,
+            ),
+            scope,
+            epoch,
+            raw.received_time,
+            raw.received_monotonic_ns,
+        )
+        return RequestedCoverageMutation(
+            scope,
+            epoch,
+            CoverageStatus.CONFIRMED_INCOMPLETE,
+            InitialCoverageReason.IN_SCOPE_NORMALIZATION_FAILURE,
+            CoverageReason.IN_SCOPE_NORMALIZATION_FAILURE,
+            evidence,
+        )
+
+    batch = prepare_coverage_mutation_batch(
+        fanout_proof=proof,
+        current_state_references=(),
+        requests=(request(NormalizationFailureCategory.PROVENANCE_MISMATCH),),
+        raw_fanout_binding=RawCoverageFanoutBinding.from_raw_record(
+            raw_record=raw,
+            coverage_fanout_proof=proof,
+        ),
+    )
+    assert batch.initializations[0].reference.status is CoverageStatus.CONFIRMED_INCOMPLETE
+    with pytest.raises(ValueError, match="provenance-mismatch"):
+        prepare_coverage_mutation_batch(
+            fanout_proof=proof,
+            current_state_references=(),
+            requests=(request(NormalizationFailureCategory.DECODER_REJECTION),),
+            raw_fanout_binding=RawCoverageFanoutBinding.from_raw_record(
+                raw_record=raw,
+                coverage_fanout_proof=proof,
+            ),
+        )
+
+    bronze_scope = next(
+        item for item in catalog.scopes if item.domain is CoverageDomain.BRONZE_INGRESS
+    )
+    bronze_epoch = CoverageEpochIdentity(
+        bronze_scope,
+        raw.collector_run_id,
+        0,
+        raw.received_time,
+        raw.received_monotonic_ns,
+    )
+    with pytest.raises(ValueError, match="incompatible with the coverage domain"):
+        CoverageEvidence(
+            CoverageEvidenceKind.NORMALIZATION_FAILURE,
+            NormalizationFailureEvidenceSource(
+                raw.raw_record_id,
+                NormalizationRunId("preack-normalization-run"),
+                0,
+                SourceEventId("preack-source-event"),
+                NormalizationFailureCategory.PROVENANCE_MISMATCH,
+                bronze_scope.coverage_scope_id,
+            ),
+            bronze_scope,
+            bronze_epoch,
+            raw.received_time,
+            raw.received_monotonic_ns,
+        )
+    with pytest.raises(ValueError, match="provenance-mismatch"):
+        prepare_coverage_mutation_batch(
+            fanout_proof=proof,
+            current_state_references=(),
+            requests=(
+                request(
+                    NormalizationFailureCategory.PROVENANCE_MISMATCH,
+                    raw_event_index=None,
+                ),
+            ),
+            raw_fanout_binding=RawCoverageFanoutBinding.from_raw_record(
+                raw_record=raw,
+                coverage_fanout_proof=proof,
+            ),
+        )
+
+
+def test_existing_acknowledged_exact_route_identity_remains_byte_exact() -> None:
+    plan = _plan()
+    proof = CoverageFanoutProof.exact_routed_event(
+        plan=plan,
+        catalog=CoverageTargetCatalog.from_subscription_plan(plan),
+        acknowledged_snapshot=_attempt_snapshot(status=SubscriptionAttemptStatus.ACKNOWLEDGED),
+        canonical_instrument_id=_instrument().canonical_instrument_id,
+        event_family="trade",
+        event_family_schema_version=2,
+        payload_type="trade",
+    )
+
+    assert proof.content_sha256 == (
+        "dc9e6d1a84b8d1baae997c12e9d6669aca3190e6d42a8593c066c576d92199e0"
+    )
+    assert json.loads(proof.coverage_fanout_proof_id.value)[:2] == [
+        "coverage-fanout-proof-v1",
+        "exact-routed-event",
+    ]
+    assert proof.source_canonical_row[0] == "exact-routed-events-v1"
 
 
 @pytest.mark.parametrize(

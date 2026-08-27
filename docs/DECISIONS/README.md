@@ -290,6 +290,8 @@ The exact computed preimages are:
 | `coverage-target-catalog-v1` | subscription-plan ID, target count, SHA-256 of exact `coverage-target-catalog-content-v1` text |
 | `coverage-fanout-proof-content-v1` | fan-out kind, subscription-plan ID, coverage-target-catalog ID, connection-session ID, exact kind-specific source row, sorted unique selected coverage-scope IDs |
 | `coverage-fanout-proof-v1` | fan-out kind, subscription-plan ID, coverage-target-catalog ID, target count, SHA-256 of exact `coverage-fanout-proof-content-v1` text |
+| `coverage-fanout-proof-content-v2` | exact identified-rejection fan-out kind, subscription-plan ID, coverage-target-catalog ID, connection-session ID, exact `exact-identified-rejections-v1` source row, sorted unique selected Silver-normalization scope IDs |
+| `coverage-fanout-proof-v2` | exact identified-rejection fan-out kind, subscription-plan ID, coverage-target-catalog ID, target count, SHA-256 of exact `coverage-fanout-proof-content-v2` text |
 | `coverage-mutation-no-op-v1` | coverage-scope ID, current coverage-state-reference ID, requested status, initial reason, transition reason, coverage-evidence ID, `already-at-or-beyond-requested-severity` |
 | `coverage-mutation-batch-content-v1` | coverage-fanout-proof ID, exact raw-coverage-fanout-binding ID or null, sorted complete expected pre-state rows, sorted initialization IDs, sorted transition IDs, sorted no-op rows, sorted complete resulting coverage-state-reference IDs |
 | `coverage-mutation-batch-v1` | coverage-fanout-proof ID, target count, SHA-256 of exact `coverage-mutation-batch-content-v1` text |
@@ -364,7 +366,8 @@ evidence kind and injected UTC/monotonic observation boundaries. Thus none of th
 label, and membership-bearing evidence can be checked against the exact high-cardinality scope.
 
 Coverage fan-out uses one of these closed kind-specific source rows inside
-`coverage-fanout-proof-content-v1`:
+`coverage-fanout-proof-content-v1`, except the identified-rejection row, which is bound by
+`coverage-fanout-proof-content-v2`:
 
 | Source tag | Ordered components after the tag |
 | --- | --- |
@@ -373,6 +376,9 @@ Coverage fan-out uses one of these closed kind-specific source rows inside
 | `one-possibly-delivered-spec-v1` | complete nested `possibly-delivered-specs-v1` row for a one-spec plan |
 | `acknowledged-active-v1` | coverage domain, complete sorted attempt/status snapshot rows, sorted explicitly selected `ACKNOWLEDGED` attempt IDs |
 | `exact-routed-events-v1` | sorted unique `[attempt ID,spec ID,canonical instrument ID,event family,family version,payload type]` rows |
+| `exact-identified-rejections-v1` | sorted non-empty `exact-identified-rejection-target-v1` rows, sorted optional `acknowledged-routed-target-v1` rows |
+| `exact-identified-rejection-target-v1` | feed-product ID, connection-session ID, subscription-spec ID, subscription-attempt ID, captured `pending`/`send-started`/`sent` status, complete public-source-selector row, canonical instrument ID, adapter profile, event family, family version, payload type, Silver-normalization coverage-scope ID |
+| `acknowledged-routed-target-v1` | feed-product ID, connection-session ID, subscription-spec ID, subscription-attempt ID, captured `acknowledged` status, complete public-source-selector row, canonical instrument ID, adapter profile, event family, family version, payload type, Silver-normalization coverage-scope ID |
 | `all-possibly-active-v1` | coverage domain, event family or null, family version or null, payload type or null, complete sorted attempt/status snapshot rows |
 
 The target catalogue represents configured plan leaves. The selected rows then distinguish exact
@@ -712,6 +718,20 @@ lower-layer batch, for this cause.
 Because this evidence exists only after the outcome, it is forbidden from that same outcome's
 prepared lineage. These are pure representation rules only; the active collector remains
 unchanged until 3B1C-2.
+
+The protected runtime audit then exposed one exact pre-ACK indexed-rejection gap, closed purely in
+3B1C-1B. `RoutedCoverageTarget` and `exact-routed-events-v1` remain ACK-only and byte-identical. The
+separate `ExactIdentifiedRejectionTarget` accepts only the raw-captured `PENDING`, `SEND_STARTED` or
+`SENT` status and resolves the exact selector/instrument/spec/attempt/family binding to a unique
+Silver leaf. Its direct matrix is closed to `REJECTED_AFTER_INDEXING`, `REJECTED`, frame evidence
+`PROVENANCE_MISMATCH`, failure category `PROVENANCE_MISMATCH`, and
+`CONFIRMED_INCOMPLETE` / `IN_SCOPE_NORMALIZATION_FAILURE`; Bronze, activation, materialization,
+duplicates, conflict, recovery and delivery are forbidden. Scope fan-out stays unique, while each
+same-route wire index retains a distinct raw-backed evidence row. For a later outcome-sink failure,
+the v2 proof can include a separate ACK-only route partition, and the aggregate binding must equal
+the complete concrete outcome scope/attempt union. Raw rederivation uses the capture-time snapshot,
+so later ACK state cannot rewrite lineage. This contract remains dormant; 3B1C-2 is still the first
+runtime consumer.
 
 **Why:** No deployed dataset or ClickHouse schema depends on v2, so one atomic migration provides a
 clean long-term boundary without permanent compatibility complexity while preserving reviewable,

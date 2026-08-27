@@ -65,6 +65,11 @@ MAX_COLLECTION_BOUND: Final = 65_536
 _RAW_COVERAGE_FANOUT_BINDING_ID_VERSION: Final = "raw-coverage-fanout-binding-v1"
 _RAW_COVERAGE_FANOUT_BINDING_CONTENT_VERSION: Final = "raw-coverage-fanout-binding-content-v1"
 _RAW_COVERAGE_SNAPSHOT_CONTENT_VERSION: Final = "raw-coverage-fanout-snapshot-content-v1"
+_IDENTIFIED_REJECTION_FANOUT_CONTENT_VERSION: Final = "coverage-fanout-proof-content-v2"
+_IDENTIFIED_REJECTION_FANOUT_ID_VERSION: Final = "coverage-fanout-proof-v2"
+_IDENTIFIED_REJECTION_SOURCE_VERSION: Final = "exact-identified-rejections-v1"
+_IDENTIFIED_REJECTION_TARGET_VERSION: Final = "exact-identified-rejection-target-v1"
+_IDENTIFIED_REJECTION_ACK_TARGET_VERSION: Final = "acknowledged-routed-target-v1"
 _NORMALIZATION_OUTCOME_FRAME_STATUS_CODES: Final = frozenset(
     {
         "control_no_event",
@@ -5581,9 +5586,33 @@ class CoverageTargetCatalogId(_CanonicalIdentifier):
 
 @dataclass(frozen=True, slots=True)
 class CoverageFanoutProofId(_CanonicalIdentifier):
-    """Bounded content-addressed identity for one cause-specific target proof."""
+    """Bounded content-addressed identity for one cause-specific target proof.
+
+    Existing fan-out kinds retain ``coverage-fanout-proof-v1`` byte-for-byte.
+    Exact identified-rejection fan-outs use ``coverage-fanout-proof-v2`` so the
+    capture-time attempt status and route discriminator are version-bound.
+    """
 
     VERSION_TAG: ClassVar = "coverage-fanout-proof-v1"
+
+    def __post_init__(self) -> None:
+        components = parse_canonical_json_array(
+            self.value,
+            field_name="canonical identifier",
+            maximum_length=MAX_CANONICAL_IDENTIFIER_LENGTH,
+        )
+        if not components or components[0] not in {
+            self.VERSION_TAG,
+            _IDENTIFIED_REJECTION_FANOUT_ID_VERSION,
+        }:
+            raise ValueError("canonical identifier has an unexpected version tag.")
+        invalid_components = False
+        try:
+            self._validate_components(components)
+        except (TypeError, ValueError):
+            invalid_components = True
+        if invalid_components:
+            raise ValueError("canonical identifier contains invalid canonical components.")
 
     def _validate_components(self, components: tuple[CanonicalValue, ...]) -> None:
         _require_component_count(components, 6, identifier_name=type(self).__name__)
@@ -5593,6 +5622,15 @@ class CoverageFanoutProofId(_CanonicalIdentifier):
             )
         except ValueError:
             raise ValueError("coverage fanout proof has an unsupported kind.") from None
+        identified_rejection_kinds = {
+            CoverageFanoutKind.EXACT_IDENTIFIED_REJECTION,
+            CoverageFanoutKind.EXACT_IDENTIFIED_REJECTIONS,
+        }
+        version = _component_text(components[0], field_name="coverage_fanout_version")
+        if (version == _IDENTIFIED_REJECTION_FANOUT_ID_VERSION) is (
+            kind not in identified_rejection_kinds
+        ):
+            raise ValueError("coverage fanout kind requires its exact identity version.")
         plan = SubscriptionPlanId(_component_text(components[2], field_name="subscription_plan_id"))
         catalog = CoverageTargetCatalogId(
             _component_text(components[3], field_name="coverage_target_catalog_id")
@@ -5607,6 +5645,10 @@ class CoverageFanoutProofId(_CanonicalIdentifier):
             raise ValueError("coverage fanout target count is outside its finite bound.")
         if (kind is CoverageFanoutKind.HANDSHAKE_BEFORE_SEND) is (count != 0):
             raise ValueError("only handshake-before-send fanout may have zero targets.")
+        if kind is CoverageFanoutKind.EXACT_IDENTIFIED_REJECTION and count != 1:
+            raise ValueError("singular identified-rejection fanout must have one target.")
+        if kind is CoverageFanoutKind.EXACT_IDENTIFIED_REJECTIONS and count < 2:
+            raise ValueError("plural identified-rejection fanout must have multiple targets.")
         require_sha256(
             _component_text(components[5], field_name="coverage_fanout_content_sha256"),
             field_name="coverage_fanout_content_sha256",
@@ -6056,6 +6098,8 @@ class CoverageFanoutKind(StrEnum):
     ACKNOWLEDGED_ACTIVE = "acknowledged-active"
     EXACT_ROUTED_EVENT = "exact-routed-event"
     EXACT_ROUTED_EVENTS = "exact-routed-events"
+    EXACT_IDENTIFIED_REJECTION = "exact-identified-rejection"
+    EXACT_IDENTIFIED_REJECTIONS = "exact-identified-rejections"
     ALL_POSSIBLY_ACTIVE = "all-possibly-active"
 
 
@@ -6139,11 +6183,74 @@ class RoutedCoverageTarget:
         )
 
 
+_IDENTIFIED_REJECTION_ATTEMPT_STATUSES: Final = frozenset(
+    {
+        SubscriptionAttemptStatus.PENDING,
+        SubscriptionAttemptStatus.SEND_STARTED,
+        SubscriptionAttemptStatus.SENT,
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ExactIdentifiedRejectionTarget:
+    """One exact non-ACK public route used only for an indexed rejection.
+
+    The snapshot is the immutable state captured in Bronze. This target never
+    asserts that the subscription was active; it proves only the exact public
+    route of a reliably indexed item that was intentionally not materialized.
+    Plan, selector, adapter, instrument and family consistency are verified by
+    the cause-specific :class:`CoverageFanoutProof` factory.
+    """
+
+    attempt_snapshot: SubscriptionAttemptSnapshot = field(repr=False)
+    source_selector: PublicSourceSelector = field(repr=False)
+    canonical_instrument_id: str = field(repr=False)
+    adapter_profile: str
+    event_family: str
+    event_family_schema_version: int
+    payload_type: str
+
+    def __post_init__(self) -> None:
+        if type(self.attempt_snapshot) is not SubscriptionAttemptSnapshot:
+            raise TypeError("attempt_snapshot must be a SubscriptionAttemptSnapshot.")
+        if self.attempt_snapshot.attempt_status not in _IDENTIFIED_REJECTION_ATTEMPT_STATUSES:
+            raise ValueError("identified rejection requires a non-acknowledged attempt snapshot.")
+        if type(self.source_selector) is not PublicSourceSelector:
+            raise TypeError("source_selector must be a PublicSourceSelector.")
+        object.__setattr__(
+            self,
+            "canonical_instrument_id",
+            validate_canonical_instrument_id(self.canonical_instrument_id),
+        )
+        object.__setattr__(
+            self,
+            "adapter_profile",
+            require_code(self.adapter_profile, field_name="adapter_profile"),
+        )
+        object.__setattr__(
+            self,
+            "event_family",
+            require_code(self.event_family, field_name="event_family"),
+        )
+        version = require_nonnegative_int(
+            self.event_family_schema_version,
+            field_name="event_family_schema_version",
+        )
+        if version == 0:
+            raise ValueError("event_family_schema_version must be positive.")
+        object.__setattr__(
+            self,
+            "payload_type",
+            require_code(self.payload_type, field_name="payload_type"),
+        )
+
+
 @dataclass(frozen=True, slots=True, init=False)
 class CoverageFanoutProof:
     """Factory-derived proof of the complete cause-specific leaf-scope slice.
 
-    Content preimage::
+    Existing content and ID preimages remain::
 
         ["coverage-fanout-proof-content-v1", fanout_kind,
          subscription_plan_id, target_catalog_id, connection_session_id,
@@ -6153,6 +6260,10 @@ class CoverageFanoutProof:
 
         ["coverage-fanout-proof-v1", fanout_kind, subscription_plan_id,
          target_catalog_id, target_count, SHA256(canonical_content)]
+
+    Identified-rejection proofs use the same ordered components with the
+    ``coverage-fanout-proof-content-v2`` and ``coverage-fanout-proof-v2`` tags.
+    Their kind-specific source row is documented by the corresponding factory.
     """
 
     kind: CoverageFanoutKind
@@ -6163,6 +6274,10 @@ class CoverageFanoutProof:
     source_attempt_snapshots: tuple[SubscriptionAttemptSnapshot, ...] = field(repr=False)
     selected_attempt_ids: tuple[SubscriptionAttemptId, ...] = field(repr=False)
     target_scopes: tuple[CoverageScope, ...] = field(repr=False)
+    identified_rejection_targets: tuple[ExactIdentifiedRejectionTarget, ...] = field(repr=False)
+    identified_rejection_scope_ids: tuple[CoverageScopeId, ...] = field(repr=False)
+    acknowledged_routed_targets: tuple[RoutedCoverageTarget, ...] = field(repr=False)
+    acknowledged_routed_scope_ids: tuple[CoverageScopeId, ...] = field(repr=False)
     canonical_content: str = field(repr=False)
     content_sha256: str
     coverage_fanout_proof_id: CoverageFanoutProofId
@@ -6470,6 +6585,175 @@ class CoverageFanoutProof:
             source_attempt_snapshots=source_snapshots,
             selected_attempt_ids=selected_attempt_ids,
             target_scopes=scopes,
+            acknowledged_routed_targets=tuple(item[1] for item in ordered),
+            acknowledged_routed_scope_ids=tuple(item[0].coverage_scope_id for item in ordered),
+        )
+
+    @classmethod
+    def exact_identified_rejection(
+        cls,
+        *,
+        plan: SubscriptionPlanIdentity,
+        catalog: CoverageTargetCatalog,
+        attempt_snapshot: SubscriptionAttemptSnapshot,
+        source_selector: PublicSourceSelector,
+        canonical_instrument_id: str,
+        adapter_profile: str,
+        event_family: str,
+        event_family_schema_version: int,
+        payload_type: str,
+    ) -> "CoverageFanoutProof":
+        """Prove one exact indexed non-ACK rejection route."""
+
+        return cls.exact_identified_rejections(
+            plan=plan,
+            catalog=catalog,
+            rejection_targets=(
+                ExactIdentifiedRejectionTarget(
+                    attempt_snapshot=attempt_snapshot,
+                    source_selector=source_selector,
+                    canonical_instrument_id=canonical_instrument_id,
+                    adapter_profile=adapter_profile,
+                    event_family=event_family,
+                    event_family_schema_version=event_family_schema_version,
+                    payload_type=payload_type,
+                ),
+            ),
+        )
+
+    @classmethod
+    def exact_identified_rejections(
+        cls,
+        *,
+        plan: SubscriptionPlanIdentity,
+        catalog: CoverageTargetCatalog,
+        rejection_targets: tuple[ExactIdentifiedRejectionTarget, ...],
+        acknowledged_targets: tuple[RoutedCoverageTarget, ...] = (),
+    ) -> "CoverageFanoutProof":
+        """Prove exact indexed rejected routes and an optional ACK route union.
+
+        The non-empty rejection partition is used directly for pre-ACK
+        normalization failure. The optional acknowledged partition exists so a
+        later outcome-sink failure can prove the complete indexed frame union
+        without weakening :class:`RoutedCoverageTarget`.
+
+        Kind-specific source preimage::
+
+            ["exact-identified-rejections-v1",
+             sorted exact-identified-rejection-target-v1 rows,
+             sorted acknowledged-routed-target-v1 rows]
+        """
+
+        _validate_fanout_parent(plan, catalog)
+        if type(rejection_targets) is not tuple or any(
+            type(item) is not ExactIdentifiedRejectionTarget for item in rejection_targets
+        ):
+            raise TypeError(
+                "rejection_targets must be a tuple of ExactIdentifiedRejectionTarget values."
+            )
+        require_collection_size(
+            rejection_targets,
+            field_name="rejection_targets",
+            maximum_items=MAX_COVERAGE_MUTATION_TARGETS,
+            minimum_items=1,
+        )
+        if type(acknowledged_targets) is not tuple or any(
+            type(item) is not RoutedCoverageTarget for item in acknowledged_targets
+        ):
+            raise TypeError("acknowledged_targets must be a tuple of RoutedCoverageTarget values.")
+        require_collection_size(
+            acknowledged_targets,
+            field_name="acknowledged_targets",
+            maximum_items=MAX_COVERAGE_MUTATION_TARGETS,
+        )
+        if len(rejection_targets) + len(acknowledged_targets) > MAX_COVERAGE_MUTATION_TARGETS:
+            raise ValueError("identified rejection routes exceed their finite bound.")
+
+        rejected_resolved = tuple(
+            _resolve_identified_rejection_target(
+                plan=plan,
+                catalog=catalog,
+                target=target,
+            )
+            for target in rejection_targets
+        )
+        acknowledged_resolved = tuple(
+            _resolve_acknowledged_route_for_identified_rejection(
+                plan=plan,
+                catalog=catalog,
+                target=target,
+            )
+            for target in acknowledged_targets
+        )
+        ordered_rejected = tuple(
+            sorted(rejected_resolved, key=lambda item: item[0].coverage_scope_id.value)
+        )
+        ordered_acknowledged = tuple(
+            sorted(acknowledged_resolved, key=lambda item: item[0].coverage_scope_id.value)
+        )
+        combined = tuple(
+            sorted(
+                (*ordered_rejected, *ordered_acknowledged),
+                key=lambda item: item[0].coverage_scope_id.value,
+            )
+        )
+        scopes = tuple(item[0] for item in combined)
+        if len({scope.coverage_scope_id for scope in scopes}) != len(scopes):
+            raise ValueError("identified rejection routes must be unique by exact Silver scope.")
+        sessions = {
+            item[1].attempt_snapshot.subscription_attempt.connection_session
+            for item in ordered_rejected
+        } | {
+            item[1].acknowledged_snapshot.subscription_attempt.connection_session
+            for item in ordered_acknowledged
+        }
+        if len(sessions) != 1:
+            raise ValueError("identified rejection routes must belong to one connection session.")
+
+        rejected_rows = tuple(item[2] for item in ordered_rejected)
+        acknowledged_rows = tuple(item[2] for item in ordered_acknowledged)
+        all_snapshots = tuple(item[1].attempt_snapshot for item in ordered_rejected) + tuple(
+            item[1].acknowledged_snapshot for item in ordered_acknowledged
+        )
+        snapshots_by_attempt: dict[SubscriptionAttemptId, SubscriptionAttemptSnapshot] = {}
+        for snapshot in all_snapshots:
+            attempt_id = snapshot.subscription_attempt.subscription_attempt_id
+            previous = snapshots_by_attempt.get(attempt_id)
+            if previous is not None and previous != snapshot:
+                raise ValueError("one identified route attempt cannot have conflicting snapshots.")
+            snapshots_by_attempt[attempt_id] = snapshot
+        source_snapshots = tuple(
+            snapshots_by_attempt[attempt_id]
+            for attempt_id in sorted(snapshots_by_attempt, key=lambda item: item.value)
+        )
+        selected_attempt_ids = tuple(
+            snapshot.subscription_attempt.subscription_attempt_id for snapshot in source_snapshots
+        )
+        return _construct_coverage_fanout(
+            kind=(
+                CoverageFanoutKind.EXACT_IDENTIFIED_REJECTION
+                if len(scopes) == 1
+                else CoverageFanoutKind.EXACT_IDENTIFIED_REJECTIONS
+            ),
+            plan=plan,
+            catalog=catalog,
+            connection_session=next(iter(sessions)),
+            source_row=(
+                _IDENTIFIED_REJECTION_SOURCE_VERSION,
+                rejected_rows,
+                acknowledged_rows,
+            ),
+            source_attempt_snapshots=source_snapshots,
+            selected_attempt_ids=selected_attempt_ids,
+            target_scopes=scopes,
+            identified_rejection_targets=tuple(item[1] for item in ordered_rejected),
+            identified_rejection_scope_ids=tuple(
+                item[0].coverage_scope_id for item in ordered_rejected
+            ),
+            acknowledged_routed_targets=tuple(item[1] for item in ordered_acknowledged),
+            acknowledged_routed_scope_ids=tuple(
+                item[0].coverage_scope_id for item in ordered_acknowledged
+            ),
         )
 
     @classmethod
@@ -6572,6 +6856,175 @@ class CoverageFanoutProof:
             raise ValueError("stored coverage fanout proof does not match its content.")
 
 
+def _exact_plan_route_scope(
+    *,
+    plan: SubscriptionPlanIdentity,
+    catalog: CoverageTargetCatalog,
+    snapshot: SubscriptionAttemptSnapshot,
+    source_selector: PublicSourceSelector,
+    canonical_instrument_id: str,
+    adapter_profile: str,
+    event_family: str,
+    event_family_schema_version: int,
+    payload_type: str,
+) -> CoverageScope:
+    """Resolve one typed public route to exactly one plan-derived Silver leaf."""
+
+    spec = snapshot.subscription_spec
+    plan_specs = tuple(
+        candidate
+        for candidate in plan.subscription_specs
+        if candidate.subscription_spec_id == spec.subscription_spec_id
+    )
+    if len(plan_specs) != 1 or plan_specs[0] != spec:
+        raise ValueError("identified route subscription spec must belong exactly to the plan.")
+    if spec.feed_product_id != plan.feed_product_id:
+        raise ValueError("identified route feed must match the subscription plan.")
+    instrument_bindings = tuple(
+        binding
+        for binding in plan.instrument_bindings
+        if binding.subscription_spec_id == spec.subscription_spec_id
+        and binding.source_selector == source_selector
+        and binding.canonical_instrument_id == canonical_instrument_id
+        and binding.adapter_profile == adapter_profile
+    )
+    if len(instrument_bindings) != 1:
+        raise ValueError("identified route must match one exact plan selector and instrument.")
+    normalization_bindings = tuple(
+        binding
+        for binding in plan.normalization_bindings
+        if binding.subscription_spec_id == spec.subscription_spec_id
+        and binding.adapter_profile == adapter_profile
+        and binding.event_family == event_family
+        and binding.event_family_schema_version == event_family_schema_version
+        and binding.payload_type == payload_type
+    )
+    if len(normalization_bindings) != 1:
+        raise ValueError("identified route must match one exact plan normalization binding.")
+    scopes = tuple(
+        scope
+        for scope in catalog.scopes
+        if scope.domain is CoverageDomain.SILVER_NORMALIZATION
+        and scope.feed_product_id == plan.feed_product_id
+        and scope.subscription_spec_ids == (spec.subscription_spec_id,)
+        and scope.canonical_instrument_ids == (canonical_instrument_id,)
+        and scope.event_family == event_family
+        and scope.event_family_schema_version == event_family_schema_version
+        and scope.payload_type == payload_type
+    )
+    if len(scopes) != 1:
+        raise ValueError("identified route must resolve to one exact plan-derived Silver scope.")
+    return scopes[0]
+
+
+def _identified_route_source_row(
+    *,
+    version_tag: str,
+    snapshot: SubscriptionAttemptSnapshot,
+    source_selector: PublicSourceSelector,
+    canonical_instrument_id: str,
+    adapter_profile: str,
+    event_family: str,
+    event_family_schema_version: int,
+    payload_type: str,
+    scope: CoverageScope,
+) -> tuple[object, ...]:
+    attempt = snapshot.subscription_attempt
+    return (
+        version_tag,
+        snapshot.subscription_spec.feed_product_id.value,
+        attempt.connection_session.connection_session_id.value,
+        snapshot.subscription_spec.subscription_spec_id.value,
+        attempt.subscription_attempt_id.value,
+        snapshot.attempt_status.value,
+        source_selector.canonical_components(),
+        canonical_instrument_id,
+        adapter_profile,
+        event_family,
+        event_family_schema_version,
+        payload_type,
+        scope.coverage_scope_id.value,
+    )
+
+
+def _resolve_identified_rejection_target(
+    *,
+    plan: SubscriptionPlanIdentity,
+    catalog: CoverageTargetCatalog,
+    target: ExactIdentifiedRejectionTarget,
+) -> tuple[CoverageScope, ExactIdentifiedRejectionTarget, tuple[object, ...]]:
+    scope = _exact_plan_route_scope(
+        plan=plan,
+        catalog=catalog,
+        snapshot=target.attempt_snapshot,
+        source_selector=target.source_selector,
+        canonical_instrument_id=target.canonical_instrument_id,
+        adapter_profile=target.adapter_profile,
+        event_family=target.event_family,
+        event_family_schema_version=target.event_family_schema_version,
+        payload_type=target.payload_type,
+    )
+    return (
+        scope,
+        target,
+        _identified_route_source_row(
+            version_tag=_IDENTIFIED_REJECTION_TARGET_VERSION,
+            snapshot=target.attempt_snapshot,
+            source_selector=target.source_selector,
+            canonical_instrument_id=target.canonical_instrument_id,
+            adapter_profile=target.adapter_profile,
+            event_family=target.event_family,
+            event_family_schema_version=target.event_family_schema_version,
+            payload_type=target.payload_type,
+            scope=scope,
+        ),
+    )
+
+
+def _resolve_acknowledged_route_for_identified_rejection(
+    *,
+    plan: SubscriptionPlanIdentity,
+    catalog: CoverageTargetCatalog,
+    target: RoutedCoverageTarget,
+) -> tuple[CoverageScope, RoutedCoverageTarget, tuple[object, ...]]:
+    snapshot = target.acknowledged_snapshot
+    instrument_bindings = tuple(
+        binding
+        for binding in plan.instrument_bindings
+        if binding.subscription_spec_id == snapshot.subscription_spec.subscription_spec_id
+        and binding.canonical_instrument_id == target.canonical_instrument_id
+    )
+    if len(instrument_bindings) != 1:
+        raise ValueError("acknowledged route must match one exact plan instrument binding.")
+    instrument_binding = instrument_bindings[0]
+    scope = _exact_plan_route_scope(
+        plan=plan,
+        catalog=catalog,
+        snapshot=snapshot,
+        source_selector=instrument_binding.source_selector,
+        canonical_instrument_id=target.canonical_instrument_id,
+        adapter_profile=instrument_binding.adapter_profile,
+        event_family=target.event_family,
+        event_family_schema_version=target.event_family_schema_version,
+        payload_type=target.payload_type,
+    )
+    return (
+        scope,
+        target,
+        _identified_route_source_row(
+            version_tag=_IDENTIFIED_REJECTION_ACK_TARGET_VERSION,
+            snapshot=snapshot,
+            source_selector=instrument_binding.source_selector,
+            canonical_instrument_id=target.canonical_instrument_id,
+            adapter_profile=instrument_binding.adapter_profile,
+            event_family=target.event_family,
+            event_family_schema_version=target.event_family_schema_version,
+            payload_type=target.payload_type,
+            scope=scope,
+        ),
+    )
+
+
 def _construct_coverage_fanout(
     *,
     kind: CoverageFanoutKind,
@@ -6582,6 +7035,10 @@ def _construct_coverage_fanout(
     source_attempt_snapshots: tuple[SubscriptionAttemptSnapshot, ...],
     selected_attempt_ids: tuple[SubscriptionAttemptId, ...],
     target_scopes: tuple[CoverageScope, ...],
+    identified_rejection_targets: tuple[ExactIdentifiedRejectionTarget, ...] = (),
+    identified_rejection_scope_ids: tuple[CoverageScopeId, ...] = (),
+    acknowledged_routed_targets: tuple[RoutedCoverageTarget, ...] = (),
+    acknowledged_routed_scope_ids: tuple[CoverageScopeId, ...] = (),
 ) -> CoverageFanoutProof:
     if connection_session.collector_run_id.value == "":
         raise ValueError("coverage fanout connection session must have a collector run.")
@@ -6624,9 +7081,68 @@ def _construct_coverage_fanout(
         raise ValueError("selected fanout attempt IDs must be sorted and unique.")
     if any(item not in source_attempt_ids for item in selected_attempt_ids):
         raise ValueError("selected fanout attempts must belong to its source snapshot.")
+    if type(identified_rejection_targets) is not tuple or any(
+        type(item) is not ExactIdentifiedRejectionTarget for item in identified_rejection_targets
+    ):
+        raise TypeError("identified_rejection_targets contain an invalid value.")
+    if type(acknowledged_routed_targets) is not tuple or any(
+        type(item) is not RoutedCoverageTarget for item in acknowledged_routed_targets
+    ):
+        raise TypeError("acknowledged_routed_targets contain an invalid value.")
+    if type(identified_rejection_scope_ids) is not tuple or any(
+        type(item) is not CoverageScopeId for item in identified_rejection_scope_ids
+    ):
+        raise TypeError("identified_rejection_scope_ids contain an invalid value.")
+    if type(acknowledged_routed_scope_ids) is not tuple or any(
+        type(item) is not CoverageScopeId for item in acknowledged_routed_scope_ids
+    ):
+        raise TypeError("acknowledged_routed_scope_ids contain an invalid value.")
+    if len(identified_rejection_targets) != len(identified_rejection_scope_ids):
+        raise ValueError("identified rejection targets and scopes must have equal cardinality.")
+    if len(acknowledged_routed_targets) != len(acknowledged_routed_scope_ids):
+        raise ValueError("acknowledged routed targets and scopes must have equal cardinality.")
+    if identified_rejection_scope_ids != tuple(
+        sorted(set(identified_rejection_scope_ids), key=lambda item: item.value)
+    ):
+        raise ValueError("identified rejection scope IDs must be sorted and unique.")
+    if acknowledged_routed_scope_ids != tuple(
+        sorted(set(acknowledged_routed_scope_ids), key=lambda item: item.value)
+    ):
+        raise ValueError("acknowledged routed scope IDs must be sorted and unique.")
+    routed_scope_ids = tuple(
+        sorted(
+            (*identified_rejection_scope_ids, *acknowledged_routed_scope_ids),
+            key=lambda item: item.value,
+        )
+    )
+    if routed_scope_ids and routed_scope_ids != tuple(scope.coverage_scope_id for scope in ordered):
+        raise ValueError("typed route partitions must equal the exact fanout scope union.")
+    identified_kind = kind in {
+        CoverageFanoutKind.EXACT_IDENTIFIED_REJECTION,
+        CoverageFanoutKind.EXACT_IDENTIFIED_REJECTIONS,
+    }
+    if identified_kind is (not identified_rejection_targets):
+        raise ValueError("identified rejection fanout requires its typed rejection targets.")
+    if not identified_kind and identified_rejection_targets:
+        raise ValueError("other fanout kinds cannot retain identified rejection targets.")
+    if acknowledged_routed_targets and kind not in {
+        CoverageFanoutKind.EXACT_ROUTED_EVENT,
+        CoverageFanoutKind.EXACT_ROUTED_EVENTS,
+        CoverageFanoutKind.EXACT_IDENTIFIED_REJECTION,
+        CoverageFanoutKind.EXACT_IDENTIFIED_REJECTIONS,
+    }:
+        raise ValueError("fanout kind cannot retain acknowledged routed targets.")
+    content_version = (
+        _IDENTIFIED_REJECTION_FANOUT_CONTENT_VERSION
+        if identified_kind
+        else "coverage-fanout-proof-content-v1"
+    )
+    id_version = (
+        _IDENTIFIED_REJECTION_FANOUT_ID_VERSION if identified_kind else "coverage-fanout-proof-v1"
+    )
     content = canonical_json_array(
         (
-            "coverage-fanout-proof-content-v1",
+            content_version,
             kind.value,
             plan.subscription_plan_id,
             catalog.coverage_target_catalog_id,
@@ -6640,7 +7156,7 @@ def _construct_coverage_fanout(
     proof_id = CoverageFanoutProofId(
         canonical_json_array(
             (
-                "coverage-fanout-proof-v1",
+                id_version,
                 kind.value,
                 plan.subscription_plan_id,
                 catalog.coverage_target_catalog_id,
@@ -6658,6 +7174,10 @@ def _construct_coverage_fanout(
     object.__setattr__(value, "source_attempt_snapshots", source_attempt_snapshots)
     object.__setattr__(value, "selected_attempt_ids", selected_attempt_ids)
     object.__setattr__(value, "target_scopes", ordered)
+    object.__setattr__(value, "identified_rejection_targets", identified_rejection_targets)
+    object.__setattr__(value, "identified_rejection_scope_ids", identified_rejection_scope_ids)
+    object.__setattr__(value, "acknowledged_routed_targets", acknowledged_routed_targets)
+    object.__setattr__(value, "acknowledged_routed_scope_ids", acknowledged_routed_scope_ids)
     object.__setattr__(value, "canonical_content", content)
     object.__setattr__(value, "content_sha256", digest)
     object.__setattr__(value, "coverage_fanout_proof_id", proof_id)
@@ -6713,6 +7233,154 @@ def _rederive_raw_coverage_fanout(
             plan=plan,
             catalog=catalog,
             routed_targets=tuple(routed),
+        )
+    if fanout_proof.kind in {
+        CoverageFanoutKind.EXACT_IDENTIFIED_REJECTION,
+        CoverageFanoutKind.EXACT_IDENTIFIED_REJECTIONS,
+    }:
+        source_row = fanout_proof.source_canonical_row
+        if (
+            len(source_row) != 3
+            or source_row[0] != _IDENTIFIED_REJECTION_SOURCE_VERSION
+            or type(source_row[1]) is not tuple
+            or type(source_row[2]) is not tuple
+        ):
+            raise ValueError("identified rejection fanout has an invalid source snapshot.")
+        snapshots_by_attempt = {
+            item.subscription_attempt.subscription_attempt_id: item for item in snapshots
+        }
+
+        def parse_route_row(
+            row: object,
+            *,
+            expected_tag: str,
+        ) -> tuple[
+            SubscriptionAttemptSnapshot,
+            PublicSourceSelector,
+            str,
+            str,
+            str,
+            int,
+            str,
+        ]:
+            if type(row) is not tuple or len(row) != 13 or row[0] != expected_tag:
+                raise ValueError("identified rejection fanout has an invalid routed row.")
+            feed_id = FeedProductId(row[1])
+            session_id = ConnectionSessionId(row[2])
+            spec_id = SubscriptionSpecId(row[3])
+            attempt_id = SubscriptionAttemptId(row[4])
+            status: SubscriptionAttemptStatus | None = None
+            try:
+                status = SubscriptionAttemptStatus(row[5])
+            except (TypeError, ValueError):
+                pass
+            if status is None:
+                raise ValueError("identified rejection row has an invalid attempt status.")
+            selector_row = row[6]
+            if (
+                type(selector_row) is not tuple
+                or len(selector_row) != 3
+                or selector_row[0] != "public-source-selector-v1"
+            ):
+                raise ValueError("identified rejection row has an invalid public selector.")
+            selector_kind: PublicSourceSelectorKind | None = None
+            try:
+                selector_kind = PublicSourceSelectorKind(selector_row[1])
+            except (TypeError, ValueError):
+                pass
+            if selector_kind is None:
+                raise ValueError("identified rejection row has an invalid public selector kind.")
+            selector = PublicSourceSelector(selector_kind, selector_row[2])
+            snapshot = snapshots_by_attempt.get(attempt_id)
+            if (
+                snapshot is None
+                or snapshot.subscription_spec.feed_product_id != feed_id
+                or snapshot.subscription_attempt.connection_session.connection_session_id
+                != session_id
+                or snapshot.subscription_spec.subscription_spec_id != spec_id
+                or snapshot.attempt_status is not status
+            ):
+                raise ValueError("identified rejection route isn't present in the raw snapshot.")
+            canonical_instrument_id = validate_canonical_instrument_id(row[7])
+            adapter_profile = require_code(row[8], field_name="adapter_profile")
+            event_family = require_code(row[9], field_name="event_family")
+            family_version = require_nonnegative_int(
+                row[10],
+                field_name="event_family_schema_version",
+            )
+            if family_version == 0:
+                raise ValueError("event_family_schema_version must be positive.")
+            payload_type = require_code(row[11], field_name="payload_type")
+            CoverageScopeId(row[12])
+            return (
+                snapshot,
+                selector,
+                canonical_instrument_id,
+                adapter_profile,
+                event_family,
+                family_version,
+                payload_type,
+            )
+
+        rejected: list[ExactIdentifiedRejectionTarget] = []
+        for row in source_row[1]:
+            (
+                snapshot,
+                selector,
+                canonical_instrument_id,
+                adapter_profile,
+                event_family,
+                family_version,
+                payload_type,
+            ) = parse_route_row(row, expected_tag=_IDENTIFIED_REJECTION_TARGET_VERSION)
+            rejected.append(
+                ExactIdentifiedRejectionTarget(
+                    attempt_snapshot=snapshot,
+                    source_selector=selector,
+                    canonical_instrument_id=canonical_instrument_id,
+                    adapter_profile=adapter_profile,
+                    event_family=event_family,
+                    event_family_schema_version=family_version,
+                    payload_type=payload_type,
+                )
+            )
+        acknowledged: list[RoutedCoverageTarget] = []
+        for row in source_row[2]:
+            (
+                snapshot,
+                selector,
+                canonical_instrument_id,
+                adapter_profile,
+                event_family,
+                family_version,
+                payload_type,
+            ) = parse_route_row(row, expected_tag=_IDENTIFIED_REJECTION_ACK_TARGET_VERSION)
+            if snapshot.attempt_status is not SubscriptionAttemptStatus.ACKNOWLEDGED:
+                raise ValueError("acknowledged route row requires its captured ACK state.")
+            matching_plan_bindings = tuple(
+                binding
+                for binding in plan.instrument_bindings
+                if binding.subscription_spec_id == snapshot.subscription_spec.subscription_spec_id
+                and binding.source_selector == selector
+                and binding.canonical_instrument_id == canonical_instrument_id
+                and binding.adapter_profile == adapter_profile
+            )
+            if len(matching_plan_bindings) != 1:
+                raise ValueError("acknowledged route row doesn't match the raw subscription plan.")
+            acknowledged.append(
+                RoutedCoverageTarget(
+                    acknowledged_snapshot=snapshot,
+                    canonical_instrument_id=canonical_instrument_id,
+                    event_family=event_family,
+                    event_family_schema_version=family_version,
+                    payload_type=payload_type,
+                )
+            )
+        return CoverageFanoutProof.exact_identified_rejections(
+            plan=plan,
+            catalog=catalog,
+            rejection_targets=tuple(rejected),
+            acknowledged_targets=tuple(acknowledged),
         )
     if fanout_proof.kind is CoverageFanoutKind.ALL_POSSIBLY_ACTIVE:
         if not fanout_proof.target_scopes:
@@ -7193,6 +7861,14 @@ def _validate_fanout_request_semantics(
                 raise ValueError(
                     "outcome-sink failure status requires its exact indexed fanout kind."
                 )
+        elif fanout.kind in {
+            CoverageFanoutKind.EXACT_IDENTIFIED_REJECTION,
+            CoverageFanoutKind.EXACT_IDENTIFIED_REJECTIONS,
+        }:
+            if outcome_status != "rejected_after_indexing":
+                raise ValueError(
+                    "identified-rejection outcome-sink fanout requires an indexed rejection."
+                )
         elif fanout.kind is CoverageFanoutKind.ALL_POSSIBLY_ACTIVE:
             if outcome_status not in _PLAN_SLICE_NORMALIZATION_OUTCOME_FRAME_STATUS_CODES:
                 raise ValueError(
@@ -7213,6 +7889,72 @@ def _validate_fanout_request_semantics(
             for request in requests
         ):
             raise ValueError("acknowledged-active fanout permits only exact initial activation.")
+        return
+    if fanout.kind in {
+        CoverageFanoutKind.EXACT_IDENTIFIED_REJECTION,
+        CoverageFanoutKind.EXACT_IDENTIFIED_REJECTIONS,
+    }:
+        outcome_rows = {
+            (
+                CoverageStatus.UNCERTAIN,
+                CoverageReason.NORMALIZATION_OUTCOME_ACCEPTANCE_UNCERTAIN,
+                CoverageEvidenceKind.NORMALIZATION_OUTCOME_SINK_ACCEPTANCE_AMBIGUITY,
+            ),
+            (
+                CoverageStatus.CONFIRMED_INCOMPLETE,
+                CoverageReason.NORMALIZATION_OUTCOME_DEFINITE_REJECTION,
+                CoverageEvidenceKind.NORMALIZATION_OUTCOME_REJECTION,
+            ),
+        }
+        acknowledged_rows = {
+            (
+                CoverageStatus.CONFIRMED_INCOMPLETE,
+                CoverageReason.IN_SCOPE_NORMALIZATION_FAILURE,
+                CoverageEvidenceKind.NORMALIZATION_FAILURE,
+            ),
+            (
+                CoverageStatus.CONFIRMED_INCOMPLETE,
+                CoverageReason.SOURCE_EVENT_CONFLICT,
+                CoverageEvidenceKind.SOURCE_EVENT_CONFLICT,
+            ),
+            (
+                CoverageStatus.CONFIRMED_INCOMPLETE,
+                CoverageReason.SOURCE_SEQUENCE_BREAK,
+                CoverageEvidenceKind.SOURCE_SEQUENCE,
+            ),
+        }
+        rejected_scope_ids = set(fanout.identified_rejection_scope_ids)
+        acknowledged_scope_ids = set(fanout.acknowledged_routed_scope_ids)
+        for request in requests:
+            row = (
+                request.requested_status,
+                request.transition_reason,
+                request.evidence.kind,
+            )
+            if row in outcome_rows:
+                continue
+            if request.scope.coverage_scope_id in acknowledged_scope_ids:
+                if row not in acknowledged_rows:
+                    raise ValueError(
+                        "acknowledged partition requires exact indexed failure evidence."
+                    )
+                continue
+            source = request.evidence.source
+            if (
+                request.scope.coverage_scope_id not in rejected_scope_ids
+                or row
+                != (
+                    CoverageStatus.CONFIRMED_INCOMPLETE,
+                    CoverageReason.IN_SCOPE_NORMALIZATION_FAILURE,
+                    CoverageEvidenceKind.NORMALIZATION_FAILURE,
+                )
+                or type(source) is not NormalizationFailureEvidenceSource
+                or source.raw_event_index is None
+                or source.category is not NormalizationFailureCategory.PROVENANCE_MISMATCH
+            ):
+                raise ValueError(
+                    "identified rejection requires exact provenance-mismatch failure evidence."
+                )
         return
     if fanout.kind in {
         CoverageFanoutKind.EXACT_ROUTED_EVENT,

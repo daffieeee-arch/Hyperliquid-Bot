@@ -220,6 +220,21 @@ processing or durable persistence. Existing 3B1B capture remains transition-empt
 The active collector does not yet construct either new 3B1C-1A contract path; that remains
 Phase 1A-3B1C-2 work.
 
+Phase 1A-3B1C-1B closes one further pure binding gap for reliably indexed trades observed before
+their exact subscription attempt was acknowledged. A separate rejection-only route accepts only
+the Bronze-captured `PENDING`, `SEND_STARTED` or `SENT` snapshot and binds the feed, session, spec,
+attempt, capture status, public selector, canonical instrument and trade-family binding to one exact
+Silver-normalization leaf. It cannot materialize an event or initialize complete coverage. Its only
+direct mutation is an indexed `REJECTED` / `PROVENANCE_MISMATCH` decision with typed
+`PROVENANCE_MISMATCH` failure evidence and `CONFIRMED_INCOMPLETE` Silver coverage. One unique route
+may explain multiple separately indexed evidence rows for the same scope; every index still resolves
+to exactly one route and retains its own raw index and source identity. Otherwise-valid acknowledged
+peers retain only frame-atomic-abort evidence, and duplicates create no coverage loss. A separate
+mixed proof form is available only where post-outcome sink failure must bind the complete exact
+non-ACK/ACK scope and attempt union. Both forms are rederived from the immutable raw attempt snapshot.
+The existing acknowledged `exact-routed-events-v1` identities and active runtime remain unchanged;
+3B1C-1B is dormant until 3B1C-2 consumes it.
+
 ### Research Plane
 
 Runs isolated experiments and may consume significant CPU/RAM without affecting the continuous trading/data path. It contains feature research, event-driven backtesting, walk-forward validation, Monte Carlo/stress tests and an experiment registry.

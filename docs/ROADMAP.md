@@ -99,6 +99,18 @@ moves new outer outcome IDs to v2 while retaining parser-only v1, and provides a
 batch/acceptance verification boundary with O(1) per-leaf access to the existing committed-state and
 upstream-source values. No runtime integration is activated; schema v2 and `is_gap` stay active and
 the v3 envelope stays dormant until later phases.
+Phase 1A-3B1C-1E closes the remaining performance gate inside that same pure bulk boundary without
+changing its API, canonical bytes, identities, versions or semantics. One call-local verification
+transcript eliminates repeated nested parsing while retaining complete verification of every
+retained field. The pinned 1,024-target medians for initialization, first degradation and full
+no-op are respectively
+0.283136466, 0.569355146 and 0.707791138 seconds, all below the reserved 0.8-second pure-contract
+budget; maxima remain below 1.0 second and 512-to-1,024 ratios remain below 2.5. These are
+host/fixture-bound `from_commit` measurements. The remaining 0.2 seconds is only a future runtime
+allocation: the current serial 1,024-leaf ordinary upstream-evidence route measured 18.257364
+seconds diagnostically and remains a hard 3B1C-2 blocker outside 1E's code scope. Phase 3B1C-2 must
+optimize or separately close that route and still prove the entire synchronous runtime path within
+its 1.0-second median gate. This phase activates no runtime or delivery behavior.
 
 Target: useful local output within approximately the first 1-2 weeks of active development.
 
@@ -136,13 +148,15 @@ The multi-venue data-contract spine proceeds in bounded steps:
    normalization-lineage commitments for complete 1,024-spec fan-out;
 7. **Phase 1A-3B1C-1D — mixed outcome and bulk derivation closure:** pure mixed-indexed-failure
    versioning and one-pass verified committed-state/upstream-evidence derivation;
-8. **Phase 1A-3B1C-2 — coverage runtime:** operational immutable coverage state and temporary v2
+8. **Phase 1A-3B1C-1E — bulk derivation performance closure:** pure call-local shared verification
+   optimization with byte-identical canonical contracts and a reserved 0.8-second contract budget;
+9. **Phase 1A-3B1C-2 — coverage runtime:** operational immutable coverage state and temporary v2
    `is_gap` projection;
-9. **Phase 1A-3B1C-3 — atomic delivery:** one audited composite output-queue item per delivered
+10. **Phase 1A-3B1C-3 — atomic delivery:** one audited composite output-queue item per delivered
    non-empty normalization outcome;
-10. **Phase 1A-3B1D — atomic cutover:** both normalizers and the collector move together to the one
+11. **Phase 1A-3B1D — atomic cutover:** both normalizers and the collector move together to the one
    mandatory outer-v3 envelope; outer v2 and `is_gap` are removed without dual writing;
-11. **Phase 1A-3B2 — deterministic replay:** digest verification, sealed run manifests and exact
+12. **Phase 1A-3B2 — deterministic replay:** digest verification, sealed run manifests and exact
    Bronze-to-Silver lineage.
 
 Phase 1A-3B1B implements no concrete persistence, operational coverage tracker, delivery outcome

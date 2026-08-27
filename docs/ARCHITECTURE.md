@@ -275,6 +275,27 @@ Defaults `H=45`, `P=10`, `R=1`, `O=1`, `C=1`, `Q=5` and `S=4` produce exactly 57
 contract correction adds no coverage runtime or delivery linearization; schema v2 and `is_gap`
 remain active, and `MarketEventEnvelopeV3` remains dormant.
 
+Phase 1A-3B1C-1E closes the remaining synchronous cost inside that unchanged bulk boundary. The
+1D implementation was linear but repeatedly parsed and serialized nested scope, epoch, evidence,
+state and acceptance identities; its historical warm 1,024-target median was 1.148715 seconds and
+could not leave an honest runtime reserve inside `C=1`. The factory now creates one call-local
+verification transcript, rederives each typed state chain and stored commitment once, and reuses
+those immutable facts for result membership and leaf derivation. It adds no global or cross-call
+cache, verification flag or alternate identity. On the pinned TerraPC fixture, full warm
+`from_commit` medians at 1,024 targets were 0.283136466 seconds for initialization, 0.569355146
+seconds for `COMPLETE -> UNCERTAIN`, and 0.707791138 seconds for a full no-op; maxima were
+0.302709014, 0.587829245 and 0.723139806 seconds. The 512-to-1,024 median ratios were 1.904129008,
+1.916039095 and 1.885200742. Fixtures and acceptances were built before timing, three warmups were
+discarded, nine sequential full calls were measured with garbage collection enabled, and no sample
+was removed. ADR-022 retains the complete ordered sample ledger. These host- and fixture-bound
+measurements satisfy the pure 0.8-second `from_commit` allocation but are not a worst-case
+guarantee. The remaining 0.2 seconds is a binding allocation for 3B1C-2, not evidence that its
+current Bronze-to-Silver path fits: a separate diagnostic serial construction of 1,024 ordinary
+upstream evidence values took 18.257364 seconds (about 739 canonical parses per leaf). That path
+must be optimized or receive a separate contract closure before 3B1C-2 may claim its complete
+synchronous median is at most 1.0 second; the runtime gate is not relaxed. Canonical bytes, IDs,
+versions and coverage semantics are unchanged. The phase remains pure and dormant.
+
 ### Research Plane
 
 Runs isolated experiments and may consume significant CPU/RAM without affecting the continuous trading/data path. It contains feature research, event-driven backtesting, walk-forward validation, Monte Carlo/stress tests and an experiment registry.

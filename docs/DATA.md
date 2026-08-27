@@ -582,6 +582,31 @@ The later runtime must keep synchronous coverage CPU work within `C=1` second so
 heartbeat expression remains strictly bounded at 57 seconds with current defaults. No runtime
 coverage or delivery queue is activated here.
 
+The 3B1C-1E correction changes only the internal execution of that same factory. A call-local
+verification transcript now rederives scope, epoch, evidence, initialization/transition, result,
+batch and acceptance facts once and reuses them during leaf construction. Successful canonical
+parses live only for the duration of the call; there is no global, mutable or cross-call cache and
+no caller-supplied validation token. Retained raw-fan-out fields are format-checked, their
+raw-ID feed/run/session lineage is cross-bound, and their exact content, content digest and outer ID
+are rederived before the batch is accepted. The originating raw-record factory computes the
+full-record and complete-snapshot digests; this retained-only boundary cannot reconstruct those two
+preimages because it intentionally retains neither the raw record nor its complete attempt table.
+All public objects, ordered tuples, canonical JSON, version tags, digests and IDs remain byte-exact.
+
+The reserved pure-contract `from_commit` budget is 0.8 seconds, allocating at least 0.2 seconds of
+the later `C=1` runtime budget for CAS and state-snapshot work. With fixture construction outside the interval,
+three unreported warmups, nine sequential complete `from_commit` calls and garbage collection
+enabled, TerraPC 1,024-target medians/maxima were 0.283136466/0.302709014 seconds for
+initialization, 0.569355146/0.587829245 seconds for `COMPLETE -> UNCERTAIN`, and
+0.707791138/0.723139806 seconds for a full no-op. Median 512-to-1,024 ratios remained between
+1.885200742 and 1.916039095. ADR-022 records every ordered sample. This is host- and fixture-bound
+evidence, not an absolute latency guarantee. It applies only to `from_commit`: a separate diagnostic
+serial construction of 1,024 ordinary upstream evidence values took 18.257364 seconds, with about
+739 canonical parses per leaf. Thus the 0.2-second remainder is an unproven runtime allocation, not
+a current Bronze-to-Silver result. 3B1C-2 must optimize or separately close that path and re-prove
+the complete warm synchronous median at no more than 1.0 second. No runtime coverage or delivery
+behavior is activated.
+
 Normalization-outcome sink failure is represented by the exact canonical
 `["normalization-outcome-evidence-v1",normalization_outcome_id,coverage_scope_id]` source row.
 Only explicit typed rejection establishes definite non-acceptance and Silver-normalization

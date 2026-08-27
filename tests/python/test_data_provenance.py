@@ -74,6 +74,7 @@ from hyperliquid_bot.data_provenance import (
     CoverageInitializationId,
     CoverageMutationBatch,
     CoverageMutationBatchId,
+    CoverageMutationDisposition,
     CoverageMutationNoOp,
     CoverageReason,
     CoverageReference,
@@ -5046,24 +5047,35 @@ def test_atomic_coverage_mutation_initializes_all_targets_and_echoes_exact_cas_r
         for state in batch.resulting_state_references
     )
     assert batch.verify_compare_and_swap(()) == batch.resulting_state_references
+    expected_decision_content = canonical_json_array(
+        (
+            "coverage-mutation-target-decision-content-v1",
+            0,
+            fanout.target_scopes[0].coverage_scope_id,
+            None,
+            CoverageMutationDisposition.INITIALIZATION,
+            batch.initializations[0].coverage_initialization_id,
+            None,
+            None,
+            batch.resulting_state_references[0].coverage_state_reference_id,
+        ),
+        maximum_length=MAX_SUBSCRIPTION_PLAN_CONTENT_LENGTH,
+    )
+    expected_decision_sha256 = hashlib.sha256(expected_decision_content.encode()).hexdigest()
+    assert batch.target_decision_sha256s == (expected_decision_sha256,)
     assert json.loads(batch.coverage_mutation_batch_id.value) == [
-        "coverage-mutation-batch-v1",
+        "coverage-mutation-batch-v2",
         fanout.coverage_fanout_proof_id.value,
         1,
         batch.content_sha256,
     ]
     assert batch.canonical_content == json.dumps(
         [
-            "coverage-mutation-batch-content-v1",
+            "coverage-mutation-batch-content-v2",
             fanout.coverage_fanout_proof_id.value,
             None,
-            batch.expected_pre_state_rows,
-            tuple(item.coverage_initialization_id.value for item in batch.initializations),
-            (),
-            (),
-            tuple(
-                item.coverage_state_reference_id.value for item in batch.resulting_state_references
-            ),
+            1,
+            (expected_decision_sha256,),
         ],
         ensure_ascii=True,
         separators=(",", ":"),
@@ -5679,13 +5691,34 @@ def test_commit_acceptance_and_committed_state_have_exact_content_addressed_iden
     )
 
     assert not hasattr(CoverageCommitAcceptance, "from_batch")
+    expected_result_item = canonical_json_array(
+        (
+            "coverage-commit-resulting-state-content-v1",
+            0,
+            committed[0].coverage_state_reference_id,
+        ),
+        maximum_length=MAX_SUBSCRIPTION_PLAN_CONTENT_LENGTH,
+    )
+    expected_result_item_sha256 = hashlib.sha256(expected_result_item.encode()).hexdigest()
+    expected_result_set = canonical_json_array(
+        (
+            "coverage-commit-resulting-states-content-v1",
+            1,
+            (expected_result_item_sha256,),
+        ),
+        maximum_length=MAX_SUBSCRIPTION_PLAN_CONTENT_LENGTH,
+    )
+    expected_result_set_sha256 = hashlib.sha256(expected_result_set.encode()).hexdigest()
+    assert acceptance.resulting_state_item_sha256s == (expected_result_item_sha256,)
+    assert acceptance.resulting_state_commitment_sha256 == expected_result_set_sha256
     assert json.loads(acceptance.canonical_content) == [
-        "coverage-commit-acceptance-content-v1",
+        "coverage-commit-acceptance-content-v2",
         batch.coverage_mutation_batch_id.value,
-        [committed[0].coverage_state_reference_id.value],
+        1,
+        expected_result_set_sha256,
     ]
     assert json.loads(acceptance.coverage_commit_acceptance_id.value) == [
-        "coverage-commit-acceptance-v1",
+        "coverage-commit-acceptance-v2",
         batch.coverage_mutation_batch_id.value,
         1,
         acceptance.content_sha256,
@@ -6789,3 +6822,506 @@ def test_raw_contract_has_no_sink_persistence_or_runtime_guarantee_fields() -> N
     assert "complete_run" not in names
     assert "active_subscriptions" not in names
     assert "subscription_attempt_snapshots" in names
+
+
+@pytest.fixture(scope="module")
+def maximum_coverage_plan() -> tuple[
+    SubscriptionPlanIdentity,
+    CoverageTargetCatalog,
+    tuple[SubscriptionAttemptSnapshot, ...],
+]:
+    plan = _multi_hyperliquid_plan(MAX_SUBSCRIPTION_SPECS)
+    catalog = CoverageTargetCatalog.from_subscription_plan(plan)
+    snapshots = tuple(
+        SubscriptionAttemptSnapshot(
+            SubscriptionAttemptIdentity(_session(), spec, 0),
+            SubscriptionAttemptStatus.ACKNOWLEDGED,
+        )
+        for spec in plan.subscription_specs
+    )
+    return plan, catalog, snapshots
+
+
+def _activation_batch_for_selected_snapshots(
+    *,
+    plan: SubscriptionPlanIdentity,
+    catalog: CoverageTargetCatalog,
+    complete_snapshots: tuple[SubscriptionAttemptSnapshot, ...],
+    selected_snapshots: tuple[SubscriptionAttemptSnapshot, ...],
+) -> CoverageMutationBatch:
+    fanout = CoverageFanoutProof.acknowledged_active(
+        plan=plan,
+        catalog=catalog,
+        complete_snapshots=complete_snapshots,
+        selected_attempt_ids=_selected_attempt_ids(*selected_snapshots),
+        domain=CoverageDomain.BRONZE_INGRESS,
+    )
+    snapshot_by_spec = {
+        item.subscription_attempt.subscription_spec.subscription_spec_id: item
+        for item in selected_snapshots
+    }
+    requests = tuple(
+        _activation_mutation_request(
+            scope,
+            snapshot_by_spec[scope.subscription_spec_ids[0]],
+        )
+        for scope in fanout.target_scopes
+    )
+    return prepare_coverage_mutation_batch(
+        fanout_proof=fanout,
+        current_state_references=(),
+        requests=requests,
+    )
+
+
+@pytest.mark.parametrize("target_count", (1, 4, 50, 957, 958, 1_000))
+def test_compact_coverage_mutation_v2_supports_previously_failing_target_counts(
+    maximum_coverage_plan: tuple[
+        SubscriptionPlanIdentity,
+        CoverageTargetCatalog,
+        tuple[SubscriptionAttemptSnapshot, ...],
+    ],
+    target_count: int,
+) -> None:
+    plan, catalog, snapshots = maximum_coverage_plan
+    batch = _activation_batch_for_selected_snapshots(
+        plan=plan,
+        catalog=catalog,
+        complete_snapshots=snapshots,
+        selected_snapshots=snapshots[:target_count],
+    )
+
+    assert len(batch.resulting_state_references) == target_count
+    assert len(batch.target_decision_sha256s) == target_count
+    assert json.loads(batch.canonical_content)[:4] == [
+        "coverage-mutation-batch-content-v2",
+        batch.fanout_proof.coverage_fanout_proof_id.value,
+        None,
+        target_count,
+    ]
+    assert json.loads(batch.coverage_mutation_batch_id.value)[0] == ("coverage-mutation-batch-v2")
+    assert len(batch.canonical_content) < MAX_SUBSCRIPTION_PLAN_CONTENT_LENGTH // 16
+
+
+def _transport_ambiguity_request(
+    state: CoverageStateReference,
+    snapshot: SubscriptionAttemptSnapshot,
+) -> RequestedCoverageMutation:
+    scope = state.reference.scope
+    evidence = CoverageEvidence(
+        CoverageEvidenceKind.TRANSPORT_FAILURE,
+        TransportAmbiguityEvidenceSource(
+            scope.feed_product_id,
+            snapshot.subscription_attempt.connection_session,
+            snapshot.subscription_attempt,
+            subscription_spec_membership_proof(
+                scope,
+                snapshot.subscription_attempt.subscription_spec.subscription_spec_id,
+            ),
+        ),
+        scope,
+        state.reference.epoch,
+        datetime(2026, 8, 26, 12, 0, 1, tzinfo=UTC),
+        101,
+    )
+    return RequestedCoverageMutation(
+        scope,
+        state.reference.epoch,
+        CoverageStatus.UNCERTAIN,
+        InitialCoverageReason.TRANSPORT_AMBIGUITY,
+        CoverageReason.TRANSPORT_AMBIGUITY,
+        evidence,
+    )
+
+
+def _sequence_break_request(
+    state: CoverageStateReference,
+) -> RequestedCoverageMutation:
+    scope = state.reference.scope
+    evidence = CoverageEvidence(
+        CoverageEvidenceKind.SOURCE_SEQUENCE,
+        SourceSequenceBreakEvidenceSource(
+            scope.feed_product_id,
+            SourceSequenceRange(
+                SourceSequenceRole.EVENT_SEQUENCE,
+                "scaling-public-trades",
+                10,
+                11,
+            ),
+            scope.coverage_scope_id,
+        ),
+        scope,
+        state.reference.epoch,
+        datetime(2026, 8, 26, 12, 0, 2, tzinfo=UTC),
+        102,
+    )
+    return RequestedCoverageMutation(
+        scope,
+        state.reference.epoch,
+        CoverageStatus.CONFIRMED_INCOMPLETE,
+        InitialCoverageReason.SOURCE_SEQUENCE_BREAK,
+        CoverageReason.SOURCE_SEQUENCE_BREAK,
+        evidence,
+    )
+
+
+def test_maximum_plan_compact_batch_and_acceptance_cover_both_transitions_and_no_op(
+    maximum_coverage_plan: tuple[
+        SubscriptionPlanIdentity,
+        CoverageTargetCatalog,
+        tuple[SubscriptionAttemptSnapshot, ...],
+    ],
+) -> None:
+    plan, catalog, acknowledged_snapshots = maximum_coverage_plan
+    active = _activation_batch_for_selected_snapshots(
+        plan=plan,
+        catalog=catalog,
+        complete_snapshots=acknowledged_snapshots,
+        selected_snapshots=acknowledged_snapshots,
+    )
+    sent_snapshots = tuple(
+        replace(item, attempt_status=SubscriptionAttemptStatus.SENT)
+        for item in acknowledged_snapshots
+    )
+    ambiguity_fanout = CoverageFanoutProof.possibly_delivered_specs(
+        plan=plan,
+        catalog=catalog,
+        complete_snapshots=sent_snapshots,
+        selected_attempt_ids=_selected_attempt_ids(*sent_snapshots),
+    )
+    active_by_scope = {
+        item.reference.scope.coverage_scope_id: item for item in active.resulting_state_references
+    }
+    sent_by_spec = {
+        item.subscription_attempt.subscription_spec.subscription_spec_id: item
+        for item in sent_snapshots
+    }
+    uncertain_requests = tuple(
+        _transport_ambiguity_request(
+            active_by_scope[scope.coverage_scope_id],
+            sent_by_spec[scope.subscription_spec_ids[0]],
+        )
+        for scope in ambiguity_fanout.target_scopes
+    )
+    uncertain = prepare_coverage_mutation_batch(
+        fanout_proof=ambiguity_fanout,
+        current_state_references=active.resulting_state_references,
+        requests=uncertain_requests,
+    )
+    incomplete_fanout = CoverageFanoutProof.all_possibly_active(
+        plan=plan,
+        catalog=catalog,
+        complete_snapshots=sent_snapshots,
+        domain=CoverageDomain.BRONZE_INGRESS,
+    )
+    uncertain_by_scope = {
+        item.reference.scope.coverage_scope_id: item
+        for item in uncertain.resulting_state_references
+    }
+    incomplete_requests = tuple(
+        _sequence_break_request(uncertain_by_scope[scope.coverage_scope_id])
+        for scope in incomplete_fanout.target_scopes
+    )
+    incomplete = prepare_coverage_mutation_batch(
+        fanout_proof=incomplete_fanout,
+        current_state_references=uncertain.resulting_state_references,
+        requests=incomplete_requests,
+    )
+    repeated = prepare_coverage_mutation_batch(
+        fanout_proof=incomplete_fanout,
+        current_state_references=incomplete.resulting_state_references,
+        requests=incomplete_requests,
+    )
+    acceptance = CoverageCommitAcceptance.after_compare_and_swap(
+        batch=repeated,
+        committed_state_references=repeated.verify_compare_and_swap(
+            incomplete.resulting_state_references
+        ),
+    )
+
+    assert len(active.initializations) == MAX_SUBSCRIPTION_SPECS
+    assert len(uncertain.transitions) == MAX_SUBSCRIPTION_SPECS
+    assert len(incomplete.transitions) == MAX_SUBSCRIPTION_SPECS
+    assert len(repeated.no_ops) == MAX_SUBSCRIPTION_SPECS
+    assert all(
+        item.reference.transition_ordinal == 2
+        and item.reference.status is CoverageStatus.CONFIRMED_INCOMPLETE
+        for item in incomplete.resulting_state_references
+    )
+    assert repeated.resulting_state_references == incomplete.resulting_state_references
+    assert len(acceptance.resulting_state_reference_ids) == MAX_SUBSCRIPTION_SPECS
+    assert len(acceptance.resulting_state_item_sha256s) == MAX_SUBSCRIPTION_SPECS
+    assert len(active.canonical_content) < MAX_SUBSCRIPTION_PLAN_CONTENT_LENGTH // 16
+    assert len(uncertain.canonical_content) < MAX_SUBSCRIPTION_PLAN_CONTENT_LENGTH // 16
+    assert len(incomplete.canonical_content) < MAX_SUBSCRIPTION_PLAN_CONTENT_LENGTH // 16
+    assert len(repeated.canonical_content) < MAX_SUBSCRIPTION_PLAN_CONTENT_LENGTH // 16
+    assert len(acceptance.canonical_content) < MAX_CANONICAL_IDENTIFIER_LENGTH
+    assert active.target_decision_sha256s[0] != uncertain.target_decision_sha256s[0]
+    assert uncertain.target_decision_sha256s[0] != incomplete.target_decision_sha256s[0]
+    assert incomplete.target_decision_sha256s[0] != repeated.target_decision_sha256s[0]
+
+    before = repeated.resulting_state_references
+    with pytest.raises(ValueError, match="pre-state"):
+        repeated.verify_compare_and_swap(incomplete.resulting_state_references[:-1])
+    assert repeated.resulting_state_references == before
+
+    repeated.verify_stored(
+        expected_canonical_content=repeated.canonical_content,
+        expected_batch_id=repeated.coverage_mutation_batch_id,
+    )
+    with pytest.raises(ValueError, match="does not match"):
+        repeated.verify_stored(
+            expected_canonical_content=repeated.canonical_content + " ",
+            expected_batch_id=repeated.coverage_mutation_batch_id,
+        )
+    tampered_batch_id = CoverageMutationBatchId(
+        canonical_json_array(
+            (
+                "coverage-mutation-batch-v2",
+                repeated.fanout_proof.coverage_fanout_proof_id,
+                MAX_SUBSCRIPTION_SPECS,
+                "f" * 64,
+            )
+        )
+    )
+    with pytest.raises(ValueError, match="does not match"):
+        repeated.verify_stored(
+            expected_canonical_content=repeated.canonical_content,
+            expected_batch_id=tampered_batch_id,
+        )
+    with pytest.raises(ValueError, match="does not match"):
+        CoverageCommitAcceptance.from_stored(
+            batch=repeated,
+            coverage_mutation_batch_id=repeated.coverage_mutation_batch_id,
+            resulting_state_reference_ids=acceptance.resulting_state_reference_ids,
+            expected_canonical_content=acceptance.canonical_content + " ",
+            expected_acceptance_id=acceptance.coverage_commit_acceptance_id,
+        )
+    tampered_acceptance_id = CoverageCommitAcceptanceId(
+        canonical_json_array(
+            (
+                "coverage-commit-acceptance-v2",
+                repeated.coverage_mutation_batch_id,
+                MAX_SUBSCRIPTION_SPECS,
+                "e" * 64,
+            )
+        )
+    )
+    with pytest.raises(ValueError, match="does not match"):
+        CoverageCommitAcceptance.from_stored(
+            batch=repeated,
+            coverage_mutation_batch_id=repeated.coverage_mutation_batch_id,
+            resulting_state_reference_ids=acceptance.resulting_state_reference_ids,
+            expected_canonical_content=acceptance.canonical_content,
+            expected_acceptance_id=tampered_acceptance_id,
+        )
+    for batch, field_name in (
+        (active, "initializations"),
+        (uncertain, "transitions"),
+        (repeated, "no_ops"),
+    ):
+        original = getattr(batch, field_name)
+        object.__setattr__(batch, field_name, tuple(reversed(original)))
+        with pytest.raises(ValueError, match="canonical order"):
+            batch.verify_stored(
+                expected_canonical_content=batch.canonical_content,
+                expected_batch_id=batch.coverage_mutation_batch_id,
+            )
+        object.__setattr__(batch, field_name, original)
+
+
+def test_subscription_plan_n_plus_one_remains_rejected_by_existing_bound(
+    maximum_coverage_plan: tuple[
+        SubscriptionPlanIdentity,
+        CoverageTargetCatalog,
+        tuple[SubscriptionAttemptSnapshot, ...],
+    ],
+) -> None:
+    plan, _catalog, _snapshots = maximum_coverage_plan
+    with pytest.raises(ValueError, match="item count"):
+        SubscriptionPlanIdentity(
+            feed_product_id=plan.feed_product_id,
+            adapter_feed_binding_id=plan.adapter_feed_binding_id,
+            subscription_specs=(*plan.subscription_specs, plan.subscription_specs[0]),
+            instrument_bindings=plan.instrument_bindings,
+            normalization_bindings=plan.normalization_bindings,
+            connection_wire_options=plan.connection_wire_options,
+        )
+
+
+def test_legacy_coverage_commitment_identifiers_are_parser_only_and_version_paired() -> None:
+    plan = _plan()
+    catalog = CoverageTargetCatalog.from_subscription_plan(plan)
+    acknowledged = _attempt_snapshot(status=SubscriptionAttemptStatus.ACKNOWLEDGED)
+    fanout = CoverageFanoutProof.acknowledged_active(
+        plan=plan,
+        catalog=catalog,
+        complete_snapshots=(acknowledged,),
+        selected_attempt_ids=_selected_attempt_ids(acknowledged),
+        domain=CoverageDomain.BRONZE_INGRESS,
+    )
+    legacy_batch = CoverageMutationBatchId(
+        canonical_json_array(
+            (
+                "coverage-mutation-batch-v1",
+                fanout.coverage_fanout_proof_id,
+                1,
+                "0" * 64,
+            )
+        )
+    )
+    legacy_acceptance = CoverageCommitAcceptanceId(
+        canonical_json_array(
+            (
+                "coverage-commit-acceptance-v1",
+                legacy_batch,
+                1,
+                "1" * 64,
+            )
+        )
+    )
+    current_batch = _activation_batch_for_selected_snapshots(
+        plan=plan,
+        catalog=catalog,
+        complete_snapshots=(acknowledged,),
+        selected_snapshots=(acknowledged,),
+    )
+
+    assert json.loads(legacy_batch.value)[0] == "coverage-mutation-batch-v1"
+    assert json.loads(legacy_acceptance.value)[0] == "coverage-commit-acceptance-v1"
+    assert json.loads(current_batch.coverage_mutation_batch_id.value)[0] == (
+        "coverage-mutation-batch-v2"
+    )
+    with pytest.raises(ValueError, match="invalid canonical components"):
+        CoverageCommitAcceptanceId(
+            canonical_json_array(
+                (
+                    "coverage-commit-acceptance-v2",
+                    legacy_batch,
+                    1,
+                    "2" * 64,
+                )
+            )
+        )
+    with pytest.raises(ValueError, match="invalid canonical components"):
+        CoverageCommitAcceptanceId(
+            canonical_json_array(
+                (
+                    "coverage-commit-acceptance-v1",
+                    current_batch.coverage_mutation_batch_id,
+                    1,
+                    "3" * 64,
+                )
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    (
+        "expected_pre_state_rows",
+        "initializations",
+        "transitions",
+        "no_ops",
+        "resulting_state_references",
+    ),
+)
+def test_stored_batch_reverification_rejects_non_tuple_typed_collections(
+    field_name: str,
+) -> None:
+    plan = _plan()
+    catalog = CoverageTargetCatalog.from_subscription_plan(plan)
+    acknowledged = _attempt_snapshot(status=SubscriptionAttemptStatus.ACKNOWLEDGED)
+    batch = _activation_batch_for_selected_snapshots(
+        plan=plan,
+        catalog=catalog,
+        complete_snapshots=(acknowledged,),
+        selected_snapshots=(acknowledged,),
+    )
+    expected_content = batch.canonical_content
+    expected_id = batch.coverage_mutation_batch_id
+    object.__setattr__(batch, field_name, list(getattr(batch, field_name)))
+
+    with pytest.raises(TypeError, match=field_name):
+        batch.verify_stored(
+            expected_canonical_content=expected_content,
+            expected_batch_id=expected_id,
+        )
+
+
+def test_stored_batch_reverification_rejects_operation_role_and_membership_forgery() -> None:
+    plan = _multi_hyperliquid_plan(2)
+    catalog = CoverageTargetCatalog.from_subscription_plan(plan)
+    snapshots = tuple(
+        SubscriptionAttemptSnapshot(
+            SubscriptionAttemptIdentity(_session(), spec, 0),
+            SubscriptionAttemptStatus.ACKNOWLEDGED,
+        )
+        for spec in plan.subscription_specs
+    )
+
+    def fresh_batch() -> CoverageMutationBatch:
+        return _activation_batch_for_selected_snapshots(
+            plan=plan,
+            catalog=catalog,
+            complete_snapshots=snapshots,
+            selected_snapshots=snapshots,
+        )
+
+    def verify_forged(batch: CoverageMutationBatch) -> None:
+        batch.verify_stored(
+            expected_canonical_content=batch.canonical_content,
+            expected_batch_id=batch.coverage_mutation_batch_id,
+        )
+
+    subset = fresh_batch()
+    object.__setattr__(subset, "initializations", subset.initializations[:-1])
+    with pytest.raises(ValueError, match="partition"):
+        verify_forged(subset)
+
+    duplicate = fresh_batch()
+    object.__setattr__(
+        duplicate,
+        "initializations",
+        (*duplicate.initializations, duplicate.initializations[0]),
+    )
+    with pytest.raises(ValueError, match=r"canonical order|unique|partition"):
+        verify_forged(duplicate)
+
+    foreign_plan = _plan(_spec("FOREIGN"))
+    foreign_snapshot = SubscriptionAttemptSnapshot(
+        SubscriptionAttemptIdentity(_session(), foreign_plan.subscription_specs[0], 0),
+        SubscriptionAttemptStatus.ACKNOWLEDGED,
+    )
+    foreign = _activation_batch_for_selected_snapshots(
+        plan=foreign_plan,
+        catalog=CoverageTargetCatalog.from_subscription_plan(foreign_plan),
+        complete_snapshots=(foreign_snapshot,),
+        selected_snapshots=(foreign_snapshot,),
+    )
+    superset = fresh_batch()
+    object.__setattr__(
+        superset,
+        "initializations",
+        (*superset.initializations, foreign.initializations[0]),
+    )
+    with pytest.raises(ValueError, match="partition"):
+        verify_forged(superset)
+
+    reordered = fresh_batch()
+    object.__setattr__(
+        reordered,
+        "resulting_state_references",
+        tuple(reversed(reordered.resulting_state_references)),
+    )
+    with pytest.raises(ValueError, match="fanout order"):
+        verify_forged(reordered)
+
+    role_substitution = fresh_batch()
+    object.__setattr__(
+        role_substitution,
+        "no_ops",
+        cast(tuple[CoverageMutationNoOp, ...], role_substitution.initializations[:1]),
+    )
+    with pytest.raises(TypeError, match="no_ops"):
+        verify_forged(role_substitution)

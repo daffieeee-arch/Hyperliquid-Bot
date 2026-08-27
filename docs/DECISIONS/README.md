@@ -293,10 +293,17 @@ The exact computed preimages are:
 | `coverage-fanout-proof-content-v2` | exact identified-rejection fan-out kind, subscription-plan ID, coverage-target-catalog ID, connection-session ID, exact `exact-identified-rejections-v1` source row, sorted unique selected Silver-normalization scope IDs |
 | `coverage-fanout-proof-v2` | exact identified-rejection fan-out kind, subscription-plan ID, coverage-target-catalog ID, target count, SHA-256 of exact `coverage-fanout-proof-content-v2` text |
 | `coverage-mutation-no-op-v1` | coverage-scope ID, current coverage-state-reference ID, requested status, initial reason, transition reason, coverage-evidence ID, `already-at-or-beyond-requested-severity` |
-| `coverage-mutation-batch-content-v1` | coverage-fanout-proof ID, exact raw-coverage-fanout-binding ID or null, sorted complete expected pre-state rows, sorted initialization IDs, sorted transition IDs, sorted no-op rows, sorted complete resulting coverage-state-reference IDs |
-| `coverage-mutation-batch-v1` | coverage-fanout-proof ID, target count, SHA-256 of exact `coverage-mutation-batch-content-v1` text |
-| `coverage-commit-acceptance-content-v1` | coverage-mutation-batch ID, sorted complete resulting coverage-state-reference IDs |
-| `coverage-commit-acceptance-v1` | coverage-mutation-batch ID, resulting-state count, SHA-256 of exact `coverage-commit-acceptance-content-v1` text |
+| `coverage-mutation-batch-content-v1` | legacy content preimage with no active writer: coverage-fanout-proof ID, exact raw-coverage-fanout-binding ID or null, sorted complete expected pre-state rows, sorted initialization IDs, sorted transition IDs, sorted no-op rows, sorted complete resulting coverage-state-reference IDs |
+| `coverage-mutation-batch-v1` | legacy parser-only identity: coverage-fanout-proof ID, target count, SHA-256 of exact v1 content |
+| `coverage-mutation-target-decision-content-v1` | target ordinal, coverage-scope ID, expected pre-state ID or null, mutation disposition, initialization ID or null, transition ID or null, no-op row or null, resulting coverage-state-reference ID |
+| `coverage-mutation-batch-content-v2` | coverage-fanout-proof ID, exact raw-coverage-fanout-binding ID or null, target count, ordered SHA-256 commitments to every exact target-decision row |
+| `coverage-mutation-batch-v2` | coverage-fanout-proof ID, target count, SHA-256 of exact `coverage-mutation-batch-content-v2` text |
+| `coverage-commit-acceptance-content-v1` | legacy content preimage with no active writer: coverage-mutation-batch ID and complete resulting coverage-state-reference IDs |
+| `coverage-commit-acceptance-v1` | legacy parser-only identity: coverage-mutation-batch ID, resulting-state count and content SHA-256 |
+| `coverage-commit-resulting-state-content-v1` | result ordinal and exact resulting coverage-state-reference ID |
+| `coverage-commit-resulting-states-content-v1` | result count and ordered SHA-256 commitments to every result row |
+| `coverage-commit-acceptance-content-v2` | coverage-mutation-batch ID, result count, SHA-256 of exact ordered result-set content |
+| `coverage-commit-acceptance-v2` | coverage-mutation-batch ID, result count, SHA-256 of exact `coverage-commit-acceptance-content-v2` text |
 | `committed-coverage-state-v1` | exact candidate coverage-state-reference ID, matching coverage-commit-acceptance ID whose result set contains that state |
 | `delivery-batch-content-v1` | ordered materialization-key texts; retained lower locator content |
 | `delivery-batch-v1` | item count, SHA-256 of exact `delivery-batch-content-v1` text; retained lower locator ID |
@@ -314,8 +321,12 @@ The exact computed preimages are:
 | `frame-atomic-abort-primary-cause-content-v1` | sorted unique primary coverage-evidence IDs |
 | `frame-atomic-abort-evidence-v1` | raw-record ID, normalization-run ID, target raw-event index, target source-event ID, target Silver-normalization scope ID, primary-cause count, SHA-256 of exact `frame-atomic-abort-primary-cause-content-v1` text |
 | `normalization-source-conflict-binding-v1` | source-conflict coverage-evidence ID, normalization-run ID |
-| `normalization-coverage-lineage-content-v2` | prepared coverage-mutation-batch ID, exact raw-coverage-fanout-binding ID, sorted primary coverage-evidence IDs, sorted frame-atomic-abort evidence IDs, sorted source-conflict-binding IDs, sorted prepared transition IDs, sorted no-op rows, sorted candidate resulting state-reference IDs |
-| `normalization-coverage-lineage-v2` | prepared coverage-mutation-batch ID, primary-evidence count, abort-evidence count, conflict-binding count, transition count, no-op count, resulting-state count, SHA-256 of exact `normalization-coverage-lineage-content-v2` text |
+| `normalization-coverage-lineage-content-v2` | legacy content preimage with no active writer, containing complete primary, abort, conflict, transition, no-op and resulting-state lists |
+| `normalization-coverage-lineage-v2` | legacy parser-only identity paired only with a v1 coverage-mutation batch |
+| `normalization-coverage-lineage-item-content-v1` | lineage role, item ordinal and exact typed ID or no-op row |
+| `normalization-coverage-lineage-role-content-v1` | lineage role, item count and ordered SHA-256 commitments to every exact role item |
+| `normalization-coverage-lineage-content-v3` | v2 coverage-mutation-batch ID, exact raw-coverage-fanout-binding ID and, for each ordered role, its item count and ordered role commitment |
+| `normalization-coverage-lineage-v3` | prepared v2 coverage-mutation-batch ID, all six role counts and SHA-256 of exact compact v3 content |
 | `normalization-outcome-content-v2` | ordered index-outcome IDs, ordered committed-materialization IDs, sorted evidence, exact prepared normalization-coverage-lineage ID, optional pre-index `raw-frame-normalization-scope-binding-v1` row |
 | `delivery-item-commitment-v1` | materialization-key ID, lowercase SHA-256 of exact serialized event content |
 | `delivery-item-commitments-v1` | complete ordered `[materialization-key ID,event-content SHA-256]` rows; its SHA-256 is the aggregate item-content digest |
@@ -394,8 +405,8 @@ cannot create ordinal-zero coverage.
 
 Canonical content including `raw-record-content-v1`, `instrument-specification-content-v1`,
 `subscription-spec-content-v1`, `subscription-plan-content-v1`, `coverage-scope-content-v1`,
-`coverage-mutation-batch-content-v1`, `raw-coverage-fanout-binding-content-v1`,
-`normalization-coverage-lineage-content-v2`, `delivery-batch-content-v1`,
+`coverage-mutation-batch-content-v2`, `raw-coverage-fanout-binding-content-v1`,
+`normalization-coverage-lineage-content-v3`, `delivery-batch-content-v1`,
 `normalization-delivery-batch-content-v1` and both normalization-outcome content versions remains
 independently validated beside its bounded digest identity where applicable. These SHA-256 values
 are integrity/content commitments, not a substitute for retaining the full canonical content. UTC
@@ -657,6 +668,11 @@ cannot be attached. Delivery state never appears in `NormalizationOutcome`.
   async, sink, queue, collector or health work.
 - **3B1C-1A — runtime-binding contract correction:** keep the contracts pure and dormant while
   requiring exact selected-ACK initialization fan-out and typed post-outcome sink-failure evidence.
+- **3B1C-1B — pre-ACK rejection binding:** represent one exactly indexed non-ACK provenance
+  rejection without weakening the acknowledged route or widening to plan-level uncertainty.
+- **3B1C-1C — compact atomic commitments:** replace newly written high-cardinality mutation,
+  acceptance and normalization-lineage content with ordered domain-separated commitments while
+  retaining every full typed value and one atomic compare-and-swap operation.
 - **3B1C-2 — coverage runtime:** operationalize immutable Bronze-ingress and Silver-normalization
   coverage and the temporary lossy v2 `is_gap` projection. Existing 3B1B outcomes remain
   transition-empty until this step.
@@ -732,6 +748,28 @@ the v2 proof can include a separate ACK-only route partition, and the aggregate 
 the complete concrete outcome scope/attempt union. Raw rederivation uses the capture-time snapshot,
 so later ACK state cannot rewrite lineage. This contract remains dormant; 3B1C-2 is still the first
 runtime consumer.
+
+The 3B1C-2 implementation probe exposed a separate boundedness blocker in the dormant contracts.
+`coverage-mutation-batch-content-v1` repeats several complete nested canonical-ID collections: a
+957-target initialization is 16,762,723 characters and still fits the 16,777,216-character
+content ceiling, while the otherwise valid 958-target operation exceeds it. Historical state makes
+the problem grow sooner; a 300-target `COMPLETE -> UNCERTAIN` batch already occupies 11,824,581
+characters. Raising the ceiling only moves the failure, and splitting one fan-out would violate the
+required all-target CAS.
+
+Phase 3B1C-1C therefore keeps every immutable typed pre-state, initialization, transition, no-op
+and resulting-state tuple, but writes `coverage-mutation-batch-content-v2` as an ordered list of
+domain-separated per-target SHA-256 commitments. Target ordinal and count are committed explicitly;
+each target commitment binds its scope, exact expected pre-state or null, closed disposition,
+exact selected operation and resulting state. `coverage-commit-acceptance-content-v2` likewise
+binds the exact ordered result count and result-set commitment. `normalization-coverage-lineage-v3`
+commits its six complete ordered roles independently, including no-op rows, without flattening
+their full values into its top-level content. Constructors and stored verification recompute all
+item, role, aggregate, content and ID digests from the retained typed values. V1 mutation and
+acceptance IDs and v2 lineage IDs remain byte-exact parser-only legacy values; new factories emit
+only the paired v2/v2/v3 identities, and cross-version role substitution is rejected. No partial
+batch, partial acceptance, chunking or recovery semantics are introduced. These contracts remain
+dormant; 3B1C-2 resumes only after this correction merges.
 
 **Why:** No deployed dataset or ClickHouse schema depends on v2, so one atomic migration provides a
 clean long-term boundary without permanent compatibility complexity while preserving reviewable,

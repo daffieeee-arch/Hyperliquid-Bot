@@ -28,6 +28,8 @@ from hyperliquid_bot.data_provenance import (
     MAX_NORMALIZATION_OUTCOME_ITEMS,
     MAX_SOURCE_SEQUENCE_RANGES,
     MAX_SOURCE_TIME_FACTS,
+    MAX_SUBSCRIPTION_PLAN_CONTENT_LENGTH,
+    MAX_SUBSCRIPTION_SPECS,
     MAX_UNSIGNED_64,
     AdapterFeedBindingId,
     CollectorRunId,
@@ -43,9 +45,11 @@ from hyperliquid_bot.data_provenance import (
     CoverageFanoutProof,
     CoverageInitialization,
     CoverageMutationBatch,
+    CoverageMutationBatchId,
     CoverageReason,
     CoverageReference,
     CoverageScope,
+    CoverageScopeId,
     CoverageStateReference,
     CoverageStatus,
     CoverageTargetCatalog,
@@ -752,6 +756,28 @@ def test_normalization_outcome_id_is_the_exact_lower_layer_reexport() -> None:
 
 def _expected_identifier(*components: object) -> str:
     return json.dumps(components, ensure_ascii=True, separators=(",", ":"), allow_nan=False)
+
+
+def _lineage_role_sha256(role: str, values: tuple[object, ...]) -> str:
+    item_sha256s = tuple(
+        hashlib.sha256(
+            _expected_identifier(
+                "normalization-coverage-lineage-item-content-v1",
+                role,
+                ordinal,
+                item,
+            ).encode()
+        ).hexdigest()
+        for ordinal, item in enumerate(values)
+    )
+    return hashlib.sha256(
+        _expected_identifier(
+            "normalization-coverage-lineage-role-content-v1",
+            role,
+            len(item_sha256s),
+            item_sha256s,
+        ).encode()
+    ).hexdigest()
 
 
 def _assert_bounded_exception_surface_excludes(error: BaseException, *markers: str) -> None:
@@ -4476,22 +4502,34 @@ def test_typed_coverage_lineage_and_outcome_have_byte_exact_content_ids() -> Non
     outcome, transition, abort = _typed_rejected_frame_with_abort()
     lineage = cast(NormalizationCoverageLineage, outcome.coverage_lineage)
     batch = lineage.coverage_mutation_batch
+    primary_ids = (transition.evidence.coverage_evidence_id.value,)
+    abort_ids = (abort.frame_atomic_abort_evidence_id.value,)
+    conflict_ids: tuple[object, ...] = ()
+    transition_ids = (transition.coverage_transition_id.value,)
+    no_op_rows: tuple[object, ...] = ()
+    state_ids = tuple(
+        state.coverage_state_reference_id.value for state in batch.resulting_state_references
+    )
     expected_content = _expected_identifier(
-        "normalization-coverage-lineage-content-v2",
+        "normalization-coverage-lineage-content-v3",
         batch.coverage_mutation_batch_id.value,
         lineage.raw_fanout_binding.raw_coverage_fanout_binding_id.value,
-        (transition.evidence.coverage_evidence_id.value,),
-        (abort.frame_atomic_abort_evidence_id.value,),
-        (),
-        (transition.coverage_transition_id.value,),
-        (),
-        tuple(
-            state.coverage_state_reference_id.value for state in batch.resulting_state_references
-        ),
+        len(primary_ids),
+        _lineage_role_sha256("primary-evidence", primary_ids),
+        len(abort_ids),
+        _lineage_role_sha256("frame-atomic-abort", abort_ids),
+        len(conflict_ids),
+        _lineage_role_sha256("source-conflict-binding", conflict_ids),
+        len(transition_ids),
+        _lineage_role_sha256("coverage-transition", transition_ids),
+        len(no_op_rows),
+        _lineage_role_sha256("coverage-no-op", no_op_rows),
+        len(state_ids),
+        _lineage_role_sha256("resulting-state", state_ids),
     )
     expected_content_sha256 = hashlib.sha256(expected_content.encode()).hexdigest()
     expected_lineage_id = _expected_identifier(
-        "normalization-coverage-lineage-v2",
+        "normalization-coverage-lineage-v3",
         batch.coverage_mutation_batch_id.value,
         1,
         1,
@@ -7177,3 +7215,400 @@ def test_new_contracts_perform_no_runtime_io(monkeypatch: pytest.MonkeyPatch) ->
     assert delivery_failure.delivery_outcome.knowledge_status is (
         DeliveryKnowledgeStatus.ACCEPTANCE_UNCERTAIN
     )
+
+
+def _maximum_hyperliquid_lineage_raw_record() -> RawMarketDataRecord:
+    coins = tuple(f"C{index:04d}" for index in range(MAX_SUBSCRIPTION_SPECS))
+    specs = tuple(
+        sorted(
+            (
+                SubscriptionSpecIdentity(
+                    feed_product_id=HYPERLIQUID_MAINNET_PUBLIC_TRADES.feed_product_id,
+                    wire_method="subscribe",
+                    wire_subscription_type="trades",
+                    wire_parameters=(
+                        PublicSubscriptionParameter(
+                            PublicSubscriptionParameterKind.HYPERLIQUID_COIN,
+                            coin,
+                        ),
+                    ),
+                )
+                for coin in coins
+            ),
+            key=lambda item: item.subscription_spec_id.value,
+        )
+    )
+    spec_by_coin = {cast(str, spec.wire_parameters[0].value): spec for spec in specs}
+    instruments = {
+        coin: Instrument(
+            venue=Venue.HYPERLIQUID,
+            instrument_type=InstrumentType.PERPETUAL,
+            base_asset=coin,
+            quote_asset="USDC",
+            venue_market_id=coin,
+            native_symbol=coin,
+        )
+        for coin in coins
+    }
+    adapter_id = AdapterFeedBindingId(
+        _expected_identifier(
+            "adapter-feed-binding-v1",
+            "hyperliquid-trades-v1",
+            HYPERLIQUID_MAINNET_PUBLIC_TRADES.feed_product_id.value,
+            Venue.HYPERLIQUID.value,
+            "acknowledged",
+        )
+    )
+    instrument_bindings = tuple(
+        sorted(
+            (
+                InstrumentSubscriptionBinding(
+                    instrument=instruments[coin],
+                    source_selector=PublicSourceSelector(
+                        PublicSourceSelectorKind.HYPERLIQUID_COIN,
+                        coin,
+                    ),
+                    subscription_spec=spec_by_coin[coin],
+                    adapter_profile="hyperliquid-trades-v1",
+                )
+                for coin in coins
+            ),
+            key=lambda item: item.canonical_components(),
+        )
+    )
+    plan = SubscriptionPlanIdentity(
+        feed_product_id=HYPERLIQUID_MAINNET_PUBLIC_TRADES.feed_product_id,
+        adapter_feed_binding_id=adapter_id,
+        subscription_specs=specs,
+        instrument_bindings=instrument_bindings,
+        normalization_bindings=tuple(
+            NormalizationBinding(
+                subscription_spec_id=spec.subscription_spec_id,
+                adapter_profile="hyperliquid-trades-v1",
+                event_family="trade",
+                event_family_schema_version=2,
+                payload_type="trade",
+            )
+            for spec in specs
+        ),
+        connection_wire_options=(
+            PublicConnectionOption(
+                PublicConnectionOptionKind.ENDPOINT_PROFILE,
+                PublicEndpointProfile.HYPERLIQUID_PRODUCTION_MAINNET,
+            ),
+        ),
+    )
+    run_id = CollectorRunId("maximum-lineage-collector-run")
+    session = ConnectionSessionIdentity(run_id, 0)
+    snapshots = tuple(
+        SubscriptionAttemptSnapshot(
+            SubscriptionAttemptIdentity(session, spec, 0),
+            SubscriptionAttemptStatus.ACKNOWLEDGED,
+        )
+        for spec in specs
+    )
+    return RawMarketDataRecord(
+        feed_product=HYPERLIQUID_MAINNET_PUBLIC_TRADES,
+        collector_run_id=run_id,
+        connection_session=session,
+        subscription_plan=plan,
+        subscription_attempt_snapshots=snapshots,
+        ingress_ordinal=0,
+        frame_kind=FrameKind.TEXT,
+        application_message_bytes=b'{"channel":"trades"}',
+        received_time=_RECEIVED_TIME,
+        received_monotonic_ns=987654321,
+        collector_version="collector-v1",
+        collector_commit="collector-commit-fixture",
+    )
+
+
+def _maximum_normalization_failure_requests(
+    *,
+    raw_record: RawMarketDataRecord,
+    scopes: tuple[CoverageScope, ...],
+    epochs_by_scope: dict[CoverageScopeId, CoverageEpochIdentity],
+) -> tuple[RequestedCoverageMutation, ...]:
+    normalization_run_id = NormalizationRunId("maximum-lineage-normalization-run")
+    return tuple(
+        RequestedCoverageMutation(
+            scope,
+            epochs_by_scope[scope.coverage_scope_id],
+            CoverageStatus.CONFIRMED_INCOMPLETE,
+            InitialCoverageReason.IN_SCOPE_NORMALIZATION_FAILURE,
+            CoverageReason.IN_SCOPE_NORMALIZATION_FAILURE,
+            CoverageEvidence(
+                CoverageEvidenceKind.NORMALIZATION_FAILURE,
+                NormalizationFailureEvidenceSource(
+                    raw_record.raw_record_id,
+                    normalization_run_id,
+                    None,
+                    None,
+                    NormalizationFailureCategory.DECODER_REJECTION,
+                    scope.coverage_scope_id,
+                ),
+                scope,
+                epochs_by_scope[scope.coverage_scope_id],
+                raw_record.received_time,
+                raw_record.received_monotonic_ns,
+            ),
+        )
+        for scope in scopes
+    )
+
+
+def test_maximum_plan_lineage_v3_is_compact_for_initialization_transition_and_no_op() -> None:
+    raw_record = _maximum_hyperliquid_lineage_raw_record()
+    plan = raw_record.subscription_plan
+    catalog = CoverageTargetCatalog.from_subscription_plan(plan)
+    snapshots = raw_record.subscription_attempt_snapshots
+    active_fanout = CoverageFanoutProof.acknowledged_active(
+        plan=plan,
+        catalog=catalog,
+        complete_snapshots=snapshots,
+        selected_attempt_ids=tuple(
+            item.subscription_attempt.subscription_attempt_id for item in snapshots
+        ),
+        domain=CoverageDomain.SILVER_NORMALIZATION,
+    )
+    snapshot_by_spec = {
+        item.subscription_attempt.subscription_spec.subscription_spec_id: item for item in snapshots
+    }
+    active_requests = tuple(
+        RequestedCoverageMutation(
+            scope,
+            CoverageEpochIdentity(
+                scope,
+                raw_record.collector_run_id,
+                0,
+                raw_record.received_time,
+                raw_record.received_monotonic_ns,
+            ),
+            CoverageStatus.COMPLETE,
+            InitialCoverageReason.INITIAL_ACTIVATION,
+            CoverageReason.INITIAL_SCOPE,
+            CoverageEvidence(
+                CoverageEvidenceKind.INITIAL_ACTIVATION,
+                InitialActivationEvidenceSource(
+                    raw_record.connection_session,
+                    (snapshot_by_spec[scope.subscription_spec_ids[0]],),
+                ),
+                scope,
+                CoverageEpochIdentity(
+                    scope,
+                    raw_record.collector_run_id,
+                    0,
+                    raw_record.received_time,
+                    raw_record.received_monotonic_ns,
+                ),
+                raw_record.received_time,
+                raw_record.received_monotonic_ns,
+            ),
+        )
+        for scope in active_fanout.target_scopes
+    )
+    active = prepare_coverage_mutation_batch(
+        fanout_proof=active_fanout,
+        current_state_references=(),
+        requests=active_requests,
+    )
+    failure_fanout = CoverageFanoutProof.all_possibly_active(
+        plan=plan,
+        catalog=catalog,
+        complete_snapshots=snapshots,
+        domain=CoverageDomain.SILVER_NORMALIZATION,
+        event_family="trade",
+        event_family_schema_version=2,
+        payload_type="trade",
+    )
+    raw_binding = RawCoverageFanoutBinding.from_raw_record(
+        raw_record=raw_record,
+        coverage_fanout_proof=failure_fanout,
+    )
+    active_by_scope = {
+        item.reference.scope.coverage_scope_id: item for item in active.resulting_state_references
+    }
+    epochs_by_scope = {
+        scope.coverage_scope_id: active_by_scope[scope.coverage_scope_id].reference.epoch
+        for scope in failure_fanout.target_scopes
+    }
+    failure_requests = _maximum_normalization_failure_requests(
+        raw_record=raw_record,
+        scopes=failure_fanout.target_scopes,
+        epochs_by_scope=epochs_by_scope,
+    )
+    initialized = prepare_coverage_mutation_batch(
+        fanout_proof=failure_fanout,
+        current_state_references=(),
+        requests=failure_requests,
+        raw_fanout_binding=raw_binding,
+    )
+    transitioned = prepare_coverage_mutation_batch(
+        fanout_proof=failure_fanout,
+        current_state_references=active.resulting_state_references,
+        requests=failure_requests,
+        raw_fanout_binding=raw_binding,
+    )
+    repeated = prepare_coverage_mutation_batch(
+        fanout_proof=failure_fanout,
+        current_state_references=transitioned.resulting_state_references,
+        requests=failure_requests,
+        raw_fanout_binding=raw_binding,
+    )
+    lineages = tuple(
+        NormalizationCoverageLineage(batch, (), raw_binding)
+        for batch in (initialized, transitioned, repeated)
+    )
+
+    assert len(initialized.initializations) == MAX_SUBSCRIPTION_SPECS
+    assert len(transitioned.transitions) == MAX_SUBSCRIPTION_SPECS
+    assert len(repeated.no_ops) == MAX_SUBSCRIPTION_SPECS
+    for lineage in lineages:
+        assert json.loads(lineage.normalization_coverage_lineage_id.value)[0] == (
+            "normalization-coverage-lineage-v3"
+        )
+        assert len(lineage.primary_evidence) == MAX_SUBSCRIPTION_SPECS
+        assert len(lineage.resulting_state_references) == MAX_SUBSCRIPTION_SPECS
+        assert len(lineage.canonical_content) < MAX_SUBSCRIPTION_PLAN_CONTENT_LENGTH // 16
+        assert (
+            NormalizationCoverageLineage.from_stored(
+                coverage_mutation_batch=lineage.coverage_mutation_batch,
+                frame_atomic_abort_evidence=lineage.frame_atomic_abort_evidence,
+                raw_fanout_binding=lineage.raw_fanout_binding,
+                additional_primary_evidence=lineage.additional_primary_evidence,
+                source_conflict_bindings=lineage.source_conflict_bindings,
+                expected_canonical_content=lineage.canonical_content,
+                expected_lineage_id=lineage.normalization_coverage_lineage_id,
+            )
+            == lineage
+        )
+    with pytest.raises(ValueError, match="does not match"):
+        NormalizationCoverageLineage.from_stored(
+            coverage_mutation_batch=lineages[0].coverage_mutation_batch,
+            frame_atomic_abort_evidence=lineages[0].frame_atomic_abort_evidence,
+            raw_fanout_binding=lineages[0].raw_fanout_binding,
+            additional_primary_evidence=lineages[0].additional_primary_evidence,
+            source_conflict_bindings=lineages[0].source_conflict_bindings,
+            expected_canonical_content=lineages[0].canonical_content + " ",
+            expected_lineage_id=lineages[0].normalization_coverage_lineage_id,
+        )
+    tampered_id_components = json.loads(lineages[0].normalization_coverage_lineage_id.value)
+    tampered_id_components[-1] = "f" * 64
+    tampered_id = NormalizationCoverageLineageId(
+        json.dumps(
+            tampered_id_components,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    )
+    with pytest.raises(ValueError, match="does not match"):
+        NormalizationCoverageLineage.from_stored(
+            coverage_mutation_batch=lineages[0].coverage_mutation_batch,
+            frame_atomic_abort_evidence=lineages[0].frame_atomic_abort_evidence,
+            raw_fanout_binding=lineages[0].raw_fanout_binding,
+            additional_primary_evidence=lineages[0].additional_primary_evidence,
+            source_conflict_bindings=lineages[0].source_conflict_bindings,
+            expected_canonical_content=lineages[0].canonical_content,
+            expected_lineage_id=tampered_id,
+        )
+    primary_ids = tuple(item.coverage_evidence_id.value for item in lineages[0].primary_evidence)
+    assert _lineage_role_sha256("primary-evidence", primary_ids) != (
+        _lineage_role_sha256("primary-evidence", tuple(reversed(primary_ids)))
+    )
+    assert _lineage_role_sha256("primary-evidence", primary_ids) != (
+        _lineage_role_sha256("coverage-transition", primary_ids)
+    )
+
+
+def test_legacy_lineage_v2_id_is_parser_only_and_version_paired() -> None:
+    outcome, _transition, _abort = _typed_rejected_frame_with_abort()
+    current = cast(NormalizationCoverageLineage, outcome.coverage_lineage)
+    current_batch_components = json.loads(
+        current.coverage_mutation_batch.coverage_mutation_batch_id.value
+    )
+    legacy_batch = CoverageMutationBatchId(
+        _expected_identifier(
+            "coverage-mutation-batch-v1",
+            current_batch_components[1],
+            current_batch_components[2],
+            current_batch_components[3],
+        )
+    )
+    legacy = NormalizationCoverageLineageId(
+        _expected_identifier(
+            "normalization-coverage-lineage-v2",
+            legacy_batch.value,
+            1,
+            1,
+            0,
+            1,
+            0,
+            1,
+            "0" * 64,
+        )
+    )
+
+    assert json.loads(legacy.value)[0] == "normalization-coverage-lineage-v2"
+    assert json.loads(current.normalization_coverage_lineage_id.value)[0] == (
+        "normalization-coverage-lineage-v3"
+    )
+    with pytest.raises(ValueError, match="versions disagree"):
+        NormalizationCoverageLineageId(
+            _expected_identifier(
+                "normalization-coverage-lineage-v3",
+                legacy_batch.value,
+                1,
+                1,
+                0,
+                1,
+                0,
+                1,
+                "1" * 64,
+            )
+        )
+    with pytest.raises(ValueError, match="versions disagree"):
+        NormalizationCoverageLineageId(
+            _expected_identifier(
+                "normalization-coverage-lineage-v2",
+                current.coverage_mutation_batch.coverage_mutation_batch_id.value,
+                1,
+                1,
+                0,
+                1,
+                0,
+                1,
+                "2" * 64,
+            )
+        )
+
+
+def test_lineage_v3_id_rejects_internally_inconsistent_role_counts() -> None:
+    outcome, _transition, _abort = _typed_rejected_frame_with_abort()
+    lineage = cast(NormalizationCoverageLineage, outcome.coverage_lineage)
+    valid = json.loads(lineage.normalization_coverage_lineage_id.value)
+    invalid_values: list[list[object]] = []
+
+    wrong_state_count = list(valid)
+    wrong_state_count[7] = cast(int, wrong_state_count[7]) + 1
+    invalid_values.append(wrong_state_count)
+    missing_primary = list(valid)
+    missing_primary[2] = 0
+    invalid_values.append(missing_primary)
+    excess_operation_roles = list(valid)
+    excess_operation_roles[6] = 1
+    invalid_values.append(excess_operation_roles)
+    excess_conflicts = list(valid)
+    excess_conflicts[4] = cast(int, excess_conflicts[2]) + 1
+    invalid_values.append(excess_conflicts)
+
+    for invalid in invalid_values:
+        with pytest.raises(ValueError, match="internally inconsistent"):
+            NormalizationCoverageLineageId(
+                json.dumps(
+                    invalid,
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                )
+            )

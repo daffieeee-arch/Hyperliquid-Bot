@@ -22,6 +22,7 @@ from hyperliquid_bot.data_provenance import (
     MAX_NORMALIZATION_OUTCOME_ITEMS,
     MAX_SOURCE_SEQUENCE_RANGES,
     MAX_SOURCE_TIME_FACTS,
+    MAX_SUBSCRIPTION_PLAN_CONTENT_LENGTH,
     MAX_UNSIGNED_64,
     AdapterFeedBindingId,
     CollectorRunId,
@@ -109,8 +110,15 @@ _FRAME_ATOMIC_ABORT_CAUSE_CONTENT_VERSION: Final = "frame-atomic-abort-primary-c
 _NORMALIZATION_SOURCE_CONFLICT_BINDING_ID_VERSION: Final = (
     "normalization-source-conflict-binding-v1"
 )
-_NORMALIZATION_COVERAGE_LINEAGE_ID_VERSION: Final = "normalization-coverage-lineage-v2"
-_NORMALIZATION_COVERAGE_LINEAGE_CONTENT_VERSION: Final = "normalization-coverage-lineage-content-v2"
+_NORMALIZATION_COVERAGE_LINEAGE_LEGACY_ID_VERSION: Final = "normalization-coverage-lineage-v2"
+_NORMALIZATION_COVERAGE_LINEAGE_ID_VERSION: Final = "normalization-coverage-lineage-v3"
+_NORMALIZATION_COVERAGE_LINEAGE_CONTENT_VERSION: Final = "normalization-coverage-lineage-content-v3"
+_NORMALIZATION_COVERAGE_LINEAGE_ITEM_CONTENT_VERSION: Final = (
+    "normalization-coverage-lineage-item-content-v1"
+)
+_NORMALIZATION_COVERAGE_LINEAGE_ROLE_CONTENT_VERSION: Final = (
+    "normalization-coverage-lineage-role-content-v1"
+)
 _DELIVERY_ITEM_COMMITMENT_ID_VERSION: Final = "delivery-item-commitment-v1"
 _DELIVERY_ITEM_COMMITMENTS_CONTENT_VERSION: Final = "delivery-item-commitments-v1"
 _DELIVERY_BATCH_CONTENT_VERSION: Final = "normalization-delivery-batch-content-v1"
@@ -468,11 +476,16 @@ class NormalizationCoverageLineageId:
     value: str
 
     def __post_init__(self) -> None:
-        components = _parse_canonical_identifier(
+        components = parse_canonical_json_array(
             self.value,
             field_name="normalization_coverage_lineage_id",
-            version_tag=_NORMALIZATION_COVERAGE_LINEAGE_ID_VERSION,
+            maximum_length=MAX_CANONICAL_IDENTIFIER_LENGTH,
         )
+        if not components or components[0] not in {
+            _NORMALIZATION_COVERAGE_LINEAGE_LEGACY_ID_VERSION,
+            _NORMALIZATION_COVERAGE_LINEAGE_ID_VERSION,
+        }:
+            raise ValueError("normalization_coverage_lineage_id has an invalid version.")
         if len(components) != 9:
             raise ValueError("normalization_coverage_lineage_id has invalid components.")
         batch_id = components[1]
@@ -508,7 +521,31 @@ class NormalizationCoverageLineageId:
             or type(content_sha256) is not str
         ):
             raise ValueError("normalization_coverage_lineage_id has invalid components.")
-        CoverageMutationBatchId(batch_id)
+        batch = CoverageMutationBatchId(batch_id)
+        batch_components = parse_canonical_json_array(
+            batch.value,
+            field_name="coverage_mutation_batch_id",
+        )
+        lineage_version = components[0]
+        batch_version = batch_components[0]
+        if (lineage_version, batch_version) not in {
+            (
+                _NORMALIZATION_COVERAGE_LINEAGE_LEGACY_ID_VERSION,
+                "coverage-mutation-batch-v1",
+            ),
+            (
+                _NORMALIZATION_COVERAGE_LINEAGE_ID_VERSION,
+                "coverage-mutation-batch-v2",
+            ),
+        }:
+            raise ValueError("normalization lineage and mutation versions disagree.")
+        if lineage_version == _NORMALIZATION_COVERAGE_LINEAGE_ID_VERSION and (
+            state_count != batch_components[2]
+            or transition_count + no_op_count > state_count
+            or primary_count < state_count
+            or conflict_binding_count > primary_count
+        ):
+            raise ValueError("normalization lineage v3 counts are internally inconsistent.")
         require_sha256(
             content_sha256,
             field_name="normalization_coverage_lineage_content_sha256",
@@ -1922,6 +1959,50 @@ class NormalizationSourceConflictBinding:
         return value
 
 
+def _normalization_lineage_role_sha256(
+    role: str,
+    values: tuple[object, ...],
+) -> str:
+    """Commit one complete ordered lineage role without flattening typed state."""
+
+    role = require_code(role, field_name="normalization_lineage_role")
+    if type(values) is not tuple:
+        raise TypeError("normalization lineage values must be a built-in tuple.")
+    require_collection_size(
+        values,
+        field_name="normalization_lineage_values",
+        maximum_items=MAX_NORMALIZATION_OUTCOME_ITEMS * 2,
+    )
+    item_sha256s = tuple(
+        sha256_hex(
+            canonical_json_array(
+                (
+                    _NORMALIZATION_COVERAGE_LINEAGE_ITEM_CONTENT_VERSION,
+                    role,
+                    ordinal,
+                    item,
+                ),
+                maximum_length=MAX_SUBSCRIPTION_PLAN_CONTENT_LENGTH,
+            ).encode("utf-8"),
+            field_name="normalization coverage lineage item",
+        )
+        for ordinal, item in enumerate(values)
+    )
+    role_content = canonical_json_array(
+        (
+            _NORMALIZATION_COVERAGE_LINEAGE_ROLE_CONTENT_VERSION,
+            role,
+            len(item_sha256s),
+            item_sha256s,
+        ),
+        maximum_length=MAX_SUBSCRIPTION_PLAN_CONTENT_LENGTH,
+    )
+    return sha256_hex(
+        role_content.encode("utf-8"),
+        field_name="normalization coverage lineage role",
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class NormalizationCoverageLineage:
     """One prepared event-scoped mutation batch plus outcome-only abort evidence.
@@ -1930,21 +2011,30 @@ class NormalizationCoverageLineage:
     state references, and primary evidence are derived here and cannot be
     independently supplied. Frame-atomic-abort evidence remains outcome-only.
 
-    Content preimage, in exact order::
+    Each role item commits to its exact typed ID or no-op row, ordinal and role::
 
-        ["normalization-coverage-lineage-content-v2",
-         coverage_mutation_batch_id,
-         raw_coverage_fanout_binding_id,
-         sorted_primary_coverage_evidence_ids,
-         sorted_frame_atomic_abort_evidence_ids,
-         sorted_normalization_source_conflict_binding_ids,
-         sorted_coverage_transition_ids,
-         sorted_coverage_no_op_rows,
-         sorted_resulting_state_reference_ids]
+        ["normalization-coverage-lineage-item-content-v1", role,
+         item_ordinal, exact_item_value]
+
+    Each complete ordered role is committed by::
+
+        ["normalization-coverage-lineage-role-content-v1", role,
+         item_count, ordered_item_sha256s]
+
+    Compact content preimage, in exact role order::
+
+        ["normalization-coverage-lineage-content-v3",
+         coverage_mutation_batch_id, raw_coverage_fanout_binding_id,
+         primary_count, primary_role_sha256,
+         abort_count, abort_role_sha256,
+         conflict_count, conflict_role_sha256,
+         transition_count, transition_role_sha256,
+         no_op_count, no_op_role_sha256,
+         resulting_state_count, resulting_state_role_sha256]
 
     ID preimage::
 
-        ["normalization-coverage-lineage-v2", coverage_mutation_batch_id,
+        ["normalization-coverage-lineage-v3", coverage_mutation_batch_id,
          primary_evidence_count, frame_abort_evidence_count,
          source_conflict_binding_count, transition_count, no_op_count,
          resulting_state_count, content_sha256]
@@ -2131,17 +2221,47 @@ class NormalizationCoverageLineage:
                     "every frame atomic abort must bind the complete primary cause set."
                 )
 
+        primary_commitment = _normalization_lineage_role_sha256(
+            "primary-evidence",
+            tuple(item.value for item in primary_ids),
+        )
+        abort_commitment = _normalization_lineage_role_sha256(
+            "frame-atomic-abort",
+            tuple(item.value for item in abort_ids),
+        )
+        conflict_commitment = _normalization_lineage_role_sha256(
+            "source-conflict-binding",
+            tuple(item.value for item in conflict_binding_ids),
+        )
+        transition_commitment = _normalization_lineage_role_sha256(
+            "coverage-transition",
+            tuple(item.value for item in transition_ids),
+        )
+        no_op_commitment = _normalization_lineage_role_sha256(
+            "coverage-no-op",
+            no_op_rows,
+        )
+        resulting_state_commitment = _normalization_lineage_role_sha256(
+            "resulting-state",
+            tuple(item.value for item in state_ids),
+        )
         content = canonical_json_array(
             (
                 _NORMALIZATION_COVERAGE_LINEAGE_CONTENT_VERSION,
                 batch.coverage_mutation_batch_id.value,
                 self.raw_fanout_binding.raw_coverage_fanout_binding_id.value,
-                tuple(item.value for item in primary_ids),
-                tuple(item.value for item in abort_ids),
-                tuple(item.value for item in conflict_binding_ids),
-                tuple(item.value for item in transition_ids),
-                no_op_rows,
-                tuple(item.value for item in state_ids),
+                len(primary_ids),
+                primary_commitment,
+                len(abort_ids),
+                abort_commitment,
+                len(conflict_binding_ids),
+                conflict_commitment,
+                len(transition_ids),
+                transition_commitment,
+                len(no_op_rows),
+                no_op_commitment,
+                len(state_ids),
+                resulting_state_commitment,
             )
         )
         content_sha256 = sha256_hex(

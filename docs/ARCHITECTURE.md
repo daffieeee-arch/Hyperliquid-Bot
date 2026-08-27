@@ -164,8 +164,9 @@ to the mandatory v3 envelope and removes outer v2 plus `is_gap`. No dual writer 
 wrapper is planned. Nothing is deployed, and SHADOW/LIVE remain disabled. ADR-022 records the
 complete decision and canonical identity rules.
 
-The 3B1C audit split that work into three reviewable phases, with 3B1C-1A as one bounded pure
-correction between contract closure and runtime activation. Phase 1A-3B1C-1 defines only pure,
+The 3B1C audit split that work into reviewable contract, coverage-runtime and delivery phases, with
+3B1C-1A through 3B1C-1C as bounded pure corrections before runtime activation. Phase 1A-3B1C-1
+defines only pure,
 dormant contracts that make coverage initialization, prepared multi-scope compare-and-swap
 mutation, repeated-degradation no-ops, frame-atomic abort lineage and destination-specific delivery
 knowledge exactly representable. A prepared coverage mutation is not committed state;
@@ -234,6 +235,21 @@ mixed proof form is available only where post-outcome sink failure must bind the
 non-ACK/ACK scope and attempt union. Both forms are rederived from the immutable raw attempt snapshot.
 The existing acknowledged `exact-routed-events-v1` identities and active runtime remain unchanged;
 3B1C-1B is dormant until 3B1C-2 consumes it.
+
+Phase 1A-3B1C-1C closes a boundedness blocker found by that future runtime integration. The v1
+mutation content repeats complete nested ID lists: 957 targets measure 16,762,723 characters under
+the 16,777,216-character limit, while 958 valid targets already fail; a 300-target historical
+`COMPLETE -> UNCERTAIN` mutation reaches 11,824,581 characters. Increasing the limit would only
+move the failure, while chunking would break the one-batch atomic CAS rule. New factories therefore
+emit `CoverageMutationBatch` v2 and `CoverageCommitAcceptance` v2. Their top-level canonical content
+uses ordered, domain-separated SHA-256 commitments that bind target/result ordinal, cardinality and
+every exact retained typed value. The full pre-state, initialization, transition, no-op and result
+tuples remain available and are rehashed during stored verification. The same audit proved that
+plan-wide normalization lineage needed compact representation, so new factories emit lineage v3
+with one ordered commitment per complete typed role. Legacy batch/acceptance v1 and lineage v2 IDs
+remain byte-exact parser-only forms and cannot cross-bind to the new versions. The representation
+still describes one indivisible operation; it adds no chunking, partial acceptance, runtime state
+or recovery. This correction is dormant, and 3B1C-2 resumes only after it is merged.
 
 ### Research Plane
 

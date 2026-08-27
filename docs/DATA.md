@@ -496,9 +496,9 @@ commit contracts; 3B1C-2 and 3B1C-3 will add operational coverage and atomic del
 
 The coverage/delivery audit found five representation gaps, so 3B1C is split into pure contract
 closure (3B1C-1), its bounded runtime-binding contract correction (3B1C-1A), operational coverage
-(3B1C-2) and atomic output delivery (3B1C-3). The first two slices add only immutable,
-deterministic values and validators. They perform no async work and change no collector, sink,
-queue, health or consumer behavior.
+(3B1C-2) and atomic output delivery (3B1C-3). The intervening 3B1C-1B and 3B1C-1C corrections
+remain pure as well. These contract slices add only immutable, deterministic values and validators;
+they perform no async work and change no collector, sink, queue, health or consumer behavior.
 
 Ordinal-zero coverage has its own versioned initialization identity. Initializations and prepared
 transitions are exposed through one tagged state-reference identity, while a prepared mutation
@@ -549,6 +549,21 @@ bind the exact acknowledged route partition so the aggregate validator requires 
 scope/attempt union. Existing transition-empty 3B1B outcomes remain valid, and no active runtime
 imports this dormant path yet.
 
+The 3B1C-1C correction keeps complete fan-out atomic when the subscription plan approaches its
+1,024-spec bound. The flattened v1 mutation content measured 16,762,723 characters for 957 targets
+and failed at 958 against the existing 16,777,216-character ceiling; an already-transitioned
+300-target mutation measured 11,824,581 characters. Neither a larger limit nor multiple batches is
+acceptable: the former only delays the same failure and the latter loses all-target CAS semantics.
+Mutation batch v2 instead retains every full immutable typed operation while its top-level content
+commits, in target order, to the exact scope, pre-state or null, mutation disposition, selected
+initialization/transition/no-op and resulting state. Commit acceptance v2 binds the exact ordered
+result set. Normalization lineage v3 similarly retains every primary, abort, conflict, transition,
+no-op and resulting-state value while committing each complete ordered role independently. Counts,
+ordinals and domain/version tags are part of the hash input, and stored verification recomputes all
+levels from typed values. Previous batch/acceptance v1 and lineage v2 IDs remain parser-only and
+cannot be interpreted as current identities. This changes no capture, coverage runtime or Silver
+output; v2 and `is_gap` remain active, v3 remains dormant, and 3B1C-2 resumes only after merge.
+
 Normalization-outcome sink failure is represented by the exact canonical
 `["normalization-outcome-evidence-v1",normalization_outcome_id,coverage_scope_id]` source row.
 Only explicit typed rejection establishes definite non-acceptance and Silver-normalization
@@ -587,10 +602,10 @@ cannot create a delivery batch. Actual v2-event serialization and a composite au
 remain 3B1C-3 work. Queue acceptance will mean bounded collector-output-queue acceptance only, not
 dequeue, downstream processing or persistence.
 
-All 3B1C-1, 3B1C-1A and 3B1C-1B values remain dormant. Existing 3B1B raw capture still emits normalization
-outcomes with empty coverage lineage; v2 remains the only active Silver envelope and operational
-`is_gap` remains unchanged. No coverage runtime, delivery linearization, raw persistence or replay
-exists yet.
+All 3B1C-1, 3B1C-1A, 3B1C-1B and 3B1C-1C values remain dormant. Existing 3B1B raw capture still
+emits normalization outcomes with empty coverage lineage; v2 remains the only active Silver
+envelope and operational `is_gap` remains unchanged. No coverage runtime, delivery linearization,
+raw persistence or replay exists yet.
 
 ## ClickHouse environments
 

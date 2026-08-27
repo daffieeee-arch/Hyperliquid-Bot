@@ -70,6 +70,17 @@ _IDENTIFIED_REJECTION_FANOUT_ID_VERSION: Final = "coverage-fanout-proof-v2"
 _IDENTIFIED_REJECTION_SOURCE_VERSION: Final = "exact-identified-rejections-v1"
 _IDENTIFIED_REJECTION_TARGET_VERSION: Final = "exact-identified-rejection-target-v1"
 _IDENTIFIED_REJECTION_ACK_TARGET_VERSION: Final = "acknowledged-routed-target-v1"
+_COVERAGE_MUTATION_BATCH_LEGACY_ID_VERSION: Final = "coverage-mutation-batch-v1"
+_COVERAGE_MUTATION_BATCH_ID_VERSION: Final = "coverage-mutation-batch-v2"
+_COVERAGE_MUTATION_BATCH_CONTENT_VERSION: Final = "coverage-mutation-batch-content-v2"
+_COVERAGE_MUTATION_TARGET_DECISION_CONTENT_VERSION: Final = (
+    "coverage-mutation-target-decision-content-v1"
+)
+_COVERAGE_COMMIT_ACCEPTANCE_LEGACY_ID_VERSION: Final = "coverage-commit-acceptance-v1"
+_COVERAGE_COMMIT_ACCEPTANCE_ID_VERSION: Final = "coverage-commit-acceptance-v2"
+_COVERAGE_COMMIT_ACCEPTANCE_CONTENT_VERSION: Final = "coverage-commit-acceptance-content-v2"
+_COVERAGE_COMMIT_RESULT_ITEMS_VERSION: Final = "coverage-commit-resulting-states-content-v1"
+_COVERAGE_COMMIT_RESULT_ITEM_VERSION: Final = "coverage-commit-resulting-state-content-v1"
 _NORMALIZATION_OUTCOME_FRAME_STATUS_CODES: Final = frozenset(
     {
         "control_no_event",
@@ -5685,7 +5696,26 @@ class RawCoverageFanoutBindingId(_CanonicalIdentifier):
 class CoverageMutationBatchId(_CanonicalIdentifier):
     """Bounded content-addressed identity for one prepared all-target CAS batch."""
 
-    VERSION_TAG: ClassVar = "coverage-mutation-batch-v1"
+    VERSION_TAG: ClassVar = _COVERAGE_MUTATION_BATCH_ID_VERSION
+
+    def __post_init__(self) -> None:
+        components = parse_canonical_json_array(
+            self.value,
+            field_name="canonical identifier",
+            maximum_length=MAX_CANONICAL_IDENTIFIER_LENGTH,
+        )
+        if not components or components[0] not in {
+            _COVERAGE_MUTATION_BATCH_LEGACY_ID_VERSION,
+            self.VERSION_TAG,
+        }:
+            raise ValueError("canonical identifier has an unexpected version tag.")
+        invalid_components = False
+        try:
+            self._validate_components(components)
+        except (TypeError, ValueError):
+            invalid_components = True
+        if invalid_components:
+            raise ValueError("canonical identifier contains invalid canonical components.")
 
     def _validate_components(self, components: tuple[CanonicalValue, ...]) -> None:
         _require_component_count(components, 4, identifier_name=type(self).__name__)
@@ -5710,13 +5740,34 @@ class CoverageMutationBatchId(_CanonicalIdentifier):
 class CoverageCommitAcceptanceId(_CanonicalIdentifier):
     """Bounded content-addressed proof identity created only after a successful CAS.
 
-    Exact preimage::
+    Current preimage::
 
-        ["coverage-commit-acceptance-v1", coverage_mutation_batch_id,
+        ["coverage-commit-acceptance-v2", coverage_mutation_batch_id,
          resulting_state_count, SHA256(canonical_acceptance_content)]
+
+    Legacy ``coverage-commit-acceptance-v1`` identities remain parser-only.
     """
 
-    VERSION_TAG: ClassVar = "coverage-commit-acceptance-v1"
+    VERSION_TAG: ClassVar = _COVERAGE_COMMIT_ACCEPTANCE_ID_VERSION
+
+    def __post_init__(self) -> None:
+        components = parse_canonical_json_array(
+            self.value,
+            field_name="canonical identifier",
+            maximum_length=MAX_CANONICAL_IDENTIFIER_LENGTH,
+        )
+        if not components or components[0] not in {
+            _COVERAGE_COMMIT_ACCEPTANCE_LEGACY_ID_VERSION,
+            self.VERSION_TAG,
+        }:
+            raise ValueError("canonical identifier has an unexpected version tag.")
+        invalid_components = False
+        try:
+            self._validate_components(components)
+        except (TypeError, ValueError):
+            invalid_components = True
+        if invalid_components:
+            raise ValueError("canonical identifier contains invalid canonical components.")
 
     def _validate_components(self, components: tuple[CanonicalValue, ...]) -> None:
         _require_component_count(components, 4, identifier_name=type(self).__name__)
@@ -5729,6 +5780,26 @@ class CoverageCommitAcceptanceId(_CanonicalIdentifier):
         batch_components = parse_canonical_json_array(
             batch.value, field_name="coverage_mutation_batch_id"
         )
+        acceptance_version = _component_text(
+            components[0], field_name="coverage_commit_acceptance_version"
+        )
+        batch_version = _component_text(
+            batch_components[0], field_name="coverage_mutation_batch_version"
+        )
+        if (
+            acceptance_version,
+            batch_version,
+        ) not in {
+            (
+                _COVERAGE_COMMIT_ACCEPTANCE_LEGACY_ID_VERSION,
+                _COVERAGE_MUTATION_BATCH_LEGACY_ID_VERSION,
+            ),
+            (
+                _COVERAGE_COMMIT_ACCEPTANCE_ID_VERSION,
+                _COVERAGE_MUTATION_BATCH_ID_VERSION,
+            ),
+        }:
+            raise ValueError("coverage acceptance and mutation versions disagree.")
         if batch_components[2] != count:
             raise ValueError("coverage acceptance count must match its mutation batch.")
         require_sha256(
@@ -7649,6 +7720,14 @@ class CoverageMutationNoOp:
         )
 
 
+class CoverageMutationDisposition(StrEnum):
+    """Closed role of one target inside an atomic coverage mutation batch."""
+
+    INITIALIZATION = "initialization"
+    TRANSITION = "transition"
+    NO_OP = "no-op"
+
+
 def _coverage_status_severity(status: CoverageStatus) -> int:
     return {
         CoverageStatus.COMPLETE: 0,
@@ -8105,18 +8184,27 @@ def _validate_fanout_request_semantics(
 class CoverageMutationBatch:
     """Prepared all-target compare-and-swap mutation with no partial representation.
 
-    Content preimage::
+    Each target-decision commitment is SHA-256 over this exact preimage::
 
-        ["coverage-mutation-batch-content-v1", fanout_proof_id,
-         raw-coverage-fanout-binding-id-or-null,
-         sorted_expected_pre-state_rows, sorted_initialization_ids,
-         sorted_transition_ids, sorted_no-op_rows,
-         sorted_resulting_state-reference_ids]
+        ["coverage-mutation-target-decision-content-v1", target_ordinal,
+         coverage_scope_id, expected_pre-state_id-or-null, disposition,
+         initialization_id-or-null, transition_id-or-null,
+         no-op-canonical-row-or-null, resulting_state-reference_id]
+
+    Exactly one operation slot is non-null. The compact batch content retains
+    target cardinality and the complete ordered decision-commitment tuple::
+
+        ["coverage-mutation-batch-content-v2", fanout_proof_id,
+         raw-coverage-fanout-binding-id-or-null, target_count,
+         ordered_target-decision-sha256s]
 
     Bounded ID preimage::
 
-        ["coverage-mutation-batch-v1", fanout_proof_id, target_count,
+        ["coverage-mutation-batch-v2", fanout_proof_id, target_count,
          SHA256(canonical_content)]
+
+    Full typed initializations, transitions, no-ops and resulting states remain
+    present. Legacy v1 IDs are parser-only; this factory emits only v2.
     """
 
     fanout_proof: CoverageFanoutProof = field(repr=False)
@@ -8126,6 +8214,7 @@ class CoverageMutationBatch:
     transitions: tuple[CoverageTransition, ...] = field(repr=False)
     no_ops: tuple[CoverageMutationNoOp, ...] = field(repr=False)
     resulting_state_references: tuple[CoverageStateReference, ...] = field(repr=False)
+    target_decision_sha256s: tuple[str, ...] = field(repr=False)
     canonical_content: str = field(repr=False)
     content_sha256: str
     coverage_mutation_batch_id: CoverageMutationBatchId
@@ -8152,17 +8241,249 @@ class CoverageMutationBatch:
         expected_canonical_content: str,
         expected_batch_id: CoverageMutationBatchId,
     ) -> None:
-        """Reject any persisted prepared-batch content or bounded-ID mismatch."""
+        """Recompute every decision and reject persisted content or ID mismatch."""
 
         if type(expected_canonical_content) is not str:
             raise TypeError("expected_canonical_content must be a built-in string.")
         if type(expected_batch_id) is not CoverageMutationBatchId:
             raise TypeError("expected_batch_id must be a CoverageMutationBatchId.")
+        recomputed_decisions = _coverage_mutation_target_decision_sha256s(
+            fanout_proof=self.fanout_proof,
+            expected_pre_state_rows=self.expected_pre_state_rows,
+            initializations=self.initializations,
+            transitions=self.transitions,
+            no_ops=self.no_ops,
+            resulting_state_references=self.resulting_state_references,
+        )
+        recomputed_content = _coverage_mutation_batch_content(
+            fanout_proof=self.fanout_proof,
+            raw_fanout_binding=self.raw_fanout_binding,
+            target_decision_sha256s=recomputed_decisions,
+        )
+        recomputed_digest = sha256_hex(
+            recomputed_content.encode("utf-8"),
+            field_name="coverage mutation batch",
+        )
+        recomputed_id = CoverageMutationBatchId(
+            canonical_json_array(
+                (
+                    _COVERAGE_MUTATION_BATCH_ID_VERSION,
+                    self.fanout_proof.coverage_fanout_proof_id,
+                    len(self.fanout_proof.target_scopes),
+                    recomputed_digest,
+                )
+            )
+        )
         if (
-            self.canonical_content != expected_canonical_content
-            or self.coverage_mutation_batch_id != expected_batch_id
+            self.target_decision_sha256s != recomputed_decisions
+            or self.canonical_content != recomputed_content
+            or self.content_sha256 != recomputed_digest
+            or self.coverage_mutation_batch_id != recomputed_id
+            or recomputed_content != expected_canonical_content
+            or recomputed_id != expected_batch_id
         ):
             raise ValueError("stored coverage mutation batch does not match its content.")
+
+
+def _coverage_mutation_target_decision_sha256s(
+    *,
+    fanout_proof: CoverageFanoutProof,
+    expected_pre_state_rows: tuple[tuple[str, str | None], ...],
+    initializations: tuple[CoverageInitialization, ...],
+    transitions: tuple[CoverageTransition, ...],
+    no_ops: tuple[CoverageMutationNoOp, ...],
+    resulting_state_references: tuple[CoverageStateReference, ...],
+) -> tuple[str, ...]:
+    """Commit every complete target decision in exact fanout order."""
+
+    if type(fanout_proof) is not CoverageFanoutProof:
+        raise TypeError("fanout_proof must be a CoverageFanoutProof.")
+    if type(expected_pre_state_rows) is not tuple or any(
+        type(item) is not tuple
+        or len(item) != 2
+        or type(item[0]) is not str
+        or (item[1] is not None and type(item[1]) is not str)
+        for item in expected_pre_state_rows
+    ):
+        raise TypeError("expected_pre_state_rows must contain exact built-in state rows.")
+    typed_collections = (
+        (initializations, CoverageInitialization, "initializations"),
+        (transitions, CoverageTransition, "transitions"),
+        (no_ops, CoverageMutationNoOp, "no_ops"),
+        (resulting_state_references, CoverageStateReference, "resulting_state_references"),
+    )
+    for values, expected_type, field_name in typed_collections:
+        if type(values) is not tuple or any(type(item) is not expected_type for item in values):
+            raise TypeError(f"{field_name} must be a built-in tuple of exact typed values.")
+        require_collection_size(
+            values,
+            field_name=field_name,
+            maximum_items=MAX_COVERAGE_MUTATION_TARGETS,
+        )
+    require_collection_size(
+        expected_pre_state_rows,
+        field_name="expected_pre_state_rows",
+        maximum_items=MAX_COVERAGE_MUTATION_TARGETS,
+    )
+    target_scopes = fanout_proof.target_scopes
+    if len(expected_pre_state_rows) != len(target_scopes):
+        raise ValueError("coverage mutation pre-state cardinality must match its fanout.")
+    operation_scope_sequences = (
+        tuple(item.scope.coverage_scope_id.value for item in initializations),
+        tuple(item.scope.coverage_scope_id.value for item in transitions),
+        tuple(item.request.scope.coverage_scope_id.value for item in no_ops),
+    )
+    if any(sequence != tuple(sorted(sequence)) for sequence in operation_scope_sequences):
+        raise ValueError("coverage mutation typed operation tuples must retain canonical order.")
+    result_by_scope = {
+        item.reference.scope.coverage_scope_id: item for item in resulting_state_references
+    }
+    initialization_by_scope = {item.scope.coverage_scope_id: item for item in initializations}
+    transition_by_scope = {item.scope.coverage_scope_id: item for item in transitions}
+    no_op_by_scope = {item.request.scope.coverage_scope_id: item for item in no_ops}
+    if (
+        len(result_by_scope) != len(resulting_state_references)
+        or len(initialization_by_scope) != len(initializations)
+        or len(transition_by_scope) != len(transitions)
+        or len(no_op_by_scope) != len(no_ops)
+    ):
+        raise ValueError("coverage mutation typed values must be unique by target scope.")
+    expected_scope_ids = tuple(scope.coverage_scope_id for scope in target_scopes)
+    expected_scope_id_set = set(expected_scope_ids)
+    operation_scope_sets = (
+        set(initialization_by_scope),
+        set(transition_by_scope),
+        set(no_op_by_scope),
+    )
+    if (
+        sum(len(item) for item in operation_scope_sets) != len(target_scopes)
+        or set().union(*operation_scope_sets) != expected_scope_id_set
+        or any(
+            left & right
+            for index, left in enumerate(operation_scope_sets)
+            for right in operation_scope_sets[index + 1 :]
+        )
+        or set(result_by_scope) != expected_scope_id_set
+    ):
+        raise ValueError("coverage mutation operations must exactly partition its fanout targets.")
+    if tuple(item[0] for item in expected_pre_state_rows) != tuple(
+        item.value for item in expected_scope_ids
+    ):
+        raise ValueError("coverage mutation pre-state rows must retain exact fanout order.")
+    if (
+        tuple(item.reference.scope.coverage_scope_id for item in resulting_state_references)
+        != expected_scope_ids
+    ):
+        raise ValueError("coverage mutation results must retain exact fanout order.")
+
+    commitments: list[str] = []
+    for ordinal, (scope, pre_state_row) in enumerate(
+        zip(target_scopes, expected_pre_state_rows, strict=True)
+    ):
+        scope_id = scope.coverage_scope_id
+        initialization = initialization_by_scope.get(scope_id)
+        transition = transition_by_scope.get(scope_id)
+        no_op = no_op_by_scope.get(scope_id)
+        selected_count = sum(item is not None for item in (initialization, transition, no_op))
+        if selected_count != 1 or scope_id not in result_by_scope:
+            raise ValueError(
+                "coverage mutation requires one exact operation and result per target."
+            )
+        if initialization is not None:
+            disposition = CoverageMutationDisposition.INITIALIZATION
+            initialization_id: str | None = initialization.coverage_initialization_id.value
+            transition_id: str | None = None
+            no_op_row: tuple[object, ...] | None = None
+            if pre_state_row[1] is not None or result_by_scope[
+                scope_id
+            ] != CoverageStateReference.from_initialization(initialization):
+                raise ValueError(
+                    "coverage initialization decision has invalid pre-state or result."
+                )
+        elif transition is not None:
+            disposition = CoverageMutationDisposition.TRANSITION
+            initialization_id = None
+            transition_id = transition.coverage_transition_id.value
+            no_op_row = None
+            result = result_by_scope[scope_id]
+            if (
+                pre_state_row[1] is None
+                or result.previous_state_reference_id is None
+                or pre_state_row[1] != result.previous_state_reference_id.value
+                or result.latest_transition != transition
+                or result.reference.scope.coverage_scope_id != scope_id
+            ):
+                raise ValueError("coverage transition decision has invalid pre-state or result.")
+        else:
+            assert no_op is not None
+            disposition = CoverageMutationDisposition.NO_OP
+            initialization_id = None
+            transition_id = None
+            no_op_row = no_op.canonical_row
+            if (
+                pre_state_row[1] != no_op.current_state.coverage_state_reference_id.value
+                or result_by_scope[scope_id] != no_op.current_state
+            ):
+                raise ValueError("coverage no-op decision must retain its exact current state.")
+        content = canonical_json_array(
+            (
+                _COVERAGE_MUTATION_TARGET_DECISION_CONTENT_VERSION,
+                ordinal,
+                scope_id.value,
+                pre_state_row[1],
+                disposition.value,
+                initialization_id,
+                transition_id,
+                no_op_row,
+                result_by_scope[scope_id].coverage_state_reference_id.value,
+            ),
+            maximum_length=MAX_SUBSCRIPTION_PLAN_CONTENT_LENGTH,
+        )
+        commitments.append(
+            sha256_hex(content.encode("utf-8"), field_name="coverage target decision")
+        )
+    return tuple(commitments)
+
+
+def _coverage_mutation_batch_content(
+    *,
+    fanout_proof: CoverageFanoutProof,
+    raw_fanout_binding: RawCoverageFanoutBinding | None,
+    target_decision_sha256s: tuple[str, ...],
+) -> str:
+    if type(fanout_proof) is not CoverageFanoutProof:
+        raise TypeError("fanout_proof must be a CoverageFanoutProof.")
+    if raw_fanout_binding is not None:
+        if type(raw_fanout_binding) is not RawCoverageFanoutBinding:
+            raise TypeError("raw_fanout_binding must be a RawCoverageFanoutBinding or None.")
+        if (
+            raw_fanout_binding.coverage_fanout_proof_id != fanout_proof.coverage_fanout_proof_id
+            or raw_fanout_binding.subscription_plan_id != fanout_proof.subscription_plan_id
+            or raw_fanout_binding.connection_session_id != fanout_proof.connection_session_id
+        ):
+            raise ValueError("raw fanout binding must match the coverage mutation fanout.")
+    if type(target_decision_sha256s) is not tuple or any(
+        type(item) is not str for item in target_decision_sha256s
+    ):
+        raise TypeError("target_decision_sha256s must be a built-in tuple of strings.")
+    if len(target_decision_sha256s) != len(fanout_proof.target_scopes):
+        raise ValueError("coverage decision commitments must match the fanout target count.")
+    for digest in target_decision_sha256s:
+        require_sha256(digest, field_name="coverage_target_decision_sha256")
+    return canonical_json_array(
+        (
+            _COVERAGE_MUTATION_BATCH_CONTENT_VERSION,
+            fanout_proof.coverage_fanout_proof_id,
+            (
+                raw_fanout_binding.raw_coverage_fanout_binding_id
+                if raw_fanout_binding is not None
+                else None
+            ),
+            len(target_decision_sha256s),
+            target_decision_sha256s,
+        ),
+        maximum_length=MAX_SUBSCRIPTION_PLAN_CONTENT_LENGTH,
+    )
 
 
 def _coverage_pre_state_rows(
@@ -8298,28 +8619,24 @@ def prepare_coverage_mutation_batch(
     ordered_results = tuple(
         sorted(resulting, key=lambda item: item.reference.scope.coverage_scope_id.value)
     )
-    content = canonical_json_array(
-        (
-            "coverage-mutation-batch-content-v1",
-            fanout_proof.coverage_fanout_proof_id,
-            (
-                raw_fanout_binding.raw_coverage_fanout_binding_id
-                if raw_fanout_binding is not None
-                else None
-            ),
-            pre_rows,
-            tuple(item.coverage_initialization_id.value for item in ordered_initializations),
-            tuple(item.coverage_transition_id.value for item in ordered_transitions),
-            tuple(item.canonical_row for item in ordered_no_ops),
-            tuple(item.coverage_state_reference_id.value for item in ordered_results),
-        ),
-        maximum_length=MAX_SUBSCRIPTION_PLAN_CONTENT_LENGTH,
+    target_decision_sha256s = _coverage_mutation_target_decision_sha256s(
+        fanout_proof=fanout_proof,
+        expected_pre_state_rows=pre_rows,
+        initializations=ordered_initializations,
+        transitions=ordered_transitions,
+        no_ops=ordered_no_ops,
+        resulting_state_references=ordered_results,
+    )
+    content = _coverage_mutation_batch_content(
+        fanout_proof=fanout_proof,
+        raw_fanout_binding=raw_fanout_binding,
+        target_decision_sha256s=target_decision_sha256s,
     )
     digest = sha256_hex(content.encode("utf-8"), field_name="coverage mutation batch")
     batch_id = CoverageMutationBatchId(
         canonical_json_array(
             (
-                "coverage-mutation-batch-v1",
+                _COVERAGE_MUTATION_BATCH_ID_VERSION,
                 fanout_proof.coverage_fanout_proof_id,
                 len(fanout_proof.target_scopes),
                 digest,
@@ -8334,6 +8651,7 @@ def prepare_coverage_mutation_batch(
     object.__setattr__(batch, "transitions", ordered_transitions)
     object.__setattr__(batch, "no_ops", ordered_no_ops)
     object.__setattr__(batch, "resulting_state_references", ordered_results)
+    object.__setattr__(batch, "target_decision_sha256s", target_decision_sha256s)
     object.__setattr__(batch, "canonical_content", content)
     object.__setattr__(batch, "content_sha256", digest)
     object.__setattr__(batch, "coverage_mutation_batch_id", batch_id)
@@ -8344,10 +8662,20 @@ def prepare_coverage_mutation_batch(
 class CoverageCommitAcceptance:
     """Content-addressed proof that one complete prepared CAS was committed.
 
+    Every ordered result item commits to::
+
+        ["coverage-commit-resulting-state-content-v1", result_ordinal,
+         resulting_state_reference_id]
+
+    The exact ordered item digests are committed by::
+
+        ["coverage-commit-resulting-states-content-v1", result_count,
+         ordered_result_item_sha256s]
+
     Canonical content::
 
-        ["coverage-commit-acceptance-content-v1", mutation_batch_id,
-         sorted_resulting_state_reference_ids]
+        ["coverage-commit-acceptance-content-v2", mutation_batch_id,
+         result_count, ordered_resulting_state_commitment_sha256]
 
     The factory name is intentionally post-CAS: a prepared batch or candidate
     state reference alone is never proof of runtime commit.
@@ -8355,6 +8683,8 @@ class CoverageCommitAcceptance:
 
     coverage_mutation_batch_id: CoverageMutationBatchId
     resulting_state_reference_ids: tuple[CoverageStateReferenceId, ...]
+    resulting_state_item_sha256s: tuple[str, ...] = field(repr=False)
+    resulting_state_commitment_sha256: str
     canonical_content: str = field(repr=False)
     content_sha256: str
     coverage_commit_acceptance_id: CoverageCommitAcceptanceId
@@ -8379,22 +8709,24 @@ class CoverageCommitAcceptance:
             field_name="resulting_state_reference_ids",
             maximum_items=MAX_COVERAGE_MUTATION_TARGETS,
         )
-        expected = tuple(sorted(set(resulting_state_reference_ids), key=lambda item: item.value))
-        if resulting_state_reference_ids != expected:
-            raise ValueError("resulting state reference IDs must be sorted and unique.")
+        if len(set(resulting_state_reference_ids)) != len(resulting_state_reference_ids):
+            raise ValueError("resulting state reference IDs must be unique.")
+        item_sha256s, result_commitment = _coverage_commit_result_commitments(
+            resulting_state_reference_ids
+        )
         content = canonical_json_array(
             (
-                "coverage-commit-acceptance-content-v1",
+                _COVERAGE_COMMIT_ACCEPTANCE_CONTENT_VERSION,
                 coverage_mutation_batch_id,
-                tuple(item.value for item in resulting_state_reference_ids),
-            ),
-            maximum_length=MAX_SUBSCRIPTION_PLAN_CONTENT_LENGTH,
+                len(resulting_state_reference_ids),
+                result_commitment,
+            )
         )
         digest = sha256_hex(content.encode("utf-8"), field_name="coverage commit acceptance")
         acceptance_id = CoverageCommitAcceptanceId(
             canonical_json_array(
                 (
-                    "coverage-commit-acceptance-v1",
+                    _COVERAGE_COMMIT_ACCEPTANCE_ID_VERSION,
                     coverage_mutation_batch_id,
                     len(resulting_state_reference_ids),
                     digest,
@@ -8404,6 +8736,8 @@ class CoverageCommitAcceptance:
         value = object.__new__(cls)
         object.__setattr__(value, "coverage_mutation_batch_id", coverage_mutation_batch_id)
         object.__setattr__(value, "resulting_state_reference_ids", resulting_state_reference_ids)
+        object.__setattr__(value, "resulting_state_item_sha256s", item_sha256s)
+        object.__setattr__(value, "resulting_state_commitment_sha256", result_commitment)
         object.__setattr__(value, "canonical_content", content)
         object.__setattr__(value, "content_sha256", digest)
         object.__setattr__(value, "coverage_commit_acceptance_id", acceptance_id)
@@ -8428,12 +8762,7 @@ class CoverageCommitAcceptance:
             raise ValueError("committed states must exactly match the prepared CAS results.")
         return cls._verified_value(
             batch.coverage_mutation_batch_id,
-            tuple(
-                sorted(
-                    (item.coverage_state_reference_id for item in committed_state_references),
-                    key=lambda item: item.value,
-                )
-            ),
+            tuple(item.coverage_state_reference_id for item in committed_state_references),
         )
 
     @classmethod
@@ -8468,16 +8797,49 @@ class CoverageCommitAcceptance:
         if type(batch) is not CoverageMutationBatch:
             raise TypeError("batch must be a CoverageMutationBatch.")
         expected_ids = tuple(
-            sorted(
-                (item.coverage_state_reference_id for item in batch.resulting_state_references),
-                key=lambda item: item.value,
-            )
+            item.coverage_state_reference_id for item in batch.resulting_state_references
         )
         if (
             self.coverage_mutation_batch_id != batch.coverage_mutation_batch_id
             or self.resulting_state_reference_ids != expected_ids
         ):
             raise ValueError("coverage mutation acceptance does not echo the exact batch results.")
+
+
+def _coverage_commit_result_commitments(
+    resulting_state_reference_ids: tuple[CoverageStateReferenceId, ...],
+) -> tuple[tuple[str, ...], str]:
+    """Return per-result and ordered-set commitments for one exact CAS result."""
+
+    item_sha256s = tuple(
+        sha256_hex(
+            canonical_json_array(
+                (
+                    _COVERAGE_COMMIT_RESULT_ITEM_VERSION,
+                    ordinal,
+                    state_id,
+                ),
+                maximum_length=MAX_SUBSCRIPTION_PLAN_CONTENT_LENGTH,
+            ).encode("utf-8"),
+            field_name="coverage commit result item",
+        )
+        for ordinal, state_id in enumerate(resulting_state_reference_ids)
+    )
+    aggregate_content = canonical_json_array(
+        (
+            _COVERAGE_COMMIT_RESULT_ITEMS_VERSION,
+            len(item_sha256s),
+            item_sha256s,
+        ),
+        maximum_length=MAX_SUBSCRIPTION_PLAN_CONTENT_LENGTH,
+    )
+    return (
+        item_sha256s,
+        sha256_hex(
+            aggregate_content.encode("utf-8"),
+            field_name="coverage commit result set",
+        ),
+    )
 
 
 @dataclass(frozen=True, slots=True, init=False)

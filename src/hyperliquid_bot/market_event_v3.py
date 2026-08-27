@@ -1700,6 +1700,7 @@ class FrameNormalizationStatus(StrEnum):
     REJECTED_BEFORE_INDEXING = "rejected_before_indexing"
     REJECTED_AFTER_INDEXING = "rejected_after_indexing"
     SOURCE_EVENT_CONFLICT = "source_event_conflict"
+    MIXED_INDEXED_FAILURE = "mixed_indexed_failure"
 
 
 class NormalizationEvidence(StrEnum):
@@ -2495,7 +2496,7 @@ class NormalizationOutcome:
     ID preimage, in exact order::
 
         [
-          "normalization-outcome-v1",
+          "normalization-outcome-v2",
           normalization_run_id,
           raw_record_id,
           normalizer_version,
@@ -2714,7 +2715,11 @@ class NormalizationOutcome:
                         == transition_components[1]
                     )
                     if (
-                        self.frame_status is not FrameNormalizationStatus.REJECTED_AFTER_INDEXING
+                        self.frame_status
+                        not in {
+                            FrameNormalizationStatus.REJECTED_AFTER_INDEXING,
+                            FrameNormalizationStatus.MIXED_INDEXED_FAILURE,
+                        }
                         or len(matching_failure_outcomes) != 1
                     ):
                         raise ValueError(
@@ -2755,7 +2760,11 @@ class NormalizationOutcome:
                     and outcome.logical_source_key.source_event_id.value == conflict_source_event_id
                 )
                 if (
-                    self.frame_status is not FrameNormalizationStatus.SOURCE_EVENT_CONFLICT
+                    self.frame_status
+                    not in {
+                        FrameNormalizationStatus.SOURCE_EVENT_CONFLICT,
+                        FrameNormalizationStatus.MIXED_INDEXED_FAILURE,
+                    }
                     or len(matching_conflict_outcomes) != 1
                 ):
                     raise ValueError(
@@ -2870,7 +2879,7 @@ class NormalizationOutcome:
         preindex_scope_binding: RawFrameNormalizationScopeBinding | None = None,
         evidence: tuple[NormalizationEvidence, ...] = (),
     ) -> Self:
-        """Construct the exact transition-empty 3B1B identity for compatibility."""
+        """Construct transition-empty 3B1B content under the current outer identity."""
 
         return cls(
             normalization_run_id=normalization_run_id,
@@ -3046,10 +3055,13 @@ class NormalizationOutcome:
             CoverageFanoutKind.EXACT_IDENTIFIED_REJECTION,
             CoverageFanoutKind.EXACT_IDENTIFIED_REJECTIONS,
         }
-        if identified_rejection_fanout and self.frame_status is not (
-            FrameNormalizationStatus.REJECTED_AFTER_INDEXING
-        ):
-            raise ValueError("identified rejection lineage requires an indexed rejected frame.")
+        if identified_rejection_fanout and self.frame_status not in {
+            FrameNormalizationStatus.REJECTED_AFTER_INDEXING,
+            FrameNormalizationStatus.MIXED_INDEXED_FAILURE,
+        }:
+            raise ValueError(
+                "identified rejection lineage requires an indexed rejected or mixed frame."
+            )
         matched_rejection_scope_ids: set[CoverageScopeId] = set()
         matched_acknowledged_scope_ids: set[CoverageScopeId] = set()
 
@@ -3079,8 +3091,14 @@ class NormalizationOutcome:
                         "non-ACK identified routes permit only rejected provenance mismatches."
                     )
                 matched_rejection_scope_ids.add(route_matches[0])
-            elif identified_rejection_fanout and (
-                outcome.disposition is RawEventDisposition.REJECTED
+            elif (
+                identified_rejection_fanout
+                and is_acknowledged
+                and outcome.disposition
+                in {
+                    RawEventDisposition.REJECTED,
+                    RawEventDisposition.SOURCE_EVENT_CONFLICT,
+                }
             ):
                 route_matches = tuple(
                     scope_id
@@ -3093,7 +3111,7 @@ class NormalizationOutcome:
                 )
                 if len(route_matches) != 1:
                     raise ValueError(
-                        "every acknowledged primary rejection must match one exact routed target."
+                        "every acknowledged indexed outcome must match one exact routed target."
                     )
                 matched_acknowledged_scope_ids.add(route_matches[0])
             if outcome.disposition is RawEventDisposition.REJECTED:
@@ -3303,6 +3321,22 @@ class NormalizationOutcome:
             ):
                 raise ValueError("source-conflict frame violates the closed outcome matrix.")
             return
+        if status is FrameNormalizationStatus.MIXED_INDEXED_FAILURE:
+            allowed = {
+                RawEventDisposition.REJECTED,
+                RawEventDisposition.SOURCE_EVENT_CONFLICT,
+                RawEventDisposition.NOT_MATERIALIZED_FRAME_ABORTED,
+                RawEventDisposition.EXACT_DUPLICATE_SUPPRESSED,
+            }
+            if (
+                any(disposition not in allowed for disposition in dispositions)
+                or RawEventDisposition.REJECTED not in dispositions
+                or RawEventDisposition.SOURCE_EVENT_CONFLICT not in dispositions
+                or materializations
+                or NormalizationEvidence.SOURCE_EVENT_CONFLICT not in evidence
+            ):
+                raise ValueError("mixed indexed failure violates the closed outcome matrix.")
+            return
         raise AssertionError("unhandled frame normalization status")
 
 
@@ -3510,7 +3544,11 @@ def _validate_concrete_outcome_fanout(
     }:
         raise ValueError("indexed outcome sink failure requires exact routed-event fan-out.")
     if identified_rejection_fanout and (
-        status is not FrameNormalizationStatus.REJECTED_AFTER_INDEXING
+        status
+        not in {
+            FrameNormalizationStatus.REJECTED_AFTER_INDEXING,
+            FrameNormalizationStatus.MIXED_INDEXED_FAILURE,
+        }
         or normalization_outcome.coverage_lineage is None
     ):
         raise ValueError(

@@ -281,7 +281,8 @@ The exact computed preimages are:
 | `coverage-epoch-v1` | coverage-scope ID, collector-run ID, non-negative epoch ordinal, activation UTC, activation monotonic ns |
 | `coverage-evidence-v1` | scope ID, epoch ID, collector-run ID, evidence kind, exact typed source reference, observed UTC, observed monotonic ns |
 | `normalization-failure-evidence-v1` | raw-record ID, normalization-run ID, raw-event index or null, source-event ID when established or null otherwise (always null before indexing), bounded failure category, exact coverage-scope ID |
-| `normalization-outcome-v1` | normalization-run ID, raw-record ID, normalizer version, normalizer commit, frame status, optional decoded count, normalization-outcome-content SHA-256; the same lower-layer strong ID is re-exported by `market_event_v3` |
+| `normalization-outcome-v1` | parser-only legacy outer identity with the historical frame-status set: normalization-run ID, raw-record ID, normalizer version, normalizer commit, frame status, optional decoded count, normalization-outcome-content SHA-256 |
+| `normalization-outcome-v2` | current writer identity with the same ordered components and content layouts, plus the closed `mixed_indexed_failure` status; the same lower-layer strong ID is re-exported by `market_event_v3` |
 | `normalization-outcome-sink-failure-coverage-binding-v1` | normalization-outcome ID, coverage-mutation-batch ID, raw-coverage-fanout-binding ID, coverage-evidence kind |
 | `coverage-transition-v1` | scope ID, epoch ID, positive transition ordinal, previous status, next status, reason, coverage-evidence ID |
 | `coverage-initialization-v1` | collector-run ID, coverage-scope ID, coverage-epoch ID, initial status, initial reason, activation UTC, activation monotonic ns, evidence ID, evidence UTC, evidence monotonic ns |
@@ -365,7 +366,7 @@ Coverage evidence embeds exactly one closed typed source row:
 | `upstream-coverage-transition-evidence-v1` | committed upstream coverage-state ID whose state contains a transition |
 | `upstream-coverage-state-evidence-v1` | committed upstream coverage-state ID |
 | `normalization-failure-evidence-reference-v1` | exact `normalization-failure-evidence-v1` ID |
-| `normalization-outcome-evidence-v1` | exact `normalization-outcome-v1` ID, identified Silver-normalization coverage-scope ID |
+| `normalization-outcome-evidence-v1` | exact parser-valid normalization-outcome v1 or v2 ID, identified Silver-normalization coverage-scope ID |
 | `source-sequence-break-evidence-v1` | feed-product ID, sequence role, namespace/domain, non-negative first and last values, identified coverage-scope ID |
 | `source-event-conflict-evidence-v1` | feed-product ID, source-event ID, raw-record ID, raw-event index, identified coverage-scope ID |
 | `acknowledgement-evidence-v1` | subscription-attempt ID, `acknowledged`, complete `subscription-spec-membership-proof-v1` row |
@@ -570,6 +571,19 @@ cancellation-cooperative sinks; it is not a claim that arbitrary hostile in-proc
 forcibly killed. Raw sink and outcome sink coordination are active in 3B1B, but the v3 envelope,
 operational coverage and delivery boundaries remain dormant.
 
+The future 3B1C-2 coverage runtime additionally reserves a synchronous CPU budget `C` and must
+validate the complete bound:
+
+```text
+max(H, P + 2 * (R + O + C) + Q) + (R + O + C + Q) + S < 60 seconds
+```
+
+With `C=1` and the same defaults, the result is exactly 57 seconds. Runtime acceptance requires a
+warm setup-excluded prepare-plus-commit median no greater than 1.0 second, the maximum of five
+1,024-target runs no greater than 1.5 seconds, maximum event-loop stall no greater than 1.0 second
+(preferably 0.5), `T(1024) / T(512) <= 2.5`, and no missed heartbeat or pong deadline. These are
+future runtime gates, not claims made by the pure 3B1C-1D contracts.
+
 ### Metadata, provenance, coverage and outcomes
 
 `InstrumentSpecification` retains full independently verified canonical content and uses a
@@ -651,7 +665,14 @@ evidence it cannot choose a strict subset or fabricate an event index. Pre-index
 positive closed allowlist: protocol rejection, decoder rejection, unknown instrument, metadata
 unavailable, provenance mismatch or local contract failure. Source-event conflict and
 frame-atomic abort are indexed-only, and every future evidence enum member remains pre-index
-invalid until explicitly classified.
+invalid until explicitly classified. A frame containing both an indexed rejection and an indexed
+source-event conflict must use `MIXED_INDEXED_FAILURE`. That status requires at least one of each,
+permits only `REJECTED`, `SOURCE_EVENT_CONFLICT`, `NOT_MATERIALIZED_FRAME_ABORTED` and
+`EXACT_DUPLICATE_SUPPRESSED`, covers the complete decoded index range, and commits no
+materialization. The older rejected and conflict statuses continue to reject the other primary
+disposition, so the mixed status is not a catch-all. New outer outcome identities use
+`normalization-outcome-v2`; v1 remains parser-only and rejects the mixed status. Both existing
+outcome-content layouts and every raw-event outcome identity remain unchanged.
 Transport, reconnect, raw-sink, delivery, foreign-scope or unrelated pre-existing transitions
 cannot be attached. Delivery state never appears in `NormalizationOutcome`.
 
@@ -673,6 +694,9 @@ cannot be attached. Delivery state never appears in `NormalizationOutcome`.
 - **3B1C-1C — compact atomic commitments:** replace newly written high-cardinality mutation,
   acceptance and normalization-lineage content with ordered domain-separated commitments while
   retaining every full typed value and one atomic compare-and-swap operation.
+- **3B1C-1D — mixed outcome and bulk derivation closure:** represent simultaneous indexed rejection
+  and conflict without precedence loss, and verify one complete committed fan-out once before O(1)
+  per-leaf committed-state/upstream-source access.
 - **3B1C-2 — coverage runtime:** operationalize immutable Bronze-ingress and Silver-normalization
   coverage and the temporary lossy v2 `is_gap` projection. Existing 3B1B outcomes remain
   transition-empty until this step.
@@ -770,6 +794,27 @@ acceptance IDs and v2 lineage IDs remain byte-exact parser-only legacy values; n
 only the paired v2/v2/v3 identities, and cross-version role substitution is rejected. No partial
 batch, partial acceptance, chunking or recovery semantics are introduced. These contracts remain
 dormant; 3B1C-2 resumes only after this correction merges.
+
+The next runtime probe exposed two independent remaining blockers. First, status precedence could
+retain either an indexed rejection or a source-event conflict but not both. Phase 3B1C-1D adds the
+strict mixed matrix described above and moves new outer outcome IDs to v2 without changing the v1
+raw-event or v1/v2 outcome-content layouts. Existing v1 outer IDs remain byte-exact parser fixtures;
+there is no legacy or dual writer.
+
+Second, a 1,000-spec run measured 0.841 seconds for plan construction, 0.070 seconds for attempts,
+0.783 seconds for runtime initialization, 3.683 seconds for ambiguity preparation and 47.808 seconds
+for commit, approximately 53.189 seconds total. Profiling attributed about 335.7 million calls and
+2.06 million canonical JSON parses to repeated verification of the same shared acceptance and
+lineage per Silver leaf. Runtime-only dictionaries cannot remove that nested validation.
+`BatchVerifiedCoverageDerivation.from_commit` therefore accepts one exact batch-v2, matching
+acceptance-v2 and complete ordered result tuple. It fully verifies their IDs, compact commitments,
+membership, scopes, run, epochs, statuses and ordinals once, then derives the existing ordinary
+committed-state and upstream-source objects once and exposes O(1) indexed access. It is sealed,
+factory-only and stateless: there is no caller-supplied verification flag, alternate identity,
+mutable/global cache or second commit proof. Deterministic tests bind one shared verification and
+one derivation per leaf and cap canonical-parse growth from 512 to 1,024 targets at 2.5x. This phase
+adds no runtime import, coverage mutation, delivery linearization or deployment; schema v2 and
+`is_gap` remain active and the v3 envelope remains dormant. Phase 3B1C-2 resumes only after merge.
 
 **Why:** No deployed dataset or ClickHouse schema depends on v2, so one atomic migration provides a
 clean long-term boundary without permanent compatibility complexity while preserving reviewable,

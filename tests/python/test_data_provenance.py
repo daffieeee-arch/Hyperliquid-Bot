@@ -52,6 +52,8 @@ from hyperliquid_bot.data_provenance import (
     AcknowledgementEvidenceSource,
     AdapterFeedBindingId,
     AuthoritativeStateSnapshotEvidenceSource,
+    BatchVerifiedCoverageDerivation,
+    CanonicalValue,
     CollectorRunId,
     CommittedCoverageState,
     CommittedCoverageStateId,
@@ -521,6 +523,50 @@ def _normalization_outcome_id(
             )
         )
     )
+
+
+def _current_normalization_outcome_id(
+    raw_record_id: RawRecordId,
+    *,
+    frame_status: str = "materialized",
+) -> NormalizationOutcomeId:
+    decoded_event_count = {
+        "control_no_event": None,
+        "valid_empty_market_frame": 0,
+        "rejected_before_indexing": None,
+    }.get(frame_status, 1)
+    return NormalizationOutcomeId(
+        canonical_json_array(
+            (
+                "normalization-outcome-v2",
+                NormalizationRunId("normalization-run-fixture"),
+                raw_record_id,
+                "normalizer-v1",
+                "normalizer-commit-fixture",
+                frame_status,
+                decoded_event_count,
+                "0" * 64,
+            )
+        )
+    )
+
+
+def test_normalization_outcome_id_v1_is_parser_only_and_v2_closes_mixed_status() -> None:
+    raw_record_id = _raw_record().raw_record_id
+    legacy = _normalization_outcome_id(raw_record_id)
+    current = _current_normalization_outcome_id(raw_record_id)
+    mixed = _current_normalization_outcome_id(
+        raw_record_id,
+        frame_status="mixed_indexed_failure",
+    )
+
+    assert json.loads(legacy.value)[0] == "normalization-outcome-v1"
+    assert json.loads(current.value)[0] == "normalization-outcome-v2"
+    assert json.loads(mixed.value)[5] == "mixed_indexed_failure"
+    legacy_mixed = json.loads(mixed.value)
+    legacy_mixed[0] = "normalization-outcome-v1"
+    with pytest.raises(ValueError, match="invalid canonical components"):
+        NormalizationOutcomeId(json.dumps(legacy_mixed, ensure_ascii=True, separators=(",", ":")))
 
 
 def _scope(domain: CoverageDomain, coin: str = "BTC") -> CoverageScope:
@@ -3841,6 +3887,7 @@ def test_outcome_sink_failure_all_possibly_active_fanout_binds_one_exact_outcome
             ("mixed_success", "exact"),
             ("rejected_after_indexing", "exact"),
             ("source_event_conflict", "exact"),
+            ("mixed_indexed_failure", "exact"),
             ("rejected_before_indexing", "plan"),
             ("control_no_event", "none"),
             ("valid_empty_market_frame", "none"),
@@ -3881,9 +3928,16 @@ def test_outcome_sink_failure_frame_status_has_one_closed_fanout_mode(
         scope=fanout.target_scopes[0],
         raw_record_id=raw_record.raw_record_id,
         kind=kind,
-        normalization_outcome_id=_normalization_outcome_id(
-            raw_record.raw_record_id,
-            frame_status=frame_status,
+        normalization_outcome_id=(
+            _current_normalization_outcome_id(
+                raw_record.raw_record_id,
+                frame_status=frame_status,
+            )
+            if frame_status == "mixed_indexed_failure"
+            else _normalization_outcome_id(
+                raw_record.raw_record_id,
+                frame_status=frame_status,
+            )
         ),
     )
     raw_binding = RawCoverageFanoutBinding.from_raw_record(
@@ -6874,7 +6928,7 @@ def _activation_batch_for_selected_snapshots(
     )
 
 
-@pytest.mark.parametrize("target_count", (1, 4, 50, 957, 958, 1_000))
+@pytest.mark.parametrize("target_count", (1, 4, 50, 512, 957, 958, 1_000, 1_024))
 def test_compact_coverage_mutation_v2_supports_previously_failing_target_counts(
     maximum_coverage_plan: tuple[
         SubscriptionPlanIdentity,
@@ -6890,8 +6944,20 @@ def test_compact_coverage_mutation_v2_supports_previously_failing_target_counts(
         complete_snapshots=snapshots,
         selected_snapshots=snapshots[:target_count],
     )
+    acceptance = CoverageCommitAcceptance.after_compare_and_swap(
+        batch=batch,
+        committed_state_references=batch.resulting_state_references,
+    )
+    derivation = BatchVerifiedCoverageDerivation.from_commit(
+        batch=batch,
+        commit_acceptance=acceptance,
+        resulting_state_references=batch.resulting_state_references,
+    )
 
     assert len(batch.resulting_state_references) == target_count
+    assert derivation.leaf_count == target_count
+    assert len(derivation.committed_states) == target_count
+    assert len(derivation.upstream_state_sources) == target_count
     assert len(batch.target_decision_sha256s) == target_count
     assert json.loads(batch.canonical_content)[:4] == [
         "coverage-mutation-batch-content-v2",
@@ -6901,6 +6967,18 @@ def test_compact_coverage_mutation_v2_supports_previously_failing_target_counts(
     ]
     assert json.loads(batch.coverage_mutation_batch_id.value)[0] == ("coverage-mutation-batch-v2")
     assert len(batch.canonical_content) < MAX_SUBSCRIPTION_PLAN_CONTENT_LENGTH // 16
+    if target_count <= 4:
+        expected_states = tuple(
+            CommittedCoverageState.from_commit(
+                state_reference=state,
+                commit_acceptance=acceptance,
+            )
+            for state in batch.resulting_state_references
+        )
+        assert derivation.committed_states == expected_states
+        assert derivation.upstream_state_sources == tuple(
+            UpstreamCoverageStateEvidenceSource(item) for item in expected_states
+        )
 
 
 def _transport_ambiguity_request(
@@ -7032,12 +7110,29 @@ def test_maximum_plan_compact_batch_and_acceptance_cover_both_transitions_and_no
         current_state_references=incomplete.resulting_state_references,
         requests=incomplete_requests,
     )
-    acceptance = CoverageCommitAcceptance.after_compare_and_swap(
-        batch=repeated,
-        committed_state_references=repeated.verify_compare_and_swap(
-            incomplete.resulting_state_references
-        ),
+    batches = (active, uncertain, incomplete, repeated)
+    previous_states = (
+        (),
+        active.resulting_state_references,
+        uncertain.resulting_state_references,
+        incomplete.resulting_state_references,
     )
+    acceptances = tuple(
+        CoverageCommitAcceptance.after_compare_and_swap(
+            batch=batch,
+            committed_state_references=batch.verify_compare_and_swap(previous),
+        )
+        for batch, previous in zip(batches, previous_states, strict=True)
+    )
+    derivations = tuple(
+        BatchVerifiedCoverageDerivation.from_commit(
+            batch=batch,
+            commit_acceptance=acceptance,
+            resulting_state_references=batch.resulting_state_references,
+        )
+        for batch, acceptance in zip(batches, acceptances, strict=True)
+    )
+    acceptance = acceptances[-1]
 
     assert len(active.initializations) == MAX_SUBSCRIPTION_SPECS
     assert len(uncertain.transitions) == MAX_SUBSCRIPTION_SPECS
@@ -7059,6 +7154,14 @@ def test_maximum_plan_compact_batch_and_acceptance_cover_both_transitions_and_no
     assert active.target_decision_sha256s[0] != uncertain.target_decision_sha256s[0]
     assert uncertain.target_decision_sha256s[0] != incomplete.target_decision_sha256s[0]
     assert incomplete.target_decision_sha256s[0] != repeated.target_decision_sha256s[0]
+    assert tuple(item.leaf_count for item in derivations) == (MAX_SUBSCRIPTION_SPECS,) * 4
+    assert all(item is None for item in derivations[0].upstream_transition_sources)
+    assert all(item is not None for item in derivations[1].upstream_transition_sources)
+    assert all(item is not None for item in derivations[2].upstream_transition_sources)
+    assert derivations[3].committed_states[0] == CommittedCoverageState.from_commit(
+        state_reference=repeated.resulting_state_references[0],
+        commit_acceptance=acceptance,
+    )
 
     before = repeated.resulting_state_references
     with pytest.raises(ValueError, match="pre-state"):
@@ -7128,6 +7231,425 @@ def test_maximum_plan_compact_batch_and_acceptance_cover_both_transitions_and_no
                 expected_batch_id=batch.coverage_mutation_batch_id,
             )
         object.__setattr__(batch, field_name, original)
+
+
+def test_batch_verified_derivation_is_sealed_and_rejects_nonexact_results() -> None:
+    plan = _multi_hyperliquid_plan(4)
+    catalog = CoverageTargetCatalog.from_subscription_plan(plan)
+    snapshots = tuple(
+        SubscriptionAttemptSnapshot(
+            SubscriptionAttemptIdentity(_session(), spec, 0),
+            SubscriptionAttemptStatus.ACKNOWLEDGED,
+        )
+        for spec in plan.subscription_specs
+    )
+    batch = _activation_batch_for_selected_snapshots(
+        plan=plan,
+        catalog=catalog,
+        complete_snapshots=snapshots,
+        selected_snapshots=snapshots,
+    )
+    acceptance = CoverageCommitAcceptance.after_compare_and_swap(
+        batch=batch,
+        committed_state_references=batch.resulting_state_references,
+    )
+    derivation = BatchVerifiedCoverageDerivation.from_commit(
+        batch=batch,
+        commit_acceptance=acceptance,
+        resulting_state_references=batch.resulting_state_references,
+    )
+
+    assert derivation.committed_state_at(0) == CommittedCoverageState.from_commit(
+        state_reference=batch.resulting_state_references[0],
+        commit_acceptance=acceptance,
+    )
+    assert derivation.upstream_state_source_at(0) == UpstreamCoverageStateEvidenceSource(
+        derivation.committed_states[0]
+    )
+    with pytest.raises(TypeError, match="from_commit"):
+        BatchVerifiedCoverageDerivation(
+            batch,
+            acceptance,
+            batch.resulting_state_references,
+        )
+    with pytest.raises(TypeError, match="from_commit"):
+        replace(derivation, committed_states=derivation.committed_states)
+    with pytest.raises(TypeError, match="subclassing"):
+
+        class ForgedDerivation(BatchVerifiedCoverageDerivation):  # type: ignore[misc]
+            pass
+
+    with pytest.raises(TypeError, match="integer"):
+        derivation.committed_state_at(cast(int, True))
+    with pytest.raises(IndexError, match="outside"):
+        derivation.upstream_state_source_at(4)
+
+    foreign_plan = _plan(_spec("FOREIGN"))
+    foreign_snapshot = SubscriptionAttemptSnapshot(
+        SubscriptionAttemptIdentity(
+            _session(),
+            foreign_plan.subscription_specs[0],
+            0,
+        ),
+        SubscriptionAttemptStatus.ACKNOWLEDGED,
+    )
+    foreign_batch = _activation_batch_for_selected_snapshots(
+        plan=foreign_plan,
+        catalog=CoverageTargetCatalog.from_subscription_plan(foreign_plan),
+        complete_snapshots=(foreign_snapshot,),
+        selected_snapshots=(foreign_snapshot,),
+    )
+    foreign_acceptance = CoverageCommitAcceptance.after_compare_and_swap(
+        batch=foreign_batch,
+        committed_state_references=foreign_batch.resulting_state_references,
+    )
+    invalid_results = (
+        batch.resulting_state_references[:-1],
+        tuple(reversed(batch.resulting_state_references)),
+        (*batch.resulting_state_references, batch.resulting_state_references[0]),
+        (*batch.resulting_state_references[:-1], foreign_batch.resulting_state_references[0]),
+    )
+    for values in invalid_results:
+        with pytest.raises(ValueError):
+            BatchVerifiedCoverageDerivation.from_commit(
+                batch=batch,
+                commit_acceptance=acceptance,
+                resulting_state_references=values,
+            )
+    with pytest.raises(ValueError):
+        BatchVerifiedCoverageDerivation.from_commit(
+            batch=batch,
+            commit_acceptance=foreign_acceptance,
+            resulting_state_references=batch.resulting_state_references,
+        )
+
+
+def test_bulk_derivation_rejects_foreign_epochs_runs_and_tampered_proofs() -> None:
+    plan = _plan()
+    catalog = CoverageTargetCatalog.from_subscription_plan(plan)
+    acknowledged = _attempt_snapshot(status=SubscriptionAttemptStatus.ACKNOWLEDGED)
+    batch = _activation_batch_for_selected_snapshots(
+        plan=plan,
+        catalog=catalog,
+        complete_snapshots=(acknowledged,),
+        selected_snapshots=(acknowledged,),
+    )
+    acceptance = CoverageCommitAcceptance.after_compare_and_swap(
+        batch=batch,
+        committed_state_references=batch.resulting_state_references,
+    )
+    state = batch.resulting_state_references[0]
+    original_epoch = state.reference.epoch
+    original_batch_digest = batch.content_sha256
+    original_acceptance_digest = acceptance.content_sha256
+    invalid_epochs = (
+        CoverageEpochIdentity(
+            state.reference.scope,
+            CollectorRunId("foreign-collector-run"),
+            original_epoch.epoch_ordinal,
+            original_epoch.activation_time,
+            original_epoch.activation_monotonic_ns,
+        ),
+        CoverageEpochIdentity(
+            state.reference.scope,
+            original_epoch.collector_run_id,
+            original_epoch.epoch_ordinal + 1,
+            original_epoch.activation_time,
+            original_epoch.activation_monotonic_ns,
+        ),
+    )
+
+    for invalid_epoch in invalid_epochs:
+        object.__setattr__(state.reference, "epoch", invalid_epoch)
+        try:
+            with pytest.raises(ValueError):
+                BatchVerifiedCoverageDerivation.from_commit(
+                    batch=batch,
+                    commit_acceptance=acceptance,
+                    resulting_state_references=batch.resulting_state_references,
+                )
+        finally:
+            object.__setattr__(state.reference, "epoch", original_epoch)
+
+    object.__setattr__(acceptance, "content_sha256", "f" * 64)
+    try:
+        with pytest.raises(ValueError, match="differs"):
+            BatchVerifiedCoverageDerivation.from_commit(
+                batch=batch,
+                commit_acceptance=acceptance,
+                resulting_state_references=batch.resulting_state_references,
+            )
+    finally:
+        object.__setattr__(acceptance, "content_sha256", original_acceptance_digest)
+
+    object.__setattr__(batch, "content_sha256", "e" * 64)
+    try:
+        with pytest.raises(ValueError, match="does not match"):
+            BatchVerifiedCoverageDerivation.from_commit(
+                batch=batch,
+                commit_acceptance=acceptance,
+                resulting_state_references=batch.resulting_state_references,
+            )
+    finally:
+        object.__setattr__(batch, "content_sha256", original_batch_digest)
+
+    assert state.reference.epoch == original_epoch
+    assert batch.content_sha256 == original_batch_digest
+    assert acceptance.content_sha256 == original_acceptance_digest
+    assert batch.resulting_state_references == (state,)
+
+
+def test_batch_verified_derivation_builds_byte_exact_upstream_evidence() -> None:
+    plan = _plan()
+    catalog = CoverageTargetCatalog.from_subscription_plan(plan)
+    acknowledged = _attempt_snapshot(status=SubscriptionAttemptStatus.ACKNOWLEDGED)
+    active = _activation_batch_for_selected_snapshots(
+        plan=plan,
+        catalog=catalog,
+        complete_snapshots=(acknowledged,),
+        selected_snapshots=(acknowledged,),
+    )
+    sent = replace(acknowledged, attempt_status=SubscriptionAttemptStatus.SENT)
+    fanout = CoverageFanoutProof.possibly_delivered_specs(
+        plan=plan,
+        catalog=catalog,
+        complete_snapshots=(sent,),
+        selected_attempt_ids=_selected_attempt_ids(sent),
+    )
+    uncertain = prepare_coverage_mutation_batch(
+        fanout_proof=fanout,
+        current_state_references=active.resulting_state_references,
+        requests=(_transport_ambiguity_request(active.resulting_state_references[0], sent),),
+    )
+    acceptance = CoverageCommitAcceptance.after_compare_and_swap(
+        batch=uncertain,
+        committed_state_references=uncertain.resulting_state_references,
+    )
+    derivation = BatchVerifiedCoverageDerivation.from_commit(
+        batch=uncertain,
+        commit_acceptance=acceptance,
+        resulting_state_references=uncertain.resulting_state_references,
+    )
+    silver_scope = next(
+        scope for scope in catalog.scopes if scope.domain is CoverageDomain.SILVER_NORMALIZATION
+    )
+    epoch = CoverageEpochIdentity(
+        silver_scope,
+        _session().collector_run_id,
+        0,
+        datetime(2026, 8, 26, 12, 0, 1, tzinfo=UTC),
+        101,
+    )
+    state_derived = derivation.derive_upstream_evidence_at(
+        0,
+        downstream_scope=silver_scope,
+        downstream_epoch=epoch,
+        observed_at=datetime(2026, 8, 26, 12, 0, 2, tzinfo=UTC),
+        observed_monotonic_ns=102,
+    )
+    reference_state = CommittedCoverageState.from_commit(
+        state_reference=uncertain.resulting_state_references[0],
+        commit_acceptance=acceptance,
+    )
+    state_expected = CoverageEvidence(
+        CoverageEvidenceKind.UPSTREAM_COVERAGE_STATE,
+        UpstreamCoverageStateEvidenceSource(reference_state),
+        silver_scope,
+        epoch,
+        datetime(2026, 8, 26, 12, 0, 2, tzinfo=UTC),
+        102,
+    )
+
+    assert state_derived == state_expected
+    assert CoverageEvidenceId(state_derived.coverage_evidence_id.value) == (
+        state_expected.coverage_evidence_id
+    )
+    current_silver = CoverageStateReference.from_initialization(
+        CoverageInitialization(
+            silver_scope,
+            epoch,
+            CoverageStatus.COMPLETE,
+            InitialCoverageReason.INITIAL_ACTIVATION,
+            CoverageEvidence(
+                CoverageEvidenceKind.INITIAL_ACTIVATION,
+                InitialActivationEvidenceSource(_session(), (acknowledged,)),
+                silver_scope,
+                epoch,
+                epoch.activation_time,
+                epoch.activation_monotonic_ns,
+            ),
+        )
+    )
+    transition_derived = derivation.derive_upstream_evidence_at(
+        0,
+        downstream_scope=silver_scope,
+        downstream_epoch=epoch,
+        observed_at=datetime(2026, 8, 26, 12, 0, 2, tzinfo=UTC),
+        observed_monotonic_ns=102,
+        current_downstream_state=current_silver,
+    )
+    transition_expected = CoverageEvidence(
+        CoverageEvidenceKind.UPSTREAM_COVERAGE_TRANSITION,
+        UpstreamCoverageTransitionEvidenceSource(reference_state),
+        silver_scope,
+        epoch,
+        datetime(2026, 8, 26, 12, 0, 2, tzinfo=UTC),
+        102,
+    )
+    assert transition_derived == transition_expected
+    with pytest.raises(ValueError, match="matching degraded"):
+        derivation.derive_upstream_evidence_at(
+            0,
+            downstream_scope=uncertain.resulting_state_references[0].reference.scope,
+            downstream_epoch=uncertain.resulting_state_references[0].reference.epoch,
+            observed_at=datetime(2026, 8, 26, 12, 0, 2, tzinfo=UTC),
+            observed_monotonic_ns=102,
+        )
+
+
+def test_bulk_derivation_verifies_shared_values_once_and_derives_each_leaf_once(
+    maximum_coverage_plan: tuple[
+        SubscriptionPlanIdentity,
+        CoverageTargetCatalog,
+        tuple[SubscriptionAttemptSnapshot, ...],
+    ],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan, catalog, snapshots = maximum_coverage_plan
+    batch = _activation_batch_for_selected_snapshots(
+        plan=plan,
+        catalog=catalog,
+        complete_snapshots=snapshots,
+        selected_snapshots=snapshots,
+    )
+    acceptance = CoverageCommitAcceptance.after_compare_and_swap(
+        batch=batch,
+        committed_state_references=batch.resulting_state_references,
+    )
+    counts = {"verification": 0, "leaf": 0, "order_comparisons": 0}
+    original_verify = data_provenance_module._verify_bulk_coverage_commit_inputs
+    original_derive = data_provenance_module._derive_bulk_committed_coverage_state
+    original_order_check = data_provenance_module._is_strictly_increasing_text_sequence
+
+    def counted_verify(**kwargs: object) -> None:
+        counts["verification"] += 1
+        original_verify(**kwargs)  # type: ignore[arg-type]
+
+    def counted_derive(
+        state: CoverageStateReference,
+        proof: CoverageCommitAcceptance,
+    ) -> tuple[
+        CommittedCoverageState,
+        UpstreamCoverageStateEvidenceSource,
+        UpstreamCoverageTransitionEvidenceSource | None,
+    ]:
+        counts["leaf"] += 1
+        return original_derive(state, proof)
+
+    def counted_order_check(values: tuple[str, ...]) -> bool:
+        counts["order_comparisons"] += max(len(values) - 1, 0)
+        return original_order_check(values)
+
+    monkeypatch.setattr(
+        data_provenance_module,
+        "_verify_bulk_coverage_commit_inputs",
+        counted_verify,
+    )
+    monkeypatch.setattr(
+        data_provenance_module,
+        "_derive_bulk_committed_coverage_state",
+        counted_derive,
+    )
+    monkeypatch.setattr(
+        data_provenance_module,
+        "_is_strictly_increasing_text_sequence",
+        counted_order_check,
+    )
+    derivation = BatchVerifiedCoverageDerivation.from_commit(
+        batch=batch,
+        commit_acceptance=acceptance,
+        resulting_state_references=batch.resulting_state_references,
+    )
+
+    assert counts == {
+        "verification": 1,
+        "leaf": MAX_SUBSCRIPTION_SPECS,
+        "order_comparisons": MAX_SUBSCRIPTION_SPECS - 1,
+    }
+    assert derivation.leaf_count == MAX_SUBSCRIPTION_SPECS
+    assert derivation.committed_state_at(0) is derivation.committed_states[0]
+    assert (
+        derivation.committed_state_at(MAX_SUBSCRIPTION_SPECS - 1)
+        is (derivation.committed_states[-1])
+    )
+
+
+def test_bulk_derivation_canonical_parse_count_scales_linearly(
+    maximum_coverage_plan: tuple[
+        SubscriptionPlanIdentity,
+        CoverageTargetCatalog,
+        tuple[SubscriptionAttemptSnapshot, ...],
+    ],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan, catalog, snapshots = maximum_coverage_plan
+    batches = tuple(
+        _activation_batch_for_selected_snapshots(
+            plan=plan,
+            catalog=catalog,
+            complete_snapshots=snapshots,
+            selected_snapshots=snapshots[:target_count],
+        )
+        for target_count in (512, MAX_SUBSCRIPTION_SPECS)
+    )
+    acceptances = tuple(
+        CoverageCommitAcceptance.after_compare_and_swap(
+            batch=batch,
+            committed_state_references=batch.resulting_state_references,
+        )
+        for batch in batches
+    )
+    original_parse = data_provenance_module.parse_canonical_json_array
+    parse_counts: list[int] = []
+
+    for batch, acceptance in zip(batches, acceptances, strict=True):
+        call_count = 0
+
+        def counted_parse(
+            value: object,
+            *,
+            field_name: str,
+            maximum_length: int = MAX_CANONICAL_IDENTIFIER_LENGTH,
+        ) -> tuple[CanonicalValue, ...]:
+            nonlocal call_count
+            call_count += 1
+            return original_parse(
+                value,
+                field_name=field_name,
+                maximum_length=maximum_length,
+            )
+
+        monkeypatch.setattr(
+            data_provenance_module,
+            "parse_canonical_json_array",
+            counted_parse,
+        )
+        derivation = BatchVerifiedCoverageDerivation.from_commit(
+            batch=batch,
+            commit_acceptance=acceptance,
+            resulting_state_references=batch.resulting_state_references,
+        )
+        assert derivation.leaf_count == len(batch.resulting_state_references)
+        parse_counts.append(call_count)
+        monkeypatch.setattr(
+            data_provenance_module,
+            "parse_canonical_json_array",
+            original_parse,
+        )
+
+    assert parse_counts[0] > 0
+    assert parse_counts[1] <= parse_counts[0] * 2.5
+    assert parse_counts[1] < MAX_SUBSCRIPTION_SPECS * 128
 
 
 def test_subscription_plan_n_plus_one_remains_rejected_by_existing_bound(

@@ -165,7 +165,7 @@ wrapper is planned. Nothing is deployed, and SHADOW/LIVE remain disabled. ADR-02
 complete decision and canonical identity rules.
 
 The 3B1C audit split that work into reviewable contract, coverage-runtime and delivery phases, with
-3B1C-1A through 3B1C-1C as bounded pure corrections before runtime activation. Phase 1A-3B1C-1
+3B1C-1A through 3B1C-1D as bounded pure corrections before runtime activation. Phase 1A-3B1C-1
 defines only pure,
 dormant contracts that make coverage initialization, prepared multi-scope compare-and-swap
 mutation, repeated-degradation no-ops, frame-atomic abort lineage and destination-specific delivery
@@ -250,6 +250,30 @@ with one ordered commitment per complete typed role. Legacy batch/acceptance v1 
 remain byte-exact parser-only forms and cannot cross-bind to the new versions. The representation
 still describes one indivisible operation; it adds no chunking, partial acceptance, runtime state
 or recovery. This correction is dormant, and 3B1C-2 resumes only after it is merged.
+
+Phase 1A-3B1C-1D closes two further contract blockers found by the protected runtime probe. First,
+one indexed frame can contain both an independently rejected item and a source-event conflict.
+Choosing either older frame status would discard one primary cause, so the closed
+`MIXED_INDEXED_FAILURE` matrix requires at least one of each, permits only rejected, conflicting,
+frame-aborted and exact-duplicate indexes, and commits no materialization. New outcome factories
+write `normalization-outcome-v2`; v1 remains parser-only and cannot encode the mixed status. The
+raw-event and outcome-content layouts remain unchanged.
+
+Second, deriving each committed leaf independently reparsed the same complete plan-wide acceptance
+and lineage. A 1,000-spec probe spent 47.808 seconds in commit and approximately 53.189 seconds
+overall, with about 335.7 million calls and 2.06 million canonical JSON parses. The sealed
+`BatchVerifiedCoverageDerivation` now verifies one exact batch-v2, acceptance-v2 and ordered result
+set once in O(N), derives the ordinary committed-state and upstream-source values once, and exposes
+O(1) indexed access without introducing alternate IDs, a cache or another commit proof. The later
+3B1C-2 integration must additionally satisfy the synchronous CPU budget `C`:
+
+```text
+max(H, P + 2 * (R + O + C) + Q) + (R + O + C + Q) + S < 60 seconds
+```
+
+Defaults `H=45`, `P=10`, `R=1`, `O=1`, `C=1`, `Q=5` and `S=4` produce exactly 57 seconds. This
+contract correction adds no coverage runtime or delivery linearization; schema v2 and `is_gap`
+remain active, and `MarketEventEnvelopeV3` remains dormant.
 
 ### Research Plane
 

@@ -93,6 +93,12 @@ continues. It replaces new flattened mutation/acceptance content with compact or
 and moves normalization lineage to compact v3, while retaining every full typed value and one
 atomic CAS. Legacy identities remain parser-only. The contracts stay dormant; 3B1C-2 resumes only
 after this correction is merged.
+Phase 1A-3B1C-1D closes the remaining mixed-frame and O(N²) derivation blockers. It adds one strict
+nonmaterializing status for frames containing both indexed rejection and indexed source conflict,
+moves new outer outcome IDs to v2 while retaining parser-only v1, and provides a sealed one-pass
+batch/acceptance verification boundary with O(1) per-leaf access to the existing committed-state and
+upstream-source values. No runtime integration is activated; schema v2 and `is_gap` stay active and
+the v3 envelope stays dormant until later phases.
 
 Target: useful local output within approximately the first 1-2 weeks of active development.
 
@@ -128,13 +134,15 @@ The multi-venue data-contract spine proceeds in bounded steps:
    mixed outcome-sink fan-out contracts only;
 6. **Phase 1A-3B1C-1C — compact atomic commitments:** pure bounded mutation, acceptance and
    normalization-lineage commitments for complete 1,024-spec fan-out;
-7. **Phase 1A-3B1C-2 — coverage runtime:** operational immutable coverage state and temporary v2
+7. **Phase 1A-3B1C-1D — mixed outcome and bulk derivation closure:** pure mixed-indexed-failure
+   versioning and one-pass verified committed-state/upstream-evidence derivation;
+8. **Phase 1A-3B1C-2 — coverage runtime:** operational immutable coverage state and temporary v2
    `is_gap` projection;
-8. **Phase 1A-3B1C-3 — atomic delivery:** one audited composite output-queue item per delivered
+9. **Phase 1A-3B1C-3 — atomic delivery:** one audited composite output-queue item per delivered
    non-empty normalization outcome;
-9. **Phase 1A-3B1D — atomic cutover:** both normalizers and the collector move together to the one
+10. **Phase 1A-3B1D — atomic cutover:** both normalizers and the collector move together to the one
    mandatory outer-v3 envelope; outer v2 and `is_gap` are removed without dual writing;
-10. **Phase 1A-3B2 — deterministic replay:** digest verification, sealed run manifests and exact
+11. **Phase 1A-3B2 — deterministic replay:** digest verification, sealed run manifests and exact
    Bronze-to-Silver lineage.
 
 Phase 1A-3B1B implements no concrete persistence, operational coverage tracker, delivery outcome

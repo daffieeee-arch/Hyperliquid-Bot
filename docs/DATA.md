@@ -496,7 +496,7 @@ commit contracts; 3B1C-2 and 3B1C-3 will add operational coverage and atomic del
 
 The coverage/delivery audit found five representation gaps, so 3B1C is split into pure contract
 closure (3B1C-1), its bounded runtime-binding contract correction (3B1C-1A), operational coverage
-(3B1C-2) and atomic output delivery (3B1C-3). The intervening 3B1C-1B and 3B1C-1C corrections
+(3B1C-2) and atomic output delivery (3B1C-3). The intervening 3B1C-1B, 3B1C-1C and 3B1C-1D corrections
 remain pure as well. These contract slices add only immutable, deterministic values and validators;
 they perform no async work and change no collector, sink, queue, health or consumer behavior.
 
@@ -564,6 +564,24 @@ levels from typed values. Previous batch/acceptance v1 and lineage v2 IDs remain
 cannot be interpreted as current identities. This changes no capture, coverage runtime or Silver
 output; v2 and `is_gap` remain active, v3 remains dormant, and 3B1C-2 resumes only after merge.
 
+The 3B1C-1D correction preserves two independent primary causes in one reliably indexed frame.
+`MIXED_INDEXED_FAILURE` requires at least one `REJECTED` and one `SOURCE_EVENT_CONFLICT`; it may
+also contain only genuinely new frame-aborted peers and exact duplicates. The complete index range,
+exact canonical evidence union, typed failure/conflict lineage and frame-atomic zero-materialization
+rule remain mandatory. The older rejected and conflict statuses still reject each other's primary
+disposition. New factories emit `normalization-outcome-v2`, which retains the existing ordered outer
+components and content digest; parser-only v1 accepts only its historical status set.
+
+The same correction adds `BatchVerifiedCoverageDerivation`, a sealed factory-only boundary over one
+exact mutation batch v2, matching acceptance v2 and complete ordered result set. It performs shared
+batch, acceptance, membership, run, epoch, status and ordinal verification once, then exposes the
+existing byte-identical `CommittedCoverageState` and upstream evidence-source values with O(1)
+per-leaf lookup. It creates no new semantic ID, commit proof, cache or partial result. This removes
+the prior O(N²) revalidation path while retaining every typed leaf and stored-verification rule.
+The later runtime must keep synchronous coverage CPU work within `C=1` second so the complete
+heartbeat expression remains strictly bounded at 57 seconds with current defaults. No runtime
+coverage or delivery queue is activated here.
+
 Normalization-outcome sink failure is represented by the exact canonical
 `["normalization-outcome-evidence-v1",normalization_outcome_id,coverage_scope_id]` source row.
 Only explicit typed rejection establishes definite non-acceptance and Silver-normalization
@@ -574,7 +592,8 @@ feed, collector run and exact Silver scope, and requires the raw record's full f
 All targets in one mutation cite the same outcome and the same failure knowledge. This evidence is
 created after the outcome exists, so it is never written back into that failed outcome's own
 normalization lineage. `materialized`, `duplicates_only`, `mixed_success`,
-`rejected_after_indexing` and `source_event_conflict` require exact routed fan-out;
+`rejected_after_indexing`, `source_event_conflict` and `mixed_indexed_failure` require exact routed
+fan-out;
 `rejected_before_indexing` requires the complete possibly-active plan slice. `control_no_event` and
 `valid_empty_market_frame` cannot create a coverage mutation through this post-outcome evidence.
 The lower evidence source and prepared mutation alone do not prove that this target selection
@@ -602,9 +621,10 @@ cannot create a delivery batch. Actual v2-event serialization and a composite au
 remain 3B1C-3 work. Queue acceptance will mean bounded collector-output-queue acceptance only, not
 dequeue, downstream processing or persistence.
 
-All 3B1C-1, 3B1C-1A, 3B1C-1B and 3B1C-1C values remain dormant. Existing 3B1B raw capture still
-emits normalization outcomes with empty coverage lineage; v2 remains the only active Silver
-envelope and operational `is_gap` remains unchanged. No coverage runtime, delivery linearization,
+All 3B1C-1, 3B1C-1A, 3B1C-1B, 3B1C-1C and 3B1C-1D coverage paths remain dormant. Existing 3B1B raw
+capture still emits normalization outcomes with empty coverage lineage, now under the current outer
+outcome v2 identity; schema v2 remains the only active Silver envelope and operational `is_gap`
+remains unchanged. No coverage runtime, delivery linearization,
 raw persistence or replay exists yet.
 
 ## ClickHouse environments

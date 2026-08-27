@@ -48,6 +48,7 @@ from hyperliquid_bot.data_provenance import (
     DeliveryBatchId,
     EventActivationRequirement,
     EventCoverage,
+    ExactIdentifiedRejectionTarget,
     FeedProductId,
     FeedProductIdentity,
     InstrumentMetadataObservationId,
@@ -62,6 +63,7 @@ from hyperliquid_bot.data_provenance import (
     RawCoverageFanoutBindingId,
     RawMarketDataRecord,
     RawRecordId,
+    RoutedCoverageTarget,
     SourceEventConflictEvidenceSource,
     SourceEventId,
     SourceSequenceRange,
@@ -1990,6 +1992,8 @@ class NormalizationCoverageLineage:
         if batch.fanout_proof.kind not in {
             CoverageFanoutKind.EXACT_ROUTED_EVENT,
             CoverageFanoutKind.EXACT_ROUTED_EVENTS,
+            CoverageFanoutKind.EXACT_IDENTIFIED_REJECTION,
+            CoverageFanoutKind.EXACT_IDENTIFIED_REJECTIONS,
             CoverageFanoutKind.ALL_POSSIBLY_ACTIVE,
         }:
             raise ValueError("frame outcomes reject lifecycle-only coverage fanout.")
@@ -1999,10 +2003,14 @@ class NormalizationCoverageLineage:
         ):
             raise ValueError("frame outcome coverage targets must all be Silver normalization.")
         if (
-            batch.fanout_proof.kind is CoverageFanoutKind.EXACT_ROUTED_EVENT
+            batch.fanout_proof.kind
+            in {
+                CoverageFanoutKind.EXACT_ROUTED_EVENT,
+                CoverageFanoutKind.EXACT_IDENTIFIED_REJECTION,
+            }
             and len(batch.fanout_proof.target_scopes) != 1
         ):
-            raise ValueError("an exact routed frame mutation must have one target.")
+            raise ValueError("a singular exact frame mutation must have one target.")
         aborts = _require_exact_tuple(
             self.frame_atomic_abort_evidence,
             item_type=FrameAtomicAbortEvidenceSource,
@@ -2327,6 +2335,37 @@ class RawEventNormalizationOutcome:
             "raw_event_normalization_outcome_id",
             RawEventNormalizationOutcomeId(canonical),
         )
+
+
+def _binding_matches_identified_rejection_target(
+    binding: RawEventNormalizationScopeBinding,
+    target: ExactIdentifiedRejectionTarget,
+    scope_id: CoverageScopeId,
+) -> bool:
+    snapshot = target.attempt_snapshot
+    return (
+        binding.coverage_scope_id == scope_id
+        and binding.subscription_spec_id == snapshot.subscription_spec.subscription_spec_id
+        and binding.subscription_attempt_id == snapshot.subscription_attempt.subscription_attempt_id
+        and binding.attempt_status is snapshot.attempt_status
+        and binding.source_selector == target.source_selector
+        and binding.canonical_instrument_id == target.canonical_instrument_id
+    )
+
+
+def _binding_matches_acknowledged_route_target(
+    binding: RawEventNormalizationScopeBinding,
+    target: "RoutedCoverageTarget",
+    scope_id: CoverageScopeId,
+) -> bool:
+    snapshot = target.acknowledged_snapshot
+    return (
+        binding.coverage_scope_id == scope_id
+        and binding.subscription_spec_id == snapshot.subscription_spec.subscription_spec_id
+        and binding.subscription_attempt_id == snapshot.subscription_attempt.subscription_attempt_id
+        and binding.attempt_status is SubscriptionAttemptStatus.ACKNOWLEDGED
+        and binding.canonical_instrument_id == target.canonical_instrument_id
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -2874,14 +2913,69 @@ class NormalizationOutcome:
                 )
             return
 
-        if lineage.coverage_mutation_batch.fanout_proof.kind not in {
+        fanout = lineage.coverage_mutation_batch.fanout_proof
+        if fanout.kind not in {
             CoverageFanoutKind.EXACT_ROUTED_EVENT,
             CoverageFanoutKind.EXACT_ROUTED_EVENTS,
+            CoverageFanoutKind.EXACT_IDENTIFIED_REJECTION,
+            CoverageFanoutKind.EXACT_IDENTIFIED_REJECTIONS,
         }:
             raise ValueError("indexed typed lineage requires exact routed-event fanout.")
 
+        identified_rejection_fanout = fanout.kind in {
+            CoverageFanoutKind.EXACT_IDENTIFIED_REJECTION,
+            CoverageFanoutKind.EXACT_IDENTIFIED_REJECTIONS,
+        }
+        if identified_rejection_fanout and self.frame_status is not (
+            FrameNormalizationStatus.REJECTED_AFTER_INDEXING
+        ):
+            raise ValueError("identified rejection lineage requires an indexed rejected frame.")
+        matched_rejection_scope_ids: set[CoverageScopeId] = set()
+        matched_acknowledged_scope_ids: set[CoverageScopeId] = set()
+
         matched_primary_ids: list[CoverageEvidenceId] = []
         for outcome in outcomes:
+            binding = outcome.normalization_scope_binding
+            is_acknowledged = binding.attempt_status is SubscriptionAttemptStatus.ACKNOWLEDGED
+            if identified_rejection_fanout and not is_acknowledged:
+                route_matches = tuple(
+                    scope_id
+                    for target, scope_id in zip(
+                        fanout.identified_rejection_targets,
+                        fanout.identified_rejection_scope_ids,
+                        strict=True,
+                    )
+                    if _binding_matches_identified_rejection_target(binding, target, scope_id)
+                )
+                if len(route_matches) != 1:
+                    raise ValueError(
+                        "every non-ACK rejected index must match one exact identified route."
+                    )
+                if (
+                    outcome.disposition is not RawEventDisposition.REJECTED
+                    or outcome.evidence is not NormalizationEvidence.PROVENANCE_MISMATCH
+                ):
+                    raise ValueError(
+                        "non-ACK identified routes permit only rejected provenance mismatches."
+                    )
+                matched_rejection_scope_ids.add(route_matches[0])
+            elif identified_rejection_fanout and (
+                outcome.disposition is RawEventDisposition.REJECTED
+            ):
+                route_matches = tuple(
+                    scope_id
+                    for target, scope_id in zip(
+                        fanout.acknowledged_routed_targets,
+                        fanout.acknowledged_routed_scope_ids,
+                        strict=True,
+                    )
+                    if _binding_matches_acknowledged_route_target(binding, target, scope_id)
+                )
+                if len(route_matches) != 1:
+                    raise ValueError(
+                        "every acknowledged primary rejection must match one exact routed target."
+                    )
+                matched_acknowledged_scope_ids.add(route_matches[0])
             if outcome.disposition is RawEventDisposition.REJECTED:
                 matches = tuple(
                     evidence
@@ -2904,6 +2998,12 @@ class NormalizationOutcome:
                     )
                     and _NORMALIZATION_FAILURE_TO_FRAME_EVIDENCE[evidence.source.category]
                     is outcome.evidence
+                    and (
+                        not identified_rejection_fanout
+                        or is_acknowledged
+                        or evidence.source.category
+                        is NormalizationFailureCategory.PROVENANCE_MISMATCH
+                    )
                 )
                 if len(matches) != 1:
                     raise ValueError(
@@ -2961,6 +3061,16 @@ class NormalizationOutcome:
                 continue
             else:  # pragma: no cover - closed enum exhaustiveness
                 raise AssertionError("unhandled raw-event disposition")
+
+        if identified_rejection_fanout:
+            if matched_rejection_scope_ids != set(fanout.identified_rejection_scope_ids):
+                raise ValueError(
+                    "identified rejection lineage contains an orphan or missing non-ACK route."
+                )
+            if matched_acknowledged_scope_ids != set(fanout.acknowledged_routed_scope_ids):
+                raise ValueError(
+                    "identified rejection lineage contains an orphan acknowledged route."
+                )
 
         if len(matched_primary_ids) != len(primary) or set(matched_primary_ids) != {
             item.coverage_evidence_id for item in primary
@@ -3268,11 +3378,24 @@ def _validate_concrete_outcome_fanout(
                 raise ValueError("pre-index outcome fan-out is outside its complete frame scope.")
         return
 
+    identified_rejection_fanout = fanout.kind in {
+        CoverageFanoutKind.EXACT_IDENTIFIED_REJECTION,
+        CoverageFanoutKind.EXACT_IDENTIFIED_REJECTIONS,
+    }
     if fanout.kind not in {
         CoverageFanoutKind.EXACT_ROUTED_EVENT,
         CoverageFanoutKind.EXACT_ROUTED_EVENTS,
+        CoverageFanoutKind.EXACT_IDENTIFIED_REJECTION,
+        CoverageFanoutKind.EXACT_IDENTIFIED_REJECTIONS,
     }:
         raise ValueError("indexed outcome sink failure requires exact routed-event fan-out.")
+    if identified_rejection_fanout and (
+        status is not FrameNormalizationStatus.REJECTED_AFTER_INDEXING
+        or normalization_outcome.coverage_lineage is None
+    ):
+        raise ValueError(
+            "identified rejection sink failure requires typed indexed rejection lineage."
+        )
     scope_bindings = tuple(
         outcome.normalization_scope_binding for outcome in normalization_outcome.raw_event_outcomes
     )
@@ -3300,6 +3423,57 @@ def _validate_concrete_outcome_fanout(
     )
     if fanout.selected_attempt_ids != expected_attempt_ids:
         raise ValueError("indexed outcome fan-out must equal its exact decoded attempt union.")
+    if identified_rejection_fanout:
+        matched_rejection_scope_ids: set[CoverageScopeId] = set()
+        matched_acknowledged_scope_ids: set[CoverageScopeId] = set()
+        for outcome in normalization_outcome.raw_event_outcomes:
+            outcome_binding = outcome.normalization_scope_binding
+            if outcome_binding.attempt_status is SubscriptionAttemptStatus.ACKNOWLEDGED:
+                route_matches = tuple(
+                    scope_id
+                    for target, scope_id in zip(
+                        fanout.acknowledged_routed_targets,
+                        fanout.acknowledged_routed_scope_ids,
+                        strict=True,
+                    )
+                    if _binding_matches_acknowledged_route_target(
+                        outcome_binding,
+                        target,
+                        scope_id,
+                    )
+                )
+                if len(route_matches) != 1:
+                    raise ValueError(
+                        "acknowledged indexed outcome must match one exact sink-fanout route."
+                    )
+                matched_acknowledged_scope_ids.add(route_matches[0])
+                continue
+            route_matches = tuple(
+                scope_id
+                for target, scope_id in zip(
+                    fanout.identified_rejection_targets,
+                    fanout.identified_rejection_scope_ids,
+                    strict=True,
+                )
+                if _binding_matches_identified_rejection_target(
+                    outcome_binding,
+                    target,
+                    scope_id,
+                )
+            )
+            if (
+                len(route_matches) != 1
+                or outcome.disposition is not RawEventDisposition.REJECTED
+                or outcome.evidence is not NormalizationEvidence.PROVENANCE_MISMATCH
+            ):
+                raise ValueError(
+                    "non-ACK sink-fanout routes require exact rejected provenance mismatches."
+                )
+            matched_rejection_scope_ids.add(route_matches[0])
+        if matched_rejection_scope_ids != set(fanout.identified_rejection_scope_ids):
+            raise ValueError("sink-failure fanout omits or adds an identified rejection route.")
+        if matched_acknowledged_scope_ids != set(fanout.acknowledged_routed_scope_ids):
+            raise ValueError("sink-failure fanout omits or adds an acknowledged route.")
 
 
 def _validate_delivery_status_reason(

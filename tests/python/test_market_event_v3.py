@@ -56,6 +56,7 @@ from hyperliquid_bot.data_provenance import (
     DeliveryBatchId,
     EventActivationRequirement,
     EventCoverage,
+    ExactIdentifiedRejectionTarget,
     FrameKind,
     InitialActivationEvidenceSource,
     InitialCoverageReason,
@@ -163,6 +164,583 @@ from hyperliquid_bot.market_event_v3 import (
     RawFrameNormalizationScopeBinding,
     SourceProvenance,
 )
+
+
+def _identified_preack_outcome(
+    *,
+    attempt_status: SubscriptionAttemptStatus = SubscriptionAttemptStatus.SENT,
+    event_count: int = 1,
+) -> tuple[
+    RawMarketDataRecord,
+    CoverageFanoutProof,
+    CoverageMutationBatch,
+    NormalizationOutcome,
+]:
+    raw_record, spec, attempt = _raw_record(attempt_status=attempt_status)
+    snapshot = raw_record.subscription_attempt_snapshots[0]
+    plan_binding = raw_record.subscription_plan.instrument_bindings[0]
+    normalization_binding = raw_record.subscription_plan.normalization_bindings[0]
+    target = ExactIdentifiedRejectionTarget(
+        attempt_snapshot=snapshot,
+        source_selector=plan_binding.source_selector,
+        canonical_instrument_id=plan_binding.canonical_instrument_id,
+        adapter_profile=plan_binding.adapter_profile,
+        event_family=normalization_binding.event_family,
+        event_family_schema_version=normalization_binding.event_family_schema_version,
+        payload_type=normalization_binding.payload_type,
+    )
+    fanout = CoverageFanoutProof.exact_identified_rejections(
+        plan=raw_record.subscription_plan,
+        catalog=CoverageTargetCatalog.from_subscription_plan(raw_record.subscription_plan),
+        rejection_targets=(target,),
+    )
+    scope = fanout.target_scopes[0]
+    normalization_run_id = NormalizationRunId("preack-normalization-run")
+    epoch = CoverageEpochIdentity(
+        scope,
+        raw_record.collector_run_id,
+        0,
+        raw_record.received_time,
+        raw_record.received_monotonic_ns,
+    )
+    primary_evidence = tuple(
+        CoverageEvidence(
+            CoverageEvidenceKind.NORMALIZATION_FAILURE,
+            NormalizationFailureEvidenceSource(
+                raw_record.raw_record_id,
+                normalization_run_id,
+                index,
+                SourceEventId(f"preack-source-{index}"),
+                NormalizationFailureCategory.PROVENANCE_MISMATCH,
+                scope.coverage_scope_id,
+            ),
+            scope,
+            epoch,
+            raw_record.received_time,
+            raw_record.received_monotonic_ns,
+        )
+        for index in range(event_count)
+    )
+    ordered_evidence = tuple(
+        sorted(primary_evidence, key=lambda item: item.coverage_evidence_id.value)
+    )
+    selected_evidence = ordered_evidence[0]
+    raw_binding = RawCoverageFanoutBinding.from_raw_record(
+        raw_record=raw_record,
+        coverage_fanout_proof=fanout,
+    )
+    batch = prepare_coverage_mutation_batch(
+        fanout_proof=fanout,
+        current_state_references=(),
+        requests=(
+            RequestedCoverageMutation(
+                scope,
+                epoch,
+                CoverageStatus.CONFIRMED_INCOMPLETE,
+                InitialCoverageReason.IN_SCOPE_NORMALIZATION_FAILURE,
+                CoverageReason.IN_SCOPE_NORMALIZATION_FAILURE,
+                selected_evidence,
+            ),
+        ),
+        raw_fanout_binding=raw_binding,
+    )
+    indexed_outcomes = tuple(
+        RawEventNormalizationOutcome(
+            ObservationKey(raw_record.raw_record_id, index),
+            _outcome_scope_binding(
+                index,
+                raw_record=raw_record,
+                spec=spec,
+                attempt=attempt,
+                scope=scope,
+            ),
+            RawEventDisposition.REJECTED,
+            LogicalSourceKey(
+                raw_record.feed_product.feed_product_id,
+                SourceEventId(f"preack-source-{index}"),
+            ),
+            evidence=NormalizationEvidence.PROVENANCE_MISMATCH,
+        )
+        for index in range(event_count)
+    )
+    lineage = NormalizationCoverageLineage(
+        coverage_mutation_batch=batch,
+        frame_atomic_abort_evidence=(),
+        raw_fanout_binding=raw_binding,
+        additional_primary_evidence=ordered_evidence[1:],
+    )
+    outcome = NormalizationOutcome(
+        normalization_run_id=normalization_run_id,
+        raw_record_id=raw_record.raw_record_id,
+        normalizer_version="normalizer-v1",
+        normalizer_commit="normalizer-commit-fixture",
+        frame_status=FrameNormalizationStatus.REJECTED_AFTER_INDEXING,
+        decoded_event_count=event_count,
+        raw_event_outcomes=indexed_outcomes,
+        committed_materialization_keys=(),
+        evidence=(NormalizationEvidence.PROVENANCE_MISMATCH,),
+        coverage_lineage=lineage,
+    )
+    return raw_record, fanout, batch, outcome
+
+
+@pytest.mark.parametrize(
+    "status",
+    (
+        SubscriptionAttemptStatus.PENDING,
+        SubscriptionAttemptStatus.SEND_STARTED,
+        SubscriptionAttemptStatus.SENT,
+    ),
+)
+def test_indexed_preack_provenance_rejection_has_exact_typed_coverage_lineage(
+    status: SubscriptionAttemptStatus,
+) -> None:
+    raw_record, fanout, batch, outcome = _identified_preack_outcome(attempt_status=status)
+    event = outcome.raw_event_outcomes[0]
+    source = cast(
+        NormalizationFailureEvidenceSource,
+        cast(NormalizationCoverageLineage, outcome.coverage_lineage).primary_evidence[0].source,
+    )
+
+    assert outcome.frame_status is FrameNormalizationStatus.REJECTED_AFTER_INDEXING
+    assert event.disposition is RawEventDisposition.REJECTED
+    assert event.evidence is NormalizationEvidence.PROVENANCE_MISMATCH
+    assert event.normalization_scope_binding.attempt_status is status
+    assert source.category is NormalizationFailureCategory.PROVENANCE_MISMATCH
+    assert source.raw_record_id == raw_record.raw_record_id
+    assert source.raw_event_index == 0
+    assert (
+        source.source_event_id
+        == cast(
+            LogicalSourceKey,
+            event.logical_source_key,
+        ).source_event_id
+    )
+    assert batch.initializations[0].reference.status is CoverageStatus.CONFIRMED_INCOMPLETE
+    assert fanout.target_scopes[0].coverage_scope_id == source.identified_coverage_scope_id
+
+
+def test_same_preack_route_supports_multiple_exact_indexed_failure_evidence_rows() -> None:
+    _raw, fanout, batch, outcome = _identified_preack_outcome(event_count=2)
+    lineage = cast(NormalizationCoverageLineage, outcome.coverage_lineage)
+
+    assert len(fanout.target_scopes) == 1
+    assert len(batch.initializations) == 1
+    assert len(lineage.primary_evidence) == 2
+    assert {
+        cast(NormalizationFailureEvidenceSource, item.source).raw_event_index
+        for item in lineage.primary_evidence
+    } == {0, 1}
+    assert len(outcome.raw_event_outcomes) == 2
+
+
+def test_identified_preack_lineage_rejects_preindex_wrong_evidence_and_source_identity() -> None:
+    raw, _fanout, _batch, outcome = _identified_preack_outcome()
+    indexed = outcome.raw_event_outcomes[0]
+    with pytest.raises(ValueError, match=r"indexed rejected frame|pre-index"):
+        replace(
+            outcome,
+            frame_status=FrameNormalizationStatus.REJECTED_BEFORE_INDEXING,
+            decoded_event_count=None,
+            raw_event_outcomes=(),
+            evidence=(NormalizationEvidence.PROVENANCE_MISMATCH,),
+            preindex_scope_binding=_preindex_scope_binding(raw),
+        )
+    with pytest.raises(
+        ValueError,
+        match=r"typed failure evidence|evidence union|provenance mismatches",
+    ):
+        replace(
+            outcome,
+            raw_event_outcomes=(
+                replace(indexed, evidence=NormalizationEvidence.DECODER_REJECTION),
+            ),
+            evidence=(NormalizationEvidence.DECODER_REJECTION,),
+        )
+    with pytest.raises(ValueError, match="typed failure evidence"):
+        replace(
+            outcome,
+            raw_event_outcomes=(
+                replace(
+                    indexed,
+                    logical_source_key=LogicalSourceKey(
+                        raw.feed_product.feed_product_id,
+                        SourceEventId("different-source-event"),
+                    ),
+                ),
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    "disposition,evidence",
+    (
+        (RawEventDisposition.MATERIALIZED_NEW, None),
+        (RawEventDisposition.EXACT_DUPLICATE_SUPPRESSED, None),
+        (RawEventDisposition.SOURCE_EVENT_CONFLICT, NormalizationEvidence.SOURCE_EVENT_CONFLICT),
+        (
+            RawEventDisposition.NOT_MATERIALIZED_FRAME_ABORTED,
+            NormalizationEvidence.FRAME_ATOMIC_ABORT,
+        ),
+    ),
+)
+def test_nonack_identified_route_cannot_use_non_rejection_dispositions(
+    disposition: RawEventDisposition,
+    evidence: NormalizationEvidence | None,
+) -> None:
+    raw, _fanout, _batch, outcome = _identified_preack_outcome()
+    original = outcome.raw_event_outcomes[0]
+    materialization = (
+        MaterializationKey(
+            outcome.normalization_run_id,
+            original.observation_key,
+            EventFamily.TRADE,
+            2,
+            PayloadType.TRADE,
+        )
+        if disposition is RawEventDisposition.MATERIALIZED_NEW
+        else None
+    )
+    with pytest.raises(ValueError, match="acknowledged subscription attempt"):
+        RawEventNormalizationOutcome(
+            original.observation_key,
+            original.normalization_scope_binding,
+            disposition,
+            LogicalSourceKey(
+                raw.feed_product.feed_product_id,
+                SourceEventId("preack-non-rejection"),
+            ),
+            materialization,
+            evidence,
+        )
+
+
+def _mixed_ack_preack_rejected_outcome(
+    *,
+    include_unrelated_sol: bool = False,
+) -> tuple[
+    RawMarketDataRecord,
+    CoverageFanoutProof,
+    NormalizationOutcome,
+    RoutedCoverageTarget,
+]:
+    raw_record, btc_spec, eth_spec, btc_instrument, eth_instrument = _multi_spec_raw_record(
+        include_unrelated_sol=include_unrelated_sol
+    )
+    original_snapshots = {
+        item.subscription_spec.subscription_spec_id: item
+        for item in raw_record.subscription_attempt_snapshots
+    }
+    btc_snapshot = replace(
+        original_snapshots[btc_spec.subscription_spec_id],
+        attempt_status=SubscriptionAttemptStatus.SENT,
+    )
+    eth_snapshot = original_snapshots[eth_spec.subscription_spec_id]
+    raw_record = replace(
+        raw_record,
+        subscription_attempt_snapshots=tuple(
+            sorted(
+                (
+                    btc_snapshot
+                    if item.subscription_spec.subscription_spec_id == btc_spec.subscription_spec_id
+                    else item
+                    for item in raw_record.subscription_attempt_snapshots
+                ),
+                key=lambda item: (
+                    item.subscription_spec.subscription_spec_id.value,
+                    item.subscription_attempt.subscription_attempt_id.value,
+                ),
+            )
+        ),
+    )
+    plan_bindings = {
+        item.subscription_spec_id: item for item in raw_record.subscription_plan.instrument_bindings
+    }
+    btc_plan_binding = plan_bindings[btc_spec.subscription_spec_id]
+    rejection_target = ExactIdentifiedRejectionTarget(
+        btc_snapshot,
+        btc_plan_binding.source_selector,
+        btc_instrument.canonical_instrument_id,
+        btc_plan_binding.adapter_profile,
+        "trade",
+        2,
+        "trade",
+    )
+    catalog = CoverageTargetCatalog.from_subscription_plan(raw_record.subscription_plan)
+    direct_fanout = CoverageFanoutProof.exact_identified_rejections(
+        plan=raw_record.subscription_plan,
+        catalog=catalog,
+        rejection_targets=(rejection_target,),
+    )
+    scopes = {
+        item.canonical_instrument_ids[0]: item
+        for item in catalog.scopes
+        if item.domain is CoverageDomain.SILVER_NORMALIZATION
+    }
+    btc_scope = scopes[btc_instrument.canonical_instrument_id]
+    eth_scope = scopes[eth_instrument.canonical_instrument_id]
+    run_id = NormalizationRunId("mixed-preack-normalization-run")
+    epoch = CoverageEpochIdentity(
+        btc_scope,
+        raw_record.collector_run_id,
+        0,
+        raw_record.received_time,
+        raw_record.received_monotonic_ns,
+    )
+    primary = CoverageEvidence(
+        CoverageEvidenceKind.NORMALIZATION_FAILURE,
+        NormalizationFailureEvidenceSource(
+            raw_record.raw_record_id,
+            run_id,
+            0,
+            SourceEventId("mixed-preack-btc-source"),
+            NormalizationFailureCategory.PROVENANCE_MISMATCH,
+            btc_scope.coverage_scope_id,
+        ),
+        btc_scope,
+        epoch,
+        raw_record.received_time,
+        raw_record.received_monotonic_ns,
+    )
+    raw_binding = RawCoverageFanoutBinding.from_raw_record(
+        raw_record=raw_record,
+        coverage_fanout_proof=direct_fanout,
+    )
+    batch = prepare_coverage_mutation_batch(
+        fanout_proof=direct_fanout,
+        current_state_references=(),
+        requests=(
+            RequestedCoverageMutation(
+                btc_scope,
+                epoch,
+                CoverageStatus.CONFIRMED_INCOMPLETE,
+                InitialCoverageReason.IN_SCOPE_NORMALIZATION_FAILURE,
+                CoverageReason.IN_SCOPE_NORMALIZATION_FAILURE,
+                primary,
+            ),
+        ),
+        raw_fanout_binding=raw_binding,
+    )
+    rejected = RawEventNormalizationOutcome(
+        ObservationKey(raw_record.raw_record_id, 0),
+        _outcome_scope_binding(
+            0,
+            raw_record=raw_record,
+            spec=btc_spec,
+            attempt=btc_snapshot.subscription_attempt,
+            scope=btc_scope,
+        ),
+        RawEventDisposition.REJECTED,
+        LogicalSourceKey(
+            raw_record.feed_product.feed_product_id,
+            SourceEventId("mixed-preack-btc-source"),
+        ),
+        evidence=NormalizationEvidence.PROVENANCE_MISMATCH,
+    )
+    eth_source_id = SourceEventId("mixed-ack-eth-source")
+    abort = FrameAtomicAbortEvidenceSource(
+        raw_record.raw_record_id,
+        run_id,
+        1,
+        eth_source_id,
+        eth_scope.coverage_scope_id,
+        (primary.coverage_evidence_id,),
+    )
+    aborted = RawEventNormalizationOutcome(
+        ObservationKey(raw_record.raw_record_id, 1),
+        _outcome_scope_binding(
+            1,
+            raw_record=raw_record,
+            spec=eth_spec,
+            attempt=eth_snapshot.subscription_attempt,
+            scope=eth_scope,
+        ),
+        RawEventDisposition.NOT_MATERIALIZED_FRAME_ABORTED,
+        LogicalSourceKey(raw_record.feed_product.feed_product_id, eth_source_id),
+        evidence=NormalizationEvidence.FRAME_ATOMIC_ABORT,
+    )
+    lineage = NormalizationCoverageLineage(
+        batch,
+        (abort,),
+        raw_binding,
+    )
+    outcome = NormalizationOutcome(
+        run_id,
+        raw_record.raw_record_id,
+        "normalizer-v1",
+        "normalizer-commit-fixture",
+        FrameNormalizationStatus.REJECTED_AFTER_INDEXING,
+        2,
+        (rejected, aborted),
+        (),
+        evidence=tuple(
+            sorted(
+                {
+                    NormalizationEvidence.PROVENANCE_MISMATCH,
+                    NormalizationEvidence.FRAME_ATOMIC_ABORT,
+                },
+                key=lambda item: item.value,
+            )
+        ),
+        coverage_lineage=lineage,
+    )
+    acknowledged_target = RoutedCoverageTarget(
+        eth_snapshot,
+        eth_instrument.canonical_instrument_id,
+        "trade",
+        2,
+        "trade",
+    )
+    return raw_record, direct_fanout, outcome, acknowledged_target
+
+
+def test_mixed_ack_preack_frame_degrades_only_rejected_scope_and_keeps_abort_atomic() -> None:
+    _raw, direct_fanout, outcome, _acknowledged_target = _mixed_ack_preack_rejected_outcome()
+    lineage = cast(NormalizationCoverageLineage, outcome.coverage_lineage)
+
+    assert len(direct_fanout.target_scopes) == 1
+    assert len(lineage.coverage_mutation_batch.resulting_state_references) == 1
+    assert outcome.raw_event_outcomes[0].disposition is RawEventDisposition.REJECTED
+    assert outcome.raw_event_outcomes[1].disposition is (
+        RawEventDisposition.NOT_MATERIALIZED_FRAME_ABORTED
+    )
+    assert len(lineage.frame_atomic_abort_evidence) == 1
+    assert outcome.committed_materialization_keys == ()
+
+
+@pytest.mark.parametrize(
+    "evidence_kind",
+    (
+        CoverageEvidenceKind.NORMALIZATION_OUTCOME_REJECTION,
+        CoverageEvidenceKind.NORMALIZATION_OUTCOME_SINK_ACCEPTANCE_AMBIGUITY,
+    ),
+)
+def test_identified_rejection_outcome_sink_binding_requires_complete_mixed_union(
+    evidence_kind: CoverageEvidenceKind,
+) -> None:
+    raw, direct_fanout, outcome, acknowledged_target = _mixed_ack_preack_rejected_outcome()
+    full_fanout = CoverageFanoutProof.exact_identified_rejections(
+        plan=raw.subscription_plan,
+        catalog=CoverageTargetCatalog.from_subscription_plan(raw.subscription_plan),
+        rejection_targets=direct_fanout.identified_rejection_targets,
+        acknowledged_targets=(acknowledged_target,),
+    )
+    batch = _outcome_sink_failure_batch(
+        raw_record=raw,
+        outcome=outcome,
+        fanout=full_fanout,
+        kind=evidence_kind,
+        current_state_references=(),
+    )
+    binding = NormalizationOutcomeSinkFailureCoverageBinding.from_outcome_and_batch(
+        normalization_outcome=outcome,
+        coverage_mutation_batch=batch,
+    )
+
+    assert binding.evidence_kind is evidence_kind
+    assert {item.coverage_scope_id for item in full_fanout.target_scopes} == {
+        item.normalization_scope_binding.coverage_scope_id for item in outcome.raw_event_outcomes
+    }
+    assert full_fanout.selected_attempt_ids == tuple(
+        sorted(
+            {
+                item.normalization_scope_binding.subscription_attempt_id
+                for item in outcome.raw_event_outcomes
+            },
+            key=lambda item: item.value,
+        )
+    )
+
+    subset_batch = _outcome_sink_failure_batch(
+        raw_record=raw,
+        outcome=outcome,
+        fanout=direct_fanout,
+        kind=evidence_kind,
+        current_state_references=(),
+    )
+    with pytest.raises(ValueError, match="decoded scope union"):
+        NormalizationOutcomeSinkFailureCoverageBinding.from_outcome_and_batch(
+            normalization_outcome=outcome,
+            coverage_mutation_batch=subset_batch,
+        )
+
+
+def test_identified_rejection_sink_union_rejects_superset_duplicate_and_foreign_attempt() -> None:
+    raw, direct_fanout, outcome, acknowledged_target = _mixed_ack_preack_rejected_outcome(
+        include_unrelated_sol=True
+    )
+    outcome_spec_ids = {
+        item.normalization_scope_binding.subscription_spec_id for item in outcome.raw_event_outcomes
+    }
+    unrelated_snapshot = next(
+        item
+        for item in raw.subscription_attempt_snapshots
+        if item.subscription_spec.subscription_spec_id not in outcome_spec_ids
+    )
+    unrelated_binding = next(
+        item
+        for item in raw.subscription_plan.instrument_bindings
+        if item.subscription_spec_id == unrelated_snapshot.subscription_spec.subscription_spec_id
+    )
+    unrelated_target = RoutedCoverageTarget(
+        unrelated_snapshot,
+        unrelated_binding.canonical_instrument_id,
+        "trade",
+        2,
+        "trade",
+    )
+    superset_fanout = CoverageFanoutProof.exact_identified_rejections(
+        plan=raw.subscription_plan,
+        catalog=CoverageTargetCatalog.from_subscription_plan(raw.subscription_plan),
+        rejection_targets=direct_fanout.identified_rejection_targets,
+        acknowledged_targets=(acknowledged_target, unrelated_target),
+    )
+    superset_batch = _outcome_sink_failure_batch(
+        raw_record=raw,
+        outcome=outcome,
+        fanout=superset_fanout,
+        current_state_references=(),
+    )
+    with pytest.raises(ValueError, match="decoded scope union"):
+        NormalizationOutcomeSinkFailureCoverageBinding.from_outcome_and_batch(
+            normalization_outcome=outcome,
+            coverage_mutation_batch=superset_batch,
+        )
+
+    with pytest.raises(ValueError, match="unique by exact Silver scope"):
+        CoverageFanoutProof.exact_identified_rejections(
+            plan=raw.subscription_plan,
+            catalog=CoverageTargetCatalog.from_subscription_plan(raw.subscription_plan),
+            rejection_targets=direct_fanout.identified_rejection_targets,
+            acknowledged_targets=(acknowledged_target, acknowledged_target),
+        )
+
+    foreign_snapshot = SubscriptionAttemptSnapshot(
+        SubscriptionAttemptIdentity(
+            acknowledged_target.acknowledged_snapshot.subscription_attempt.connection_session,
+            acknowledged_target.acknowledged_snapshot.subscription_spec,
+            1,
+        ),
+        SubscriptionAttemptStatus.ACKNOWLEDGED,
+    )
+    foreign_target = replace(
+        acknowledged_target,
+        acknowledged_snapshot=foreign_snapshot,
+    )
+    foreign_fanout = CoverageFanoutProof.exact_identified_rejections(
+        plan=raw.subscription_plan,
+        catalog=CoverageTargetCatalog.from_subscription_plan(raw.subscription_plan),
+        rejection_targets=direct_fanout.identified_rejection_targets,
+        acknowledged_targets=(foreign_target,),
+    )
+    with pytest.raises(ValueError, match="raw snapshot"):
+        _outcome_sink_failure_batch(
+            raw_record=raw,
+            outcome=outcome,
+            fanout=foreign_fanout,
+            current_state_references=(),
+        )
+
 
 _RECEIVED_TIME = datetime(2026, 8, 26, 12, 0, 0, 123456, tzinfo=UTC)
 _EVENT_TIME = datetime(2026, 8, 26, 11, 59, 59, 654321, tzinfo=UTC)
@@ -316,7 +894,10 @@ def _raw_record(
     return raw_record, spec, attempt
 
 
-def _multi_spec_raw_record() -> tuple[
+def _multi_spec_raw_record(
+    *,
+    include_unrelated_sol: bool = False,
+) -> tuple[
     RawMarketDataRecord,
     SubscriptionSpecIdentity,
     SubscriptionSpecIdentity,
@@ -326,7 +907,11 @@ def _multi_spec_raw_record() -> tuple[
     adapter_binding = _adapter_binding()
     btc_spec = _wire_spec("BTCUSDT", request_id=1)
     eth_spec = _wire_spec("ETHUSDT", request_id=2)
-    specs = tuple(sorted((btc_spec, eth_spec), key=lambda item: item.subscription_spec_id.value))
+    sol_spec = _wire_spec("SOLUSDT", request_id=3)
+    selected_specs = (
+        (btc_spec, eth_spec, sol_spec) if include_unrelated_sol else (btc_spec, eth_spec)
+    )
+    specs = tuple(sorted(selected_specs, key=lambda item: item.subscription_spec_id.value))
     btc_instrument = _instrument()
     eth_instrument = Instrument(
         venue=Venue.BINANCE,
@@ -336,13 +921,23 @@ def _multi_spec_raw_record() -> tuple[
         venue_market_id="ETHUSDT",
         native_symbol="ETHUSDT",
     )
+    sol_instrument = Instrument(
+        venue=Venue.BINANCE,
+        instrument_type=InstrumentType.SPOT,
+        base_asset="SOL",
+        quote_asset="USDT",
+        venue_market_id="SOLUSDT",
+        native_symbol="SOLUSDT",
+    )
     instrument_by_spec_id = {
         btc_spec.subscription_spec_id: btc_instrument,
         eth_spec.subscription_spec_id: eth_instrument,
+        sol_spec.subscription_spec_id: sol_instrument,
     }
     selector_by_spec_id = {
         btc_spec.subscription_spec_id: "btcusdt@trade",
         eth_spec.subscription_spec_id: "ethusdt@trade",
+        sol_spec.subscription_spec_id: "solusdt@trade",
     }
     instrument_bindings = tuple(
         sorted(

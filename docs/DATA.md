@@ -534,6 +534,21 @@ set is all and only the requested-domain leaf scopes belonging to those selected
 is an explicit caller fact for the intended leaf initialization; the proof does not reconstruct ACK
 transition history from one current snapshot.
 
+The 3B1C-1B correction represents an exact indexed rejection before acknowledgement without
+pretending that the subscription was active or falling back to plan-wide pre-index uncertainty. A
+new rejection-only target accepts exactly `PENDING`, `SEND_STARTED` or `SENT` from the raw record's
+immutable attempt snapshot. It binds that status plus the exact public selector, spec, attempt,
+session, canonical instrument and family/version/payload to one Silver-normalization leaf. The
+corresponding typed outcome is necessarily `REJECTED_AFTER_INDEXING`, with a `REJECTED` item,
+`PROVENANCE_MISMATCH` frame evidence and a `PROVENANCE_MISMATCH` normalization-failure category.
+That evidence establishes `CONFIRMED_INCOMPLETE` only for the identified Silver leaf; it never
+mutates Bronze or authorizes activation, delivery, recovery, conflicts, duplicates or
+materialization. Multiple wire indexes on the same route retain separate raw-index/source-ID evidence
+while sharing one scope mutation. For later outcome-sink failure, the new proof can additionally
+bind the exact acknowledged route partition so the aggregate validator requires the complete decoded
+scope/attempt union. Existing transition-empty 3B1B outcomes remain valid, and no active runtime
+imports this dormant path yet.
+
 Normalization-outcome sink failure is represented by the exact canonical
 `["normalization-outcome-evidence-v1",normalization_outcome_id,coverage_scope_id]` source row.
 Only explicit typed rejection establishes definite non-acceptance and Silver-normalization
@@ -572,7 +587,7 @@ cannot create a delivery batch. Actual v2-event serialization and a composite au
 remain 3B1C-3 work. Queue acceptance will mean bounded collector-output-queue acceptance only, not
 dequeue, downstream processing or persistence.
 
-All 3B1C-1 and 3B1C-1A values remain dormant. Existing 3B1B raw capture still emits normalization
+All 3B1C-1, 3B1C-1A and 3B1C-1B values remain dormant. Existing 3B1B raw capture still emits normalization
 outcomes with empty coverage lineage; v2 remains the only active Silver envelope and operational
 `is_gap` remains unchanged. No coverage runtime, delivery linearization, raw persistence or replay
 exists yet.

@@ -293,6 +293,8 @@ The exact computed preimages are:
 | `coverage-fanout-proof-v1` | fan-out kind, subscription-plan ID, coverage-target-catalog ID, target count, SHA-256 of exact `coverage-fanout-proof-content-v1` text |
 | `coverage-fanout-proof-content-v2` | exact identified-rejection fan-out kind, subscription-plan ID, coverage-target-catalog ID, connection-session ID, exact `exact-identified-rejections-v1` source row, sorted unique selected Silver-normalization scope IDs |
 | `coverage-fanout-proof-v2` | exact identified-rejection fan-out kind, subscription-plan ID, coverage-target-catalog ID, target count, SHA-256 of exact `coverage-fanout-proof-content-v2` text |
+| `coverage-fanout-proof-content-v3` | fan-out kind, subscription-plan ID, coverage-target-catalog ID, connection-session ID, exact closed kind-specific source row, sorted unique selected coverage-scope IDs |
+| `coverage-fanout-proof-v3` | fan-out kind, subscription-plan ID, coverage-target-catalog ID, target count, SHA-256 of exact `coverage-fanout-proof-content-v3` text |
 | `coverage-mutation-no-op-v1` | coverage-scope ID, current coverage-state-reference ID, requested status, initial reason, transition reason, coverage-evidence ID, `already-at-or-beyond-requested-severity` |
 | `coverage-mutation-batch-content-v1` | legacy content preimage with no active writer: coverage-fanout-proof ID, exact raw-coverage-fanout-binding ID or null, sorted complete expected pre-state rows, sorted initialization IDs, sorted transition IDs, sorted no-op rows, sorted complete resulting coverage-state-reference IDs |
 | `coverage-mutation-batch-v1` | legacy parser-only identity: coverage-fanout-proof ID, target count, SHA-256 of exact v1 content |
@@ -377,9 +379,9 @@ The outer `coverage-evidence-v1` row additionally binds scope ID, epoch ID, coll
 evidence kind and injected UTC/monotonic observation boundaries. Thus none of these rows is a free
 label, and membership-bearing evidence can be checked against the exact high-cardinality scope.
 
-Coverage fan-out uses one of these closed kind-specific source rows inside
-`coverage-fanout-proof-content-v1`, except the identified-rejection row, which is bound by
-`coverage-fanout-proof-content-v2`:
+Coverage fan-out uses one of these closed kind-specific source rows. New writers bind every kind
+inside `coverage-fanout-proof-content-v3`; v1 remains parser-only for historical non-rejection
+kinds and v2 remains parser-only for historical identified-rejection kinds:
 
 | Source tag | Ordered components after the tag |
 | --- | --- |
@@ -392,6 +394,20 @@ Coverage fan-out uses one of these closed kind-specific source rows inside
 | `exact-identified-rejection-target-v1` | feed-product ID, connection-session ID, subscription-spec ID, subscription-attempt ID, captured `pending`/`send-started`/`sent` status, complete public-source-selector row, canonical instrument ID, adapter profile, event family, family version, payload type, Silver-normalization coverage-scope ID |
 | `acknowledged-routed-target-v1` | feed-product ID, connection-session ID, subscription-spec ID, subscription-attempt ID, captured `acknowledged` status, complete public-source-selector row, canonical instrument ID, adapter profile, event family, family version, payload type, Silver-normalization coverage-scope ID |
 | `all-possibly-active-v1` | coverage domain, event family or null, family version or null, payload type or null, complete sorted attempt/status snapshot rows |
+
+The active compact preimages are exactly:
+
+```text
+["coverage-fanout-proof-content-v3",fanout_kind,subscription_plan_id,
+ coverage_target_catalog_id,connection_session_id,kind_specific_source_row,
+ sorted_target_scope_ids]
+["coverage-fanout-proof-v3",fanout_kind,subscription_plan_id,
+ coverage_target_catalog_id,target_count,content_sha256]
+```
+
+The proof retains the exact typed `CoverageTargetCatalog`; the catalog is the sole retained parent
+for its complete typed `SubscriptionPlanIdentity`. The full plan/catalog values are therefore
+available for stored rederivation without being duplicated in either compact preimage.
 
 The target catalogue represents configured plan leaves. The selected rows then distinguish exact
 possibly delivered, acknowledged, routed and complete relevant possibly-active populations. An
@@ -873,12 +889,520 @@ max(45, 10 + 2 * (1 + 1 + 1) + 5) + (1 + 1 + 1 + 5) + 4
 This correction remains pure contract code. It activates neither 3B1C-2 runtime coverage nor
 3B1C-3 delivery; schema v2 and `is_gap` remain active and v3 remains dormant.
 
-The retained-only fan-out verifier also cannot independently reconstruct plan-wide completeness or
-catalog membership from content-addressed plan/catalog IDs alone; public fan-out factories prove
-those properties from their full typed plan and catalog inputs. This limitation predates 1E and is
-neither weakened nor hidden by the call-local optimization. Closing it for independently persisted
-fan-out proofs requires a later versioned contract that retains typed parents or an equivalent
-cryptographic completeness witness; 1E does not change canonical identities to do so.
+**3B1C-1F initial fan-out and fused design.** New fan-out writers emit v3 for every closed kind.
+Each proof retains the exact typed `CoverageTargetCatalog`; the catalog retains the exact typed
+plan, so no second plan field is stored. `verify_stored` rederives plan content, digest and ID;
+catalog scopes, content, digest and ID; session; complete attempt snapshot; kind-specific
+membership; target ordering/count; proof content, digest and ID. V1 non-rejection and v2
+identified-rejection proofs remain byte-exact parser-only forms. Mutation-batch v2, acceptance v2,
+raw-binding v1 and lineage v3 layouts are unchanged. This paragraph describes the pre-correction
+evidence/state writer used by the two failure series below; the compact writer matrix follows those
+series.
+
+`BatchVerifiedUpstreamCoveragePreparation.from_committed_upstream(...)` accepts only a degraded
+Bronze `ALL_POSSIBLY_ACTIVE` batch/acceptance/result tuple and the corresponding Silver
+`ALL_POSSIBLY_ACTIVE` v3 proof over the same feed, run, plan, catalog, session, complete attempt
+snapshot and selected attempts. Optional raw bindings are symmetric and must retain the same raw
+record, full-record digest and snapshot digest. One call-local verification context verifies the
+upstream batch and acceptance once, reuses one plan/catalog verification across the two fan-outs,
+indexes Bronze/Silver semantic scope keys, performs exactly N pairings and returns exactly N
+ordinary upstream evidence-v2 values, N requested mutations and one complete batch-v2. Initial propagation
+uses the upstream state boundary; a Silver status change requires the exact upstream transition;
+equal or worse state is a no-op. No partial tuple or commit acceptance is produced on failure.
+Tests observe one batch verification, one acceptance verification, two proof verifications with
+shared retained-parent verification, exactly `2N` scope-key visits and `N-1` operation-order
+comparisons. Top-level batch, acceptance, plan, catalog and each proof ID are parsed at most once in
+the call-local transcript; 512-to-1,024 parse growth remains linear.
+
+The performance protocol built fixtures outside the interval, kept garbage collection enabled,
+ran three unreported warm-ups and then exactly nine reported sequential calls for every operation,
+scenario and cardinality. Development profiles before this protocol were not measurement series.
+Series 1 and Series 2 are retained below as immutable failure evidence. Series 1 exposed that a
+direct target-decision serializer was slower for deeply nested no-op IDs. No sample was removed or
+selected. The implementation was changed back to the existing byte-identical generic canonical
+serializer, all equivalence tests passed, and Series 2 measured that still-recursive code. The
+compact-identity correction below was then code-frozen and measured as Series 3. Independent
+post-Series-3 review added bounded retained-cycle guards; the first formal post-review Series 4
+then exposed redundant public-constructor verification in fused initialization and transition
+paths. That hotspot was closed without changing canonical output, correctness and resource gates
+were rerun, and Series 5 established the first green post-correction evidence. Later trust-boundary
+review added fresh public-parent verification and a normative aggregate compact-graph bound.
+Series 6 preserved the resulting narrow full-no-op timing failure; cached verification dispatch was
+then made single-lookup without changing any verified fact, and Series 7 was green. Final
+atomicity review then found that the ordinary batch writer did not yet rederive every retained
+fan-out and optional raw-binding field before return. That gap was closed with one shared
+call-local verification context and no canonical change; Series 8 was green. The subsequent full
+suite exposed one family-filtered Silver `ALL_POSSIBLY_ACTIVE` retained-proof rederivation bug:
+the verifier compared a family-specific target slice with all possibly active specs. The verifier
+now derives the exact spec set from the fully reconstructed family-filtered scope tuple. After its
+regression test and the complete correctness/resource selection passed, Series 9 retained one
+narrow failure: fused full no-op at 1,024 targets had a 0.803406503-second median. Series 9 is kept
+unchanged below. Profiling found construction-time duplicate fan-out scans, no-op retained-load
+verification and generic end-of-transcript validation over facts already fully verified in the
+same lexical call. Those duplicate passes were removed only from the closed fused construction
+path; independent retained-load verification remains unchanged. Series 10 was green, but final
+trust-boundary review then found one low-severity public metadata
+inconsistency: `CoverageFanoutProofId.VERSION_TAG` still advertised parser-only v1 although all
+current writers emit v3. The metadata now names v3 while the explicit accepted parser set remains
+exactly v1/v2/v3; canonical bytes and validation semantics do not change. The affected parser,
+writer and retained-proof selection passed before Series 11 was announced. Series 11 is the final
+evidence.
+
+Series 1 ordered ledger (`from_commit` first, then fused preparation):
+
+- `from_commit` initial uncertain, 512: `samples_s=[0.193113370,0.194118878,0.205996496,0.219868281,0.201592694,0.215889878,0.205350926,0.209896523,0.220235010]`; `median_s=0.205996496`; `max_s=0.220235010`;
+- `from_commit` initial uncertain, 1,024: `samples_s=[0.379169509,0.390090482,0.404189812,0.396348258,0.398616134,0.407987591,0.393863854,0.417213166,0.394967631]`; `median_s=0.396348258`; `max_s=0.417213166`; `ratio=1.924053398`;
+- `from_commit` complete to uncertain, 512: `samples_s=[0.304534889,0.310382901,0.311563599,0.301062624,0.320051903,0.326100735,0.302827741,0.309325128,0.304412992]`; `median_s=0.309325128`; `max_s=0.326100735`;
+- `from_commit` complete to uncertain, 1,024: `samples_s=[0.619968099,0.651494896,0.605443526,0.645165254,0.608362076,0.622315464,0.621860677,0.616146597,0.613970240]`; `median_s=0.619968099`; `max_s=0.651494896`; `ratio=2.004260381`;
+- `from_commit` full no-op, 512: `samples_s=[1.192488108,1.198321593,1.173241083,1.207104869,1.181193629,1.208301812,1.202905165,1.188767702,1.211119482]`; `median_s=1.198321593`; `max_s=1.211119482`;
+- `from_commit` full no-op, 1,024: `samples_s=[2.438071954,2.402724166,2.377272134,2.401628689,2.403724144,2.432823428,2.452038801,2.441711342,2.441537328]`; `median_s=2.432823428`; `max_s=2.452038801`; `ratio=2.030192431`;
+- fused initial uncertain, 512: `samples_s=[0.645200359,0.656939671,0.677264194,0.644793645,0.660471495,0.653041425,0.640407415,0.662490288,0.643340911]`; `median_s=0.653041425`; `max_s=0.677264194`;
+- fused initial uncertain, 1,024: `samples_s=[1.292699909,1.346441217,1.410014355,1.405090160,1.336354511,1.354890798,1.328043397,1.385376659,1.329101016]`; `median_s=1.346441217`; `max_s=1.410014355`; `ratio=2.061800623`;
+- fused initial incomplete, 512: `samples_s=[0.565454383,0.538301947,0.567414474,0.554738187,0.547532827,0.545913767,0.550028499,0.545549881,0.543914184]`; `median_s=0.547532827`; `max_s=0.567414474`;
+- fused initial incomplete, 1,024: `samples_s=[1.102641982,1.057701852,1.130069380,1.111971727,1.094892405,1.127697717,1.102308460,1.077740208,1.081655625]`; `median_s=1.102308460`; `max_s=1.130069380`; `ratio=2.013228076`;
+- fused complete to uncertain, 512: `samples_s=[1.221623157,1.187102767,1.198352147,1.200879218,1.185464137,1.218282243,1.190501789,1.204976394,1.197958177]`; `median_s=1.198352147`; `max_s=1.221623157`;
+- fused complete to uncertain, 1,024: `samples_s=[2.625046250,2.796448464,2.673521066,2.643517451,2.706863516,2.713209643,2.682325830,2.629312784,2.585401926]`; `median_s=2.673521066`; `max_s=2.796448464`; `ratio=2.230997852`;
+- fused uncertain to incomplete, 512: `samples_s=[7.164445482,7.249923658,7.040639247,7.527854790,7.225452625,8.096781101,8.332573586,7.498436539,7.090475737]`; `median_s=7.249923658`; `max_s=8.332573586`;
+- fused uncertain to incomplete, 1,024: `samples_s=[15.899772919,15.396018164,15.515741096,15.669622170,15.606039473,17.049321640,16.642122434,17.683727526,16.826970080]`; `median_s=15.899772919`; `max_s=17.683727526`; `ratio=2.193095220`;
+- fused mixed transition/no-op, 512: `samples_s=[1.721228153,1.660545301,1.645525874,1.649892586,1.672614046,1.684003645,1.664887231,1.712809139,1.727039203]`; `median_s=1.672614046`; `max_s=1.727039203`;
+- fused mixed transition/no-op, 1,024: `samples_s=[3.294925160,3.412930978,3.328537554,3.216654992,3.244130868,3.211215436,3.230929291,3.206443481,3.175170057]`; `median_s=3.230929291`; `max_s=3.412930978`; `ratio=1.931664569`;
+- fused full no-op, 512: `samples_s=[23.690293996,23.298218730,23.230792849,23.115139089,23.259124222,23.102364107,23.141746039,23.060506439,22.910823037]`; `median_s=23.141746039`; `max_s=23.690293996`;
+- fused full no-op, 1,024: `samples_s=[47.311028967,45.956334541,46.881562814,46.818369505,46.839633005,46.664820541,47.640378412,46.961184813,46.176905655]`; `median_s=46.839633005`; `max_s=47.640378412`; `ratio=2.024031935`.
+
+Series 2 final-code ordered ledger:
+
+- `from_commit` initial uncertain, 512: `samples_s=[0.227622963,0.251923766,0.238849237,0.217673525,0.239549612,0.215649802,0.219981059,0.213529506,0.217817671]`; `median_s=0.219981059`; `max_s=0.251923766`;
+- `from_commit` initial uncertain, 1,024: `samples_s=[0.435323572,0.448174007,0.448541028,0.423157854,0.442136689,0.438534805,0.488215394,0.454407765,0.445590674]`; `median_s=0.445590674`; `max_s=0.488215394`; `ratio=2.025586548`;
+- `from_commit` complete to uncertain, 512: `samples_s=[0.358841559,0.345305311,0.371121864,0.346791701,0.346843922,0.359007163,0.357384356,0.350417657,0.360178183]`; `median_s=0.357384356`; `max_s=0.371121864`;
+- `from_commit` complete to uncertain, 1,024: `samples_s=[0.696958473,0.712905735,0.691735267,0.729935295,0.727216846,0.730128321,0.697853600,0.727576439,0.700464715]`; `median_s=0.712905735`; `max_s=0.730128321`; `ratio=1.994787189`;
+- `from_commit` full no-op, 512: `samples_s=[1.390140526,1.331822411,1.301951839,1.323447560,1.316864507,1.287840955,1.324885377,1.343628071,1.318754610]`; `median_s=1.323447560`; `max_s=1.390140526`;
+- `from_commit` full no-op, 1,024: `samples_s=[2.807772603,2.945551495,2.867108751,2.684832962,2.768648040,2.763869419,2.698423424,2.607674239,2.639830862]`; `median_s=2.763869419`; `max_s=2.945551495`; `ratio=2.088386048`;
+- fused initial uncertain, 512: `samples_s=[0.813684258,0.744677741,0.760133201,0.755627169,0.765493157,0.753753573,0.751055276,0.762100433,0.743672490]`; `median_s=0.755627169`; `max_s=0.813684258`;
+- fused initial uncertain, 1,024: `samples_s=[1.495965397,1.548083138,1.550381150,1.514006826,1.569185696,1.574837776,1.569053990,1.517482330,1.589057655]`; `median_s=1.550381150`; `max_s=1.589057655`; `ratio=2.051780579`;
+- fused initial incomplete, 512: `samples_s=[0.640273712,0.688440121,0.665962456,0.658821727,0.663174433,0.638878393,0.638954507,0.649226842,0.672157923]`; `median_s=0.658821727`; `max_s=0.688440121`;
+- fused initial incomplete, 1,024: `samples_s=[1.301624138,1.262241121,1.259782348,1.284885974,1.266075061,1.269979040,1.277234969,1.269012386,1.268555328]`; `median_s=1.269012386`; `max_s=1.301624138`; `ratio=1.926184784`;
+- fused complete to uncertain, 512: `samples_s=[1.535681394,1.423990536,1.423750300,1.416263541,1.411918228,1.397071109,1.396879981,1.435069149,1.370728348]`; `median_s=1.416263541`; `max_s=1.535681394`;
+- fused complete to uncertain, 1,024: `samples_s=[2.809159180,2.787855932,2.770458467,2.762430354,2.829751578,2.807876204,2.815377122,2.773685688,2.784676353]`; `median_s=2.787855932`; `max_s=2.829751578`; `ratio=1.968458448`;
+- fused uncertain to incomplete, 512: `samples_s=[5.520170958,5.566538546,5.562425810,5.654053322,5.573338776,5.527827966,5.473317644,5.470836236,5.489778715]`; `median_s=5.527827966`; `max_s=5.654053322`;
+- fused uncertain to incomplete, 1,024: `samples_s=[13.547391817,13.509388881,13.495212192,13.466305655,13.483475885,13.488128593,13.582483464,13.605750352,14.058029326]`; `median_s=13.509388881`; `max_s=14.058029326`; `ratio=2.443887358`;
+- fused mixed transition/no-op, 512: `samples_s=[2.008589939,1.994736640,1.971207381,2.008058436,2.078855219,1.940760058,2.014170003,1.963489674,1.989914241]`; `median_s=1.994736640`; `max_s=2.078855219`;
+- fused mixed transition/no-op, 1,024: `samples_s=[4.021662101,4.009270483,4.046603072,3.962445439,4.038697576,4.038982635,4.078966155,4.039021442,4.008531661]`; `median_s=4.038697576`; `max_s=4.078966155`; `ratio=2.024677090`;
+- fused full no-op, 512: `samples_s=[26.830041898,26.909540312,26.629819266,26.620347090,26.813807127,26.886553282,26.549572140,26.651845167,26.919392355]`; `median_s=26.813807127`; `max_s=26.919392355`;
+- fused full no-op, 1,024: `samples_s=[45.313278972,45.392613817,45.806412354,45.861638293,45.437754810,45.385292755,45.415680428,45.203344666,45.349740570]`; `median_s=45.392613817`; `max_s=45.861638293`; `ratio=1.692882089`.
+
+Both historical series remain linear by the `<=2.5` ratio gate, but their absolute gates fail.
+Series 2 exceeds 0.8 seconds for every fused 1,024 case and exceeds 1.0 second maximum for every
+fused 1,024 case; retained v3 verification also makes `from_commit` full no-op exceed both 1E
+bounds. The cause is recursive JSON-in-JSON identity expansion: an upstream evidence ID embeds a
+full committed-state v1 ID, that embeds a full state-reference v1 ID, transitions retain the
+predecessor and earlier evidence, and a no-op quotes the full current state again. The final 1,024
+full-no-op fixture used about 4.3 GiB resident. A faster serializer cannot remove that byte volume.
+
+**3B1C-1F compact recursive coverage identities.** The pre-commit correction breaks the recursive
+identity at three exact boundaries while retaining every typed parent:
+
+```text
+["upstream-coverage-state-evidence-v2", committed_coverage_state_id_v2]
+["upstream-coverage-transition-evidence-v2", committed_coverage_state_id_v2,
+ upstream_coverage_transition_id]
+
+["coverage-evidence-content-v2", coverage_scope_id, coverage_epoch_id, collector_run_id,
+ evidence_kind, typed_upstream_source_row_v2, canonical_observed_at, observed_monotonic_ns]
+["coverage-evidence-v2", coverage_scope_id, coverage_epoch_id, collector_run_id,
+ evidence_kind, typed_upstream_source_row_v2, canonical_observed_at, observed_monotonic_ns,
+ content_sha256]
+
+["coverage-state-reference-content-v2", "initialization"|"transition",
+ coverage_initialization_id, previous_coverage_state_reference_id_or_null,
+ latest_coverage_transition_id_or_null, coverage_scope_id, coverage_epoch_id,
+ collector_run_id, coverage_status, transition_ordinal, canonical_observed_at,
+ observed_monotonic_ns]
+["coverage-state-reference-v2", coverage_scope_id, coverage_epoch_id, collector_run_id,
+ coverage_status, transition_ordinal, canonical_observed_at, observed_monotonic_ns,
+ content_sha256]
+
+["committed-coverage-state-content-v2", coverage_state_reference_id,
+ coverage_commit_acceptance_id, result_ordinal]
+["committed-coverage-state-v2", coverage_scope_id, coverage_epoch_id, collector_run_id,
+ coverage_status, transition_ordinal, canonical_observed_at, observed_monotonic_ns,
+ result_ordinal, content_sha256]
+```
+
+The state source retains the complete typed `CommittedCoverageState`; the transition source also
+retains the exact typed `CoverageTransition`; a state retains its initialization, predecessor and
+latest transition; and a committed state retains its state, acceptance and exact result ordinal.
+Stored verification rederives all retained parents, canonical content, digest, ID, time boundary
+and positional membership. Hashes prove integrity only: they do not prove availability,
+reconstructability, completeness, venue authenticity or semantic validity. Missing typed parents
+therefore fail closed. No validation token, cross-call cache or hash-only load path exists.
+
+New committed-state writers emit v2 and committed-state v1 is parser-only. Upstream evidence
+writers emit evidence v2 while non-upstream evidence remains writer-active v1. Transitioned and
+upstream-derived state references emit v2; an ordinary non-upstream ordinal-zero state may still
+emit v1, and a first v2 transition may retain a fully verified v1 predecessor. Initialization v1,
+transition v1, mutation-no-op v1, mutation-batch v2, acceptance v2, fan-out v3, raw binding v1 and
+normalization-lineage v3 remain unchanged. A no-op returns the identical state object and ID and
+does not create a transition or increment the ordinal. `CommittedCoverageState.from_commit_at`
+binds membership by exact built-in `result_ordinal`; it never performs a per-leaf tuple search.
+
+The current-writer outer state and committed-state ID bounds are structurally derived as 156,856
+and 156,877 characters; committed-state content is bounded at 483,694 characters. Existing
+evidence/state content ceilings were not raised. The exact maximum retained transition ID that can
+fit both evidence-v2 preimages is 813,255 characters and larger input fails closed. Tests account
+for every reachable compact evidence/state/committed ID once. The normative joint cross-component
+composability limit is `(64 MiB) - 1`: both the ordinary batch writer and fused writer charge every
+unique verified v2 evidence/state/committed ID by role and fail closed before returning any value
+when the total would exceed 67,108,863 bytes. This means independently valid widest scalar values
+need not compose with every maximum-cardinality graph. At 1,024 leaves the worst-case escaped
+collector-run probe accepts 550 emoji codepoints at exactly 67,065,684 bytes; 551 is the first
+rejected width and returns no partial prefix. The representative 512-to-1,024 byte growth must
+remain at most 2.5. The absolute RSS limit was fixed at 1.5 GiB before any compact-series launch
+and was not relaxed.
+
+The deterministic retained-graph ledger measured 16,080,346 compact ID-bytes at 512 leaves and
+32,161,362 at 1,024 leaves (`ratio=2.000041666`). Maximum observed current-writer IDs at 1,024 were
+9,292 bytes for evidence, 1,215 for state references and 1,208 for committed states. The
+instrumented 512/1,024 transcript totals were respectively 60,824/96,214 parse-input bytes,
+25,708,147/51,398,703 canonical re-encode bytes, 90,132,118/180,258,991 quote-input bytes,
+126,855,716/253,698,109 quote-output bytes, 123,558,080/247,111,824 encoded-array-output bytes and
+92,841,336/185,675,276 SHA-256-input bytes. Unique/repeated charged bytes were
+209,444,080/418,825,036 and 249,712,141/499,414,081; the maximum individual encoded preimage was
+1,505,462 bytes. Every byte-work ratio is at most 2.0 apart from the deliberately deduplicated parse
+counter (`1.581842694`), and all are below 2.5.
+
+Series 3 ran after code freeze in one isolated process per operation/scenario/cardinality. Fixture
+construction was outside timing; garbage collection stayed enabled; every process performed three
+unreported warm-ups followed by exactly nine reported complete calls. The append-only ledger
+completed all 18 children. No child was restarted and no sample was removed, replaced or selected.
+
+Series 3 ordered ledger (`from_commit` first, then fused preparation; RSS includes fixture,
+warm-ups and samples in that isolated process):
+
+- `from_commit` initial uncertain, 512: `samples_s=[0.116505803,0.112288268,0.112916640,0.112440639,0.113288423,0.113497367,0.113955223,0.115040251,0.113838635]`; `median_s=0.113497367`; `max_s=0.116505803`; `peak_rss_bytes=73273344`;
+- `from_commit` initial uncertain, 1,024: `samples_s=[0.230128853,0.224055748,0.224059028,0.222006845,0.222785886,0.223998384,0.226391570,0.230641047,0.223282698]`; `median_s=0.224055748`; `max_s=0.230641047`; `ratio=1.974105250`; `peak_rss_bytes=110186496`;
+- `from_commit` complete to uncertain, 512: `samples_s=[0.129712740,0.130093131,0.129781680,0.130538237,0.133230053,0.137334295,0.132973735,0.130871626,0.131893043]`; `median_s=0.130871626`; `max_s=0.137334295`; `peak_rss_bytes=156233728`;
+- `from_commit` complete to uncertain, 1,024: `samples_s=[0.264288278,0.265323916,0.263816232,0.271990994,0.278438386,0.278180864,0.283953954,0.265118122,0.267047330]`; `median_s=0.267047330`; `max_s=0.283953954`; `ratio=2.040528861`; `peak_rss_bytes=278462464`;
+- `from_commit` full no-op, 512: `samples_s=[0.159108860,0.157762931,0.158213497,0.157118675,0.157707069,0.160706744,0.157687722,0.157820010,0.157137591]`; `median_s=0.157762931`; `max_s=0.160706744`; `peak_rss_bytes=224022528`;
+- `from_commit` full no-op, 1,024: `samples_s=[0.329597202,0.322912240,0.327485066,0.320543752,0.319918848,0.320634233,0.321553864,0.319937098,0.326467674]`; `median_s=0.321553864`; `max_s=0.329597202`; `ratio=2.038209242`; `peak_rss_bytes=412954624`;
+- fused initial uncertain, 512: `samples_s=[0.145552713,0.144600723,0.145183520,0.146210062,0.145761212,0.144510725,0.145987752,0.145777138,0.148328554]`; `median_s=0.145761212`; `max_s=0.148328554`; `peak_rss_bytes=92200960`;
+- fused initial uncertain, 1,024: `samples_s=[0.297871027,0.295390510,0.293497315,0.293052182,0.292449868,0.293148857,0.301997556,0.296235176,0.292930054]`; `median_s=0.293497315`; `max_s=0.301997556`; `ratio=2.013548810`; `peak_rss_bytes=149139456`;
+- fused initial incomplete, 512: `samples_s=[0.134223905,0.142588349,0.135781367,0.134912691,0.141197767,0.134916711,0.134896878,0.150277328,0.135219100]`; `median_s=0.135219100`; `max_s=0.150277328`; `peak_rss_bytes=84910080`;
+- fused initial incomplete, 1,024: `samples_s=[0.272503513,0.270261744,0.271327582,0.273676304,0.270680740,0.274887452,0.272028410,0.270605220,0.270216984]`; `median_s=0.271327582`; `max_s=0.274887452`; `ratio=2.006577340`; `peak_rss_bytes=135151616`;
+- fused complete to uncertain, 512: `samples_s=[0.250294711,0.246846608,0.244317151,0.243710439,0.245133671,0.245038528,0.244334490,0.244538443,0.249968667]`; `median_s=0.245038528`; `max_s=0.250294711`; `peak_rss_bytes=156405760`;
+- fused complete to uncertain, 1,024: `samples_s=[0.488611065,0.487799747,0.486734017,0.492999318,0.486724726,0.484914879,0.486195882,0.486838503,0.486570337]`; `median_s=0.486734017`; `max_s=0.492999318`; `ratio=1.986357088`; `peak_rss_bytes=278364160`;
+- fused uncertain to incomplete, 512: `samples_s=[0.358105388,0.357483362,0.361363599,0.357315181,0.356061839,0.359803770,0.359869794,0.358696047,0.361779379]`; `median_s=0.358696047`; `max_s=0.361779379`; `peak_rss_bytes=222044160`;
+- fused uncertain to incomplete, 1,024: `samples_s=[0.740927550,0.767520597,0.738438730,0.759504481,0.735133711,0.724390548,0.741394845,0.725661596,0.726846883]`; `median_s=0.738438730`; `max_s=0.767520597`; `ratio=2.058675405`; `peak_rss_bytes=409042944`;
+- fused mixed transition/no-op, 512: `samples_s=[0.260415866,0.259602274,0.260155324,0.260250285,0.265923666,0.262590718,0.260894934,0.261796163,0.266757185]`; `median_s=0.260894934`; `max_s=0.266757185`; `peak_rss_bytes=165740544`;
+- fused mixed transition/no-op, 1,024: `samples_s=[0.536272768,0.538328044,0.536103592,0.532946293,0.533098902,0.531632448,0.528111229,0.538706191,0.553360045]`; `median_s=0.536103592`; `max_s=0.553360045`; `ratio=2.054863940`; `peak_rss_bytes=295878656`;
+- fused full no-op, 512: `samples_s=[0.373569561,0.370947721,0.372290388,0.373252785,0.371216795,0.371820367,0.371228595,0.384488611,0.378726209]`; `median_s=0.372290388`; `max_s=0.384488611`; `peak_rss_bytes=242233344`;
+- fused full no-op, 1,024: `samples_s=[0.763051499,0.764016390,0.753211982,0.762434562,0.757798140,0.757098337,0.757337654,0.769037574,0.804969960]`; `median_s=0.762434562`; `max_s=0.804969960`; `ratio=2.047956613`; `peak_rss_bytes=448778240`.
+
+Every 1,024 median is at most 0.800000 seconds, every reported maximum is at most 1.000000
+second, every scale ratio is at most 2.5 and every isolated-process peak RSS is below 1.5 GiB.
+The slowest median is 0.762434562 seconds, the slowest sample is 0.804969960 seconds, the worst
+ratio is 2.058675405 and the highest peak RSS is 448,778,240 bytes. These results are TerraPC- and
+fixture-bound, not absolute worst-case guarantees. They restore the pure contract/resource gates;
+3B1C-2 must still integrate the fused factory and separately prove its complete warm synchronous
+runtime path at a median no greater than 1.0 second. This phase remains pure and dormant, schema v2
+plus `is_gap` remain active, and market-event v3 remains dormant.
+
+Independent review after Series 3 required bounded cycle detection for retained predecessor,
+evidence and committed-state graphs. Correctness, adversarial, complexity and byte-volume tests
+were green before the first explicitly announced post-review measurement. Series 4 used the same
+isolated-process protocol and completed all 18 children without restart or sample selection. It is
+retained as failure evidence because fused initialization and transition still invoked public
+constructors that opened a fresh stored-verification transcript for every leaf.
+
+Series 4 ordered ledger (`from_commit` first, then fused preparation; RSS includes fixture,
+warm-ups and samples in that isolated process):
+
+- `from_commit` initial uncertain, 512: `samples_s=[0.118091179,0.118610703,0.117148244,0.117984080,0.117266583,0.117195376,0.117322951,0.124062866,0.122649797]`; `median_s=0.117984080`; `max_s=0.124062866`; `peak_rss_bytes=72982528`;
+- `from_commit` initial uncertain, 1,024: `samples_s=[0.230715607,0.232644315,0.231751239,0.232355129,0.231279976,0.238137183,0.233128764,0.241717324,0.233633367]`; `median_s=0.232644315`; `max_s=0.241717324`; `ratio=1.971828021`; `peak_rss_bytes=110084096`;
+- `from_commit` complete to uncertain, 512: `samples_s=[0.132223183,0.130830297,0.130746802,0.131115325,0.131348130,0.131786206,0.131647358,0.131350209,0.133198180]`; `median_s=0.131350209`; `max_s=0.133198180`; `peak_rss_bytes=158728192`;
+- `from_commit` complete to uncertain, 1,024: `samples_s=[0.266888799,0.278844379,0.269642148,0.289180709,0.268633298,0.285088306,0.266455468,0.267670479,0.267685101]`; `median_s=0.268633298`; `max_s=0.289180709`; `ratio=2.045168409`; `peak_rss_bytes=281620480`;
+- `from_commit` full no-op, 512: `samples_s=[0.156056828,0.158540928,0.157238464,0.155791341,0.157029845,0.157147204,0.158650260,0.157809109,0.158021708]`; `median_s=0.157238464`; `max_s=0.158650260`; `peak_rss_bytes=225456128`;
+- `from_commit` full no-op, 1,024: `samples_s=[0.322149260,0.333292484,0.320201527,0.318904146,0.321148554,0.325247977,0.318174162,0.322897834,0.325797291]`; `median_s=0.322149260`; `max_s=0.333292484`; `ratio=2.048794244`; `peak_rss_bytes=415236096`;
+- fused initial uncertain, 512: `samples_s=[1.371763318,1.364502265,1.391478865,1.367644329,1.362222192,1.372054957,1.366510045,1.369567754,1.378099545]`; `median_s=1.369567754`; `max_s=1.391478865`; `peak_rss_bytes=93827072`;
+- fused initial uncertain, 1,024: `samples_s=[2.746192242,2.765380745,2.769448649,2.781596756,2.748749596,2.756286278,2.773878090,2.744775634,2.783113076]`; `median_s=2.765380745`; `max_s=2.783113076`; `ratio=2.019163153`; `peak_rss_bytes=152043520`;
+- fused initial incomplete, 512: `samples_s=[1.172061355,1.169863247,1.166810062,1.168052175,1.186212254,1.168059584,1.173794589,1.199038815,1.183341595]`; `median_s=1.172061355`; `max_s=1.199038815`; `peak_rss_bytes=86630400`;
+- fused initial incomplete, 1,024: `samples_s=[2.367212572,2.370063760,2.361937117,2.392799562,2.369684726,2.364048864,2.373042016,2.376070495,2.358459602]`; `median_s=2.369684726`; `max_s=2.392799562`; `ratio=2.021809452`; `peak_rss_bytes=137928704`;
+- fused complete to uncertain, 512: `samples_s=[3.168948183,3.172375536,3.223609387,3.167894510,3.175502306,3.196447018,3.194320744,3.187571410,3.182764927]`; `median_s=3.182764927`; `max_s=3.223609387`; `peak_rss_bytes=158445568`;
+- fused complete to uncertain, 1,024: `samples_s=[6.363456468,6.364278310,6.365653429,6.406412011,6.380784433,6.377180277,6.343121117,6.371369293,6.404486377]`; `median_s=6.371369293`; `max_s=6.406412011`; `ratio=2.001834706`; `peak_rss_bytes=281501696`;
+- fused uncertain to incomplete, 512: `samples_s=[2.562549894,2.580385454,2.557948629,2.591588054,2.556850436,2.553080016,2.552376298,2.581511294,2.559570873]`; `median_s=2.559570873`; `max_s=2.591588054`; `peak_rss_bytes=223215616`;
+- fused uncertain to incomplete, 1,024: `samples_s=[5.153780742,5.180796497,5.188147294,5.175958085,5.193545464,5.160587808,5.163231957,5.210895776,5.199095328]`; `median_s=5.180796497`; `max_s=5.210895776`; `ratio=2.024087925`; `peak_rss_bytes=411557888`;
+- fused mixed transition/no-op, 512: `samples_s=[1.738360953,1.739807150,1.731768682,1.732598465,1.757716648,1.744408514,1.749067591,1.739787508,1.757212845]`; `median_s=1.739807150`; `max_s=1.757716648`; `peak_rss_bytes=167477248`;
+- fused mixed transition/no-op, 1,024: `samples_s=[3.535674669,3.549886918,3.538701400,3.528022117,3.544633595,3.506776318,3.524149536,3.520801398,3.525174428]`; `median_s=3.528022117`; `max_s=3.549886918`; `ratio=2.027823668`; `peak_rss_bytes=299118592`;
+- fused full no-op, 512: `samples_s=[0.381100374,0.382180910,0.382835844,0.381487430,0.381459103,0.392813437,0.390425151,0.383140479,0.382504392]`; `median_s=0.382504392`; `max_s=0.392813437`; `peak_rss_bytes=243077120`;
+- fused full no-op, 1,024: `samples_s=[0.788470874,0.790533305,0.781940561,0.782170434,0.795506434,0.803757995,0.787616262,0.785480342,0.794342482]`; `median_s=0.788470874`; `max_s=0.803757995`; `ratio=2.061338093`; `peak_rss_bytes=449966080`.
+
+The Series 4 scale and RSS gates passed, but every fused initialization/transition absolute gate
+failed; the slowest median was 6.371369293 seconds. The constructor hotspot was then removed by
+deriving initialization-v1, transition-v1 and compact state-v2 candidates inside the already
+verified lexical transcript and immediately rederiving every candidate through that same context.
+No private context crosses the public factory boundary, and retained loads still invoke a fresh,
+complete stored verifier. Ordinary factory output and every canonical byte remain equal.
+
+After that correction the complete correctness, adversarial, complexity and byte-volume gates were
+rerun. Series 5 was announced before launch and is the first formal post-hotspot series. It used the
+same protocol, completed all 18 children, and did not restart, discard, replace or select a sample.
+
+Series 5 ordered ledger (`from_commit` first, then fused preparation; RSS includes fixture,
+warm-ups and samples in that isolated process):
+
+- `from_commit` initial uncertain, 512: `samples_s=[0.120376257,0.119120791,0.119749856,0.119988156,0.120310628,0.118951150,0.121655130,0.120621268,0.121426192]`; `median_s=0.120310628`; `max_s=0.121655130`; `peak_rss_bytes=72871936`;
+- `from_commit` initial uncertain, 1,024: `samples_s=[0.239294197,0.237216887,0.233956606,0.238740896,0.246124784,0.252279932,0.245805863,0.248135584,0.254801338]`; `median_s=0.245805863`; `max_s=0.254801338`; `ratio=2.043093508`; `peak_rss_bytes=109953024`;
+- `from_commit` complete to uncertain, 512: `samples_s=[0.133309830,0.132497308,0.134231649,0.130868313,0.133081510,0.134750472,0.135621629,0.141070929,0.135297848]`; `median_s=0.134231649`; `max_s=0.141070929`; `peak_rss_bytes=156688384`;
+- `from_commit` complete to uncertain, 1,024: `samples_s=[0.269889350,0.268986671,0.268148478,0.269039922,0.268815058,0.277275031,0.275110379,0.268287913,0.268118356]`; `median_s=0.268986671`; `max_s=0.277275031`; `ratio=2.003899028`; `peak_rss_bytes=278470656`;
+- `from_commit` full no-op, 512: `samples_s=[0.155379588,0.156176719,0.155509276,0.155741562,0.165868302,0.163486976,0.155377587,0.164478641,0.161801826]`; `median_s=0.156176719`; `max_s=0.165868302`; `peak_rss_bytes=224526336`;
+- `from_commit` full no-op, 1,024: `samples_s=[0.317455181,0.323040992,0.323106988,0.324436858,0.323482912,0.316035539,0.320206287,0.314550979,0.314797172]`; `median_s=0.320206287`; `max_s=0.324436858`; `ratio=2.050281816`; `peak_rss_bytes=413704192`;
+- fused initial uncertain, 512: `samples_s=[0.210804487,0.207688358,0.207318273,0.208261916,0.213950909,0.206804550,0.208073198,0.205955864,0.207647274]`; `median_s=0.207688358`; `max_s=0.213950909`; `peak_rss_bytes=92504064`;
+- fused initial uncertain, 1,024: `samples_s=[0.417878880,0.417580949,0.430444627,0.421434377,0.423229101,0.422403084,0.421157270,0.437336491,0.430788141]`; `median_s=0.422403084`; `max_s=0.437336491`; `ratio=2.033831304`; `peak_rss_bytes=150622208`;
+- fused initial incomplete, 512: `samples_s=[0.196227270,0.200624759,0.196163022,0.196880556,0.197779630,0.198708151,0.201872785,0.199303239,0.196244930]`; `median_s=0.197779630`; `max_s=0.201872785`; `peak_rss_bytes=85540864`;
+- fused initial incomplete, 1,024: `samples_s=[0.393592398,0.390939721,0.395784612,0.393020252,0.394252959,0.394200003,0.407551031,0.393058565,0.399896847]`; `median_s=0.394200003`; `max_s=0.407551031`; `ratio=1.993127417`; `peak_rss_bytes=136323072`;
+- fused complete to uncertain, 512: `samples_s=[0.270424903,0.268221811,0.272512523,0.270653409,0.270724998,0.268989598,0.272225423,0.270864297,0.269817583]`; `median_s=0.270653409`; `max_s=0.272512523`; `peak_rss_bytes=156639232`;
+- fused complete to uncertain, 1,024: `samples_s=[0.548722941,0.539314219,0.549166379,0.539932345,0.543635533,0.538483768,0.541890250,0.535003455,0.534640457]`; `median_s=0.539932345`; `max_s=0.549166379`; `ratio=1.994921649`; `peak_rss_bytes=278519808`;
+- fused uncertain to incomplete, 512: `samples_s=[0.390635796,0.382810578,0.386604542,0.382538661,0.383002916,0.388855444,0.382207899,0.391148364,0.392660239]`; `median_s=0.386604542`; `max_s=0.392660239`; `peak_rss_bytes=222437376`;
+- fused uncertain to incomplete, 1,024: `samples_s=[0.699229766,0.699628367,0.724275605,0.711041684,0.698385059,0.727471217,0.713823367,0.708467279,0.710175441]`; `median_s=0.710175441`; `max_s=0.727471217`; `ratio=1.836955762`; `peak_rss_bytes=410185728`;
+- fused mixed transition/no-op, 512: `samples_s=[0.281733059,0.278343552,0.278098881,0.286883246,0.277851844,0.277267536,0.279813670,0.283840251,0.284678995]`; `median_s=0.279813670`; `max_s=0.286883246`; `peak_rss_bytes=166051840`;
+- fused mixed transition/no-op, 1,024: `samples_s=[0.567950974,0.573928433,0.574488471,0.573861347,0.565447238,0.574198396,0.562814355,0.565602493,0.577075942]`; `median_s=0.573861347`; `max_s=0.577075942`; `ratio=2.050869591`; `peak_rss_bytes=296128512`;
+- fused full no-op, 512: `samples_s=[0.385121940,0.384508219,0.389014914,0.389619424,0.396401249,0.387674470,0.387136915,0.391103920,0.400163383]`; `median_s=0.389014914`; `max_s=0.400163383`; `peak_rss_bytes=242212864`;
+- fused full no-op, 1,024: `samples_s=[0.799519001,0.792557347,0.795413196,0.791147212,0.807741558,0.790658338,0.784166435,0.798012575,0.787129437]`; `median_s=0.792557347`; `max_s=0.807741558`; `ratio=2.037344375`; `peak_rss_bytes=448614400`.
+
+Every Series 5 1,024 median is at most 0.800000 seconds, every maximum is at most 1.000000
+second, every 1,024/512 median ratio is at most 2.5 and every isolated-process peak RSS is below
+1.5 GiB. The slowest median is 0.792557347 seconds, the slowest sample is 0.807741558 seconds, the
+worst ratio is 2.050869591 and the highest peak RSS is 448,614,400 bytes. These measurements are
+TerraPC- and fixture-bound rather than absolute worst-case guarantees. The full 3B1C-2 runtime path
+still has to integrate these dormant contracts and prove its separate warm median at or below 1.0
+second.
+
+Independent review then required fresh public-parent verification, one-shot call-local contexts and
+the joint compact-graph resource boundary described above. After all correctness, adversarial,
+complexity and byte gates were green, Series 6 was announced and run once against binary diff
+`7b3fdc69f0dd8afd5d85bd2e25203773dbb62d28cc76e368113f07eaf9cec82f` and code/test diff
+`a455b976ae1c5137e4d93873af5250f34e6c08c8dfdc50144b93f7a1378c9ab1`. It completed all 18
+isolated children with the unchanged protocol and no discarded, replaced or selected sample.
+
+Series 6 ordered ledger (`from_commit` first, then fused preparation; RSS includes fixture,
+warm-ups and samples in that isolated process):
+
+- `from_commit` initial uncertain, 512: `samples_s=[0.116250290,0.116874028,0.115634942,0.117500657,0.116574740,0.118566198,0.120372959,0.119055761,0.117896340]`; `median_s=0.117500657`; `max_s=0.120372959`; `peak_rss_bytes=73281536`;
+- `from_commit` initial uncertain, 1,024: `samples_s=[0.230921609,0.232036345,0.231039440,0.232675223,0.251297918,0.233447636,0.231985363,0.230583522,0.230462784]`; `median_s=0.231985363`; `max_s=0.251297918`; `ratio=1.974332475`; `peak_rss_bytes=109654016`;
+- `from_commit` complete to uncertain, 512: `samples_s=[0.133039020,0.139189248,0.132179158,0.130549466,0.132299660,0.132268542,0.131950930,0.131474577,0.132580047]`; `median_s=0.132268542`; `max_s=0.139189248`; `peak_rss_bytes=157368320`;
+- `from_commit` complete to uncertain, 1,024: `samples_s=[0.267470824,0.279309156,0.267730368,0.274640662,0.271116867,0.268010714,0.277213603,0.276944764,0.278403835]`; `median_s=0.274640662`; `max_s=0.279309156`; `ratio=2.076386855`; `peak_rss_bytes=278560768`;
+- `from_commit` full no-op, 512: `samples_s=[0.159228622,0.161020257,0.158111250,0.159754890,0.162875996,0.160931499,0.159722887,0.158331891,0.159009602]`; `median_s=0.159722887`; `max_s=0.162875996`; `peak_rss_bytes=224669696`;
+- `from_commit` full no-op, 1,024: `samples_s=[0.320799887,0.320578027,0.318550572,0.320239827,0.319437283,0.318376225,0.319693332,0.322290306,0.324160243]`; `median_s=0.320239827`; `max_s=0.324160243`; `ratio=2.004971442`; `peak_rss_bytes=413818880`;
+- fused initial uncertain, 512: `samples_s=[0.208742067,0.212132625,0.209326406,0.214133014,0.213429937,0.217108644,0.215571349,0.210481621,0.213228259]`; `median_s=0.213228259`; `max_s=0.217108644`; `peak_rss_bytes=92520448`;
+- fused initial uncertain, 1,024: `samples_s=[0.420926170,0.421999912,0.428057406,0.421344280,0.420517282,0.425364271,0.431735363,0.438477838,0.416897055]`; `median_s=0.421999912`; `max_s=0.438477838`; `ratio=1.979099365`; `peak_rss_bytes=150765568`;
+- fused initial incomplete, 512: `samples_s=[0.201843775,0.197116539,0.197780912,0.198030855,0.198228470,0.198773881,0.206740413,0.197990252,0.198614426]`; `median_s=0.198228470`; `max_s=0.206740413`; `peak_rss_bytes=85745664`;
+- fused initial incomplete, 1,024: `samples_s=[0.400280151,0.397388679,0.400093425,0.397561286,0.396623232,0.396875215,0.402318616,0.398291984,0.398623205]`; `median_s=0.398291984`; `max_s=0.402318616`; `ratio=2.009257217`; `peak_rss_bytes=136540160`;
+- fused complete to uncertain, 512: `samples_s=[0.287763734,0.288737675,0.283540443,0.282731412,0.285261637,0.285470377,0.284503545,0.284924075,0.282127024]`; `median_s=0.284924075`; `max_s=0.288737675`; `peak_rss_bytes=157175808`;
+- fused complete to uncertain, 1,024: `samples_s=[0.532087662,0.538276643,0.533096086,0.554093824,0.535951039,0.553876678,0.535331678,0.545987511,0.534758817]`; `median_s=0.535951039`; `max_s=0.554093824`; `ratio=1.881031075`; `peak_rss_bytes=278507520`;
+- fused uncertain to incomplete, 512: `samples_s=[0.381097969,0.383356758,0.394625023,0.382633726,0.391362357,0.384199002,0.379112546,0.379734898,0.387006837]`; `median_s=0.383356758`; `max_s=0.394625023`; `peak_rss_bytes=223211520`;
+- fused uncertain to incomplete, 1,024: `samples_s=[0.715600712,0.712853614,0.738180793,0.729756647,0.722246807,0.728669732,0.718680253,0.727231425,0.717226277]`; `median_s=0.722246807`; `max_s=0.738180793`; `ratio=1.884006978`; `peak_rss_bytes=410619904`;
+- fused mixed transition/no-op, 512: `samples_s=[0.282025723,0.283740217,0.280338231,0.281163458,0.287290493,0.284268122,0.281211072,0.283988641,0.287175345]`; `median_s=0.283740217`; `max_s=0.287290493`; `peak_rss_bytes=165974016`;
+- fused mixed transition/no-op, 1,024: `samples_s=[0.573267560,0.575454816,0.589745465,0.597563440,0.590146391,0.578958688,0.575122661,0.573790260,0.583273741]`; `median_s=0.578958688`; `max_s=0.597563440`; `ratio=2.040453391`; `peak_rss_bytes=296153088`;
+- fused full no-op, 512: `samples_s=[0.387906928,0.389659939,0.389280525,0.391481966,0.391419390,0.400189307,0.384958877,0.385291018,0.385588002]`; `median_s=0.389280525`; `max_s=0.400189307`; `peak_rss_bytes=242192384`;
+- fused full no-op, 1,024: `samples_s=[0.801821428,0.803626881,0.802064711,0.810096071,0.824570169,0.831693416,0.821573706,0.805516257,0.822554404]`; `median_s=0.810096071`; `max_s=0.831693416`; `ratio=2.081008473`; `peak_rss_bytes=449802240`.
+
+Series 6 passed every scale, maximum-sample and RSS gate, but its fused 1,024 full-no-op median
+was 0.810096071 seconds and therefore failed the non-negotiable 0.800000-second median gate. That
+failure is retained. A diagnostic profile then identified redundant wrapper dispatch and duplicate
+dictionary lookup on already verified call-local values. The cache-hit path was reduced to one
+lookup while preserving the same object/value collision check; no verification fact, canonical
+byte, ID, public API or cache lifetime changed. After the complete correctness/resource selection
+passed again, Series 7 was announced and run once against binary diff
+`e95dac35d6d390d265e72d6d7d9b6920f5506cac1c6b6caa7f06a035743225dd` and code/test diff
+`7d1095e901cecef384740a32e2bfa638a508bd22cb1f2f5b3e55d163cea3d734`. It likewise completed
+all 18 isolated children without restarting or changing any sample.
+
+Series 7 ordered ledger (`from_commit` first, then fused preparation; RSS includes fixture,
+warm-ups and samples in that isolated process):
+
+- `from_commit` initial uncertain, 512: `samples_s=[0.117599669,0.116539786,0.117786999,0.117024608,0.117010297,0.116743124,0.121175387,0.117865105,0.120685715]`; `median_s=0.117599669`; `max_s=0.121175387`; `peak_rss_bytes=73228288`;
+- `from_commit` initial uncertain, 1,024: `samples_s=[0.233007686,0.232464370,0.231536369,0.235033942,0.231964618,0.232510396,0.231661289,0.232033043,0.236198612]`; `median_s=0.232464370`; `max_s=0.236198612`; `ratio=1.976743404`; `peak_rss_bytes=109506560`;
+- `from_commit` complete to uncertain, 512: `samples_s=[0.130523515,0.134019379,0.130561279,0.132491884,0.132021947,0.132670160,0.136891223,0.130902983,0.131680492]`; `median_s=0.132021947`; `max_s=0.136891223`; `peak_rss_bytes=157184000`;
+- `from_commit` complete to uncertain, 1,024: `samples_s=[0.266953379,0.273601557,0.291059616,0.272414276,0.271650310,0.276987896,0.266152637,0.274739243,0.274582590]`; `median_s=0.273601557`; `max_s=0.291059616`; `ratio=2.072394501`; `peak_rss_bytes=278499328`;
+- `from_commit` full no-op, 512: `samples_s=[0.158678585,0.156034515,0.158454315,0.158038658,0.159064085,0.157048504,0.167614829,0.159513096,0.157723021]`; `median_s=0.158454315`; `max_s=0.167614829`; `peak_rss_bytes=224305152`;
+- `from_commit` full no-op, 1,024: `samples_s=[0.327380010,0.327837307,0.322668739,0.321024925,0.325270080,0.331836205,0.327591007,0.322700148,0.321038450]`; `median_s=0.325270080`; `max_s=0.331836205`; `ratio=2.052768838`; `peak_rss_bytes=414273536`;
+- fused initial uncertain, 512: `samples_s=[0.209193122,0.212762205,0.212846102,0.216365270,0.210031277,0.209747223,0.215456609,0.212847787,0.208562653]`; `median_s=0.212762205`; `max_s=0.216365270`; `peak_rss_bytes=92729344`;
+- fused initial uncertain, 1,024: `samples_s=[0.421690580,0.419074892,0.426517230,0.420016004,0.419700458,0.421244120,0.417153884,0.427846324,0.418295156]`; `median_s=0.420016004`; `max_s=0.427846324`; `ratio=1.974110035`; `peak_rss_bytes=150732800`;
+- fused initial incomplete, 512: `samples_s=[0.201772221,0.195565426,0.196810233,0.200289893,0.199951344,0.197546116,0.199600793,0.197633634,0.198135377]`; `median_s=0.198135377`; `max_s=0.201772221`; `peak_rss_bytes=85753856`;
+- fused initial incomplete, 1,024: `samples_s=[0.398581163,0.396708722,0.399521360,0.416294875,0.398626321,0.406924623,0.408640783,0.396702013,0.396403562]`; `median_s=0.398626321`; `max_s=0.416294875`; `ratio=2.011888674`; `peak_rss_bytes=136802304`;
+- fused complete to uncertain, 512: `samples_s=[0.288664762,0.285470180,0.281423583,0.284562970,0.283182949,0.282611240,0.281595042,0.281052381,0.282302233]`; `median_s=0.282611240`; `max_s=0.288664762`; `peak_rss_bytes=157212672`;
+- fused complete to uncertain, 1,024: `samples_s=[0.530058874,0.527730041,0.526491397,0.526985133,0.532376370,0.529756267,0.534375922,0.542429494,0.531867178]`; `median_s=0.530058874`; `max_s=0.542429494`; `ratio=1.875576053`; `peak_rss_bytes=278528000`;
+- fused uncertain to incomplete, 512: `samples_s=[0.383761259,0.384521264,0.386089933,0.378053986,0.378335285,0.397455533,0.399255239,0.393759976,0.402292859]`; `median_s=0.386089933`; `max_s=0.402292859`; `peak_rss_bytes=222601216`;
+- fused uncertain to incomplete, 1,024: `samples_s=[0.702852595,0.709719009,0.705981688,0.707983818,0.706451947,0.716605821,0.703092339,0.711356683,0.716696498]`; `median_s=0.707983818`; `max_s=0.716696498`; `ratio=1.833727734`; `peak_rss_bytes=410918912`;
+- fused mixed transition/no-op, 512: `samples_s=[0.285406841,0.284534084,0.285689358,0.280865126,0.280408366,0.298238079,0.287386143,0.286563744,0.286609359]`; `median_s=0.285689358`; `max_s=0.298238079`; `peak_rss_bytes=166121472`;
+- fused mixed transition/no-op, 1,024: `samples_s=[0.575893974,0.583865114,0.576634808,0.573451072,0.575022280,0.569553311,0.576841284,0.573461504,0.571890537]`; `median_s=0.575022280`; `max_s=0.583865114`; `ratio=2.012753587`; `peak_rss_bytes=296189952`;
+- fused full no-op, 512: `samples_s=[0.387462378,0.416996195,0.398451269,0.397831778,0.390439452,0.395107575,0.389439295,0.390111029,0.403526231]`; `median_s=0.395107575`; `max_s=0.416996195`; `peak_rss_bytes=242098176`;
+- fused full no-op, 1,024: `samples_s=[0.800556591,0.788896064,0.788405089,0.786853790,0.790887412,0.794700568,0.800262130,0.799500722,0.799622003]`; `median_s=0.794700568`; `max_s=0.800556591`; `ratio=2.011352397`; `peak_rss_bytes=449769472`.
+
+Every Series 7 1,024 median is at most 0.800000 seconds, every maximum is at most 1.000000
+second, every 1,024/512 median ratio is at most 2.5 and every isolated-process peak RSS is below
+1.5 GiB. The slowest median is 0.794700568 seconds, the slowest sample is 0.800556591 seconds, the
+worst ratio is 2.072394501 and the highest peak RSS is 449,769,472 bytes. These results are
+TerraPC- and fixture-bound rather than absolute worst-case guarantees. The full 3B1C-2 runtime
+path still must integrate these dormant contracts and prove its separate warm median at or below
+1.0 second.
+
+Final atomicity review then identified a retained-parent verification gap in the ordinary
+`prepare_coverage_mutation_batch(...)` writer. The writer now constructs one call-local
+verification context, fully rederives the v3 fan-out proof and optional raw binding before target
+decisions, and reuses that same verified context for every decision and aggregate charge. Six
+tamper cases cover fan-out content, digest and catalog plus raw-binding content, digest and ID. No
+canonical byte, version, identity or benchmarked fused/from-commit path changed. The complete
+correctness/resource selection passed before Series 8 was announced. Series 8 ran once against
+binary diff `dfa81467fad882942f4cb1c9d67fdb97149fab48613baa86f4cb703101c5283f` and code/test diff
+`122714cf5f64d97eb038a2a7a72947a519e6a58855f5e51dc5f37ca55006de35`. It completed all 18
+isolated children without restart, replacement or sample selection; its append-only ledger SHA-256
+is `921d406b616ba249d5a00f06950b893228c47a3906c3a7b91e044c917b1bc8d0`.
+
+Series 8 ordered ledger (`from_commit` first, then fused preparation; RSS includes fixture,
+warm-ups and samples in that isolated process):
+
+- `from_commit` initial uncertain, 512: `samples_s=[0.118578796,0.116236352,0.117208144,0.117725042,0.116700597,0.116565646,0.117878603,0.117056103,0.115708604]`; `median_s=0.117056103`; `max_s=0.118578796`; `peak_rss_bytes=73101312`;
+- `from_commit` initial uncertain, 1,024: `samples_s=[0.233698489,0.230312837,0.231967761,0.237470047,0.234036955,0.231481414,0.232480509,0.233559518,0.241352344]`; `median_s=0.233559518`; `max_s=0.241352344`; `ratio=1.995278435`; `peak_rss_bytes=110170112`;
+- `from_commit` complete to uncertain, 512: `samples_s=[0.130599944,0.131201838,0.130986944,0.131749445,0.132478350,0.130510746,0.131428032,0.131858704,0.130319586]`; `median_s=0.131201838`; `max_s=0.132478350`; `peak_rss_bytes=156786688`;
+- `from_commit` complete to uncertain, 1,024: `samples_s=[0.270495775,0.270418415,0.267278577,0.267220699,0.269190046,0.268451631,0.267717677,0.265336147,0.269259242]`; `median_s=0.268451631`; `max_s=0.270495775`; `ratio=2.046096572`; `peak_rss_bytes=278347776`;
+- `from_commit` full no-op, 512: `samples_s=[0.156423677,0.156654865,0.158117897,0.156206779,0.157245591,0.156355340,0.156642313,0.158523389,0.156673081]`; `median_s=0.156654865`; `max_s=0.158523389`; `peak_rss_bytes=224280576`;
+- `from_commit` full no-op, 1,024: `samples_s=[0.316343779,0.326224600,0.329236108,0.319304906,0.320860257,0.330467287,0.324375538,0.321385223,0.319455466]`; `median_s=0.321385223`; `max_s=0.330467287`; `ratio=2.051549583`; `peak_rss_bytes=414175232`;
+- fused initial uncertain, 512: `samples_s=[0.207760271,0.208714801,0.213074025,0.210771342,0.215365939,0.208827375,0.209772327,0.223522974,0.219393752]`; `median_s=0.210771342`; `max_s=0.223522974`; `peak_rss_bytes=92721152`;
+- fused initial uncertain, 1,024: `samples_s=[0.420666671,0.415746013,0.420398620,0.419059302,0.421280366,0.431913068,0.421523673,0.418325234,0.419764618]`; `median_s=0.420398620`; `max_s=0.431913068`; `ratio=1.994572013`; `peak_rss_bytes=150757376`;
+- fused initial incomplete, 512: `samples_s=[0.197608879,0.197694465,0.196508825,0.196094068,0.196341292,0.199038803,0.196869797,0.196872858,0.197643231]`; `median_s=0.196872858`; `max_s=0.199038803`; `peak_rss_bytes=85856256`;
+- fused initial incomplete, 1,024: `samples_s=[0.400621387,0.397822624,0.406008938,0.394384606,0.396461826,0.400892016,0.398248995,0.400997658,0.394424555]`; `median_s=0.398248995`; `max_s=0.406008938`; `ratio=2.022874047`; `peak_rss_bytes=136609792`;
+- fused complete to uncertain, 512: `samples_s=[0.293332834,0.292631602,0.294800551,0.309480744,0.293768503,0.285481158,0.283944745,0.286740295,0.284919265]`; `median_s=0.292631602`; `max_s=0.309480744`; `peak_rss_bytes=156966912`;
+- fused complete to uncertain, 1,024: `samples_s=[0.525819390,0.529813260,0.526144946,0.527613059,0.529883531,0.527912067,0.527680645,0.526131399,0.527284740]`; `median_s=0.527613059`; `max_s=0.529883531`; `ratio=1.802994124`; `peak_rss_bytes=278581248`;
+- fused uncertain to incomplete, 512: `samples_s=[0.380135282,0.390657189,0.398140121,0.386362914,0.382988509,0.385123572,0.381199223,0.380610132,0.384845900]`; `median_s=0.384845900`; `max_s=0.398140121`; `peak_rss_bytes=222130176`;
+- fused uncertain to incomplete, 1,024: `samples_s=[0.709538608,0.703283215,0.704292669,0.706051740,0.707359955,0.701581090,0.703382666,0.708713493,0.710063573]`; `median_s=0.706051740`; `max_s=0.710063573`; `ratio=1.834634954`; `peak_rss_bytes=410906624`;
+- fused mixed transition/no-op, 512: `samples_s=[0.282833441,0.293512104,0.295030402,0.288429652,0.284967327,0.280988623,0.282593968,0.285233673,0.289484285]`; `median_s=0.285233673`; `max_s=0.295030402`; `peak_rss_bytes=165453824`;
+- fused mixed transition/no-op, 1,024: `samples_s=[0.570097437,0.582962185,0.568286639,0.570467257,0.575779412,0.568692427,0.568281309,0.564743882,0.570624111]`; `median_s=0.570097437`; `max_s=0.582962185`; `ratio=1.998703137`; `peak_rss_bytes=296345600`;
+- fused full no-op, 512: `samples_s=[0.389526852,0.384233114,0.386237412,0.385889652,0.400000483,0.384540781,0.384034595,0.397076212,0.391865356]`; `median_s=0.386237412`; `max_s=0.400000483`; `peak_rss_bytes=241999872`;
+- fused full no-op, 1,024: `samples_s=[0.790591347,0.802912768,0.790723904,0.802440504,0.792857738,0.790821342,0.792540991,0.790710708,0.790911471]`; `median_s=0.790911471`; `max_s=0.802912768`; `ratio=2.047733975`; `peak_rss_bytes=449912832`.
+
+Every Series 8 1,024 median is at most 0.800000 seconds, every maximum is at most 1.000000
+second, every 1,024/512 median ratio is at most 2.5 and every isolated-process peak RSS is below
+1.5 GiB. The slowest median is 0.790911471 seconds, the slowest sample is 0.802912768 seconds, the
+worst ratio is 2.051549583 and the highest peak RSS is 449,912,832 bytes. These results are
+TerraPC- and fixture-bound rather than absolute worst-case guarantees. The full 3B1C-2 runtime
+path still must integrate these dormant contracts and prove its separate warm median at or below
+1.0 second.
+
+The family-filtered retained-proof correction described above passed the full correctness and
+resource selection before Series 9 was announced. Series 9 ran once against binary diff
+`44ed44d7ee2678900367d7ab4cf58293f7d63452728129b996b2a80d11ffec8a` and code/test diff
+`c7d05a8e58f9aff1020eb83ef8b731df3bd606e28d4186c5d38f8f3a0f3e70b9`. It completed all 18
+isolated children without restart, replacement or sample selection; its append-only ledger SHA-256
+is `0ad83dc38c01943d08386acd68cdc750a3c71b38e333cdec7b9c7d622d68c749`.
+
+Series 9 ordered ledger (`from_commit` first, then fused preparation; RSS includes fixture,
+warm-ups and samples in that isolated process):
+
+- `from_commit` initial uncertain, 512: `samples_s=[0.119505185,0.120124779,0.117513416,0.117849650,0.118169502,0.117608054,0.116335876,0.118357975,0.118401197]`; `median_s=0.118169502`; `max_s=0.120124779`; `peak_rss_bytes=73146368`;
+- `from_commit` initial uncertain, 1,024: `samples_s=[0.232240649,0.243832061,0.237125650,0.237121671,0.234242629,0.232520289,0.231179876,0.231796758,0.233129202]`; `median_s=0.233129202`; `max_s=0.243832061`; `ratio=1.972837306`; `peak_rss_bytes=110129152`;
+- `from_commit` complete to uncertain, 512: `samples_s=[0.134109327,0.135933013,0.131925244,0.132339664,0.130273771,0.134270453,0.138134331,0.135891321,0.131806198]`; `median_s=0.134109327`; `max_s=0.138134331`; `peak_rss_bytes=156827648`;
+- `from_commit` complete to uncertain, 1,024: `samples_s=[0.266005146,0.270137823,0.265772901,0.271194047,0.268751548,0.269096299,0.268707255,0.271772220,0.268808854]`; `median_s=0.268808854`; `max_s=0.271772220`; `ratio=2.004400887`; `peak_rss_bytes=278564864`;
+- `from_commit` full no-op, 512: `samples_s=[0.158174707,0.156838095,0.158490848,0.159541340,0.158107273,0.159135593,0.158161534,0.158669427,0.169147388]`; `median_s=0.158490848`; `max_s=0.169147388`; `peak_rss_bytes=224509952`;
+- `from_commit` full no-op, 1,024: `samples_s=[0.331822480,0.325432996,0.327449127,0.326147878,0.325947764,0.326974856,0.328760037,0.340404288,0.324486542]`; `median_s=0.326974856`; `max_s=0.340404288`; `ratio=2.063051969`; `peak_rss_bytes=414351360`;
+- fused initial uncertain, 512: `samples_s=[0.210780388,0.210588112,0.212020673,0.211258400,0.212116460,0.212432451,0.210933727,0.215385318,0.210565712]`; `median_s=0.211258400`; `max_s=0.215385318`; `peak_rss_bytes=92504064`;
+- fused initial uncertain, 1,024: `samples_s=[0.424814327,0.422887581,0.436305163,0.431033006,0.425966631,0.422874529,0.424428423,0.434763671,0.428858053]`; `median_s=0.425966631`; `max_s=0.436305163`; `ratio=2.016329912`; `peak_rss_bytes=150597632`;
+- fused initial incomplete, 512: `samples_s=[0.197497902,0.198793031,0.201435714,0.198913521,0.199514852,0.204438382,0.200086490,0.208364726,0.199797562]`; `median_s=0.199797562`; `max_s=0.208364726`; `peak_rss_bytes=85618688`;
+- fused initial incomplete, 1,024: `samples_s=[0.421165817,0.396290292,0.402200378,0.395423976,0.405252139,0.397586719,0.398808735,0.392713310,0.407480991]`; `median_s=0.398808735`; `max_s=0.421165817`; `ratio=1.996064071`; `peak_rss_bytes=136593408`;
+- fused complete to uncertain, 512: `samples_s=[0.284265202,0.287877693,0.289168118,0.281597660,0.283492028,0.285689886,0.283187914,0.283886715,0.288800652]`; `median_s=0.284265202`; `max_s=0.289168118`; `peak_rss_bytes=156946432`;
+- fused complete to uncertain, 1,024: `samples_s=[0.538295521,0.535983379,0.533736881,0.548323611,0.534438120,0.531837278,0.531833250,0.533519367,0.544135478]`; `median_s=0.534438120`; `max_s=0.548323611`; `ratio=1.880068739`; `peak_rss_bytes=278618112`;
+- fused uncertain to incomplete, 512: `samples_s=[0.386472852,0.387674339,0.384675515,0.383707316,0.389017713,0.384645793,0.383384052,0.394092216,0.388069526]`; `median_s=0.386472852`; `max_s=0.394092216`; `peak_rss_bytes=222416896`;
+- fused uncertain to incomplete, 1,024: `samples_s=[0.731337074,0.719148273,0.720798438,0.711251202,0.712505819,0.714768067,0.710776608,0.712058359,0.736431319]`; `median_s=0.714768067`; `max_s=0.736431319`; `ratio=1.849465139`; `peak_rss_bytes=410853376`;
+- fused mixed transition/no-op, 512: `samples_s=[0.284853901,0.285785148,0.283857113,0.284277251,0.280986021,0.283847573,0.285425810,0.285065877,0.282383369]`; `median_s=0.284277251`; `max_s=0.285785148`; `peak_rss_bytes=166023168`;
+- fused mixed transition/no-op, 1,024: `samples_s=[0.576637520,0.582373043,0.574816111,0.576850945,0.592181112,0.579875983,0.581319925,0.574097801,0.587403540]`; `median_s=0.579875983`; `max_s=0.592181112`; `ratio=2.039825491`; `peak_rss_bytes=296255488`;
+- fused full no-op, 512: `samples_s=[0.396864494,0.390084388,0.393656640,0.382634301,0.390445804,0.390589511,0.384876138,0.391727563,0.389089617]`; `median_s=0.390445804`; `max_s=0.396864494`; `peak_rss_bytes=241954816`;
+- fused full no-op, 1,024: `samples_s=[0.804315111,0.811338975,0.800016109,0.813619827,0.790596244,0.795454624,0.795781957,0.803406503,0.822745783]`; `median_s=0.803406503`; `max_s=0.822745783`; `ratio=2.057664584`; `peak_rss_bytes=450019328`.
+
+Series 9 passed every maximum-sample, scale and RSS gate, but its fused 1,024 full-no-op median
+was 0.803406503 seconds and therefore failed the strict 0.800000-second median gate. That failure
+is retained. A profile found no missing compact identity; it found duplicate construction-time
+validation only. For `ALL_POSSIBLY_ACTIVE`, exact equality with the family-filtered reconstructed
+scope tuple already proves target spec, domain and family, so redundant set/domain scans were
+removed. The fused writer already fully verifies current state, request, evidence boundary and
+severity before sealing a no-op, and fully verifies fan-out v3 and optional raw symmetry before its
+leaf loop. It now derives that exact no-op row once and omits only the duplicate generic
+construction-time passes. Independent retained-load verifiers remain unchanged. The complete
+correctness/resource selection passed before Series 10 was announced.
+
+Series 10 ran once against binary diff
+`1d57ec517ed8bfccc6c5b3491ba20cc5260931c771d9b620b0ccc8dfbeb44580` and code/test diff
+`a92a39905b0559c238ffb7a48c3bf42fe9a4196aaa7369aae742bcb53f2426a2`. It completed all 18
+isolated children without restart, replacement or sample selection; its append-only ledger SHA-256
+is `0e479d4f2797eab9376ebb357c0fcaa43dcf5b772834c4715a620db68efb28cd`.
+
+Series 10 ordered ledger (`from_commit` first, then fused preparation; RSS includes fixture,
+warm-ups and samples in that isolated process):
+
+- `from_commit` initial uncertain, 512: `samples_s=[0.119851760,0.119875341,0.118879098,0.116932266,0.120903017,0.122975407,0.119261446,0.116958747,0.119174459]`; `median_s=0.119261446`; `max_s=0.122975407`; `peak_rss_bytes=72916992`;
+- `from_commit` initial uncertain, 1,024: `samples_s=[0.233041132,0.235866972,0.233882194,0.231838394,0.233132358,0.235273097,0.232424315,0.232412246,0.235087703]`; `median_s=0.233132358`; `max_s=0.235866972`; `ratio=1.954800699`; `peak_rss_bytes=110403584`;
+- `from_commit` complete to uncertain, 512: `samples_s=[0.131901946,0.141121080,0.130705757,0.131174712,0.131590883,0.131719673,0.130904731,0.131834802,0.135750731]`; `median_s=0.131719673`; `max_s=0.141121080`; `peak_rss_bytes=157044736`;
+- `from_commit` complete to uncertain, 1,024: `samples_s=[0.264748127,0.264187635,0.267063192,0.276353357,0.275863640,0.273099017,0.270322027,0.266263011,0.267719479]`; `median_s=0.267719479`; `max_s=0.276353357`; `ratio=2.032494258`; `peak_rss_bytes=278298624`;
+- `from_commit` full no-op, 512: `samples_s=[0.157146738,0.155189434,0.156264182,0.155453422,0.157878373,0.154410233,0.156311586,0.155927097,0.158938123]`; `median_s=0.156264182`; `max_s=0.158938123`; `peak_rss_bytes=224362496`;
+- `from_commit` full no-op, 1,024: `samples_s=[0.323133463,0.320518391,0.320848615,0.321582850,0.329750286,0.318949163,0.328355333,0.338856780,0.322141592]`; `median_s=0.322141592`; `max_s=0.338856780`; `ratio=2.061519075`; `peak_rss_bytes=414195712`;
+- fused initial uncertain, 512: `samples_s=[0.211595638,0.210812021,0.217054015,0.212408659,0.213879677,0.209938971,0.209330492,0.210215219,0.211833616]`; `median_s=0.211595638`; `max_s=0.217054015`; `peak_rss_bytes=92532736`;
+- fused initial uncertain, 1,024: `samples_s=[0.422772747,0.423861811,0.424028148,0.418643938,0.431599267,0.426888390,0.427880344,0.426092523,0.422562690]`; `median_s=0.424028148`; `max_s=0.431599267`; `ratio=2.003955053`; `peak_rss_bytes=150720512`;
+- fused initial incomplete, 512: `samples_s=[0.198088453,0.197830313,0.202344080,0.202280694,0.196762775,0.199842273,0.197781099,0.202912584,0.196157479]`; `median_s=0.198088453`; `max_s=0.202912584`; `peak_rss_bytes=85843968`;
+- fused initial incomplete, 1,024: `samples_s=[0.408283284,0.414438543,0.418038818,0.410291854,0.398971898,0.399050503,0.400656153,0.397280112,0.402610083]`; `median_s=0.402610083`; `max_s=0.418038818`; `ratio=2.032476285`; `peak_rss_bytes=136466432`;
+- fused complete to uncertain, 512: `samples_s=[0.281033397,0.280033781,0.286868598,0.281965096,0.280536218,0.282523847,0.285001448,0.283995432,0.283353866]`; `median_s=0.282523847`; `max_s=0.286868598`; `peak_rss_bytes=156946432`;
+- fused complete to uncertain, 1,024: `samples_s=[0.547637559,0.542453707,0.532871144,0.530765959,0.540197528,0.531748062,0.528796033,0.540751868,0.535167767]`; `median_s=0.535167767`; `max_s=0.547637559`; `ratio=1.894239275`; `peak_rss_bytes=278597632`;
+- fused uncertain to incomplete, 512: `samples_s=[0.392083939,0.382365186,0.380609325,0.383983669,0.383368842,0.381348975,0.383851711,0.386884279,0.382835800]`; `median_s=0.383368842`; `max_s=0.392083939`; `peak_rss_bytes=223051776`;
+- fused uncertain to incomplete, 1,024: `samples_s=[0.733733231,0.712685166,0.717375017,0.711054294,0.725807503,0.718900989,0.723283585,0.705836470,0.712686301]`; `median_s=0.717375017`; `max_s=0.733733231`; `ratio=1.871239752`; `peak_rss_bytes=410607616`;
+- fused mixed transition/no-op, 512: `samples_s=[0.280908631,0.280245321,0.280987307,0.280633679,0.304913994,0.281316428,0.283033236,0.286782170,0.295700918]`; `median_s=0.281316428`; `max_s=0.304913994`; `peak_rss_bytes=165683200`;
+- fused mixed transition/no-op, 1,024: `samples_s=[0.574533832,0.577521993,0.570896253,0.569247990,0.572083917,0.583148887,0.582494760,0.573982893,0.570210154]`; `median_s=0.573982893`; `max_s=0.583148887`; `ratio=2.040346158`; `peak_rss_bytes=296169472`;
+- fused full no-op, 512: `samples_s=[0.391114622,0.394196033,0.389431268,0.383806975,0.383053729,0.386732803,0.388280121,0.381731898,0.382968733]`; `median_s=0.386732803`; `max_s=0.394196033`; `peak_rss_bytes=242167808`;
+- fused full no-op, 1,024: `samples_s=[0.790247370,0.800836814,0.809815022,0.792892892,0.795126322,0.786511766,0.811541931,0.790585457,0.788481514]`; `median_s=0.792892892`; `max_s=0.811541931`; `ratio=2.050234389`; `peak_rss_bytes=449294336`.
+
+Every Series 10 1,024 median is at most 0.800000 seconds, every maximum is at most 1.000000
+second, every 1,024/512 median ratio is at most 2.5 and every isolated-process peak RSS is below
+1.5 GiB. The slowest median is 0.792892892 seconds, the slowest sample is 0.811541931 seconds, the
+worst ratio is 2.061519075 and the highest peak RSS is 449,294,336 bytes. These results are
+TerraPC- and fixture-bound rather than absolute worst-case guarantees. The full 3B1C-2 runtime
+path still must integrate these dormant contracts and prove its separate warm median at or below
+1.0 second.
+
+After the low-severity writer-tag metadata correction, the affected parser/writer and retained
+fan-out selection passed before Series 11 was announced. The accepted parser set remained exactly
+v1/v2/v3 and no canonical byte or validation rule changed. Series 11 ran once against binary diff
+`6f5dc267fbc7dbc5861e6d68f1efa04f9219cd7ae7ed5ede5619bd905e09d86a` and final code/test diff
+`798718080f248fc4d8ba2a0aa1e0206e0b1712c69740eebbba66680ccc13c2f0`. It reused the exact
+Series 10 isolated child harness with SHA-256
+`f91d98ddb92311629d7d0b322130e12b2de73dc031ade269cc99ca27d00d09b7`, completed all 18
+children without restart, replacement or sample selection, and produced append-only ledger SHA-256
+`7bf0f53c232f564a776db6eafd397b16661e8b2779fd342d29ce778c7a7901fe`.
+
+Series 11 ordered ledger (`from_commit` first, then fused preparation; RSS includes fixture,
+warm-ups and samples in that isolated process):
+
+- `from_commit` initial uncertain, 512: `samples_s=[0.117819328,0.117300276,0.122065600,0.117053756,0.117288354,0.117032164,0.115857492,0.115988489,0.117147374]`; `median_s=0.117147374`; `max_s=0.122065600`; `peak_rss_bytes=73207808`;
+- `from_commit` initial uncertain, 1,024: `samples_s=[0.229879606,0.243932635,0.233438509,0.229936805,0.239304307,0.235816415,0.231520014,0.243218074,0.238896973]`; `median_s=0.235816415`; `max_s=0.243932635`; `ratio=2.012989339`; `peak_rss_bytes=110014464`;
+- `from_commit` complete to uncertain, 512: `samples_s=[0.131734142,0.132379371,0.131544187,0.133809159,0.134589571,0.137017241,0.130768864,0.132012213,0.140530371]`; `median_s=0.132379371`; `max_s=0.140530371`; `peak_rss_bytes=157147136`;
+- `from_commit` complete to uncertain, 1,024: `samples_s=[0.263316796,0.264735629,0.265949776,0.271850580,0.265076046,0.263249170,0.262297744,0.262467168,0.263840408]`; `median_s=0.263840408`; `max_s=0.271850580`; `ratio=1.993062862`; `peak_rss_bytes=278425600`;
+- `from_commit` full no-op, 512: `samples_s=[0.157722542,0.155353140,0.157665930,0.164405640,0.157762664,0.156842062,0.157835062,0.159565021,0.156945391]`; `median_s=0.157722542`; `max_s=0.164405640`; `peak_rss_bytes=224264192`;
+- `from_commit` full no-op, 1,024: `samples_s=[0.337944642,0.320113685,0.319288229,0.321124686,0.319489454,0.318771236,0.317981732,0.324646073,0.318034326]`; `median_s=0.319489454`; `max_s=0.337944642`; `ratio=2.025642308`; `peak_rss_bytes=414511104`;
+- fused initial uncertain, 512: `samples_s=[0.208453075,0.206901473,0.207144381,0.210759318,0.206741072,0.206267254,0.206735401,0.207365648,0.206707360]`; `median_s=0.206901473`; `max_s=0.210759318`; `peak_rss_bytes=92778496`;
+- fused initial uncertain, 1,024: `samples_s=[0.428360671,0.430362513,0.420763693,0.433511241,0.417641370,0.417392347,0.421354412,0.416242306,0.424600356]`; `median_s=0.421354412`; `max_s=0.433511241`; `ratio=2.036497884`; `peak_rss_bytes=150691840`;
+- fused initial incomplete, 512: `samples_s=[0.196689990,0.196657547,0.197695391,0.197088242,0.197312220,0.197234934,0.197368613,0.197879957,0.197217483]`; `median_s=0.197234934`; `max_s=0.197879957`; `peak_rss_bytes=85741568`;
+- fused initial incomplete, 1,024: `samples_s=[0.403316825,0.405035188,0.403983028,0.398909206,0.417142808,0.421551397,0.396011510,0.395254138,0.398308747]`; `median_s=0.403316825`; `max_s=0.421551397`; `ratio=2.044854919`; `peak_rss_bytes=136581120`;
+- fused complete to uncertain, 512: `samples_s=[0.288719031,0.289052261,0.289001510,0.285412090,0.292001317,0.284473817,0.282297504,0.281718026,0.279782688]`; `median_s=0.285412090`; `max_s=0.292001317`; `peak_rss_bytes=156753920`;
+- fused complete to uncertain, 1,024: `samples_s=[0.542291076,0.528278544,0.524853864,0.528584324,0.532372932,0.536602044,0.527838451,0.528307742,0.533269615]`; `median_s=0.528584324`; `max_s=0.542291076`; `ratio=1.852003971`; `peak_rss_bytes=278339584`;
+- fused uncertain to incomplete, 512: `samples_s=[0.379686731,0.433701408,0.386940108,0.389189980,0.410163802,0.390158654,0.388235658,0.382959363,0.380709819]`; `median_s=0.388235658`; `max_s=0.433701408`; `peak_rss_bytes=222375936`;
+- fused uncertain to incomplete, 1,024: `samples_s=[0.707194638,0.715219586,0.713386277,0.732738462,0.702051523,0.702290981,0.724652551,0.711495216,0.706927028]`; `median_s=0.711495216`; `max_s=0.732738462`; `ratio=1.832637475`; `peak_rss_bytes=410689536`;
+- fused mixed transition/no-op, 512: `samples_s=[0.285087799,0.297886106,0.281754825,0.286847966,0.278815443,0.280675050,0.279834551,0.282499123,0.278484538]`; `median_s=0.281754825`; `max_s=0.297886106`; `peak_rss_bytes=165965824`;
+- fused mixed transition/no-op, 1,024: `samples_s=[0.569415788,0.577737689,0.567442110,0.565040886,0.561737791,0.571339993,0.566642105,0.566628324,0.563932017]`; `median_s=0.566642105`; `max_s=0.577737689`; `ratio=2.011117662`; `peak_rss_bytes=295976960`;
+- fused full no-op, 512: `samples_s=[0.383302284,0.382743552,0.383319506,0.381137951,0.384047935,0.391247234,0.383368441,0.387220381,0.390368054]`; `median_s=0.383368441`; `max_s=0.391247234`; `peak_rss_bytes=242085888`;
+- fused full no-op, 1,024: `samples_s=[0.793814509,0.796460020,0.793836825,0.785515012,0.789060659,0.831679216,0.801635667,0.794327686,0.787743893]`; `median_s=0.793836825`; `max_s=0.831679216`; `ratio=2.070689029`; `peak_rss_bytes=449732608`.
+
+Every Series 11 1,024 median is at most 0.800000 seconds, every maximum is at most 1.000000
+second, every 1,024/512 median ratio is at most 2.5 and every isolated-process peak RSS is below
+1.5 GiB. The slowest median is 0.793836825 seconds, the slowest sample is 0.831679216 seconds, the
+worst ratio is 2.070689029 and the highest peak RSS is 449,732,608 bytes. These results are
+TerraPC- and fixture-bound rather than absolute worst-case guarantees. The full 3B1C-2 runtime
+path still must integrate these dormant contracts and prove its separate warm median at or below
+1.0 second.
 
 **Why:** No deployed dataset or ClickHouse schema depends on v2, so one atomic migration provides a
 clean long-term boundary without permanent compatibility complexity while preserving reviewable,

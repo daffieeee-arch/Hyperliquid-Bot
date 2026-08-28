@@ -165,7 +165,7 @@ wrapper is planned. Nothing is deployed, and SHADOW/LIVE remain disabled. ADR-02
 complete decision and canonical identity rules.
 
 The 3B1C audit split that work into reviewable contract, coverage-runtime and delivery phases, with
-3B1C-1A through 3B1C-1D as bounded pure corrections before runtime activation. Phase 1A-3B1C-1
+3B1C-1A through 3B1C-1F as bounded pure corrections before runtime activation. Phase 1A-3B1C-1
 defines only pure,
 dormant contracts that make coverage initialization, prepared multi-scope compare-and-swap
 mutation, repeated-degradation no-ops, frame-atomic abort lineage and destination-specific delivery
@@ -295,6 +295,48 @@ upstream evidence values took 18.257364 seconds (about 739 canonical parses per 
 must be optimized or receive a separate contract closure before 3B1C-2 may claim its complete
 synchronous median is at most 1.0 second; the runtime gate is not relaxed. Canonical bytes, IDs,
 versions and coverage semantics are unchanged. The phase remains pure and dormant.
+
+Phase 1A-3B1C-1F makes each newly written fan-out proof self-contained. Every active fan-out
+factory writes `coverage-fanout-proof-v3` and retains the exact typed `CoverageTargetCatalog`; the
+catalog already retains its complete typed `SubscriptionPlanIdentity`, so the plan is not copied a
+second time. Stored verification reconstructs the plan, catalog, connection session,
+kind-specific source row, selected attempts and exact target slice before rederiving the compact v3
+content digest and ID. Historical v1/v2 proof IDs remain parser-only.
+
+The same pure slice adds `BatchVerifiedUpstreamCoveragePreparation`. Its first closed route accepts
+only matching Bronze and Silver `ALL_POSSIBLY_ACTIVE` v3 proofs over one retained plan, catalog,
+session and complete attempt snapshot. One call-local transcript verifies the upstream batch and
+acceptance once, verifies the retained trust boundary once and pairs every Bronze leaf with exactly
+one Silver leaf. Symmetric raw bindings must describe the same raw record, full-record digest and
+attempt snapshot. The factory never fabricates a Silver commit acceptance, performs no I/O and has
+no runtime import.
+
+The pre-commit compact-identity correction breaks recursive JSON-in-JSON growth at three boundaries:
+newly written committed states use `committed-coverage-state-v2`, upstream-derived state references
+use `coverage-state-reference-v2`, and upstream state/transition evidence uses
+`coverage-evidence-v2`. Each compact identity binds parent IDs while the immutable object retains
+the complete typed parents; stored verification still walks and rederives the full graph. Ordinary
+non-upstream evidence and ordinal-zero states remain writer-active v1, while legacy committed-state
+and upstream-evidence v1 values are parser-only. Exact positional commit membership is bound by
+`result_ordinal`; no-op decisions preserve the exact existing state and ordinal.
+
+ADR-022 retains every failure series, including Series 6's 0.810096071-second and Series 9's
+0.803406503-second fused full-no-op medians, and every sample from the final green Series 11. At
+1,024 leaves, Series 11's slowest median is 0.793836825 seconds, its slowest sample is 0.831679216
+seconds, its worst 1,024/512 median ratio is 2.070689029 and its highest isolated-process peak RSS
+is 449,732,608 bytes. The Series 9 correction removed only duplicate construction-time scans and
+retained-load calls over facts already fully verified in the same fused transcript; independent
+stored-load verification remains unchanged. Series 11 followed the public fan-out writer-tag
+metadata correction from legacy v1 to current v3; the accepted parser versions and canonical
+bytes remained unchanged. The normative joint
+compact-graph limit is 67,108,863 bytes: both ordinary and fused writers fail closed before return
+when all unique verified v2 evidence/state/committed IDs do not compose below that limit. At 1,024
+leaves the worst-case escaped run-ID probe accepts width 550 at 67,065,684 bytes and rejects 551
+without a partial prefix. All pure 0.8/1.0/2.5 timing gates, the predeclared 1.5 GiB RSS gate and
+deterministic byte-volume gates pass. These measurements are host- and fixture-bound; 3B1C-2
+remains responsible for integrating the dormant contracts and proving its complete warm
+synchronous runtime path at a median no greater than 1.0 second. Schema v2 and `is_gap` remain
+active, and market-event v3 remains dormant.
 
 ### Research Plane
 

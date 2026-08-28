@@ -607,6 +607,50 @@ a current Bronze-to-Silver result. 3B1C-2 must optimize or separately close that
 the complete warm synchronous median at no more than 1.0 second. No runtime coverage or delivery
 behavior is activated.
 
+The 3B1C-1F correction retains the complete typed `CoverageTargetCatalog` inside every newly
+written fan-out v3 proof. Because that catalog already retains its exact `SubscriptionPlanIdentity`,
+one stored proof can rederive the full plan and catalog content, digests and IDs, reconstruct the
+kind-specific membership selection and reject omitted, added, reordered or foreign leaves without
+an external mapping. Fan-out v1 and v2 remain byte-exact parser-only values. The active v3 compact
+preimage contains only plan/catalog IDs, session, kind-specific source row and sorted scope IDs; it
+does not duplicate full plan or catalog content.
+
+`BatchVerifiedUpstreamCoveragePreparation.from_committed_upstream` fuses one fully accepted
+Bronze batch with one exact Silver fan-out. The first API deliberately supports only matching
+`ALL_POSSIBLY_ACTIVE` slices with the same feed, run, plan, catalog, session and complete attempt
+snapshot. It verifies the upstream batch/acceptance/result set and both fan-outs in one call-local
+linear transcript, builds O(1) semantic-scope indexes and pairs every Bronze leaf once. Initial
+degraded states copy the exact upstream boundary; later degradation requires the exact committed
+upstream transition; equal or worse current Silver state creates a typed no-op. No recovery to
+`COMPLETE`, partial prefix or fabricated Silver acceptance exists. Optional raw bindings must be
+absent on both sides or retain the same raw-record ID, full-record digest and complete attempt
+snapshot.
+
+Compact v2 identities prevent the retained graph from recursively embedding complete JSON text.
+Upstream-derived state references bind initialization, compact predecessor-ID and latest-transition
+ID; committed states bind the compact state ID, exact acceptance ID and `result_ordinal`; upstream
+evidence binds its full typed committed-state parent through a compact state/transition source row.
+The complete typed parents remain retained and are fully reverified on load. Upstream evidence and
+committed states now write v2 only; non-upstream evidence and ordinary ordinal-zero state references
+may still write v1, and a first v2 transition may retain a fully verified v1 predecessor. A no-op
+returns the exact prior state without a new transition or ordinal.
+
+All failure benchmark series remain recorded, including Series 6's and Series 9's narrow fused
+full-no-op median failures. In the final green Series 11 run, all 1,024-leaf medians were at most
+0.793836825 seconds, all samples were at most 0.831679216 seconds, the worst 1,024/512 ratio was
+2.070689029 and peak isolated-process RSS was at most 449,732,608 bytes. Series 10 follows a
+family-filtered retained-proof correction and removes only duplicate construction-time validation;
+retained-load verification remains complete. Series 11 follows the metadata-only correction that
+makes the public fan-out writer tag v3 while preserving parser support and canonical bytes. The
+deterministic 67,108,863-byte joint
+composability limit charges every unique verified v2 evidence/state/committed ID in both the
+ordinary and fused writers. At 1,024 leaves the worst-case escaped run-ID probe accepts width 550
+at 67,065,684 bytes and rejects width 551 without returning a partial graph; independently valid
+widest scalars therefore need not compose with maximum fan-out. Representative byte volume grows
+linearly from 512 to 1,024. Timing remains host- and fixture-bound; 3B1C-2 still must integrate this
+dormant pure path and prove the complete runtime median at no more than 1.0 second. No event schema
+or active runtime behavior changes here.
+
 Normalization-outcome sink failure is represented by the exact canonical
 `["normalization-outcome-evidence-v1",normalization_outcome_id,coverage_scope_id]` source row.
 Only explicit typed rejection establishes definite non-acceptance and Silver-normalization
@@ -646,7 +690,7 @@ cannot create a delivery batch. Actual v2-event serialization and a composite au
 remain 3B1C-3 work. Queue acceptance will mean bounded collector-output-queue acceptance only, not
 dequeue, downstream processing or persistence.
 
-All 3B1C-1, 3B1C-1A, 3B1C-1B, 3B1C-1C and 3B1C-1D coverage paths remain dormant. Existing 3B1B raw
+All 3B1C-1 through 3B1C-1F coverage paths remain dormant. Existing 3B1B raw
 capture still emits normalization outcomes with empty coverage lineage, now under the current outer
 outcome v2 identity; schema v2 remains the only active Silver envelope and operational `is_gap`
 remains unchanged. No coverage runtime, delivery linearization,

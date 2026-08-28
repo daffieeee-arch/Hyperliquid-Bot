@@ -112,6 +112,26 @@ seconds diagnostically and remains a hard 3B1C-2 blocker outside 1E's code scope
 optimize or separately close that route and still prove the entire synchronous runtime path within
 its 1.0-second median gate. This phase activates no runtime or delivery behavior.
 
+Phase 1A-3B1C-1F closes the retained fan-out trust boundary and introduces one fused pure
+Bronze-to-Silver preparation route. New fan-out writers emit v3 proofs that retain the complete
+typed target catalog (and therefore its plan), while v1/v2 remain parser-only. Compact v2
+state-reference, committed-state and upstream-evidence identities break recursive JSON-in-JSON
+growth without dropping any typed parent or stored verification. The fused factory supports only
+exact matching `ALL_POSSIBLY_ACTIVE` Bronze/Silver slices, verifies shared parents and the upstream
+commit once, pairs every leaf linearly and returns one complete Silver mutation batch without
+fabricating acceptance. Series 1, 2 and the post-review Series 4 remain failure evidence; Series 6
+and Series 9 also remain failure evidence because their fused full-no-op medians were respectively
+0.810096071 and 0.803406503 seconds. The final green Series 11 slowest 1,024-target median was
+0.793836825 seconds, its maximum sample was 0.831679216 seconds, its worst scale ratio was
+2.070689029 and its highest isolated-process RSS was 449,732,608 bytes. Series 10 removes only
+duplicate construction-time verification; stored-load verification remains intact. Series 11
+follows the public fan-out writer-tag metadata correction without changing parser support or
+canonical bytes. The joint
+compact-graph boundary accepts the worst-case escaped 1,024-leaf run
+width 550 at 67,065,684 bytes and rejects width 551 without a partial result. The pure contract
+gates pass, but 3B1C-2 must still integrate the contracts and prove the complete runtime path within
+its unchanged 1.0-second median budget. 1F remains pure and dormant.
+
 Target: useful local output within approximately the first 1-2 weeks of active development.
 
 Deliverables:
@@ -150,13 +170,16 @@ The multi-venue data-contract spine proceeds in bounded steps:
    versioning and one-pass verified committed-state/upstream-evidence derivation;
 8. **Phase 1A-3B1C-1E — bulk derivation performance closure:** pure call-local shared verification
    optimization with byte-identical canonical contracts and a reserved 0.8-second contract budget;
-9. **Phase 1A-3B1C-2 — coverage runtime:** operational immutable coverage state and temporary v2
+9. **Phase 1A-3B1C-1F — self-contained fan-out and fused upstream preparation:** retained typed
+   catalog/plan trust boundary, compact recursive coverage identities and one bounded linear
+   `ALL_POSSIBLY_ACTIVE` Bronze-to-Silver factory;
+10. **Phase 1A-3B1C-2 — coverage runtime:** operational immutable coverage state and temporary v2
    `is_gap` projection;
-10. **Phase 1A-3B1C-3 — atomic delivery:** one audited composite output-queue item per delivered
+11. **Phase 1A-3B1C-3 — atomic delivery:** one audited composite output-queue item per delivered
    non-empty normalization outcome;
-11. **Phase 1A-3B1D — atomic cutover:** both normalizers and the collector move together to the one
+12. **Phase 1A-3B1D — atomic cutover:** both normalizers and the collector move together to the one
    mandatory outer-v3 envelope; outer v2 and `is_gap` are removed without dual writing;
-12. **Phase 1A-3B2 — deterministic replay:** digest verification, sealed run manifests and exact
+13. **Phase 1A-3B2 — deterministic replay:** digest verification, sealed run manifests and exact
    Bronze-to-Silver lineage.
 
 Phase 1A-3B1B implements no concrete persistence, operational coverage tracker, delivery outcome

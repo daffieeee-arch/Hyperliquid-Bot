@@ -132,6 +132,21 @@ width 550 at 67,065,684 bytes and rejects width 551 without a partial result. Th
 gates pass, but 3B1C-2 must still integrate the contracts and prove the complete runtime path within
 its unchanged 1.0-second median budget. 1F remains pure and dormant.
 
+Phase 1A-3B1C-1G closes the pre-parse raw-rejection knowledge gap as a separate dormant contract.
+A definitive raw-sink rejection makes Bronze `CONFIRMED_INCOMPLETE`; when Silver projection
+membership is still `UNKNOWN`, exact typed Bronze lineage permits only Silver `UNCERTAIN`.
+Proven `INCLUDED` still maps to Silver `CONFIRMED_INCOMPLETE`, while proven `EXCLUDED` causes no
+Silver degradation. The existing exact-status upstream route and `EventCoverage` remain strict.
+The exact-status factories refuse the pre-parse raw-rejection cause unless a separate typed
+`INCLUDED` proof exists, so factory selection cannot bypass the closed table.
+One opt-in evidence-v3 relation retains and rederives the complete batch, acceptance, plan,
+catalog, session, attempt, raw-record, rejection and positional-commit lineage. Ordinary positional
+derivation and fused complete preparation remain byte-equivalent and are both linearly verified
+through 1,024 targets; standalone fully reverifying factories remain the non-plan-scale semantic
+oracle, while fused preparation is the integrated atomic convenience boundary. Existing versions
+and golden IDs are unchanged. The collector does not import this path; v2 and `is_gap` remain
+active, market-event v3 remains dormant, and neither 3B1C-2 nor 3B1C-3 is implemented here.
+
 Target: useful local output within approximately the first 1-2 weeks of active development.
 
 Deliverables:
@@ -173,13 +188,15 @@ The multi-venue data-contract spine proceeds in bounded steps:
 9. **Phase 1A-3B1C-1F — self-contained fan-out and fused upstream preparation:** retained typed
    catalog/plan trust boundary, compact recursive coverage identities and one bounded linear
    `ALL_POSSIBLY_ACTIVE` Bronze-to-Silver factory;
-10. **Phase 1A-3B1C-2 — coverage runtime:** operational immutable coverage state and temporary v2
+10. **Phase 1A-3B1C-1G — typed lossy raw-rejection projection:** pure opt-in pre-parse `UNKNOWN`
+   membership relation from definitive Bronze loss to Silver uncertainty;
+11. **Phase 1A-3B1C-2 — coverage runtime:** operational immutable coverage state and temporary v2
    `is_gap` projection;
-11. **Phase 1A-3B1C-3 — atomic delivery:** one audited composite output-queue item per delivered
+12. **Phase 1A-3B1C-3 — atomic delivery:** one audited composite output-queue item per delivered
    non-empty normalization outcome;
-12. **Phase 1A-3B1D — atomic cutover:** both normalizers and the collector move together to the one
+13. **Phase 1A-3B1D — atomic cutover:** both normalizers and the collector move together to the one
    mandatory outer-v3 envelope; outer v2 and `is_gap` are removed without dual writing;
-13. **Phase 1A-3B2 — deterministic replay:** digest verification, sealed run manifests and exact
+14. **Phase 1A-3B2 — deterministic replay:** digest verification, sealed run manifests and exact
    Bronze-to-Silver lineage.
 
 Phase 1A-3B1B implements no concrete persistence, operational coverage tracker, delivery outcome

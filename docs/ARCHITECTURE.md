@@ -165,7 +165,7 @@ wrapper is planned. Nothing is deployed, and SHADOW/LIVE remain disabled. ADR-02
 complete decision and canonical identity rules.
 
 The 3B1C audit split that work into reviewable contract, coverage-runtime and delivery phases, with
-3B1C-1A through 3B1C-1F as bounded pure corrections before runtime activation. Phase 1A-3B1C-1
+3B1C-1A through 3B1C-1G as bounded pure corrections before runtime activation. Phase 1A-3B1C-1
 defines only pure,
 dormant contracts that make coverage initialization, prepared multi-scope compare-and-swap
 mutation, repeated-degradation no-ops, frame-atomic abort lineage and destination-specific delivery
@@ -337,6 +337,33 @@ deterministic byte-volume gates pass. These measurements are host- and fixture-b
 remains responsible for integrating the dormant contracts and proving its complete warm
 synchronous runtime path at a median no greater than 1.0 second. Schema v2 and `is_gap` remain
 active, and market-event v3 remains dormant.
+
+Phase 1A-3B1C-1G closes one knowledge-boundary gap without weakening the existing exact-status
+upstream route or `EventCoverage`. A definitive raw-sink rejection proves Bronze ingress
+`CONFIRMED_INCOMPLETE`, but before parsing it does not prove whether the rejected record contained
+a Silver-relevant item. The closed projection table is therefore: proven `INCLUDED` means Silver
+`CONFIRMED_INCOMPLETE`; proven `EXCLUDED` causes no Silver degradation from that rejection; and
+`UNKNOWN` specifically because rejection occurred before parsing means Silver `UNCERTAIN`. The
+last case is available only through an opt-in typed raw-rejection relation, never through a generic
+`CONFIRMED_INCOMPLETE -> UNCERTAIN` conversion. The exact-status propagation factories also reject
+this pre-parse raw-rejection cause: Silver `CONFIRMED_INCOMPLETE` would require a separate typed
+`INCLUDED` proof, which this phase does not fabricate.
+
+That relation retains the exact accepted Bronze mutation transcript, positional committed state,
+raw-rejection evidence, raw fan-out binding and matching Silver scope. Stored verification
+rederives every typed parent, ID, digest, result ordinal, plan/catalog/session/attempt membership,
+raw-record lineage and scope pairing before permitting a new `coverage-evidence-v3` value. The
+ordinary positional and fused factories produce byte-equivalent evidence and decisions. The
+standalone fully reverifying source/evidence factories remain the semantic oracle and are not a
+plan-scale composition path. The verified positional ordinary transcript and fused complete
+preparation each share one linear verification context through 1-, 4-, 50- and 1,024-leaf
+construction; the fused factory remains the integrated atomic convenience boundary. Missing,
+foreign, reordered, duplicated or tampered evidence fails closed without a partial result.
+Existing evidence v1/v2 identities and writers remain unchanged, and v3 is writer-active only for
+this lossy raw-rejection projection.
+This pure contract is dormant: the collector has no import of it, schema v2 plus `is_gap` remain
+active, market-event v3 remains dormant, and neither 3B1C-2 runtime integration nor 3B1C-3
+delivery is implemented here.
 
 ### Research Plane
 

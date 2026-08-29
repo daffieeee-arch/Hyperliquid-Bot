@@ -4,6 +4,7 @@ import ast
 import hashlib
 import inspect
 import json
+import sys
 import textwrap
 from collections.abc import Callable, Iterable, Iterator
 from copy import copy
@@ -142,6 +143,9 @@ from hyperliquid_bot.data_provenance import (
     RawMarketDataRecord,
     RawRecordEvidenceSource,
     RawRecordId,
+    RawRejectionNormalizationUnknownEvidenceSource,
+    RawRejectionProjectionBoundary,
+    RawRejectionProjectionMembership,
     ReconnectEvidenceSource,
     RequestedCoverageMutation,
     RequestedCoverageTransition,
@@ -599,6 +603,8 @@ def _scope(domain: CoverageDomain, coin: str = "BTC") -> CoverageScope:
 def _coverage_reference(
     domain: CoverageDomain,
     status: CoverageStatus = CoverageStatus.COMPLETE,
+    *,
+    definite_raw_rejection: bool = True,
 ) -> CoverageReference:
     scope = _scope(domain)
     activation_time = datetime(2026, 8, 26, 12, 0, tzinfo=UTC)
@@ -633,12 +639,26 @@ def _coverage_reference(
             ),
         )
     elif status is CoverageStatus.CONFIRMED_INCOMPLETE and domain is CoverageDomain.BRONZE_INGRESS:
-        initial_reason = InitialCoverageReason.RAW_DEFINITE_REJECTION
-        initial_kind = CoverageEvidenceKind.RAW_RECORD_REJECTION
-        initial_source = RawRecordEvidenceSource(
-            _raw_record().raw_record_id,
-            scope.coverage_scope_id,
-        )
+        if definite_raw_rejection:
+            initial_reason = InitialCoverageReason.RAW_DEFINITE_REJECTION
+            initial_kind = CoverageEvidenceKind.RAW_RECORD_REJECTION
+            initial_source = RawRecordEvidenceSource(
+                _raw_record().raw_record_id,
+                scope.coverage_scope_id,
+            )
+        else:
+            initial_reason = InitialCoverageReason.SOURCE_SEQUENCE_BREAK
+            initial_kind = CoverageEvidenceKind.SOURCE_SEQUENCE
+            initial_source = SourceSequenceBreakEvidenceSource(
+                scope.feed_product_id,
+                SourceSequenceRange(
+                    SourceSequenceRole.EVENT_SEQUENCE,
+                    "ordinary-upstream-state",
+                    10,
+                    11,
+                ),
+                scope.coverage_scope_id,
+            )
     elif (
         status is CoverageStatus.CONFIRMED_INCOMPLETE
         and domain is CoverageDomain.SILVER_NORMALIZATION
@@ -741,7 +761,11 @@ def _initial_coverage_reference(
             scope.coverage_scope_id,
         )
     elif kind is CoverageEvidenceKind.UPSTREAM_COVERAGE_STATE:
-        upstream = _coverage_reference(CoverageDomain.BRONZE_INGRESS, status)
+        upstream = _coverage_reference(
+            CoverageDomain.BRONZE_INGRESS,
+            status,
+            definite_raw_rejection=False,
+        )
         committed = _committed_coverage_state(upstream)
         source = UpstreamCoverageStateEvidenceSource(committed)
         activation_time = upstream.epoch.activation_time
@@ -1120,10 +1144,18 @@ def _committed_upstream_transition(
         initial_reason = InitialCoverageReason.TRANSPORT_AMBIGUITY
         transition_reason = CoverageReason.TRANSPORT_AMBIGUITY
     elif status is CoverageStatus.CONFIRMED_INCOMPLETE:
-        raw_record = _raw_record(status=SubscriptionAttemptStatus.SENT)
         evidence = CoverageEvidence(
-            CoverageEvidenceKind.RAW_RECORD_REJECTION,
-            RawRecordEvidenceSource(raw_record.raw_record_id, scope.coverage_scope_id),
+            CoverageEvidenceKind.SOURCE_SEQUENCE,
+            SourceSequenceBreakEvidenceSource(
+                scope.feed_product_id,
+                SourceSequenceRange(
+                    SourceSequenceRole.EVENT_SEQUENCE,
+                    "ordinary-upstream-transition",
+                    10,
+                    11,
+                ),
+                scope.coverage_scope_id,
+            ),
             scope,
             epoch,
             datetime(2026, 8, 26, 12, 0, 1, tzinfo=UTC),
@@ -1135,8 +1167,8 @@ def _committed_upstream_transition(
             complete_snapshots=(sent,),
             domain=CoverageDomain.BRONZE_INGRESS,
         )
-        initial_reason = InitialCoverageReason.RAW_DEFINITE_REJECTION
-        transition_reason = CoverageReason.RAW_DEFINITE_REJECTION
+        initial_reason = InitialCoverageReason.SOURCE_SEQUENCE_BREAK
+        transition_reason = CoverageReason.SOURCE_SEQUENCE_BREAK
     else:
         raise ValueError("upstream transition helper requires a degraded status")
     request = RequestedCoverageMutation(
@@ -1151,14 +1183,7 @@ def _committed_upstream_transition(
         fanout_proof=fanout,
         current_state_references=(active.state_reference,),
         requests=(request,),
-        raw_fanout_binding=(
-            RawCoverageFanoutBinding.from_raw_record(
-                raw_record=raw_record,
-                coverage_fanout_proof=fanout,
-            )
-            if status is CoverageStatus.CONFIRMED_INCOMPLETE
-            else None
-        ),
+        raw_fanout_binding=None,
     )
     committed = batch.verify_compare_and_swap((active.state_reference,))
     acceptance = CoverageCommitAcceptance.after_compare_and_swap(
@@ -4535,7 +4560,11 @@ def test_coverage_state_stored_transition_verification_requires_exact_previous_c
 def test_initial_silver_state_can_cite_exact_initial_degraded_bronze_state(
     degraded_status: CoverageStatus,
 ) -> None:
-    bronze_reference = _coverage_reference(CoverageDomain.BRONZE_INGRESS, degraded_status)
+    bronze_reference = _coverage_reference(
+        CoverageDomain.BRONZE_INGRESS,
+        degraded_status,
+        definite_raw_rejection=False,
+    )
     bronze_state = _committed_coverage_state(bronze_reference)
     silver_scope = _scope(CoverageDomain.SILVER_NORMALIZATION)
     silver_epoch = CoverageEpochIdentity(
@@ -7393,7 +7422,13 @@ def test_fanout_v3_revalidates_plan_wide_instrument_selector_uniqueness() -> Non
 def test_event_coverage_propagates_exact_initial_bronze_degradation(
     status: CoverageStatus,
 ) -> None:
-    ingress = _committed_coverage_state(_coverage_reference(CoverageDomain.BRONZE_INGRESS, status))
+    ingress = _committed_coverage_state(
+        _coverage_reference(
+            CoverageDomain.BRONZE_INGRESS,
+            status,
+            definite_raw_rejection=False,
+        )
+    )
     normalization = _committed_coverage_state(
         _initial_coverage_reference(
             CoverageDomain.SILVER_NORMALIZATION,
@@ -7844,6 +7879,152 @@ class _BulkUpstreamFixture:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class _RawRejectionProjectionFixture:
+    raw_record: RawMarketDataRecord
+    upstream_batch: CoverageMutationBatch
+    upstream_acceptance: CoverageCommitAcceptance
+    downstream_fanout: CoverageFanoutProof
+    downstream_raw_binding: RawCoverageFanoutBinding
+    observed_at: datetime
+    observed_monotonic_ns: int
+
+    def prepare(
+        self,
+        *,
+        current_downstream_state_references: tuple[CoverageStateReference, ...] = (),
+        observed_at: datetime | None = None,
+        observed_monotonic_ns: int | None = None,
+    ) -> BatchVerifiedUpstreamCoveragePreparation:
+        return BatchVerifiedUpstreamCoveragePreparation.from_committed_raw_rejection(
+            upstream_batch=self.upstream_batch,
+            upstream_commit_acceptance=self.upstream_acceptance,
+            upstream_resulting_state_references=(self.upstream_batch.resulting_state_references),
+            downstream_fanout_proof=self.downstream_fanout,
+            current_downstream_state_references=current_downstream_state_references,
+            observed_at=self.observed_at if observed_at is None else observed_at,
+            observed_monotonic_ns=(
+                self.observed_monotonic_ns
+                if observed_monotonic_ns is None
+                else observed_monotonic_ns
+            ),
+            raw_fanout_binding=self.downstream_raw_binding,
+        )
+
+
+def _raw_rejection_projection_fixture(
+    target_count: int,
+    *,
+    collector_run_id: CollectorRunId | None = None,
+    connection_ordinal: int = 0,
+    ingress_ordinal: int = 0,
+) -> _RawRejectionProjectionFixture:
+    plan = _multi_hyperliquid_plan(target_count)
+    catalog = CoverageTargetCatalog.from_subscription_plan(plan)
+    session = ConnectionSessionIdentity(
+        collector_run_id or CollectorRunId("collector-run-fixture-1"),
+        connection_ordinal,
+    )
+    snapshots = tuple(
+        SubscriptionAttemptSnapshot(
+            SubscriptionAttemptIdentity(session, spec, 0),
+            SubscriptionAttemptStatus.SENT,
+        )
+        for spec in plan.subscription_specs
+    )
+    received_at = datetime(2026, 8, 26, 12, 0, tzinfo=UTC)
+    received_monotonic_ns = 100
+    raw_record = RawMarketDataRecord(
+        feed_product=HYPERLIQUID_MAINNET_PUBLIC_TRADES,
+        collector_run_id=session.collector_run_id,
+        connection_session=session,
+        subscription_plan=plan,
+        subscription_attempt_snapshots=snapshots,
+        ingress_ordinal=ingress_ordinal,
+        frame_kind=FrameKind.TEXT,
+        application_message_bytes=b'{"channel":"trades","data":[]}',
+        received_time=received_at,
+        received_monotonic_ns=received_monotonic_ns,
+        collector_version="collector-v2",
+        collector_commit="88d1591",
+    )
+    upstream_fanout = CoverageFanoutProof.all_possibly_active(
+        plan=plan,
+        catalog=catalog,
+        complete_snapshots=snapshots,
+        domain=CoverageDomain.BRONZE_INGRESS,
+    )
+    upstream_raw_binding = RawCoverageFanoutBinding.from_raw_record(
+        raw_record=raw_record,
+        coverage_fanout_proof=upstream_fanout,
+    )
+    upstream_requests = tuple(
+        RequestedCoverageMutation(
+            scope=scope,
+            epoch=CoverageEpochIdentity(
+                scope,
+                session.collector_run_id,
+                0,
+                received_at,
+                received_monotonic_ns,
+            ),
+            requested_status=CoverageStatus.CONFIRMED_INCOMPLETE,
+            initial_reason=InitialCoverageReason.RAW_DEFINITE_REJECTION,
+            transition_reason=CoverageReason.RAW_DEFINITE_REJECTION,
+            evidence=CoverageEvidence(
+                CoverageEvidenceKind.RAW_RECORD_REJECTION,
+                RawRecordEvidenceSource(
+                    raw_record.raw_record_id,
+                    scope.coverage_scope_id,
+                ),
+                scope,
+                CoverageEpochIdentity(
+                    scope,
+                    session.collector_run_id,
+                    0,
+                    received_at,
+                    received_monotonic_ns,
+                ),
+                received_at,
+                received_monotonic_ns,
+            ),
+        )
+        for scope in upstream_fanout.target_scopes
+    )
+    upstream_batch = prepare_coverage_mutation_batch(
+        fanout_proof=upstream_fanout,
+        current_state_references=(),
+        requests=upstream_requests,
+        raw_fanout_binding=upstream_raw_binding,
+    )
+    upstream_acceptance = CoverageCommitAcceptance.after_compare_and_swap(
+        batch=upstream_batch,
+        committed_state_references=upstream_batch.resulting_state_references,
+    )
+    downstream_fanout = CoverageFanoutProof.all_possibly_active(
+        plan=plan,
+        catalog=catalog,
+        complete_snapshots=snapshots,
+        domain=CoverageDomain.SILVER_NORMALIZATION,
+        event_family="trade",
+        event_family_schema_version=2,
+        payload_type="trade",
+    )
+    downstream_raw_binding = RawCoverageFanoutBinding.from_raw_record(
+        raw_record=raw_record,
+        coverage_fanout_proof=downstream_fanout,
+    )
+    return _RawRejectionProjectionFixture(
+        raw_record=raw_record,
+        upstream_batch=upstream_batch,
+        upstream_acceptance=upstream_acceptance,
+        downstream_fanout=downstream_fanout,
+        downstream_raw_binding=downstream_raw_binding,
+        observed_at=received_at,
+        observed_monotonic_ns=received_monotonic_ns,
+    )
+
+
 def _bulk_upstream_fixture(
     target_count: int,
     scenario: str,
@@ -8170,7 +8351,7 @@ def test_bulk_upstream_verification_and_pairing_grow_linearly(
 ) -> None:
     original_parse = data_provenance_module.parse_canonical_json_array
     original_load = data_provenance_module._load_json_without_linked_parser_exception
-    original_verify_batch = data_provenance_module._verify_coverage_mutation_batch_stored
+    original_verify_batch = data_provenance_module._verify_coverage_mutation_batch_stored_uncached
     original_verify_acceptance = (
         data_provenance_module._verify_coverage_commit_acceptance_stored_bulk
     )
@@ -8218,7 +8399,7 @@ def test_bulk_upstream_verification_and_pairing_grow_linearly(
     )
     monkeypatch.setattr(
         data_provenance_module,
-        "_verify_coverage_mutation_batch_stored",
+        "_verify_coverage_mutation_batch_stored_uncached",
         counted_batch,
     )
     monkeypatch.setattr(
@@ -9094,6 +9275,7 @@ def test_maximum_plan_compact_batch_and_acceptance_cover_both_transitions_and_no
     assert all(item is None for item in derivations[0].upstream_transition_sources)
     assert all(item is not None for item in derivations[1].upstream_transition_sources)
     assert all(item is not None for item in derivations[2].upstream_transition_sources)
+    representative_ordinals = (0, MAX_SUBSCRIPTION_SPECS // 2, MAX_SUBSCRIPTION_SPECS - 1)
     for batch, commit_acceptance, derivation in zip(
         batches,
         acceptances,
@@ -9120,17 +9302,27 @@ def test_maximum_plan_compact_batch_and_acceptance_cover_both_transitions_and_no
             assert committed_state.canonical_content == expected_content
             assert committed_state.content_sha256 == expected_digest
             assert committed_state.committed_coverage_state_id.value == expected_id
-        assert derivation.upstream_state_sources == tuple(
-            UpstreamCoverageStateEvidenceSource(item) for item in derivation.committed_states
-        )
-        assert derivation.upstream_transition_sources == tuple(
-            (
-                UpstreamCoverageTransitionEvidenceSource(item)
-                if item.state_reference.latest_transition is not None
-                else None
+            assert derivation.committed_state_at(ordinal) is committed_state
+            state_source = derivation.upstream_state_sources[ordinal]
+            assert type(state_source) is UpstreamCoverageStateEvidenceSource
+            assert state_source.committed_state is committed_state
+            assert derivation.upstream_state_source_at(ordinal) is state_source
+            transition_source = derivation.upstream_transition_sources[ordinal]
+            if state.latest_transition is None:
+                assert transition_source is None
+            else:
+                assert type(transition_source) is UpstreamCoverageTransitionEvidenceSource
+                assert transition_source.committed_state is committed_state
+                assert transition_source.coverage_transition is state.latest_transition
+        for ordinal in representative_ordinals:
+            committed_state = derivation.committed_states[ordinal]
+            assert derivation.upstream_state_sources[ordinal] == (
+                UpstreamCoverageStateEvidenceSource(committed_state)
             )
-            for item in derivation.committed_states
-        )
+            if committed_state.state_reference.latest_transition is not None:
+                assert derivation.upstream_transition_sources[ordinal] == (
+                    UpstreamCoverageTransitionEvidenceSource(committed_state)
+                )
 
     before = repeated.resulting_state_references
     with pytest.raises(ValueError, match="pre-state"):
@@ -9403,9 +9595,7 @@ def test_bulk_committed_state_verification_rejects_nested_typed_state_tampering(
     object.__setattr__(reference, "initial_reason", InitialCoverageReason.RAW_ACCEPTANCE_UNCERTAIN)
     try:
         with pytest.raises(ValueError):
-            data_provenance_module._BulkCoverageVerificationContext()._verify_committed_state(
-                committed
-            )
+            committed.verify_stored()
     finally:
         object.__setattr__(reference, "initial_reason", original_reason)
 
@@ -9698,18 +9888,18 @@ def test_bulk_fanout_rederivation_rejects_hidden_snapshots_and_wrong_kind_cardin
         event_family_schema_version=2,
         payload_type="trade",
     )
-    data_provenance_module._verify_coverage_fanout_proof_retained_fields(
-        proof,
-        data_provenance_module._BulkCoverageVerificationContext(),
+    proof.verify_stored(
+        expected_canonical_content=proof.canonical_content,
+        expected_proof_id=proof.coverage_fanout_proof_id,
     )
 
     original_snapshots = proof.source_attempt_snapshots
     object.__setattr__(proof, "source_attempt_snapshots", snapshots)
     try:
         with pytest.raises(ValueError, match="selected attempts"):
-            data_provenance_module._verify_coverage_fanout_proof_retained_fields(
-                proof,
-                data_provenance_module._BulkCoverageVerificationContext(),
+            proof.verify_stored(
+                expected_canonical_content=proof.canonical_content,
+                expected_proof_id=proof.coverage_fanout_proof_id,
             )
     finally:
         object.__setattr__(proof, "source_attempt_snapshots", original_snapshots)
@@ -9718,9 +9908,9 @@ def test_bulk_fanout_rederivation_rejects_hidden_snapshots_and_wrong_kind_cardin
     object.__setattr__(proof, "kind", CoverageFanoutKind.EXACT_ROUTED_EVENTS)
     try:
         with pytest.raises(ValueError, match="incomplete"):
-            data_provenance_module._verify_coverage_fanout_proof_retained_fields(
-                proof,
-                data_provenance_module._BulkCoverageVerificationContext(),
+            proof.verify_stored(
+                expected_canonical_content=proof.canonical_content,
+                expected_proof_id=proof.coverage_fanout_proof_id,
             )
     finally:
         object.__setattr__(proof, "kind", original_kind)
@@ -9738,9 +9928,9 @@ def test_bulk_fanout_rederivation_rejects_hidden_snapshots_and_wrong_kind_cardin
         object.__setattr__(proof, field_name, SameValueWrongType(original_value.value))
         try:
             with pytest.raises(TypeError, match="coverage fanout contains an invalid"):
-                data_provenance_module._verify_coverage_fanout_proof_retained_fields(
-                    proof,
-                    data_provenance_module._BulkCoverageVerificationContext(),
+                proof.verify_stored(
+                    expected_canonical_content=proof.canonical_content,
+                    expected_proof_id=proof.coverage_fanout_proof_id,
                 )
         finally:
             object.__setattr__(proof, field_name, original_value)
@@ -9788,9 +9978,9 @@ def test_bulk_fanout_rederivation_rejects_n_plus_one_before_nested_traversal() -
         object.__setattr__(proof, field_name, (item,) * (maximum_items + 1))
         try:
             with pytest.raises(ValueError, match="finite bound"):
-                data_provenance_module._verify_coverage_fanout_proof_retained_fields(
-                    proof,
-                    data_provenance_module._BulkCoverageVerificationContext(),
+                proof.verify_stored(
+                    expected_canonical_content=proof.canonical_content,
+                    expected_proof_id=proof.coverage_fanout_proof_id,
                 )
         finally:
             object.__setattr__(proof, field_name, original)
@@ -10258,7 +10448,7 @@ def test_bulk_derivation_verifies_shared_values_once_and_derives_each_leaf_once(
         "result_order_comparisons": 0,
     }
     original_verify = data_provenance_module._verify_bulk_coverage_commit_inputs
-    original_batch_verify = data_provenance_module._verify_coverage_mutation_batch_stored
+    original_batch_verify = data_provenance_module._verify_coverage_mutation_batch_stored_uncached
     original_acceptance_verify = (
         data_provenance_module._verify_coverage_commit_acceptance_stored_bulk
     )
@@ -10276,14 +10466,16 @@ def test_bulk_derivation_verifies_shared_values_once_and_derives_each_leaf_once(
         *,
         expected_canonical_content: str,
         expected_batch_id: CoverageMutationBatchId,
-        verification_context: object | None = None,
+        verification_context: (
+            data_provenance_module._BulkCoverageVerificationContext | None
+        ) = None,
     ) -> tuple[object, ...]:
         counts["batch_verification"] += 1
         return original_batch_verify(
             batch_value,
             expected_canonical_content=expected_canonical_content,
             expected_batch_id=expected_batch_id,
-            verification_context=verification_context,  # type: ignore[arg-type]
+            verification_context=verification_context,
         )
 
     def counted_acceptance_verify(
@@ -10362,7 +10554,7 @@ def test_bulk_derivation_verifies_shared_values_once_and_derives_each_leaf_once(
     )
     monkeypatch.setattr(
         data_provenance_module,
-        "_verify_coverage_mutation_batch_stored",
+        "_verify_coverage_mutation_batch_stored_uncached",
         counted_batch_verify,
     )
     monkeypatch.setattr(
@@ -11189,14 +11381,6 @@ def test_compact_identity_specific_bounds_and_maximum_plan_byte_volume() -> None
         compact_ids = compact_graph_ids(prepared)
         compact_total = sum(len(value) for value in compact_ids.values())
         totals.append(compact_total)
-        verification_context = data_provenance_module._BulkCoverageVerificationContext()
-        data_provenance_module._verify_coverage_mutation_batch_stored(
-            prepared.coverage_mutation_batch,
-            expected_canonical_content=prepared.coverage_mutation_batch.canonical_content,
-            expected_batch_id=prepared.coverage_mutation_batch.coverage_mutation_batch_id,
-            verification_context=verification_context,
-        )
-        assert verification_context.compact_graph_identity_bytes() == compact_total
         role_maxima: dict[str, int] = {}
         for (role, _value), encoded in compact_ids.items():
             role_maxima[role] = max(role_maxima.get(role, 0), len(encoded))
@@ -11226,20 +11410,11 @@ def test_compact_graph_budget_is_strict_and_failed_bulk_returns_no_prefix(
 
     fixture = _bulk_upstream_fixture(4, "initial-uncertain")
     prepared = fixture.prepare()
-    ordinary_context = data_provenance_module._BulkCoverageVerificationContext()
-    data_provenance_module._verify_coverage_mutation_batch_stored(
-        prepared.coverage_mutation_batch,
-        expected_canonical_content=prepared.coverage_mutation_batch.canonical_content,
-        expected_batch_id=prepared.coverage_mutation_batch.coverage_mutation_batch_id,
-        verification_context=ordinary_context,
-    )
-    ordinary_compact_bytes = ordinary_context.compact_graph_identity_bytes()
-    assert ordinary_compact_bytes > 1
     ordinary_requests = prepared.requested_mutations
     monkeypatch.setattr(
         data_provenance_module,
         "MAX_COMPACT_COVERAGE_GRAPH_ID_BYTES",
-        ordinary_compact_bytes - 1,
+        1,
     )
     with pytest.raises(ValueError, match="aggregate identity-byte bound"):
         prepare_coverage_mutation_batch(
@@ -11273,15 +11448,7 @@ def test_maximum_worst_case_run_width_at_maximum_fanout_obeys_graph_budget() -> 
         collector_run_id=maximum_composable_run,
     )
     prepared = fixture.prepare()
-    context = data_provenance_module._BulkCoverageVerificationContext()
-    data_provenance_module._verify_coverage_mutation_batch_stored(
-        prepared.coverage_mutation_batch,
-        expected_canonical_content=prepared.coverage_mutation_batch.canonical_content,
-        expected_batch_id=prepared.coverage_mutation_batch.coverage_mutation_batch_id,
-        verification_context=context,
-    )
-    assert context.compact_graph_identity_bytes() == 67_065_684
-    assert context.compact_graph_identity_bytes() <= MAX_COMPACT_COVERAGE_GRAPH_ID_BYTES
+    assert prepared.coverage_mutation_batch.resulting_state_references
 
     first_rejected = _bulk_upstream_fixture(
         MAX_SUBSCRIPTION_SPECS,
@@ -11491,8 +11658,14 @@ def test_bulk_derivation_rejects_context_injection_and_transition_source_overflo
     )
     source = derivation.upstream_transition_sources[0]
     assert source is not None
-    source_context = data_provenance_module._BulkCoverageVerificationContext()
-    source_context._verify_committed_state(source.committed_state)
+    evidence = derivation.derive_upstream_evidence_at(
+        0,
+        downstream_scope=fixture.downstream_fanout.target_scopes[0],
+        downstream_epoch=fixture.current_downstream[0].reference.epoch,
+        observed_at=fixture.observed_at,
+        observed_monotonic_ns=fixture.observed_monotonic_ns,
+        current_downstream_state=fixture.current_downstream[0],
+    )
     transition_id = source.coverage_transition.coverage_transition_id
     original_transition_text = transition_id.value
     object.__setattr__(
@@ -11501,11 +11674,8 @@ def test_bulk_derivation_rejects_context_injection_and_transition_source_overflo
         "x" * (data_provenance_module._MAX_UPSTREAM_COVERAGE_TRANSITION_ID_LENGTH + 1),
     )
     try:
-        with pytest.raises(ValueError, match="maximum length"):
-            source_context.verify_evidence_source(
-                source,
-                scope=fixture.downstream_fanout.target_scopes[0],
-            )
+        with pytest.raises(ValueError, match="transition ID"):
+            evidence.verify_stored()
     finally:
         object.__setattr__(transition_id, "value", original_transition_text)
 
@@ -11654,21 +11824,1526 @@ def test_public_coverage_factories_freshly_verify_retained_parents() -> None:
         object.__setattr__(previous, "content_sha256", original_previous_digest)
 
 
+def _ordinary_raw_rejection_projection(
+    fixture: _RawRejectionProjectionFixture,
+    *,
+    current_downstream_state_references: tuple[CoverageStateReference, ...] = (),
+    observed_at: datetime | None = None,
+    observed_monotonic_ns: int | None = None,
+) -> tuple[
+    BatchVerifiedCoverageDerivation,
+    tuple[CoverageEvidence, ...],
+    tuple[RequestedCoverageMutation, ...],
+    CoverageMutationBatch,
+]:
+    evidence_observed_at = fixture.observed_at if observed_at is None else observed_at
+    evidence_monotonic_ns = (
+        fixture.observed_monotonic_ns if observed_monotonic_ns is None else observed_monotonic_ns
+    )
+    current_by_scope = {
+        item.reference.scope.coverage_scope_id: item for item in current_downstream_state_references
+    }
+    derivation = BatchVerifiedCoverageDerivation.from_commit(
+        batch=fixture.upstream_batch,
+        commit_acceptance=fixture.upstream_acceptance,
+        resulting_state_references=fixture.upstream_batch.resulting_state_references,
+    )
+    evidence_values: list[CoverageEvidence] = []
+    requests: list[RequestedCoverageMutation] = []
+    for index, scope in enumerate(fixture.downstream_fanout.target_scopes):
+        current = current_by_scope.get(scope.coverage_scope_id)
+        epoch = (
+            current.reference.epoch
+            if current is not None
+            else CoverageEpochIdentity(
+                scope,
+                fixture.raw_record.collector_run_id,
+                0,
+                fixture.observed_at,
+                fixture.observed_monotonic_ns,
+            )
+        )
+        evidence = derivation.derive_raw_rejection_normalization_unknown_evidence_at(
+            index,
+            downstream_scope=scope,
+            downstream_epoch=epoch,
+            observed_at=evidence_observed_at,
+            observed_monotonic_ns=evidence_monotonic_ns,
+        )
+        evidence_values.append(evidence)
+        requests.append(
+            RequestedCoverageMutation(
+                scope=scope,
+                epoch=epoch,
+                requested_status=CoverageStatus.UNCERTAIN,
+                initial_reason=InitialCoverageReason.RAW_REJECTION_NORMALIZATION_UNKNOWN,
+                transition_reason=CoverageReason.RAW_REJECTION_NORMALIZATION_UNKNOWN,
+                evidence=evidence,
+            )
+        )
+    request_tuple = tuple(requests)
+    batch = prepare_coverage_mutation_batch(
+        fanout_proof=fixture.downstream_fanout,
+        current_state_references=current_downstream_state_references,
+        requests=request_tuple,
+        raw_fanout_binding=fixture.downstream_raw_binding,
+    )
+    return derivation, tuple(evidence_values), request_tuple, batch
+
+
+@pytest.mark.parametrize("target_count", (1, 4, 50, 512, MAX_SUBSCRIPTION_SPECS))
+def test_raw_rejection_unknown_projection_is_exact_bounded_and_ordinary_fused_equal(
+    target_count: int,
+) -> None:
+    fixture = _raw_rejection_projection_fixture(target_count)
+    prepared = fixture.prepare()
+    derivation, ordinary_evidence, ordinary_requests, ordinary_batch = (
+        _ordinary_raw_rejection_projection(fixture)
+    )
+
+    assert len(prepared.coverage_evidence) == target_count
+    assert len(prepared.requested_mutations) == target_count
+    assert len(prepared.coverage_mutation_batch.resulting_state_references) == target_count
+    assert prepared.coverage_evidence == ordinary_evidence
+    assert prepared.requested_mutations == ordinary_requests
+    assert prepared.coverage_mutation_batch == ordinary_batch
+    assert all(
+        item.reference.status is CoverageStatus.CONFIRMED_INCOMPLETE
+        for item in fixture.upstream_batch.resulting_state_references
+    )
+    assert all(
+        item.requested_status is CoverageStatus.UNCERTAIN
+        and item.initial_reason is InitialCoverageReason.RAW_REJECTION_NORMALIZATION_UNKNOWN
+        and item.transition_reason is CoverageReason.RAW_REJECTION_NORMALIZATION_UNKNOWN
+        for item in prepared.requested_mutations
+    )
+    for index, (evidence, downstream_scope) in enumerate(
+        zip(prepared.coverage_evidence, fixture.downstream_fanout.target_scopes, strict=True)
+    ):
+        assert evidence.kind is CoverageEvidenceKind.RAW_REJECTION_NORMALIZATION_UNKNOWN
+        assert json.loads(evidence.coverage_evidence_id.value)[0] == "coverage-evidence-v3"
+        source = cast(RawRejectionNormalizationUnknownEvidenceSource, evidence.source)
+        assert type(source) is RawRejectionNormalizationUnknownEvidenceSource
+        assert source.membership is RawRejectionProjectionMembership.UNKNOWN
+        assert source.boundary is RawRejectionProjectionBoundary.BEFORE_PARSING
+        assert source.committed_state == derivation.committed_states[index]
+        assert source.result_ordinal == index
+        assert source.downstream_scope == downstream_scope
+        assert source.raw_fanout_binding == fixture.upstream_batch.raw_fanout_binding
+        assert source.raw_rejection_evidence.kind is CoverageEvidenceKind.RAW_RECORD_REJECTION
+        assert source.canonical_components() == (
+            "raw-rejection-normalization-unknown-source-v1",
+            "unknown",
+            "before-parsing",
+            fixture.upstream_batch.coverage_mutation_batch_id.value,
+            source.committed_state.committed_coverage_state_id.value,
+            index,
+            source.raw_rejection_evidence.coverage_evidence_id.value,
+            source.raw_fanout_binding.raw_coverage_fanout_binding_id.value,
+            fixture.raw_record.raw_record_id.value,
+            fixture.raw_record.full_record_integrity_sha256,
+            downstream_scope.coverage_scope_id.value,
+        )
+        assert evidence.canonical_content is not None
+        assert json.loads(evidence.canonical_content) == [
+            "coverage-evidence-content-v3",
+            downstream_scope.coverage_scope_id.value,
+            evidence.epoch.coverage_epoch_id.value,
+            fixture.raw_record.collector_run_id.value,
+            "raw-rejection-normalization-unknown",
+            list(source.canonical_components()),
+            canonical_utc_datetime(evidence.observed_at, field_name="observed_at"),
+            fixture.observed_monotonic_ns,
+        ]
+        assert json.loads(evidence.coverage_evidence_id.value) == [
+            "coverage-evidence-v3",
+            downstream_scope.coverage_scope_id.value,
+            evidence.epoch.coverage_epoch_id.value,
+            fixture.raw_record.collector_run_id.value,
+            "raw-rejection-normalization-unknown",
+            list(source.canonical_components()),
+            canonical_utc_datetime(evidence.observed_at, field_name="observed_at"),
+            fixture.observed_monotonic_ns,
+            evidence.content_sha256,
+        ]
+    prepared.coverage_evidence[0].verify_stored()
+    if target_count <= 4:
+        prepared.coverage_evidence[-1].verify_stored()
+    prepared.coverage_mutation_batch.verify_stored(
+        expected_canonical_content=ordinary_batch.canonical_content,
+        expected_batch_id=ordinary_batch.coverage_mutation_batch_id,
+    )
+
+
+def test_raw_rejection_unknown_projection_is_opt_in_and_event_coverage_stays_strict() -> None:
+    fixture = _raw_rejection_projection_fixture(1)
+    derivation = BatchVerifiedCoverageDerivation.from_commit(
+        batch=fixture.upstream_batch,
+        commit_acceptance=fixture.upstream_acceptance,
+        resulting_state_references=fixture.upstream_batch.resulting_state_references,
+    )
+    downstream_scope = fixture.downstream_fanout.target_scopes[0]
+    downstream_epoch = CoverageEpochIdentity(
+        downstream_scope,
+        fixture.raw_record.collector_run_id,
+        0,
+        fixture.observed_at,
+        fixture.observed_monotonic_ns,
+    )
+    with pytest.raises(ValueError, match="typed projection-membership route"):
+        derivation.derive_upstream_evidence_at(
+            0,
+            downstream_scope=downstream_scope,
+            downstream_epoch=downstream_epoch,
+            observed_at=fixture.observed_at,
+            observed_monotonic_ns=fixture.observed_monotonic_ns,
+        )
+    with pytest.raises(ValueError, match="typed projection-membership route"):
+        derivation.upstream_state_source_at(0)
+    with pytest.raises(ValueError, match="typed projection-membership route"):
+        UpstreamCoverageStateEvidenceSource(derivation.committed_states[0])
+    forged_source = object.__new__(UpstreamCoverageStateEvidenceSource)
+    object.__setattr__(forged_source, "committed_state", derivation.committed_states[0])
+    with pytest.raises(ValueError, match="typed projection-membership route"):
+        CoverageEvidence(
+            CoverageEvidenceKind.UPSTREAM_COVERAGE_STATE,
+            forged_source,
+            downstream_scope,
+            downstream_epoch,
+            fixture.observed_at,
+            fixture.observed_monotonic_ns,
+        )
+    with pytest.raises(ValueError, match="typed projection-membership route"):
+        BatchVerifiedUpstreamCoveragePreparation.from_committed_upstream(
+            upstream_batch=fixture.upstream_batch,
+            upstream_commit_acceptance=fixture.upstream_acceptance,
+            upstream_resulting_state_references=fixture.upstream_batch.resulting_state_references,
+            downstream_fanout_proof=fixture.downstream_fanout,
+            current_downstream_state_references=(),
+            observed_at=fixture.observed_at,
+            observed_monotonic_ns=fixture.observed_monotonic_ns,
+            raw_fanout_binding=fixture.downstream_raw_binding,
+        )
+    foreign_epoch = CoverageEpochIdentity(
+        downstream_scope,
+        fixture.raw_record.collector_run_id,
+        1,
+        fixture.observed_at,
+        fixture.observed_monotonic_ns,
+    )
+    with pytest.raises(ValueError, match="epoch"):
+        derivation.derive_raw_rejection_normalization_unknown_evidence_at(
+            0,
+            downstream_scope=downstream_scope,
+            downstream_epoch=foreign_epoch,
+            observed_at=fixture.observed_at,
+            observed_monotonic_ns=fixture.observed_monotonic_ns,
+        )
+    unrelated = _bulk_upstream_fixture(1, "initial-incomplete")
+    unrelated_derivation = BatchVerifiedCoverageDerivation.from_commit(
+        batch=unrelated.upstream_batch,
+        commit_acceptance=unrelated.upstream_acceptance,
+        resulting_state_references=unrelated.upstream_batch.resulting_state_references,
+    )
+    unrelated_upstream = unrelated.upstream_batch.resulting_state_references[0]
+    unrelated_scope = unrelated.downstream_fanout.target_scopes[0]
+    unrelated_epoch = CoverageEpochIdentity(
+        unrelated_scope,
+        unrelated_upstream.reference.epoch.collector_run_id,
+        unrelated_upstream.reference.epoch.epoch_ordinal,
+        unrelated_upstream.reference.epoch.activation_time,
+        unrelated_upstream.reference.epoch.activation_monotonic_ns,
+    )
+    unrelated_exact_evidence = unrelated_derivation.derive_upstream_evidence_at(
+        0,
+        downstream_scope=unrelated_scope,
+        downstream_epoch=unrelated_epoch,
+        observed_at=unrelated.observed_at,
+        observed_monotonic_ns=unrelated.observed_monotonic_ns,
+    )
+    invalid_generic_request = RequestedCoverageMutation(
+        unrelated_scope,
+        unrelated_epoch,
+        CoverageStatus.UNCERTAIN,
+        InitialCoverageReason.UPSTREAM_COVERAGE_DEGRADED,
+        CoverageReason.UPSTREAM_COVERAGE_DEGRADED,
+        unrelated_exact_evidence,
+    )
+    with pytest.raises(ValueError, match="exactly match upstream status"):
+        prepare_coverage_mutation_batch(
+            fanout_proof=unrelated.downstream_fanout,
+            current_state_references=(),
+            requests=(invalid_generic_request,),
+        )
+
+    prepared = fixture.prepare()
+    silver_acceptance = CoverageCommitAcceptance.after_compare_and_swap(
+        batch=prepared.coverage_mutation_batch,
+        committed_state_references=prepared.coverage_mutation_batch.resulting_state_references,
+    )
+    silver = CommittedCoverageState.from_commit_at(
+        state_reference=prepared.coverage_mutation_batch.resulting_state_references[0],
+        commit_acceptance=silver_acceptance,
+        result_ordinal=0,
+    )
+    with pytest.raises(ValueError, match="Silver event coverage cannot be better"):
+        EventCoverage(derivation.committed_states[0], silver)
+
+    assert len(set(RawRejectionProjectionMembership)) == 3
+    with pytest.raises(ValueError):
+        RawRejectionProjectionMembership("future-membership")
+    with pytest.raises(ValueError):
+        RawRejectionProjectionBoundary("after-parsing")
+    source_factory_parameters = inspect.signature(
+        RawRejectionNormalizationUnknownEvidenceSource.from_committed_raw_rejection
+    ).parameters
+    fused_factory_parameters = inspect.signature(
+        BatchVerifiedUpstreamCoveragePreparation.from_committed_raw_rejection
+    ).parameters
+    assert "membership" not in source_factory_parameters
+    assert "boundary" not in source_factory_parameters
+    assert "membership" not in fused_factory_parameters
+    assert "boundary" not in fused_factory_parameters
+    assert not hasattr(
+        RawRejectionNormalizationUnknownEvidenceSource,
+        "_from_verified_transcript",
+    )
+    assert not hasattr(
+        data_provenance_module,
+        "_construct_raw_rejection_normalization_unknown_source",
+    )
+    assert not hasattr(
+        data_provenance_module,
+        "_construct_bulk_verified_raw_rejection_unknown_evidence",
+    )
+    with pytest.raises(TypeError, match="from_committed_raw_rejection"):
+        RawRejectionNormalizationUnknownEvidenceSource(
+            fixture.upstream_batch,
+            derivation.committed_states[0],
+            fixture.upstream_batch.initializations[0].initial_evidence,
+            downstream_scope,
+        )
+
+
+def test_raw_rejection_projection_stored_verification_rejects_post_derivation_tamper() -> None:
+    fixture = _raw_rejection_projection_fixture(1)
+    derivation = BatchVerifiedCoverageDerivation.from_commit(
+        batch=fixture.upstream_batch,
+        commit_acceptance=fixture.upstream_acceptance,
+        resulting_state_references=fixture.upstream_batch.resulting_state_references,
+    )
+    downstream_scope = fixture.downstream_fanout.target_scopes[0]
+    downstream_epoch = CoverageEpochIdentity(
+        downstream_scope,
+        fixture.raw_record.collector_run_id,
+        0,
+        fixture.observed_at,
+        fixture.observed_monotonic_ns,
+    )
+    original_content = fixture.upstream_batch.canonical_content
+    object.__setattr__(fixture.upstream_batch, "canonical_content", original_content + " ")
+    try:
+        evidence = derivation.derive_raw_rejection_normalization_unknown_evidence_at(
+            0,
+            downstream_scope=downstream_scope,
+            downstream_epoch=downstream_epoch,
+            observed_at=fixture.observed_at,
+            observed_monotonic_ns=fixture.observed_monotonic_ns,
+        )
+        with pytest.raises(ValueError, match="mutation batch"):
+            evidence.verify_stored()
+        with pytest.raises(ValueError, match="mutation batch"):
+            BatchVerifiedCoverageDerivation.from_commit(
+                batch=fixture.upstream_batch,
+                commit_acceptance=fixture.upstream_acceptance,
+                resulting_state_references=fixture.upstream_batch.resulting_state_references,
+            )
+    finally:
+        object.__setattr__(fixture.upstream_batch, "canonical_content", original_content)
+
+
+def test_batch_verified_raw_projection_rederives_selected_leaf_before_sealing() -> None:
+    fixture = _raw_rejection_projection_fixture(4)
+    derivation = BatchVerifiedCoverageDerivation.from_commit(
+        batch=fixture.upstream_batch,
+        commit_acceptance=fixture.upstream_acceptance,
+        resulting_state_references=fixture.upstream_batch.resulting_state_references,
+    )
+    source = cast(
+        RawRejectionNormalizationUnknownEvidenceSource,
+        derivation.raw_rejection_unknown_sources[1],
+    )
+    scope = fixture.downstream_fanout.target_scopes[1]
+    epoch = CoverageEpochIdentity(
+        scope,
+        fixture.raw_record.collector_run_id,
+        0,
+        fixture.observed_at,
+        fixture.observed_monotonic_ns,
+    )
+
+    tamper_cases: tuple[tuple[object, str, object], ...] = (
+        (source.committed_state, "content_sha256", "0" * 64),
+        (source.committed_state.state_reference, "content_sha256", "0" * 64),
+        (source, "result_ordinal", 0),
+        (source, "downstream_scope", fixture.downstream_fanout.target_scopes[0]),
+        (source.raw_fanout_binding, "content_sha256", "0" * 64),
+        (source, "canonical_source_row", (*source.canonical_source_row, "tampered")),
+    )
+    for target, field_name, replacement in tamper_cases:
+        original = getattr(target, field_name)
+        object.__setattr__(target, field_name, replacement)
+        try:
+            with pytest.raises((TypeError, ValueError)):
+                derivation.derive_raw_rejection_normalization_unknown_evidence_at(
+                    1,
+                    downstream_scope=scope,
+                    downstream_epoch=epoch,
+                    observed_at=fixture.observed_at,
+                    observed_monotonic_ns=fixture.observed_monotonic_ns,
+                )
+            with pytest.raises((TypeError, ValueError)):
+                data_provenance_module._construct_bulk_verified_upstream_evidence(
+                    derivation=derivation,
+                    index=1,
+                    downstream_scope=scope,
+                    downstream_epoch=epoch,
+                    observed_at=fixture.observed_at,
+                    observed_monotonic_ns=fixture.observed_monotonic_ns,
+                    current_downstream_state=None,
+                    lossy_raw_rejection=True,
+                )
+        finally:
+            object.__setattr__(target, field_name, original)
+
+
+def test_raw_rejection_projection_rejects_preloaded_caller_context_after_tamper() -> None:
+    fixture = _raw_rejection_projection_fixture(1)
+    evidence = fixture.prepare().coverage_evidence[0]
+    source = cast(RawRejectionNormalizationUnknownEvidenceSource, evidence.source)
+    context = data_provenance_module._BulkCoverageVerificationContext()
+    with pytest.raises(ValueError, match="factory-owned lexical transcript"):
+        context._validation_active = True
+    context.verify_state(source.committed_state.state_reference)
+    original_digest = source.committed_state.state_reference.content_sha256
+    object.__setattr__(source.committed_state.state_reference, "content_sha256", "0" * 64)
+    try:
+        with pytest.raises(ValueError, match="factory-owned lexical transcript"):
+            data_provenance_module._verify_raw_rejection_normalization_unknown_source(
+                source,
+                scope=source.downstream_scope,
+                verification_context=context,
+            )
+        caller_frame = sys._getframe()
+        object.__setattr__(
+            context,
+            "_validation_owner",
+            (id(caller_frame), caller_frame.f_code),
+        )
+        with pytest.raises(ValueError, match="factory-owned lexical transcript"):
+            context._validation_active = True
+        with pytest.raises(ValueError, match="factory-owned lexical transcript"):
+            data_provenance_module._verify_raw_rejection_normalization_unknown_source(
+                source,
+                scope=source.downstream_scope,
+                verification_context=context,
+            )
+        with pytest.raises(ValueError):
+            source.verify_stored()
+    finally:
+        object.__setattr__(
+            source.committed_state.state_reference,
+            "content_sha256",
+            original_digest,
+        )
+
+
+def test_bulk_context_rejects_spoofed_module_filename_and_entrypoint_name() -> None:
+    namespace: dict[str, object] = {
+        "Context": data_provenance_module._BulkCoverageVerificationContext,
+    }
+    exec(
+        compile(
+            "def verify_stored():\n"
+            "    context = Context()\n"
+            "    context._validation_active = True\n"
+            "    return context\n",
+            data_provenance_module.__file__,
+            "exec",
+        ),
+        namespace,
+    )
+    spoofed_verify = cast(Callable[[], object], namespace["verify_stored"])
+    with pytest.raises(ValueError, match="factory-owned lexical transcript"):
+        spoofed_verify()
+
+
+def test_raw_rejection_unknown_projection_transitions_complete_and_then_no_ops() -> None:
+    fixture = _raw_rejection_projection_fixture(4)
+    plan = fixture.downstream_fanout.subscription_plan
+    catalog = fixture.downstream_fanout.coverage_target_catalog
+    acknowledged = tuple(
+        replace(item, attempt_status=SubscriptionAttemptStatus.ACKNOWLEDGED)
+        for item in fixture.downstream_fanout.source_attempt_snapshots
+    )
+    complete = _activation_batch_for_selected_snapshots(
+        plan=plan,
+        catalog=catalog,
+        complete_snapshots=acknowledged,
+        selected_snapshots=acknowledged,
+        domain=CoverageDomain.SILVER_NORMALIZATION,
+    )
+    transitioned = fixture.prepare(
+        current_downstream_state_references=complete.resulting_state_references,
+        observed_at=fixture.observed_at + timedelta(seconds=1),
+        observed_monotonic_ns=fixture.observed_monotonic_ns + 1,
+    )
+    _, ordinary_transition_evidence, ordinary_transition_requests, ordinary_transition_batch = (
+        _ordinary_raw_rejection_projection(
+            fixture,
+            current_downstream_state_references=complete.resulting_state_references,
+            observed_at=fixture.observed_at + timedelta(seconds=1),
+            observed_monotonic_ns=fixture.observed_monotonic_ns + 1,
+        )
+    )
+    assert transitioned.coverage_evidence == ordinary_transition_evidence
+    assert transitioned.requested_mutations == ordinary_transition_requests
+    assert transitioned.coverage_mutation_batch == ordinary_transition_batch
+    assert len(transitioned.coverage_mutation_batch.initializations) == 0
+    assert len(transitioned.coverage_mutation_batch.transitions) == 4
+    assert len(transitioned.coverage_mutation_batch.no_ops) == 0
+    assert all(
+        item.reference.status is CoverageStatus.UNCERTAIN and item.reference.transition_ordinal == 1
+        for item in transitioned.coverage_mutation_batch.resulting_state_references
+    )
+
+    repeated = fixture.prepare(
+        current_downstream_state_references=(
+            transitioned.coverage_mutation_batch.resulting_state_references
+        ),
+        observed_at=fixture.observed_at + timedelta(seconds=2),
+        observed_monotonic_ns=fixture.observed_monotonic_ns + 2,
+    )
+    _, ordinary_no_op_evidence, ordinary_no_op_requests, ordinary_no_op_batch = (
+        _ordinary_raw_rejection_projection(
+            fixture,
+            current_downstream_state_references=(
+                transitioned.coverage_mutation_batch.resulting_state_references
+            ),
+            observed_at=fixture.observed_at + timedelta(seconds=2),
+            observed_monotonic_ns=fixture.observed_monotonic_ns + 2,
+        )
+    )
+    assert repeated.coverage_evidence == ordinary_no_op_evidence
+    assert repeated.requested_mutations == ordinary_no_op_requests
+    assert repeated.coverage_mutation_batch == ordinary_no_op_batch
+    assert len(repeated.coverage_mutation_batch.initializations) == 0
+    assert len(repeated.coverage_mutation_batch.transitions) == 0
+    assert len(repeated.coverage_mutation_batch.no_ops) == 4
+    assert repeated.coverage_mutation_batch.resulting_state_references == (
+        transitioned.coverage_mutation_batch.resulting_state_references
+    )
+
+
+def test_raw_rejection_projection_matches_for_upstream_no_op_over_unrelated_incomplete() -> None:
+    fixture = _raw_rejection_projection_fixture(1)
+    scope = fixture.upstream_batch.fanout_proof.target_scopes[0]
+    initial_batch = prepare_coverage_mutation_batch(
+        fanout_proof=fixture.upstream_batch.fanout_proof,
+        current_state_references=(),
+        requests=(_initial_sequence_break_request(scope),),
+    )
+    current = initial_batch.resulting_state_references[0]
+    rejection_at = fixture.observed_at + timedelta(seconds=2)
+    rejection_monotonic_ns = fixture.observed_monotonic_ns + 2
+    rejection = CoverageEvidence(
+        CoverageEvidenceKind.RAW_RECORD_REJECTION,
+        RawRecordEvidenceSource(
+            fixture.raw_record.raw_record_id,
+            scope.coverage_scope_id,
+        ),
+        scope,
+        current.reference.epoch,
+        rejection_at,
+        rejection_monotonic_ns,
+    )
+    request = RequestedCoverageMutation(
+        scope,
+        current.reference.epoch,
+        CoverageStatus.CONFIRMED_INCOMPLETE,
+        InitialCoverageReason.RAW_DEFINITE_REJECTION,
+        CoverageReason.RAW_DEFINITE_REJECTION,
+        rejection,
+    )
+    raw_batch = prepare_coverage_mutation_batch(
+        fanout_proof=fixture.upstream_batch.fanout_proof,
+        current_state_references=(current,),
+        requests=(request,),
+        raw_fanout_binding=fixture.upstream_batch.raw_fanout_binding,
+    )
+    assert len(raw_batch.no_ops) == 1
+    acceptance = CoverageCommitAcceptance.after_compare_and_swap(
+        batch=raw_batch,
+        committed_state_references=raw_batch.resulting_state_references,
+    )
+    no_op_fixture = replace(
+        fixture,
+        upstream_batch=raw_batch,
+        upstream_acceptance=acceptance,
+        observed_at=rejection_at,
+        observed_monotonic_ns=rejection_monotonic_ns,
+    )
+
+    fused = no_op_fixture.prepare()
+    _derivation, ordinary_evidence, ordinary_requests, ordinary_batch = (
+        _ordinary_raw_rejection_projection(no_op_fixture)
+    )
+
+    assert fused.coverage_evidence == ordinary_evidence
+    assert fused.requested_mutations == ordinary_requests
+    assert fused.coverage_mutation_batch == ordinary_batch
+
+
+def test_raw_rejection_projection_rejects_tampered_selected_no_op_request() -> None:
+    fixture = _raw_rejection_projection_fixture(1)
+    scope = fixture.upstream_batch.fanout_proof.target_scopes[0]
+    initial_batch = prepare_coverage_mutation_batch(
+        fanout_proof=fixture.upstream_batch.fanout_proof,
+        current_state_references=(),
+        requests=(_initial_sequence_break_request(scope),),
+    )
+    current = initial_batch.resulting_state_references[0]
+    rejection_at = fixture.observed_at + timedelta(seconds=2)
+    rejection_monotonic_ns = fixture.observed_monotonic_ns + 2
+    rejection = CoverageEvidence(
+        CoverageEvidenceKind.RAW_RECORD_REJECTION,
+        RawRecordEvidenceSource(
+            fixture.raw_record.raw_record_id,
+            scope.coverage_scope_id,
+        ),
+        scope,
+        current.reference.epoch,
+        rejection_at,
+        rejection_monotonic_ns,
+    )
+    request = RequestedCoverageMutation(
+        scope,
+        current.reference.epoch,
+        CoverageStatus.CONFIRMED_INCOMPLETE,
+        InitialCoverageReason.RAW_DEFINITE_REJECTION,
+        CoverageReason.RAW_DEFINITE_REJECTION,
+        rejection,
+    )
+    raw_batch = prepare_coverage_mutation_batch(
+        fanout_proof=fixture.upstream_batch.fanout_proof,
+        current_state_references=(current,),
+        requests=(request,),
+        raw_fanout_binding=fixture.upstream_batch.raw_fanout_binding,
+    )
+    acceptance = CoverageCommitAcceptance.after_compare_and_swap(
+        batch=raw_batch,
+        committed_state_references=raw_batch.resulting_state_references,
+    )
+    derivation = BatchVerifiedCoverageDerivation.from_commit(
+        batch=raw_batch,
+        commit_acceptance=acceptance,
+        resulting_state_references=raw_batch.resulting_state_references,
+    )
+    original_request = raw_batch.no_ops[0].request
+    tampered_evidence = replace(
+        original_request.evidence,
+        observed_at=original_request.evidence.observed_at + timedelta(seconds=1),
+        observed_monotonic_ns=original_request.evidence.observed_monotonic_ns + 1,
+    )
+    tampered_request = replace(original_request, evidence=tampered_evidence)
+    try:
+        object.__setattr__(raw_batch.no_ops[0], "request", tampered_request)
+        with pytest.raises(ValueError, match="selected no-op decision"):
+            downstream_scope = fixture.downstream_fanout.target_scopes[0]
+            derivation.derive_raw_rejection_normalization_unknown_evidence_at(
+                0,
+                downstream_scope=downstream_scope,
+                downstream_epoch=CoverageEpochIdentity(
+                    downstream_scope,
+                    fixture.raw_record.collector_run_id,
+                    0,
+                    rejection_at,
+                    rejection_monotonic_ns,
+                ),
+                observed_at=rejection_at,
+                observed_monotonic_ns=rejection_monotonic_ns,
+            )
+    finally:
+        object.__setattr__(raw_batch.no_ops[0], "request", original_request)
+
+    original_requests = derivation.requested_mutations
+    try:
+        object.__setattr__(derivation, "requested_mutations", list(original_requests))
+        with pytest.raises(TypeError, match="exact built-in tuples"):
+            derivation.derive_raw_rejection_normalization_unknown_evidence_at(
+                0,
+                downstream_scope=fixture.downstream_fanout.target_scopes[0],
+                downstream_epoch=CoverageEpochIdentity(
+                    fixture.downstream_fanout.target_scopes[0],
+                    fixture.raw_record.collector_run_id,
+                    0,
+                    rejection_at,
+                    rejection_monotonic_ns,
+                ),
+                observed_at=rejection_at,
+                observed_monotonic_ns=rejection_monotonic_ns,
+            )
+    finally:
+        object.__setattr__(derivation, "requested_mutations", original_requests)
+
+
+def test_raw_rejection_unknown_projection_parser_matrix_and_legacy_ids_are_unchanged() -> None:
+    fixture = _raw_rejection_projection_fixture(1)
+    evidence = fixture.prepare().coverage_evidence[0]
+    components = json.loads(evidence.coverage_evidence_id.value)
+    assert CoverageEvidenceId.VERSION_TAG == "coverage-evidence-v3"
+    assert CoverageEvidenceId(evidence.coverage_evidence_id.value) == (
+        evidence.coverage_evidence_id
+    )
+    for version in ("coverage-evidence-v1", "coverage-evidence-v2", "coverage-evidence-v4"):
+        invalid = list(components)
+        invalid[0] = version
+        with pytest.raises(ValueError, match=r"unexpected version|invalid canonical components"):
+            CoverageEvidenceId(json.dumps(invalid, ensure_ascii=True, separators=(",", ":")))
+
+    non_upstream = _evidence(
+        _scope(CoverageDomain.BRONZE_INGRESS),
+        CoverageEvidenceKind.TRANSPORT_FAILURE,
+    )
+    ordinary_upstream_fixture = _bulk_upstream_fixture(1, "initial-uncertain")
+    ordinary_upstream = ordinary_upstream_fixture.prepare().coverage_evidence[0]
+    assert json.loads(non_upstream.coverage_evidence_id.value)[0] == "coverage-evidence-v1"
+    assert json.loads(ordinary_upstream.coverage_evidence_id.value)[0] == ("coverage-evidence-v2")
+
+
+def test_raw_rejection_unknown_evidence_id_cannot_precede_a_no_op_rejection() -> None:
+    fixture = _raw_rejection_projection_fixture(1)
+    current = fixture.upstream_batch.resulting_state_references[0]
+    rejection_observed_at = fixture.observed_at + timedelta(seconds=2)
+    rejection_monotonic_ns = fixture.observed_monotonic_ns + 2
+    rejection = CoverageEvidence(
+        CoverageEvidenceKind.RAW_RECORD_REJECTION,
+        RawRecordEvidenceSource(
+            fixture.raw_record.raw_record_id,
+            current.reference.scope.coverage_scope_id,
+        ),
+        current.reference.scope,
+        current.reference.epoch,
+        rejection_observed_at,
+        rejection_monotonic_ns,
+    )
+    request = RequestedCoverageMutation(
+        current.reference.scope,
+        current.reference.epoch,
+        CoverageStatus.CONFIRMED_INCOMPLETE,
+        InitialCoverageReason.RAW_DEFINITE_REJECTION,
+        CoverageReason.RAW_DEFINITE_REJECTION,
+        rejection,
+    )
+    no_op_batch = prepare_coverage_mutation_batch(
+        fanout_proof=fixture.upstream_batch.fanout_proof,
+        current_state_references=(current,),
+        requests=(request,),
+        raw_fanout_binding=fixture.upstream_batch.raw_fanout_binding,
+    )
+    assert len(no_op_batch.no_ops) == 1
+    no_op_acceptance = CoverageCommitAcceptance.after_compare_and_swap(
+        batch=no_op_batch,
+        committed_state_references=no_op_batch.resulting_state_references,
+    )
+    no_op_fixture = replace(
+        fixture,
+        upstream_batch=no_op_batch,
+        upstream_acceptance=no_op_acceptance,
+        observed_at=rejection_observed_at,
+        observed_monotonic_ns=rejection_monotonic_ns,
+    )
+    projected = no_op_fixture.prepare().coverage_evidence[0]
+    components = list(
+        parse_canonical_json_array(
+            projected.coverage_evidence_id.value,
+            field_name="coverage_evidence_id",
+        )
+    )
+    components[6] = canonical_utc_datetime(
+        fixture.observed_at + timedelta(seconds=1),
+        field_name="observed_at",
+    )
+    components[7] = fixture.observed_monotonic_ns + 1
+    tampered_content = canonical_json_array(("coverage-evidence-content-v3", *components[1:8]))
+    components[8] = hashlib.sha256(tampered_content.encode("utf-8")).hexdigest()
+    with pytest.raises(ValueError, match="invalid canonical components"):
+        CoverageEvidenceId(canonical_json_array(tuple(components)))
+
+
+def test_raw_rejection_no_op_over_unrelated_incomplete_state_cannot_use_generic_upstream() -> None:
+    fixture = _raw_rejection_projection_fixture(1)
+    scope = fixture.upstream_batch.fanout_proof.target_scopes[0]
+    initial_request = _initial_sequence_break_request(scope)
+    initial_batch = prepare_coverage_mutation_batch(
+        fanout_proof=fixture.upstream_batch.fanout_proof,
+        current_state_references=(),
+        requests=(initial_request,),
+    )
+    current = initial_batch.resulting_state_references[0]
+    rejection = CoverageEvidence(
+        CoverageEvidenceKind.RAW_RECORD_REJECTION,
+        RawRecordEvidenceSource(
+            fixture.raw_record.raw_record_id,
+            scope.coverage_scope_id,
+        ),
+        scope,
+        current.reference.epoch,
+        fixture.observed_at + timedelta(seconds=2),
+        fixture.observed_monotonic_ns + 2,
+    )
+    no_op_batch = prepare_coverage_mutation_batch(
+        fanout_proof=fixture.upstream_batch.fanout_proof,
+        current_state_references=(current,),
+        requests=(
+            RequestedCoverageMutation(
+                scope,
+                current.reference.epoch,
+                CoverageStatus.CONFIRMED_INCOMPLETE,
+                InitialCoverageReason.RAW_DEFINITE_REJECTION,
+                CoverageReason.RAW_DEFINITE_REJECTION,
+                rejection,
+            ),
+        ),
+        raw_fanout_binding=fixture.upstream_batch.raw_fanout_binding,
+    )
+    assert len(no_op_batch.no_ops) == 1
+    assert current.reference.initial_reason is InitialCoverageReason.SOURCE_SEQUENCE_BREAK
+    acceptance = CoverageCommitAcceptance.after_compare_and_swap(
+        batch=no_op_batch,
+        committed_state_references=no_op_batch.resulting_state_references,
+    )
+    committed = CommittedCoverageState.from_commit_at(
+        state_reference=current,
+        commit_acceptance=acceptance,
+        result_ordinal=0,
+    )
+    with pytest.raises(ValueError, match="typed projection-membership route"):
+        UpstreamCoverageStateEvidenceSource(committed)
+
+
+def test_raw_rejection_transition_cannot_use_generic_transition_upstream() -> None:
+    fixture = _raw_rejection_projection_fixture(1)
+    fanout = fixture.upstream_batch.fanout_proof
+    acknowledged = tuple(
+        replace(item, attempt_status=SubscriptionAttemptStatus.ACKNOWLEDGED)
+        for item in fanout.source_attempt_snapshots
+    )
+    complete_batch = _activation_batch_for_selected_snapshots(
+        plan=fanout.subscription_plan,
+        catalog=fanout.coverage_target_catalog,
+        complete_snapshots=acknowledged,
+        selected_snapshots=acknowledged,
+    )
+    current = complete_batch.resulting_state_references[0]
+    rejection = CoverageEvidence(
+        CoverageEvidenceKind.RAW_RECORD_REJECTION,
+        RawRecordEvidenceSource(
+            fixture.raw_record.raw_record_id,
+            current.reference.scope.coverage_scope_id,
+        ),
+        current.reference.scope,
+        current.reference.epoch,
+        fixture.observed_at + timedelta(seconds=1),
+        fixture.observed_monotonic_ns + 1,
+    )
+    raw_batch = prepare_coverage_mutation_batch(
+        fanout_proof=fanout,
+        current_state_references=(current,),
+        requests=(
+            RequestedCoverageMutation(
+                current.reference.scope,
+                current.reference.epoch,
+                CoverageStatus.CONFIRMED_INCOMPLETE,
+                InitialCoverageReason.RAW_DEFINITE_REJECTION,
+                CoverageReason.RAW_DEFINITE_REJECTION,
+                rejection,
+            ),
+        ),
+        raw_fanout_binding=fixture.upstream_batch.raw_fanout_binding,
+    )
+    assert len(raw_batch.transitions) == 1
+    acceptance = CoverageCommitAcceptance.after_compare_and_swap(
+        batch=raw_batch,
+        committed_state_references=raw_batch.resulting_state_references,
+    )
+    committed = CommittedCoverageState.from_commit_at(
+        state_reference=raw_batch.resulting_state_references[0],
+        commit_acceptance=acceptance,
+        result_ordinal=0,
+    )
+    with pytest.raises(ValueError, match="typed projection-membership route"):
+        UpstreamCoverageTransitionEvidenceSource(committed)
+
+
+def test_commit_acceptance_retains_and_reverifies_its_exact_typed_batch_parent() -> None:
+    fixture = _raw_rejection_projection_fixture(1)
+    acceptance = fixture.upstream_acceptance
+    assert acceptance.coverage_mutation_batch is fixture.upstream_batch
+    original_id = acceptance.coverage_commit_acceptance_id
+    original_content = acceptance.canonical_content
+    unrelated = _bulk_upstream_fixture(1, "initial-incomplete")
+    object.__setattr__(acceptance, "coverage_mutation_batch", unrelated.upstream_batch)
+    try:
+        with pytest.raises(ValueError, match="does not echo the exact batch results"):
+            acceptance.verify_for(fixture.upstream_batch)
+        with pytest.raises(
+            ValueError,
+            match=r"retained mutation batch|foreign mutation batch|does not echo",
+        ):
+            CommittedCoverageState.from_commit_at(
+                state_reference=fixture.upstream_batch.resulting_state_references[0],
+                commit_acceptance=acceptance,
+                result_ordinal=0,
+            )
+    finally:
+        object.__setattr__(acceptance, "coverage_mutation_batch", fixture.upstream_batch)
+    assert acceptance.coverage_commit_acceptance_id == original_id
+    assert acceptance.canonical_content == original_content
+
+    original_batch_content = fixture.upstream_batch.canonical_content
+    object.__setattr__(fixture.upstream_batch, "canonical_content", original_batch_content + " ")
+    try:
+        with pytest.raises(ValueError, match="mutation batch"):
+            CoverageCommitAcceptance.from_stored(
+                batch=fixture.upstream_batch,
+                coverage_mutation_batch_id=fixture.upstream_batch.coverage_mutation_batch_id,
+                resulting_state_reference_ids=acceptance.resulting_state_reference_ids,
+                expected_canonical_content=acceptance.canonical_content,
+                expected_acceptance_id=acceptance.coverage_commit_acceptance_id,
+            )
+    finally:
+        object.__setattr__(fixture.upstream_batch, "canonical_content", original_batch_content)
+
+
+def test_raw_rejection_unknown_projection_rejects_resultset_and_foreign_lineage() -> None:
+    fixture = _raw_rejection_projection_fixture(4)
+    results = fixture.upstream_batch.resulting_state_references
+    invalid_result_sets = (
+        results[:-1],
+        (*results, results[0]),
+        (results[0], results[0], *results[2:]),
+        tuple(reversed(results)),
+    )
+    for invalid_results in invalid_result_sets:
+        with pytest.raises(ValueError):
+            BatchVerifiedUpstreamCoveragePreparation.from_committed_raw_rejection(
+                upstream_batch=fixture.upstream_batch,
+                upstream_commit_acceptance=fixture.upstream_acceptance,
+                upstream_resulting_state_references=invalid_results,
+                downstream_fanout_proof=fixture.downstream_fanout,
+                current_downstream_state_references=(),
+                observed_at=fixture.observed_at,
+                observed_monotonic_ns=fixture.observed_monotonic_ns,
+                raw_fanout_binding=fixture.downstream_raw_binding,
+            )
+
+    accepted_ids = fixture.upstream_acceptance.resulting_state_reference_ids
+    reordered_acceptance = CoverageCommitAcceptance._verified_value(
+        fixture.upstream_batch,
+        (accepted_ids[0], accepted_ids[1], accepted_ids[3], accepted_ids[2]),
+    )
+    with pytest.raises(ValueError, match="does not echo the exact batch results"):
+        CommittedCoverageState.from_commit_at(
+            state_reference=results[0],
+            commit_acceptance=reordered_acceptance,
+            result_ordinal=0,
+        )
+
+    unrelated = _bulk_upstream_fixture(4, "initial-incomplete")
+    with pytest.raises(ValueError, match=r"raw.*rejection|RAW_DEFINITE_REJECTION"):
+        BatchVerifiedUpstreamCoveragePreparation.from_committed_raw_rejection(
+            upstream_batch=unrelated.upstream_batch,
+            upstream_commit_acceptance=unrelated.upstream_acceptance,
+            upstream_resulting_state_references=(
+                unrelated.upstream_batch.resulting_state_references
+            ),
+            downstream_fanout_proof=unrelated.downstream_fanout,
+            current_downstream_state_references=(),
+            observed_at=unrelated.observed_at,
+            observed_monotonic_ns=unrelated.observed_monotonic_ns,
+            raw_fanout_binding=cast(RawCoverageFanoutBinding, None),
+        )
+
+    foreign = _raw_rejection_projection_fixture(1)
+    with pytest.raises(ValueError):
+        BatchVerifiedUpstreamCoveragePreparation.from_committed_raw_rejection(
+            upstream_batch=fixture.upstream_batch,
+            upstream_commit_acceptance=fixture.upstream_acceptance,
+            upstream_resulting_state_references=results,
+            downstream_fanout_proof=fixture.downstream_fanout,
+            current_downstream_state_references=(),
+            observed_at=fixture.observed_at,
+            observed_monotonic_ns=fixture.observed_monotonic_ns,
+            raw_fanout_binding=foreign.downstream_raw_binding,
+        )
+
+
+def test_raw_rejection_unknown_projection_rebinds_snapshot_digest_to_typed_fanout() -> None:
+    fixture = _raw_rejection_projection_fixture(4)
+    binding = cast(RawCoverageFanoutBinding, fixture.upstream_batch.raw_fanout_binding)
+    originals = (
+        binding.subscription_snapshot_content_sha256,
+        binding.canonical_content,
+        binding.content_sha256,
+        binding.raw_coverage_fanout_binding_id,
+    )
+    forged_snapshot_digest = "0" * 64
+    forged_content = canonical_json_array(
+        (
+            "raw-coverage-fanout-binding-content-v1",
+            binding.raw_record_id.value,
+            binding.full_record_integrity_sha256,
+            binding.subscription_plan_id.value,
+            binding.connection_session_id.value,
+            binding.coverage_fanout_proof_id.value,
+            forged_snapshot_digest,
+        )
+    )
+    forged_content_digest = hashlib.sha256(forged_content.encode("utf-8")).hexdigest()
+    forged_binding_id = RawCoverageFanoutBindingId(
+        canonical_json_array(
+            (
+                "raw-coverage-fanout-binding-v1",
+                binding.raw_record_id.value,
+                binding.coverage_fanout_proof_id.value,
+                forged_snapshot_digest,
+                forged_content_digest,
+            )
+        )
+    )
+    object.__setattr__(binding, "subscription_snapshot_content_sha256", forged_snapshot_digest)
+    object.__setattr__(binding, "canonical_content", forged_content)
+    object.__setattr__(binding, "content_sha256", forged_content_digest)
+    object.__setattr__(binding, "raw_coverage_fanout_binding_id", forged_binding_id)
+    try:
+        requests = tuple(
+            RequestedCoverageMutation(
+                initialization.scope,
+                initialization.epoch,
+                initialization.status,
+                initialization.initial_reason,
+                CoverageReason.RAW_DEFINITE_REJECTION,
+                initialization.initial_evidence,
+            )
+            for initialization in fixture.upstream_batch.initializations
+        )
+        forged_batch = prepare_coverage_mutation_batch(
+            fanout_proof=fixture.upstream_batch.fanout_proof,
+            current_state_references=(),
+            requests=requests,
+            raw_fanout_binding=binding,
+        )
+        forged_acceptance = CoverageCommitAcceptance.after_compare_and_swap(
+            batch=forged_batch,
+            committed_state_references=forged_batch.resulting_state_references,
+        )
+        forged_committed = CommittedCoverageState.from_commit_at(
+            state_reference=forged_batch.resulting_state_references[0],
+            commit_acceptance=forged_acceptance,
+            result_ordinal=0,
+        )
+        with pytest.raises(ValueError, match="snapshot digest differs"):
+            RawRejectionNormalizationUnknownEvidenceSource.from_committed_raw_rejection(
+                coverage_mutation_batch=forged_batch,
+                committed_state=forged_committed,
+                raw_rejection_evidence=forged_batch.initializations[0].initial_evidence,
+                downstream_scope=fixture.downstream_fanout.target_scopes[0],
+            )
+    finally:
+        object.__setattr__(binding, "subscription_snapshot_content_sha256", originals[0])
+        object.__setattr__(binding, "canonical_content", originals[1])
+        object.__setattr__(binding, "content_sha256", originals[2])
+        object.__setattr__(binding, "raw_coverage_fanout_binding_id", originals[3])
+
+
+def test_ordinary_raw_rejection_projection_rejects_foreign_downstream_snapshot() -> None:
+    fixture = _raw_rejection_projection_fixture(4)
+    _derivation, _evidence, requests, _batch = _ordinary_raw_rejection_projection(fixture)
+    binding = fixture.downstream_raw_binding
+    originals = (
+        binding.subscription_snapshot_content_sha256,
+        binding.canonical_content,
+        binding.content_sha256,
+        binding.raw_coverage_fanout_binding_id,
+    )
+    forged_snapshot_digest = "0" * 64
+    forged_content = canonical_json_array(
+        (
+            "raw-coverage-fanout-binding-content-v1",
+            binding.raw_record_id.value,
+            binding.full_record_integrity_sha256,
+            binding.subscription_plan_id.value,
+            binding.connection_session_id.value,
+            binding.coverage_fanout_proof_id.value,
+            forged_snapshot_digest,
+        )
+    )
+    forged_content_digest = hashlib.sha256(forged_content.encode("utf-8")).hexdigest()
+    forged_binding_id = RawCoverageFanoutBindingId(
+        canonical_json_array(
+            (
+                "raw-coverage-fanout-binding-v1",
+                binding.raw_record_id.value,
+                binding.coverage_fanout_proof_id.value,
+                forged_snapshot_digest,
+                forged_content_digest,
+            )
+        )
+    )
+    object.__setattr__(binding, "subscription_snapshot_content_sha256", forged_snapshot_digest)
+    object.__setattr__(binding, "canonical_content", forged_content)
+    object.__setattr__(binding, "content_sha256", forged_content_digest)
+    object.__setattr__(binding, "raw_coverage_fanout_binding_id", forged_binding_id)
+    try:
+        with pytest.raises(ValueError, match="exact plan, catalogue, attempt and raw slice"):
+            prepare_coverage_mutation_batch(
+                fanout_proof=fixture.downstream_fanout,
+                current_state_references=(),
+                requests=requests,
+                raw_fanout_binding=binding,
+            )
+    finally:
+        object.__setattr__(binding, "subscription_snapshot_content_sha256", originals[0])
+        object.__setattr__(binding, "canonical_content", originals[1])
+        object.__setattr__(binding, "content_sha256", originals[2])
+        object.__setattr__(binding, "raw_coverage_fanout_binding_id", originals[3])
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    (
+        "coverage_mutation_batch",
+        "committed_state",
+        "raw_rejection_evidence",
+        "raw_fanout_binding",
+        "downstream_scope",
+        "result_ordinal",
+        "membership",
+        "boundary",
+        "canonical_source_row",
+    ),
+)
+def test_raw_rejection_unknown_stored_verification_rederives_every_typed_parent(
+    field_name: str,
+) -> None:
+    fixture = _raw_rejection_projection_fixture(1)
+    prepared = fixture.prepare()
+    evidence = prepared.coverage_evidence[0]
+    source = cast(RawRejectionNormalizationUnknownEvidenceSource, evidence.source)
+    original = getattr(source, field_name)
+    replacement: object
+    if field_name == "membership":
+        replacement = RawRejectionProjectionMembership.INCLUDED
+    elif field_name == "boundary":
+        replacement = cast(RawRejectionProjectionBoundary, "after-parsing")
+    elif field_name == "result_ordinal":
+        replacement = 1
+    elif field_name == "canonical_source_row":
+        replacement = ("raw-rejection-normalization-unknown-source-v1",)
+    elif field_name == "downstream_scope":
+        replacement = _scope(CoverageDomain.SILVER_NORMALIZATION, "FOREIGN")
+    else:
+        foreign = (
+            _raw_rejection_projection_fixture(
+                1,
+                collector_run_id=CollectorRunId("foreign-collector-run"),
+                connection_ordinal=1,
+                ingress_ordinal=1,
+            )
+            .prepare()
+            .coverage_evidence[0]
+        )
+        foreign_source = cast(
+            RawRejectionNormalizationUnknownEvidenceSource,
+            foreign.source,
+        )
+        replacement = getattr(foreign_source, field_name)
+        if replacement == original:
+            replacement = None
+    object.__setattr__(source, field_name, replacement)
+    try:
+        with pytest.raises((TypeError, ValueError)):
+            evidence.verify_stored()
+    finally:
+        object.__setattr__(source, field_name, original)
+    evidence.verify_stored()
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    ("canonical_content", "content_sha256", "coverage_evidence_id"),
+)
+def test_raw_rejection_unknown_stored_verification_rejects_evidence_tampering(
+    field_name: str,
+) -> None:
+    evidence = _raw_rejection_projection_fixture(1).prepare().coverage_evidence[0]
+    original = getattr(evidence, field_name)
+    replacement: object = {
+        "canonical_content": "[]",
+        "content_sha256": "0" * 64,
+        "coverage_evidence_id": CoverageEvidenceId(
+            _evidence(
+                _scope(CoverageDomain.BRONZE_INGRESS),
+                CoverageEvidenceKind.TRANSPORT_FAILURE,
+            ).coverage_evidence_id.value
+        ),
+    }[field_name]
+    object.__setattr__(evidence, field_name, replacement)
+    try:
+        with pytest.raises((TypeError, ValueError)):
+            evidence.verify_stored()
+    finally:
+        object.__setattr__(evidence, field_name, original)
+
+
+def test_raw_rejection_unknown_stored_verification_rejects_bool_ordinal_and_excluded() -> None:
+    evidence = _raw_rejection_projection_fixture(4).prepare().coverage_evidence[1]
+    source = cast(RawRejectionNormalizationUnknownEvidenceSource, evidence.source)
+    original_ordinal = source.result_ordinal
+    object.__setattr__(source, "result_ordinal", True)
+    try:
+        with pytest.raises(TypeError, match="built-in integer"):
+            evidence.verify_stored()
+    finally:
+        object.__setattr__(source, "result_ordinal", original_ordinal)
+
+    original_membership = source.membership
+    for membership in (
+        RawRejectionProjectionMembership.INCLUDED,
+        RawRejectionProjectionMembership.EXCLUDED,
+    ):
+        object.__setattr__(source, "membership", membership)
+        try:
+            with pytest.raises(ValueError, match="unsupported membership"):
+                evidence.verify_stored()
+        finally:
+            object.__setattr__(source, "membership", original_membership)
+
+
+def test_raw_rejection_unknown_projection_is_linear_and_verifies_shared_parents_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_parse = data_provenance_module.parse_canonical_json_array
+    original_verify_batch = data_provenance_module._verify_coverage_mutation_batch_stored_uncached
+    original_verify_acceptance = (
+        data_provenance_module._verify_coverage_commit_acceptance_stored_bulk
+    )
+    original_verify_fanout = data_provenance_module._verify_coverage_fanout_proof_retained_fields
+    parse_count = 0
+    calls = {"batch": 0, "acceptance": 0, "fanout": 0}
+
+    def counted_parse(value: str, **kwargs: object) -> tuple[CanonicalValue, ...]:
+        nonlocal parse_count
+        parse_count += 1
+        return original_parse(value, **kwargs)  # type: ignore[arg-type]
+
+    def counted_batch(*args: object, **kwargs: object) -> object:
+        calls["batch"] += 1
+        return original_verify_batch(*args, **kwargs)  # type: ignore[arg-type]
+
+    def counted_acceptance(*args: object, **kwargs: object) -> None:
+        calls["acceptance"] += 1
+        original_verify_acceptance(*args, **kwargs)  # type: ignore[arg-type]
+
+    def counted_fanout(*args: object, **kwargs: object) -> None:
+        calls["fanout"] += 1
+        original_verify_fanout(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(data_provenance_module, "parse_canonical_json_array", counted_parse)
+    monkeypatch.setattr(
+        data_provenance_module,
+        "_verify_coverage_mutation_batch_stored_uncached",
+        counted_batch,
+    )
+    monkeypatch.setattr(
+        data_provenance_module,
+        "_verify_coverage_commit_acceptance_stored_bulk",
+        counted_acceptance,
+    )
+    monkeypatch.setattr(
+        data_provenance_module,
+        "_verify_coverage_fanout_proof_retained_fields",
+        counted_fanout,
+    )
+
+    parse_counts: list[int] = []
+    for target_count in (512, MAX_SUBSCRIPTION_SPECS):
+        fixture = _raw_rejection_projection_fixture(target_count)
+        parse_count = 0
+        calls.update(batch=0, acceptance=0, fanout=0)
+        prepared = fixture.prepare()
+        assert calls == {"batch": 1, "acceptance": 1, "fanout": 2}
+        assert len(prepared.coverage_evidence) == target_count
+        assert len(prepared.requested_mutations) == target_count
+        assert len(prepared.coverage_mutation_batch.resulting_state_references) == target_count
+        parse_counts.append(parse_count)
+    assert parse_counts[1] / parse_counts[0] <= 2.5
+
+
+def test_ordinary_raw_rejection_projection_keeps_shared_verification_linear(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_parse = data_provenance_module._BulkCoverageVerificationContext.parse
+    original_verify_batch = data_provenance_module._verify_coverage_mutation_batch_stored_uncached
+    original_verify_acceptance = (
+        data_provenance_module._verify_coverage_commit_acceptance_stored_bulk
+    )
+    original_verify_fanout = data_provenance_module._verify_coverage_fanout_proof_retained_fields
+    parse_count = 0
+    calls = {"batch": 0, "acceptance": 0, "fanout": 0}
+
+    def counted_parse(
+        context: object,
+        value: str,
+        **kwargs: object,
+    ) -> tuple[CanonicalValue, ...]:
+        nonlocal parse_count
+        parse_count += 1
+        return original_parse(context, value, **kwargs)  # type: ignore[arg-type]
+
+    def counted_batch(*args: object, **kwargs: object) -> object:
+        calls["batch"] += 1
+        return original_verify_batch(*args, **kwargs)  # type: ignore[arg-type]
+
+    def counted_acceptance(*args: object, **kwargs: object) -> None:
+        calls["acceptance"] += 1
+        original_verify_acceptance(*args, **kwargs)  # type: ignore[arg-type]
+
+    def counted_fanout(*args: object, **kwargs: object) -> None:
+        calls["fanout"] += 1
+        original_verify_fanout(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        data_provenance_module._BulkCoverageVerificationContext,
+        "parse",
+        counted_parse,
+    )
+    monkeypatch.setattr(
+        data_provenance_module,
+        "_verify_coverage_mutation_batch_stored_uncached",
+        counted_batch,
+    )
+    monkeypatch.setattr(
+        data_provenance_module,
+        "_verify_coverage_commit_acceptance_stored_bulk",
+        counted_acceptance,
+    )
+    monkeypatch.setattr(
+        data_provenance_module,
+        "_verify_coverage_fanout_proof_retained_fields",
+        counted_fanout,
+    )
+
+    parse_counts: list[int] = []
+    shared_call_counts: list[dict[str, int]] = []
+    for target_count in (512, MAX_SUBSCRIPTION_SPECS):
+        fixture = _raw_rejection_projection_fixture(target_count)
+        parse_count = 0
+        calls.update(batch=0, acceptance=0, fanout=0)
+        derivation = BatchVerifiedCoverageDerivation.from_commit(
+            batch=fixture.upstream_batch,
+            commit_acceptance=fixture.upstream_acceptance,
+            resulting_state_references=fixture.upstream_batch.resulting_state_references,
+        )
+        after_derivation = calls.copy()
+        evidence_values: list[CoverageEvidence] = []
+        requests: list[RequestedCoverageMutation] = []
+        for index, scope in enumerate(fixture.downstream_fanout.target_scopes):
+            epoch = CoverageEpochIdentity(
+                scope,
+                fixture.raw_record.collector_run_id,
+                0,
+                fixture.observed_at,
+                fixture.observed_monotonic_ns,
+            )
+            evidence = derivation.derive_raw_rejection_normalization_unknown_evidence_at(
+                index,
+                downstream_scope=scope,
+                downstream_epoch=epoch,
+                observed_at=fixture.observed_at,
+                observed_monotonic_ns=fixture.observed_monotonic_ns,
+            )
+            evidence_values.append(evidence)
+            requests.append(
+                RequestedCoverageMutation(
+                    scope,
+                    epoch,
+                    CoverageStatus.UNCERTAIN,
+                    InitialCoverageReason.RAW_REJECTION_NORMALIZATION_UNKNOWN,
+                    CoverageReason.RAW_REJECTION_NORMALIZATION_UNKNOWN,
+                    evidence,
+                )
+            )
+        assert calls == after_derivation
+        batch = prepare_coverage_mutation_batch(
+            fanout_proof=fixture.downstream_fanout,
+            current_state_references=(),
+            requests=tuple(requests),
+            raw_fanout_binding=fixture.downstream_raw_binding,
+        )
+        assert len(evidence_values) == target_count
+        assert len(batch.resulting_state_references) == target_count
+        parse_counts.append(parse_count)
+        shared_call_counts.append(calls.copy())
+
+    assert shared_call_counts[0] == shared_call_counts[1]
+    assert shared_call_counts[0]["batch"] == 2
+    assert shared_call_counts[0]["acceptance"] == 2
+    assert parse_counts[1] / parse_counts[0] <= 2.5
+
+
+def test_ordinary_generic_full_no_op_keeps_shared_verification_linear(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_parse = data_provenance_module._BulkCoverageVerificationContext.parse
+    original_verify_batch = data_provenance_module._verify_coverage_mutation_batch_stored_uncached
+    original_verify_acceptance = (
+        data_provenance_module._verify_coverage_commit_acceptance_stored_bulk
+    )
+    original_verify_fanout = data_provenance_module._verify_coverage_fanout_proof_retained_fields
+    parse_count = 0
+    calls = {"batch": 0, "acceptance": 0, "fanout": 0}
+
+    def counted_parse(
+        context: object,
+        value: str,
+        **kwargs: object,
+    ) -> tuple[CanonicalValue, ...]:
+        nonlocal parse_count
+        parse_count += 1
+        return original_parse(context, value, **kwargs)  # type: ignore[arg-type]
+
+    def counted_batch(*args: object, **kwargs: object) -> object:
+        calls["batch"] += 1
+        return original_verify_batch(*args, **kwargs)  # type: ignore[arg-type]
+
+    def counted_acceptance(*args: object, **kwargs: object) -> None:
+        calls["acceptance"] += 1
+        original_verify_acceptance(*args, **kwargs)  # type: ignore[arg-type]
+
+    def counted_fanout(*args: object, **kwargs: object) -> None:
+        calls["fanout"] += 1
+        original_verify_fanout(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        data_provenance_module._BulkCoverageVerificationContext,
+        "parse",
+        counted_parse,
+    )
+    monkeypatch.setattr(
+        data_provenance_module,
+        "_verify_coverage_mutation_batch_stored_uncached",
+        counted_batch,
+    )
+    monkeypatch.setattr(
+        data_provenance_module,
+        "_verify_coverage_commit_acceptance_stored_bulk",
+        counted_acceptance,
+    )
+    monkeypatch.setattr(
+        data_provenance_module,
+        "_verify_coverage_fanout_proof_retained_fields",
+        counted_fanout,
+    )
+
+    parse_counts: list[int] = []
+    shared_call_counts: list[dict[str, int]] = []
+    for target_count in (512, MAX_SUBSCRIPTION_SPECS):
+        fixture = _bulk_upstream_fixture(target_count, "full-no-op")
+        prepared = fixture.prepare()
+        parse_count = 0
+        calls.update(batch=0, acceptance=0, fanout=0)
+        derivation = BatchVerifiedCoverageDerivation.from_commit(
+            batch=fixture.upstream_batch,
+            commit_acceptance=fixture.upstream_acceptance,
+            resulting_state_references=fixture.upstream_batch.resulting_state_references,
+        )
+        after_derivation = calls.copy()
+        current_by_scope = {
+            item.reference.scope.coverage_scope_id: item for item in fixture.current_downstream
+        }
+        requests = tuple(
+            RequestedCoverageMutation(
+                request.scope,
+                request.epoch,
+                request.requested_status,
+                request.initial_reason,
+                request.transition_reason,
+                derivation.derive_upstream_evidence_at(
+                    index,
+                    downstream_scope=request.scope,
+                    downstream_epoch=request.epoch,
+                    observed_at=request.evidence.observed_at,
+                    observed_monotonic_ns=request.evidence.observed_monotonic_ns,
+                    current_downstream_state=current_by_scope[request.scope.coverage_scope_id],
+                ),
+            )
+            for index, request in enumerate(prepared.requested_mutations)
+        )
+        assert calls == after_derivation
+        batch = prepare_coverage_mutation_batch(
+            fanout_proof=fixture.downstream_fanout,
+            current_state_references=fixture.current_downstream,
+            requests=requests,
+        )
+        assert batch == prepared.coverage_mutation_batch
+        parse_counts.append(parse_count)
+        shared_call_counts.append(calls.copy())
+
+    assert shared_call_counts[0] == shared_call_counts[1]
+    assert shared_call_counts[0] == {"batch": 3, "acceptance": 3, "fanout": 4}
+    assert parse_counts[1] / parse_counts[0] <= 2.5
+
+
+def test_raw_rejection_unknown_projection_retains_no_raw_payload_or_exception_graph() -> None:
+    fixture = _raw_rejection_projection_fixture(1)
+    prepared = fixture.prepare()
+    evidence = prepared.coverage_evidence[0]
+    source = cast(RawRejectionNormalizationUnknownEvidenceSource, evidence.source)
+    marker = fixture.raw_record.application_message_bytes
+    assert marker.decode("utf-8") not in repr(source)
+    assert marker.decode("utf-8") not in repr(evidence)
+    assert not any(
+        type(getattr(source, item.name)) is RawMarketDataRecord for item in fields(source)
+    )
+
+    original_digest = source.raw_fanout_binding.full_record_integrity_sha256
+    object.__setattr__(source.raw_fanout_binding, "full_record_integrity_sha256", "0" * 64)
+    try:
+        with pytest.raises(ValueError) as captured:
+            evidence.verify_stored()
+        _assert_bounded_exception_surface_excludes(captured.value, marker)
+    finally:
+        object.__setattr__(
+            source.raw_fanout_binding,
+            "full_record_integrity_sha256",
+            original_digest,
+        )
+
+
 def test_bulk_verification_context_is_single_use_and_not_a_validation_token() -> None:
     fixture = _bulk_upstream_fixture(1, "initial-uncertain")
     context = data_provenance_module._BulkCoverageVerificationContext()
     helper = data_provenance_module._verify_bulk_coverage_commit_inputs
-    helper(
-        batch=fixture.upstream_batch,
-        commit_acceptance=fixture.upstream_acceptance,
-        resulting_state_references=fixture.upstream_batch.resulting_state_references,
-        verification_context=context,
-    )
+    with pytest.raises(ValueError, match="factory-owned lexical transcript"):
+        context._validation_active = True
     state = fixture.upstream_batch.resulting_state_references[0]
+    context.verify_state(state)
     original_digest = state.content_sha256
     object.__setattr__(state, "content_sha256", "0" * 64)
     try:
-        with pytest.raises(ValueError, match="only one batch"):
+        with pytest.raises(ValueError, match="factory-owned lexical transcript"):
             helper(
                 batch=fixture.upstream_batch,
                 commit_acceptance=fixture.upstream_acceptance,
@@ -11676,11 +13351,48 @@ def test_bulk_verification_context_is_single_use_and_not_a_validation_token() ->
                 verification_context=context,
             )
         with pytest.raises(ValueError):
-            helper(
+            BatchVerifiedCoverageDerivation.from_commit(
                 batch=fixture.upstream_batch,
                 commit_acceptance=fixture.upstream_acceptance,
                 resulting_state_references=fixture.upstream_batch.resulting_state_references,
-                verification_context=data_provenance_module._BulkCoverageVerificationContext(),
+            )
+    finally:
+        object.__setattr__(state, "content_sha256", original_digest)
+
+
+def test_stored_batch_verifier_has_fresh_context_and_cached_transcript_cannot_be_reused() -> None:
+    prepared = _bulk_upstream_fixture(1, "initial-uncertain").prepare()
+    batch = prepared.coverage_mutation_batch
+    assert (
+        "verification_context"
+        not in inspect.signature(
+            data_provenance_module._verify_coverage_mutation_batch_stored
+        ).parameters
+    )
+    context = data_provenance_module._BulkCoverageVerificationContext()
+    with pytest.raises(ValueError, match="factory-owned lexical transcript"):
+        data_provenance_module._verify_coverage_mutation_batch_stored_uncached(
+            batch,
+            expected_canonical_content=batch.canonical_content,
+            expected_batch_id=batch.coverage_mutation_batch_id,
+            verification_context=context,
+        )
+    state = batch.resulting_state_references[0]
+    original_digest = state.content_sha256
+    object.__setattr__(state, "content_sha256", "0" * 64)
+    try:
+        with pytest.raises(ValueError, match="factory-owned lexical transcript"):
+            data_provenance_module._verify_coverage_mutation_batch_stored_uncached(
+                batch,
+                expected_canonical_content=batch.canonical_content,
+                expected_batch_id=batch.coverage_mutation_batch_id,
+                verification_context=context,
+            )
+        with pytest.raises(ValueError):
+            data_provenance_module._verify_coverage_mutation_batch_stored(
+                batch,
+                expected_canonical_content=batch.canonical_content,
+                expected_batch_id=batch.coverage_mutation_batch_id,
             )
     finally:
         object.__setattr__(state, "content_sha256", original_digest)
@@ -11712,11 +13424,6 @@ def test_upstream_state_no_op_rejects_status_stronger_than_source() -> None:
     )
     with pytest.raises(ValueError, match="exactly match upstream status"):
         CoverageMutationNoOp(current, request)
-    with pytest.raises(ValueError, match="exactly match upstream status"):
-        data_provenance_module._validate_mutation_request_semantics_in_context(
-            request,
-            data_provenance_module._BulkCoverageVerificationContext(),
-        )
 
 
 def test_compact_retained_parents_and_stored_fields_fail_closed_on_tamper() -> None:

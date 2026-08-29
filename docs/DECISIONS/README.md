@@ -2,6 +2,15 @@
 
 This register records current high-level decisions and the conditions under which they should be revisited.
 
+## COURSE-1B runtime transition status
+
+Host-neutral Linux/amd64 OCI is now the platform boundary, with a supported Ubuntu LTS VPS as the
+intended primary deployment profile. TrueNAS is no longer mandatory or primary; its existing
+environment remains an optional protected profile. This narrows the host-specific scope of
+ADR-003, ADR-012, ADR-016, ADR-017, ADR-019 and ADR-021 without authorizing a migration. The
+definitive runtime ADR and factual VPS migration follow only after the local BTC-PERP vertical
+slice passes.
+
 ## ADR-001 — Python for the quantitative/trading core
 
 **Decision:** Use Python for market-data adapters, research, backtesting, strategies, portfolio/risk and initial execution.
@@ -34,7 +43,7 @@ This register records current high-level decisions and the conditions under whic
 
 **Alternative considered:** PostgreSQL as the only database.
 
-**Implementation note:** use a disposable local ClickHouse container in DEV and a managed persistent instance/database on TrueNAS for 24/7 PAPER/SHADOW/LIVE data.
+**Implementation note:** use a disposable local ClickHouse container in DEV and, when needed, a managed persistent instance on the approved runtime. Existing TrueNAS/ClickHouse state remains protected while that profile is retained or until migration is explicitly approved.
 
 ---
 
@@ -110,11 +119,11 @@ This register records current high-level decisions and the conditions under whic
 
 ---
 
-## ADR-012 — Keep runtime infrastructure lean on TrueNAS
+## ADR-012 — Keep runtime infrastructure lean
 
 **Decision:** Start with ClickHouse + Python services + Next.js + Grafana/Alloy, adding PostgreSQL and Redis when their responsibilities become necessary. Do not add Kafka, Kubernetes, Elasticsearch/OpenSearch or Spark without a demonstrated bottleneck.
 
-**Why:** Preserve RAM, operational simplicity and reliability on the shared 64 GB TrueNAS host.
+**Why:** Preserve operational simplicity and reliability across the host-neutral Linux/OCI boundary, including constrained VPS and optional shared TrueNAS profiles.
 
 ---
 
@@ -158,27 +167,27 @@ This register records current high-level decisions and the conditions under whic
 
 **Decision:** Develop the project on the Windows workstation using WSL2 Ubuntu, with Codex configured to run in WSL. Keep the repository inside the WSL Linux filesystem.
 
-**Why:** Provides Linux parity, fast local iteration, strong Codex/desktop/mobile Remote workflows, better frontend/debugging ergonomics and access to the workstation's CPU/GPU without destabilizing TrueNAS.
+**Why:** Provides Linux parity, fast local iteration, strong Codex/desktop/mobile Remote workflows, better frontend/debugging ergonomics and access to the workstation's CPU/GPU without destabilizing the continuous runtime.
 
-**Alternatives considered:** direct source development on TrueNAS; native Windows/PowerShell as the primary runtime; source on an SMB share.
+**Alternatives considered:** direct source development on a runtime host; native Windows/PowerShell as the primary runtime; source on an SMB share.
 
 **Constraints:** no normal live trading credentials on the workstation; use workspace-scoped Codex permissions; store source under the Linux home filesystem rather than `/mnt/c` or SMB.
 
 ---
 
-## ADR-016 — TrueNAS is a deployment/runtime host, not the interactive development host
+## ADR-016 — The deployment/runtime host is not the interactive development host
 
-**Decision:** TrueNAS runs CI-built container images for 24/7 PAPER/SHADOW/LIVE services. Do not run production-like services from a mutable repository checkout and do not hot-edit running containers.
+**Decision:** Any 24/7 PAPER/SHADOW/LIVE host runs CI-built Linux/OCI images. Do not run production-like services from a mutable repository checkout and do not hot-edit running containers.
 
 **Why:** Isolates experimentation from persistent services, reduces failure blast radius, enables deterministic rollback and keeps the Windows PC optional during continuous operation.
 
-**Constraint:** Hermes/TrueNAS MCP may operate deployments and project resources, but source changes return through Git and CI.
+**Constraint:** Authorized runtime tooling may operate deployments and project resources, but source changes return through Git and CI. The Ubuntu LTS VPS profile, optional TrueNAS profile and later migration remain subject to their own scoped controls.
 
 ---
 
 ## ADR-017 — Build once in CI and deploy by immutable image digest
 
-**Decision:** GitHub Actions builds release images, publishes them to private GHCR and records source commit, tag and digest. TrueNAS deploys a reviewed digest, never a floating `latest` tag.
+**Decision:** GitHub Actions builds release images, publishes them to private GHCR and records source commit, tag and digest. The approved runtime deploys a reviewed digest, never a floating `latest` tag.
 
 **Why:** Reproducibility, supply-chain traceability, reliable rollback and confidence that PAPER/SHADOW/LIVE can use the same artifact.
 
@@ -194,13 +203,13 @@ This register records current high-level decisions and the conditions under whic
 
 ---
 
-## ADR-019 — Local development uses disposable data; TrueNAS owns continuous history
+## ADR-019 — Local development uses disposable data; the runtime owns continuous history
 
-**Decision:** DEV uses synthetic fixtures, deterministic replay and bounded data exports in disposable local services. TrueNAS holds the authoritative self-collected 24/7 dataset.
+**Decision:** DEV uses synthetic fixtures, deterministic replay and bounded data exports in disposable local services. The selected durable runtime store holds the authoritative self-collected 24/7 dataset.
 
 **Why:** Keeps development fast/reproducible and prevents accidental mutation or copying of large production-like datasets.
 
-**Constraint:** Windows may query approved TrueNAS data read-only or receive bounded exports; it does not directly mutate the runtime database.
+**Constraint:** Windows may query approved runtime data read-only or receive bounded exports; it does not directly mutate the runtime database. Existing TrueNAS/ClickHouse data receives the same protection while that optional profile is retained.
 
 ---
 
@@ -219,15 +228,20 @@ This register records current high-level decisions and the conditions under whic
 
 ---
 
-## ADR-021 — Early-release TrueNAS is PAPER-only by default
+## ADR-021 — The optional early-release TrueNAS profile is PAPER-only by default
 
-**Decision:** TrueNAS 26 BETA.3 may host research and PAPER services with backups and monitoring. Material live capital should use a stable runtime release or require explicit documented risk acceptance and repeated soak/recovery testing.
+**Decision:** If retained, TrueNAS 26 BETA.3 may host research and PAPER services with backups and monitoring. It is not the primary deployment profile. Material live capital requires a supported stable runtime release or explicit documented risk acceptance and repeated soak/recovery testing.
 
 **Why:** Operating-system maturity is part of execution risk, not merely infrastructure preference.
 
 ---
 
 ## ADR-022 — One provenance-complete market-event envelope, introduced atomically
+
+**Status (2026-08-29): Accepted design, implementation deferred by COURSE-1.** Existing contracts,
+tests and identities remain intact and dormant. Phase 1A-3B1C-2, 3B1C-3, 3B1D and the
+provenance-complete form of 3B2 are not the active delivery path while the project proves one
+BTC-PERP replay-to-PAPER consumer. Deferral changes priority, not the recorded semantics below.
 
 **Decision:** The final Silver boundary uses one mandatory `MarketEventEnvelopeV3`. Phase
 1A-3B1A defines its pure contract spine, but the contracts remain dormant. Existing Hyperliquid
@@ -1487,3 +1501,25 @@ rejected raw record produces no fabricated normalization outcome or market event
 **Why:** No deployed dataset or ClickHouse schema depends on v2, so one atomic migration provides a
 clean long-term boundary without permanent compatibility complexity while preserving reviewable,
 bounded implementation slices.
+
+### COURSE-1 reactivation gate
+
+ADR-022 may return to active implementation only after the BTC-PERP vertical slice identifies a
+direct consumer for its guarantees and the selected core-engine ADR states how the project/engine
+boundary preserves them. Reactivation must compare the remaining work with the concrete product
+risk it removes. Prior implementation effort, plan-scale completeness and dormant contract
+coverage are not sufficient reasons by themselves.
+
+---
+
+## Pending ADR gates — not yet decisions
+
+Two material choices still require evidence and therefore are not recorded as accepted ADRs here:
+
+1. **Trading core:** after the time-boxed fit gate proves or rejects the primary candidate, record
+   the selected replay/sandbox/live engine, version line, licensing outcome, direct mapping
+   boundary, fail-closed rules and explicitly project-owned safety/reconciliation gaps.
+2. **Runtime deployment:** after the local replay-to-PAPER route passes, record the supported
+   Ubuntu LTS VPS/OCI/Compose profile, operational and rollback requirements, and how existing
+   TrueNAS, ClickHouse and Grafana assets are retained or migrated without mutation by ordinary
+   development tasks.

@@ -20,13 +20,13 @@ Use:
 - small captured public-data samples;
 - deterministic replay files;
 - disposable local ClickHouse containers;
-- bounded exports from TrueNAS for specific research questions.
+- bounded exports from an approved runtime store for specific research questions.
 
 The local environment is optimized for fast, reproducible tests. It is not the authoritative 24/7 dataset and should not need production credentials.
 
-### TrueNAS runtime
+### Durable runtime data
 
-TrueNAS is the system of record for:
+The selected durable runtime store is the system of record for:
 
 - continuous public-market ingestion;
 - raw/normalized market history;
@@ -35,7 +35,7 @@ TrueNAS is the system of record for:
 - portfolio/equity history;
 - operational data-quality records.
 
-Windows development must not directly mutate the TrueNAS ClickHouse database. Read-only remote analysis may be permitted, while large experiments run through a controlled research worker or bounded export.
+Windows development must not directly mutate a runtime database. Read-only remote analysis may be permitted, while large experiments run through a controlled research worker or bounded export. Existing TrueNAS/ClickHouse data remains protected until retention or migration is explicitly approved.
 
 ### Fixture policy
 
@@ -233,7 +233,7 @@ remain downstream. Nothing was deployed, and SHADOW/LIVE remain disabled.
 
 ## Self-collected dataset
 
-Realtime collectors should run on TrueNAS from the beginning of Phase 1B and persist data to ClickHouse. This creates a dataset with the same receipt path and timestamp discipline the future live bot will use.
+After the local slice and definitive runtime ADR, realtime collectors should run on the approved 24/7 runtime and persist data to ClickHouse. This creates a dataset with the same receipt path and timestamp discipline the future live bot will use.
 
 Recommended normalized schema per instrument/time bucket includes:
 
@@ -734,7 +734,7 @@ A disposable ClickHouse container supports:
 
 It may be destroyed and recreated.
 
-### TrueNAS PAPER/SHADOW/LIVE
+### PAPER/SHADOW/LIVE runtime
 
 Use a managed ClickHouse instance with:
 
@@ -815,7 +815,7 @@ Do not backfill current market metadata into historical periods without evidence
 
 ## Storage tiers
 
-Use SSD-backed TrueNAS storage for:
+Use SSD-backed durable runtime storage for:
 
 - active ClickHouse partitions;
 - recent raw feed data;
@@ -823,9 +823,9 @@ Use SSD-backed TrueNAS storage for:
 - paper/live execution data;
 - Redis/PostgreSQL when introduced.
 
-Move large cold archives and old raw market data to the HDD pool according to retention policy.
+Move large cold archives and old raw market data to the chosen archive tier according to retention policy; the existing TrueNAS HDD pool remains an option while that profile is retained.
 
-The Windows workstation stores only source, build caches and bounded development datasets. It is not a backup of the TrueNAS data lake.
+The Windows workstation stores only source, build caches and bounded development datasets. It is not a backup of the durable runtime data store.
 
 ## Paid data decision rule
 

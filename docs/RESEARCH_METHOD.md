@@ -4,7 +4,7 @@
 
 Prevent false discovery, overfitting, survivorship bias, look-ahead bias and unrealistic execution assumptions from creating fictitious trading edges.
 
-Research must also be reproducible across the Windows/WSL2 development environment, GitHub CI and the TrueNAS research/runtime environment.
+Research must also be reproducible across the Windows/WSL2 development environment, GitHub CI and the approved Linux/OCI research/runtime environment.
 
 ## Research environments
 
@@ -30,7 +30,7 @@ Use for:
 
 CI is not the place for large stochastic research sweeps whose result changes every run.
 
-### TrueNAS research worker
+### Runtime research worker
 
 Use for:
 
@@ -52,7 +52,7 @@ All research preserves point-in-time correctness:
 - exchange timestamps and local receipt timestamps are distinguished;
 - fee schedules match the relevant historical period where possible;
 - dataset extraction time and transformation code are recorded;
-- local exports retain provenance back to the TrueNAS/ClickHouse source version.
+- local exports retain provenance back to the runtime/ClickHouse source version.
 
 ## Dataset partitions
 
@@ -75,7 +75,7 @@ Every experiment runs from:
 - identified dataset version/range;
 - explicit random seed where stochastic methods are used;
 - declared compute environment;
-- recorded image/commit when run on TrueNAS.
+- recorded image/commit when run on a runtime worker.
 
 Do not treat a notebook's uncommitted interactive state as a validated experiment.
 
@@ -99,7 +99,7 @@ Stress at minimum with higher-than-expected costs, such as 1.5x and 2.0x modeled
 
 A limit price being touched does not imply a full maker fill. Event-driven simulation becomes increasingly conservative as order-book data improves. Queue position, available depth, latency and adverse selection must be considered for microstructure strategies.
 
-Backtests, local replay and TrueNAS PAPER must expose fill-model assumptions so paper-versus-simulation decay can be measured.
+Backtests, local replay and deployed PAPER must expose fill-model assumptions so paper-versus-simulation decay can be measured.
 
 ## Robustness tests
 
@@ -201,4 +201,4 @@ Examples of properly testable questions:
 - Does Hyperliquid lag Binance for specific assets/regimes enough to overcome costs?
 - Does basis convergence remain profitable after both-leg execution costs?
 - Does order-book imbalance improve entry quality rather than merely predict tiny pre-cost returns?
-- Does a feature improve results out-of-sample and in 24/7 TrueNAS paper data, not only in a local backtest?
+- Does a feature improve results out-of-sample and in 24/7 runtime paper data, not only in a local backtest?

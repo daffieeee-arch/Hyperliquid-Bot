@@ -40,7 +40,7 @@ CI
   ↓
 PRIVATE GHCR IMAGE
   ↓
-TRUENAS PAPER DEPLOYMENT
+APPROVED RUNTIME PAPER DEPLOYMENT
   ↓
 SOAK / RECOVERY / ROLLBACK TESTS
   ↓
@@ -85,7 +85,7 @@ Require:
 - paper-only broker and safety tests pass;
 - approved CI image exists.
 
-## Software -> TrueNAS PAPER
+## Software -> runtime PAPER
 
 Require:
 
@@ -96,7 +96,7 @@ Require:
 - release image built in CI;
 - image tag, digest and source commit recorded;
 - no secrets baked into image;
-- TrueNAS PAPER configuration references the approved digest;
+- the PAPER runtime configuration references the approved digest;
 - rollback target is known.
 
 Merge to `main` alone does not deploy.
@@ -110,7 +110,7 @@ Require:
 - strategy output understandable via why-this-trade records;
 - no unexplained state drift;
 - alerting and risk limits operational;
-- prolonged TrueNAS service stability with the Windows development PC switched off;
+- prolonged runtime service stability with the Windows development PC switched off;
 - restart/reconnect/data-gap tests pass;
 - paper deployment rollback proven;
 - Grafana and cockpit agree on state.
@@ -131,7 +131,10 @@ Require:
 - no dependency on Windows, Codex, Hermes or an interactive session for continuous risk management;
 - stable runtime operating system preferred.
 
-TrueNAS 26 BETA.3 is acceptable for PAPER research, but material live capital should wait for a stable runtime or require explicit documented risk acceptance and repeat recovery/soak testing.
+The intended primary deployment profile is a supported Ubuntu LTS VPS. The existing TrueNAS 26
+BETA.3 profile, if retained, is acceptable for PAPER research but not preferred for material live
+capital without explicit documented risk acceptance and repeated recovery/soak testing. Actual VPS
+migration and the definitive runtime ADR follow the local vertical slice.
 
 ## SMALL LIVE -> PRODUCTION
 
@@ -161,7 +164,7 @@ Allocation increases gradually and can be reversed immediately.
 - Any material state mismatch blocks new live risk.
 - A frontend toggle cannot enable live trading.
 - No floating `latest` image is used in production-like environments.
-- Source is not edited inside running TrueNAS containers.
+- Source is not edited inside running runtime containers.
 - Deployment approval and strategy approval are distinct records.
 
 ## De-promotion

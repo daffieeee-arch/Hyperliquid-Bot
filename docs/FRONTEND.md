@@ -28,7 +28,7 @@ The local frontend uses:
 - explicit environment banners;
 - no real trading credentials.
 
-TrueNAS does not compile or hot-reload the frontend. GitHub Actions creates a production image, and TrueNAS pulls a pinned tag/digest.
+The runtime host does not compile or hot-reload the frontend. GitHub Actions creates a production image, and the approved runtime pulls a pinned tag/digest.
 
 Runtime configuration that differs between DEV/PAPER/SHADOW/LIVE must be supplied through safe server-side configuration. No secret may be exposed through `NEXT_PUBLIC_*` variables or browser bundles.
 

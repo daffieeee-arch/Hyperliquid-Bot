@@ -8,8 +8,8 @@ The platform separates four trust zones:
 
 1. Windows/WSL2 development;
 2. GitHub/CI and container registry;
-3. TrueNAS PAPER/SHADOW runtime;
-4. TrueNAS LIVE runtime and exchange credentials.
+3. approved Linux/OCI PAPER/SHADOW runtime;
+4. separately approved LIVE runtime and exchange credentials.
 
 Moving code between zones happens through reviewed source and immutable container artifacts—not through shared mutable directories.
 
@@ -36,7 +36,7 @@ Mobile Remote can supervise Codex but does not change this boundary: commands st
 - Prefer hardware-backed custody for meaningful capital.
 - Hyperliquid agent/API wallets are authorized for automated trading.
 - Use separate agent wallets per trading process/account scope where practical.
-- Never expose the master seed/private key to Windows, WSL2, TrueNAS, Docker, logs, browser code or GitHub.
+- Never expose the master seed/private key to Windows/WSL2, any runtime host or container (including TrueNAS), logs, browser code or GitHub.
 
 ## Centralized-exchange credentials
 
@@ -79,7 +79,7 @@ GitHub Actions should include:
 - protected release/deployment environments;
 - no direct live deployment from an unreviewed pull request.
 
-Release images are published to private GHCR. TrueNAS receives a dedicated read-only package credential. Production-like deployments pin an image digest and record the source commit.
+Release images are published to private GHCR. Each approved runtime profile receives a dedicated read-only package credential. Production-like deployments pin an image digest and record the source commit.
 
 No successful CI run automatically promotes a strategy into live capital.
 
@@ -97,7 +97,7 @@ Release images should:
 - avoid mutable `latest` deployment tags;
 - support rollback to a known-good digest.
 
-Do not build production images directly on TrueNAS. Do not hot-edit running containers.
+Do not build production images directly on a runtime host. Do not hot-edit running containers.
 
 ## Browser boundary
 
@@ -121,9 +121,9 @@ Grafana, Codex, research workers and the frontend do not receive exchange privat
 
 The project favors **maximum useful capability with scoped standing privilege**, not blanket read-only access.
 
-### TrueNAS MCP
+### Optional TrueNAS-profile MCP
 
-Hermes may inspect and operate project resources, including creating/updating project datasets and Custom Apps when authorized.
+When the optional TrueNAS profile is used, Hermes may inspect and operate project resources, including creating/updating project datasets and Custom Apps when authorized.
 
 Always require explicit approval for high-blast-radius actions such as:
 

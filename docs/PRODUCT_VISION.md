@@ -6,7 +6,7 @@ A professional crypto quantitative research and trading platform centered on Hyp
 
 The platform is designed to behave more like a small systematic trading desk than a single retail bot. It should continuously test multiple independent sources of edge, measure whether those edges survive realistic costs, allocate capital according to current evidence, and reduce or quarantine strategies whose live behavior diverges from their validated distribution.
 
-Development happens on a Windows 11 workstation through WSL2 and Codex. Tested, versioned Linux container images are deployed to TrueNAS SCALE for continuous data collection, paper/shadow trading, observability and eventual controlled live execution. The runtime remains independent of the development workstation.
+Development happens on a Windows 11 workstation through WSL2 and Codex. Tested, versioned Linux/amd64 OCI images run on an independent host-neutral runtime. A supported Ubuntu LTS VPS is the intended primary deployment profile after the local vertical slice; TrueNAS remains an optional existing profile.
 
 ## Strategic objective
 
@@ -43,7 +43,7 @@ The platform has six logical planes:
 - **Trading Plane** — signals, portfolio construction, risk and execution.
 - **Control Plane** — configuration, strategy lifecycle, permissions and operator actions.
 - **Observability Plane** — Grafana, traces, logs, alerts and forensic reconstruction.
-- **Build & Deployment Plane** — Windows/WSL2 development, GitHub CI, private images and TrueNAS promotion/rollback.
+- **Build & Deployment Plane** — Windows/WSL2 development, GitHub CI, private images and approved-runtime promotion/rollback.
 
 The build/deployment plane ensures that source changes do not directly affect 24/7 services. PAPER, SHADOW and LIVE are distinct runtime environments with separate configuration, secrets and approval gates.
 
@@ -85,7 +85,7 @@ Success requires:
 - deterministic local and CI tests;
 - version-pinned dependencies;
 - immutable container artifacts;
-- digest-pinned TrueNAS deployments;
+- digest-pinned host-neutral Linux/OCI deployments;
 - deployment health checks and rollback;
 - no dependence on the Windows PC for 24/7 operation;
 - every trade attributable to strategy, configuration, commit and image digest.
@@ -114,4 +114,4 @@ We are not building:
 - a strategy that depends on hidden look-ahead information;
 - a system that automatically promotes new research into live capital;
 - an HFT system requiring microsecond co-location as the first objective;
-- a production system that runs from a mutable source checkout on TrueNAS.
+- a production system that runs from a mutable source checkout on any runtime host.

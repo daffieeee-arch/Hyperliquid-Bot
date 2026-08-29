@@ -2,13 +2,22 @@
 
 Private multi-strategy crypto quantitative research and trading platform.
 
-The project is developed on a Windows 11 workstation through **WSL2 + Codex**, validated in GitHub Actions, packaged as immutable Linux container images, and deployed to **TrueNAS SCALE** for continuous market-data collection, paper trading, observability and—only after explicit promotion gates—controlled live execution.
+The project is developed on a Windows 11 workstation through **WSL2 + Codex**, validated in GitHub Actions and packaged as immutable Linux/amd64 OCI images. The 24/7 architecture is host-neutral; a supported Ubuntu LTS VPS is the intended primary deployment profile, while the existing TrueNAS SCALE environment remains optional.
 
-> **Current stage:** Development environment and research foundation  
-> **Default trading mode:** PAPER  
-> **Live capital:** Disabled by design until explicit promotion gates are met  
-> **Primary development host:** Windows 11 + WSL2  
-> **24/7 runtime host:** TrueNAS SCALE
+> **Current stage:** COURSE-1 core-engine fit gate and BTC-PERP vertical-slice planning<br>
+> **Default trading mode:** PAPER<br>
+> **Live capital:** Disabled by design until explicit promotion gates are met<br>
+> **Primary development host:** Windows 11 + WSL2<br>
+> **24/7 runtime boundary:** Host-neutral Linux/amd64 OCI<br>
+> **Intended primary deployment profile:** Supported Ubuntu LTS VPS, after the local slice<br>
+> **Optional existing profile:** TrueNAS SCALE
+
+The current delivery priority is one credentialless Hyperliquid BTC perpetual path from a bounded,
+deterministic replay through strategy, risk and PAPER execution to reproducible orders, fills,
+position and PnL. Further expansion of the dormant provenance/v3 path is deferred without deleting
+or weakening it. Existing trading engines are evaluated before the project builds backtesting,
+paper execution, order management or reconciliation infrastructure itself; no external engine has
+yet been adopted. See [Architecture](docs/ARCHITECTURE.md) and [Roadmap](docs/ROADMAP.md).
 
 ## Mission
 
@@ -59,11 +68,13 @@ Windows 11 workstation
    pinned tag + image digest
              │
              ▼
-        TrueNAS SCALE
-    PAPER / SHADOW / LIVE
+ Linux/amd64 OCI runtime
+    Ubuntu LTS VPS primary profile
+    TrueNAS optional existing profile
+       PAPER / SHADOW / LIVE
 ```
 
-The Windows computer is a development workstation, not a trading server. It may be powered off without interrupting 24/7 paper or live services on TrueNAS.
+The Windows computer is a development workstation, not a trading server. It may be powered off without interrupting services on the independently operated 24/7 runtime.
 
 See [Development Workflow](docs/DEVELOPMENT.md) and [Deployment & Environments](docs/DEPLOYMENT.md).
 
@@ -92,7 +103,7 @@ See [Venue Strategy](docs/VENUES.md).
 | Realtime state / event distribution | Redis when multi-process realtime state requires it |
 | Observability | Grafana + Grafana Alloy / OpenTelemetry |
 | Local development | Windows 11 + WSL2 + Docker Desktop |
-| Runtime | Linux containers on TrueNAS SCALE Custom Apps |
+| Runtime | Host-neutral Linux/amd64 OCI; Ubuntu LTS VPS intended primary profile |
 | CI/CD | GitHub Actions + private GitHub Container Registry |
 
 Redis and PostgreSQL remain planned platform components, but they are not mandatory blockers for the first thin vertical slice.
@@ -124,7 +135,7 @@ data/
 infra/
   dev/                  # disposable local compose stack
   images/               # Dockerfiles/build targets
-  truenas/              # runtime Compose/YAML and runbooks
+  truenas/              # optional existing TrueNAS profile
   clickhouse/
   postgres/
   redis/
@@ -157,7 +168,7 @@ PRODUCTION
 Software artifacts have a separate promotion path:
 
 ```text
-LOCAL DEV -> PR -> CI -> IMAGE -> TRUENAS PAPER -> SHADOW -> LIVE
+LOCAL DEV -> PR -> CI -> IMAGE -> APPROVED RUNTIME PAPER -> SHADOW -> LIVE
 ```
 
 No stage may be skipped merely because an in-sample backtest looks attractive or because a build passed CI. See [Research Method](docs/RESEARCH_METHOD.md), [Risk Management](docs/RISK_MANAGEMENT.md), [Paper to Live](docs/PAPER_TO_LIVE.md), and [Deployment](docs/DEPLOYMENT.md).
@@ -167,8 +178,8 @@ No stage may be skipped merely because an in-sample backtest looks attractive or
 The aim is to get useful output early rather than disappear into a months-long build:
 
 - Initial days: WSL2/Codex workspace, repository bootstrap, CI and local disposable services.
-- Week 1-2: local vertical slice with public data, normalization, tests, paper broker baseline, Grafana provisioning and cockpit shell.
-- Week 2-4: deploy the first pinned images to TrueNAS and begin 24/7 public-data collection and paper trading.
+- Current: time-boxed core-engine fit gate, then one local BTC-PERP replay-to-PAPER slice; Grafana and the cockpit are not slice dependencies.
+- After the local vertical slice: record the runtime ADR, migrate to the approved Ubuntu LTS VPS profile and begin 24/7 public-data collection and paper trading; retain TrueNAS only where explicitly chosen.
 - Week 3-6: robust research, validation, execution simulation and paper-vs-backtest comparison.
 - Week 6-12: production-grade recovery, reconciliation, security and live-readiness work while paper evidence accumulates.
 - Following weeks: shadow and very-small-capital validation before any material live allocation.

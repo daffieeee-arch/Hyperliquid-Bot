@@ -651,6 +651,31 @@ linearly from 512 to 1,024. Timing remains host- and fixture-bound; 3B1C-2 still
 dormant pure path and prove the complete runtime median at no more than 1.0 second. No event schema
 or active runtime behavior changes here.
 
+The 3B1C-1G correction makes the pre-parse raw-rejection knowledge boundary explicit. A definitive
+raw-sink rejection proves that the expected Bronze record was not accepted, so Bronze is
+`CONFIRMED_INCOMPLETE`. Projection membership is nevertheless unknown before parsing: no typed fact
+yet proves that the rejected record contained a Silver-relevant item. The closed projection table
+is `INCLUDED` to Silver `CONFIRMED_INCOMPLETE`, `EXCLUDED` to no Silver degradation from this cause,
+and pre-parse `UNKNOWN` to Silver `UNCERTAIN`. Only the final row is added here; it is not a generic
+status downgrade and it does not alter the existing exact-status upstream route or
+`EventCoverage` invariant. That exact-status route remains available for its existing valid causes
+but rejects this pre-parse raw-rejection cause unless a separate typed `INCLUDED` proof exists.
+
+The opt-in raw-rejection relation retains the full accepted Bronze batch, exact positional
+committed state, typed raw-record rejection evidence, raw fan-out binding and exact paired Silver
+scope. Its compact source row binds those parent IDs, `result_ordinal`, raw-record identity and
+full-record digest; stored verification walks the retained plan, catalog, session, attempt,
+fan-out, commit and rejection lineage before rederiving the source, evidence content, digest and
+outer ID. New evidence v3 is written only for this `UNKNOWN` relation. Existing non-upstream
+evidence v1 and exact upstream state/transition evidence v2 remain writer-active on their existing
+routes and byte-exact; their parsers and all other coverage identities are unchanged. Ordinary
+standalone source/evidence factories remain the fully validating semantic oracle and are not a
+plan-scale composition path. The verified positional ordinary transcript and fused complete
+preparation both produce byte-equivalent values with bounded linear growth through 1,024 targets;
+the fused factory is the integrated atomic convenience boundary. This contract remains dormant:
+raw rejection emits no fabricated normalization outcome or v2 event, schema v2 and `is_gap`
+remain active, market-event v3 remains dormant, and no runtime or delivery behavior is activated.
+
 Normalization-outcome sink failure is represented by the exact canonical
 `["normalization-outcome-evidence-v1",normalization_outcome_id,coverage_scope_id]` source row.
 Only explicit typed rejection establishes definite non-acceptance and Silver-normalization
@@ -690,7 +715,7 @@ cannot create a delivery batch. Actual v2-event serialization and a composite au
 remain 3B1C-3 work. Queue acceptance will mean bounded collector-output-queue acceptance only, not
 dequeue, downstream processing or persistence.
 
-All 3B1C-1 through 3B1C-1F coverage paths remain dormant. Existing 3B1B raw
+All 3B1C-1 through 3B1C-1G coverage paths remain dormant. Existing 3B1B raw
 capture still emits normalization outcomes with empty coverage lineage, now under the current outer
 outcome v2 identity; schema v2 remains the only active Silver envelope and operational `is_gap`
 remains unchanged. No coverage runtime, delivery linearization,

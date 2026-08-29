@@ -9,11 +9,13 @@ all values come from callers or pure deterministic derivation.
 import hashlib
 import json
 import re
+import sys
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
 from itertools import pairwise
+from types import CodeType, FrameType
 from typing import ClassVar, Final, Self, cast, final
 
 from hyperliquid_bot.contracts import Instrument, InstrumentType, Venue
@@ -243,6 +245,11 @@ _COVERAGE_COMMIT_RESULT_ITEM_VERSION: Final = "coverage-commit-resulting-state-c
 _COVERAGE_EVIDENCE_LEGACY_ID_VERSION: Final = "coverage-evidence-v1"
 _COVERAGE_EVIDENCE_ID_VERSION: Final = "coverage-evidence-v2"
 _COVERAGE_EVIDENCE_CONTENT_VERSION: Final = "coverage-evidence-content-v2"
+_LOSSY_RAW_REJECTION_COVERAGE_EVIDENCE_ID_VERSION: Final = "coverage-evidence-v3"
+_LOSSY_RAW_REJECTION_COVERAGE_EVIDENCE_CONTENT_VERSION: Final = "coverage-evidence-content-v3"
+_RAW_REJECTION_NORMALIZATION_UNKNOWN_SOURCE_VERSION: Final = (
+    "raw-rejection-normalization-unknown-source-v1"
+)
 _UPSTREAM_COVERAGE_STATE_SOURCE_VERSION: Final = "upstream-coverage-state-evidence-v2"
 _UPSTREAM_COVERAGE_TRANSITION_SOURCE_VERSION: Final = "upstream-coverage-transition-evidence-v2"
 _COVERAGE_STATE_REFERENCE_LEGACY_ID_VERSION: Final = "coverage-state-reference-v1"
@@ -1383,13 +1390,16 @@ class CoverageEpochId(_CanonicalIdentifier):
 class CoverageEvidenceId(_CanonicalIdentifier):
     """Bounded canonical identity for one typed, epoch-bound evidence record."""
 
-    VERSION_TAG: ClassVar = _COVERAGE_EVIDENCE_ID_VERSION
+    VERSION_TAG: ClassVar = _LOSSY_RAW_REJECTION_COVERAGE_EVIDENCE_ID_VERSION
 
     def __post_init__(self) -> None:
         maximum_length = (
             MAX_COVERAGE_EVIDENCE_V2_ID_LENGTH
             if type(self.value) is str
-            and self.value.startswith(f'["{_COVERAGE_EVIDENCE_ID_VERSION}",')
+            and (
+                self.value.startswith(f'["{_COVERAGE_EVIDENCE_ID_VERSION}",')
+                or self.value.startswith(f'["{_LOSSY_RAW_REJECTION_COVERAGE_EVIDENCE_ID_VERSION}",')
+            )
             else MAX_CANONICAL_IDENTIFIER_LENGTH
         )
         components = parse_canonical_json_array(
@@ -1399,6 +1409,7 @@ class CoverageEvidenceId(_CanonicalIdentifier):
         )
         if not components or components[0] not in {
             _COVERAGE_EVIDENCE_LEGACY_ID_VERSION,
+            _COVERAGE_EVIDENCE_ID_VERSION,
             self.VERSION_TAG,
         }:
             raise ValueError("canonical identifier has an unexpected version tag.")
@@ -1499,6 +1510,39 @@ class CoverageTransitionId(_CanonicalIdentifier):
                 < upstream_details[6]
             ):
                 raise ValueError("downstream transition cannot precede upstream evidence.")
+        elif (
+            evidence_components[4] == CoverageEvidenceKind.RAW_REJECTION_NORMALIZATION_UNKNOWN.value
+        ):
+            source = _component_tuple(
+                evidence_components[5],
+                field_name="raw_rejection_normalization_unknown_source",
+            )
+            committed = CommittedCoverageStateId(
+                _component_text(source[4], field_name="committed_coverage_state_id")
+            )
+            upstream_details = _committed_coverage_state_id_details(committed)
+            rejection = CoverageEvidenceId(
+                _component_text(source[6], field_name="raw_rejection_evidence_id")
+            )
+            rejection_components = parse_canonical_json_array(
+                rejection.value,
+                field_name="raw_rejection_evidence_id",
+            )
+            if (
+                current is not CoverageStatus.UNCERTAIN
+                or upstream_details[3] is not CoverageStatus.CONFIRMED_INCOMPLETE
+                or _component_nonnegative_int(
+                    evidence_components[7],
+                    field_name="evidence_observed_monotonic_ns",
+                )
+                < _component_nonnegative_int(
+                    rejection_components[7],
+                    field_name="raw_rejection_observed_monotonic_ns",
+                )
+            ):
+                raise ValueError(
+                    "only incomplete Bronze raw rejection may transition Silver to uncertain."
+                )
 
 
 @dataclass(frozen=True, slots=True)
@@ -3482,6 +3526,20 @@ class CoverageStatus(StrEnum):
     CONFIRMED_INCOMPLETE = "confirmed-incomplete"
 
 
+class RawRejectionProjectionMembership(StrEnum):
+    """Closed knowledge state for a rejected raw record's Silver membership."""
+
+    INCLUDED = "included"
+    EXCLUDED = "excluded"
+    UNKNOWN = "unknown"
+
+
+class RawRejectionProjectionBoundary(StrEnum):
+    """Closed processing boundary at which Silver membership was still unknown."""
+
+    BEFORE_PARSING = "before-parsing"
+
+
 def _validate_coverage_status_ordinal(status: CoverageStatus, ordinal: int) -> None:
     """Reject state summaries impossible under the fixed monotone ladder."""
 
@@ -3503,6 +3561,7 @@ class CoverageReason(StrEnum):
     TRANSPORT_AMBIGUITY = "transport-ambiguity"
     RAW_ACCEPTANCE_UNCERTAIN = "raw-acceptance-uncertain"
     RAW_DEFINITE_REJECTION = "raw-definite-rejection"
+    RAW_REJECTION_NORMALIZATION_UNKNOWN = "raw-rejection-normalization-unknown"
     UPSTREAM_COVERAGE_DEGRADED = "upstream-coverage-degraded"
     IN_SCOPE_NORMALIZATION_FAILURE = "in-scope-normalization-failure"
     NORMALIZATION_OUTCOME_ACCEPTANCE_UNCERTAIN = "normalization-outcome-acceptance-uncertain"
@@ -3520,6 +3579,7 @@ class InitialCoverageReason(StrEnum):
     TRANSPORT_AMBIGUITY = "transport-ambiguity"
     RAW_ACCEPTANCE_UNCERTAIN = "raw-acceptance-uncertain"
     RAW_DEFINITE_REJECTION = "raw-definite-rejection"
+    RAW_REJECTION_NORMALIZATION_UNKNOWN = "raw-rejection-normalization-unknown"
     UPSTREAM_COVERAGE_DEGRADED = "upstream-coverage-degraded"
     IN_SCOPE_NORMALIZATION_FAILURE = "in-scope-normalization-failure"
     NORMALIZATION_OUTCOME_ACCEPTANCE_UNCERTAIN = "normalization-outcome-acceptance-uncertain"
@@ -3535,6 +3595,7 @@ class CoverageEvidenceKind(StrEnum):
     TRANSPORT_FAILURE = "transport-failure"
     RAW_SINK_ACCEPTANCE_AMBIGUITY = "raw-sink-acceptance-ambiguity"
     RAW_RECORD_REJECTION = "raw-record-rejection"
+    RAW_REJECTION_NORMALIZATION_UNKNOWN = "raw-rejection-normalization-unknown"
     UPSTREAM_COVERAGE_TRANSITION = "upstream-coverage-transition"
     UPSTREAM_COVERAGE_STATE = "upstream-coverage-state"
     NORMALIZATION_FAILURE = "normalization-failure"
@@ -3713,7 +3774,16 @@ class UpstreamCoverageTransitionEvidenceSource:
     def __post_init__(self) -> None:
         if type(self.committed_state) is not CommittedCoverageState:
             raise TypeError("committed_state must be a CommittedCoverageState.")
-        self.committed_state.verify_stored()
+        verification_context = _BulkCoverageVerificationContext()
+        verification_context._validation_active = True
+        request = _verified_committed_mutation_request(
+            self.committed_state,
+            verification_context,
+        )
+        if _is_exact_raw_rejection_request(request):
+            raise ValueError(
+                "definite raw rejection requires an explicit typed projection-membership route."
+            )
         transition = self.committed_state.state_reference.latest_transition
         if transition is None:
             raise ValueError("upstream transition evidence requires a transitioned state.")
@@ -3751,7 +3821,16 @@ class UpstreamCoverageStateEvidenceSource:
     def __post_init__(self) -> None:
         if type(self.committed_state) is not CommittedCoverageState:
             raise TypeError("committed_state must be a CommittedCoverageState.")
-        self.committed_state.verify_stored()
+        verification_context = _BulkCoverageVerificationContext()
+        verification_context._validation_active = True
+        request = _verified_committed_mutation_request(
+            self.committed_state,
+            verification_context,
+        )
+        if _is_exact_raw_rejection_request(request):
+            raise ValueError(
+                "definite raw rejection requires an explicit typed projection-membership route."
+            )
         _upstream_coverage_state_details(
             self.committed_state.state_reference.coverage_state_reference_id
         )
@@ -3764,6 +3843,94 @@ class UpstreamCoverageStateEvidenceSource:
         return (
             _UPSTREAM_COVERAGE_STATE_SOURCE_VERSION,
             self.committed_state.committed_coverage_state_id.value,
+        )
+
+
+@final
+@dataclass(frozen=True, slots=True, init=False)
+class RawRejectionNormalizationUnknownEvidenceSource:
+    """Typed proof that a definite raw rejection left Silver membership unknown.
+
+    The retained mutation batch proves the exact raw-rejection decision and its
+    complete fanout. The committed state proves the accepted Bronze result, and
+    the retained raw binding supplies the record-integrity, plan, session and
+    attempt-snapshot lineage. This relation is deliberately factory-only and
+    represents only ``UNKNOWN`` membership at ``BEFORE_PARSING``.
+    """
+
+    coverage_mutation_batch: "CoverageMutationBatch" = field(repr=False)
+    committed_state: "CommittedCoverageState" = field(repr=False)
+    raw_rejection_evidence: "CoverageEvidence" = field(repr=False)
+    downstream_scope: "CoverageScope" = field(repr=False)
+    result_ordinal: int
+    membership: RawRejectionProjectionMembership
+    boundary: RawRejectionProjectionBoundary
+    raw_fanout_binding: "RawCoverageFanoutBinding" = field(repr=False)
+    canonical_source_row: tuple[object, ...] = field(repr=False)
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        del cls, kwargs
+        raise TypeError("raw-rejection projection sources do not support subclassing.")
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        raise TypeError(
+            "use RawRejectionNormalizationUnknownEvidenceSource.from_committed_raw_rejection()."
+        )
+
+    @classmethod
+    def from_committed_raw_rejection(
+        cls,
+        *,
+        coverage_mutation_batch: "CoverageMutationBatch",
+        committed_state: "CommittedCoverageState",
+        raw_rejection_evidence: "CoverageEvidence",
+        downstream_scope: "CoverageScope",
+    ) -> Self:
+        """Verify every retained parent before creating the lossy relation."""
+
+        if cls is not RawRejectionNormalizationUnknownEvidenceSource:
+            raise TypeError("raw-rejection projection sources do not support subclassing.")
+        verification_context = _BulkCoverageVerificationContext()
+        verification_context._validation_active = True
+        binding, _request = _verify_raw_rejection_normalization_unknown_parents(
+            coverage_mutation_batch=coverage_mutation_batch,
+            committed_state=committed_state,
+            raw_rejection_evidence=raw_rejection_evidence,
+            downstream_scope=downstream_scope,
+            verification_context=verification_context,
+        )
+        ordinal = committed_state.result_ordinal
+        source_row = _raw_rejection_normalization_unknown_source_row(
+            coverage_mutation_batch=coverage_mutation_batch,
+            committed_state=committed_state,
+            raw_rejection_evidence=raw_rejection_evidence,
+            downstream_scope=downstream_scope,
+            binding=binding,
+        )
+        value = object.__new__(cls)
+        object.__setattr__(value, "coverage_mutation_batch", coverage_mutation_batch)
+        object.__setattr__(value, "committed_state", committed_state)
+        object.__setattr__(value, "raw_rejection_evidence", raw_rejection_evidence)
+        object.__setattr__(value, "downstream_scope", downstream_scope)
+        object.__setattr__(value, "result_ordinal", ordinal)
+        object.__setattr__(value, "membership", RawRejectionProjectionMembership.UNKNOWN)
+        object.__setattr__(value, "boundary", RawRejectionProjectionBoundary.BEFORE_PARSING)
+        object.__setattr__(value, "raw_fanout_binding", binding)
+        object.__setattr__(value, "canonical_source_row", source_row)
+        return value
+
+    def canonical_components(self) -> tuple[object, ...]:
+        return self.canonical_source_row
+
+    def verify_stored(self) -> None:
+        """Rederive the complete retained rejection, commit and fanout graph."""
+
+        verification_context = _BulkCoverageVerificationContext()
+        verification_context._validation_active = True
+        _verify_raw_rejection_normalization_unknown_source(
+            self,
+            scope=self.downstream_scope,
+            verification_context=verification_context,
         )
 
 
@@ -4008,6 +4175,7 @@ type CoverageEvidenceSource = (
     | RawRecordEvidenceSource
     | UpstreamCoverageTransitionEvidenceSource
     | UpstreamCoverageStateEvidenceSource
+    | RawRejectionNormalizationUnknownEvidenceSource
     | NormalizationFailureEvidenceSource
     | NormalizationOutcomeEvidenceSource
     | SourceSequenceBreakEvidenceSource
@@ -4368,6 +4536,7 @@ def _validate_coverage_evidence_source(
     source: CoverageEvidenceSource,
     scope: CoverageScope,
     epoch: CoverageEpochIdentity,
+    verification_context: "_BulkCoverageVerificationContext | None" = None,
 ) -> None:
     expected_type: type[object] | None = {
         CoverageEvidenceKind.INITIAL_ACTIVATION: InitialActivationEvidenceSource,
@@ -4378,6 +4547,9 @@ def _validate_coverage_evidence_source(
             UpstreamCoverageTransitionEvidenceSource
         ),
         CoverageEvidenceKind.UPSTREAM_COVERAGE_STATE: UpstreamCoverageStateEvidenceSource,
+        CoverageEvidenceKind.RAW_REJECTION_NORMALIZATION_UNKNOWN: (
+            RawRejectionNormalizationUnknownEvidenceSource
+        ),
         CoverageEvidenceKind.NORMALIZATION_FAILURE: NormalizationFailureEvidenceSource,
         CoverageEvidenceKind.NORMALIZATION_OUTCOME_SINK_ACCEPTANCE_AMBIGUITY: (
             NormalizationOutcomeEvidenceSource
@@ -4404,6 +4576,9 @@ def _validate_coverage_evidence_source(
         CoverageEvidenceKind.RAW_RECORD_REJECTION: {CoverageDomain.BRONZE_INGRESS},
         CoverageEvidenceKind.UPSTREAM_COVERAGE_TRANSITION: {CoverageDomain.SILVER_NORMALIZATION},
         CoverageEvidenceKind.UPSTREAM_COVERAGE_STATE: {CoverageDomain.SILVER_NORMALIZATION},
+        CoverageEvidenceKind.RAW_REJECTION_NORMALIZATION_UNKNOWN: {
+            CoverageDomain.SILVER_NORMALIZATION
+        },
         CoverageEvidenceKind.NORMALIZATION_FAILURE: {CoverageDomain.SILVER_NORMALIZATION},
         CoverageEvidenceKind.NORMALIZATION_OUTCOME_SINK_ACCEPTANCE_AMBIGUITY: {
             CoverageDomain.SILVER_NORMALIZATION
@@ -4474,6 +4649,12 @@ def _validate_coverage_evidence_source(
             raise ValueError("raw evidence must belong to the coverage feed and collector run.")
         return
     if type(source) is UpstreamCoverageTransitionEvidenceSource:
+        if verification_context is None:
+            raise ValueError("upstream evidence requires one complete verification transcript.")
+        _reject_generic_raw_rejection_upstream_source(
+            source,
+            verification_context,
+        )
         upstream_state = source.committed_state.state_reference
         upstream_scope_id = upstream_state.reference.scope.coverage_scope_id
         upstream_scope_components = parse_canonical_json_array(
@@ -4490,6 +4671,12 @@ def _validate_coverage_evidence_source(
             raise ValueError("upstream transition must match the Bronze event scope and run.")
         return
     if type(source) is UpstreamCoverageStateEvidenceSource:
+        if verification_context is None:
+            raise ValueError("upstream evidence requires one complete verification transcript.")
+        _reject_generic_raw_rejection_upstream_source(
+            source,
+            verification_context,
+        )
         upstream_scope_id, upstream_run_id, upstream_status = _upstream_coverage_state_details(
             source.coverage_state_reference_id
         )
@@ -4505,6 +4692,30 @@ def _validate_coverage_evidence_source(
             or upstream_status is CoverageStatus.COMPLETE
         ):
             raise ValueError("upstream state must be degraded matching Bronze coverage.")
+        return
+    if type(source) is RawRejectionNormalizationUnknownEvidenceSource:
+        if verification_context is None:
+            raise ValueError(
+                "lossy raw-rejection evidence requires one complete verification transcript."
+            )
+        _verify_raw_rejection_normalization_unknown_source(
+            source,
+            scope=scope,
+            verification_context=verification_context,
+        )
+        upstream = source.committed_state.state_reference.reference
+        if (
+            scope.domain is not CoverageDomain.SILVER_NORMALIZATION
+            or upstream.scope.domain is not CoverageDomain.BRONZE_INGRESS
+            or _coverage_event_scope_key(upstream.scope) != _coverage_event_scope_key(scope)
+            or upstream.epoch.collector_run_id != run
+            or upstream.epoch.epoch_ordinal != epoch.epoch_ordinal
+            or upstream.status is not CoverageStatus.CONFIRMED_INCOMPLETE
+        ):
+            raise ValueError(
+                "raw-rejection projection must match its Bronze scope, run, epoch and "
+                "incomplete status."
+            )
         return
     if type(source) is NormalizationFailureEvidenceSource:
         raw_feed, raw_run = _raw_record_feed_run(source.raw_record_id)
@@ -4572,7 +4783,10 @@ def _validate_coverage_evidence_id_components(
     version = _component_text(components[0], field_name="coverage_evidence_version")
     if version == _COVERAGE_EVIDENCE_LEGACY_ID_VERSION:
         _require_component_count(components, 8, identifier_name="CoverageEvidenceId")
-    elif version == _COVERAGE_EVIDENCE_ID_VERSION:
+    elif version in {
+        _COVERAGE_EVIDENCE_ID_VERSION,
+        _LOSSY_RAW_REJECTION_COVERAGE_EVIDENCE_ID_VERSION,
+    }:
         _require_component_count(components, 9, identifier_name="CoverageEvidenceId")
     else:
         raise ValueError("coverage evidence has an unsupported identity version.")
@@ -4584,6 +4798,7 @@ def _validate_coverage_evidence_id_components(
         raise ValueError("coverage evidence scope, epoch and collector run must agree.")
     kind = CoverageEvidenceKind(_component_text(components[4], field_name="evidence_kind"))
     source = _component_tuple(components[5], field_name="typed_source_reference")
+    raw_rejection_boundary: tuple[str, int] | None = None
     legacy_expected_tag = {
         CoverageEvidenceKind.INITIAL_ACTIVATION: "initial-activation-evidence-v1",
         CoverageEvidenceKind.TRANSPORT_FAILURE: "transport-ambiguity-evidence-v1",
@@ -4612,11 +4827,16 @@ def _validate_coverage_evidence_id_components(
         ),
         CoverageEvidenceKind.UPSTREAM_COVERAGE_STATE: _UPSTREAM_COVERAGE_STATE_SOURCE_VERSION,
     }.get(kind)
-    expected_tag = (
-        legacy_expected_tag
-        if version == _COVERAGE_EVIDENCE_LEGACY_ID_VERSION
-        else current_expected_tag
-    )
+    lossy_expected_tag = {
+        CoverageEvidenceKind.RAW_REJECTION_NORMALIZATION_UNKNOWN: (
+            _RAW_REJECTION_NORMALIZATION_UNKNOWN_SOURCE_VERSION
+        )
+    }.get(kind)
+    expected_tag = {
+        _COVERAGE_EVIDENCE_LEGACY_ID_VERSION: legacy_expected_tag,
+        _COVERAGE_EVIDENCE_ID_VERSION: current_expected_tag,
+        _LOSSY_RAW_REJECTION_COVERAGE_EVIDENCE_ID_VERSION: lossy_expected_tag,
+    }[version]
     if expected_tag is None or not source or source[0] != expected_tag:
         raise ValueError("coverage evidence contains an incompatible typed source reference.")
     scope_components = parse_canonical_json_array(scope.value, field_name="coverage_scope_id")
@@ -4638,6 +4858,9 @@ def _validate_coverage_evidence_id_components(
         CoverageEvidenceKind.RAW_RECORD_REJECTION: {CoverageDomain.BRONZE_INGRESS},
         CoverageEvidenceKind.UPSTREAM_COVERAGE_TRANSITION: {CoverageDomain.SILVER_NORMALIZATION},
         CoverageEvidenceKind.UPSTREAM_COVERAGE_STATE: {CoverageDomain.SILVER_NORMALIZATION},
+        CoverageEvidenceKind.RAW_REJECTION_NORMALIZATION_UNKNOWN: {
+            CoverageDomain.SILVER_NORMALIZATION
+        },
         CoverageEvidenceKind.NORMALIZATION_FAILURE: {CoverageDomain.SILVER_NORMALIZATION},
         CoverageEvidenceKind.NORMALIZATION_OUTCOME_SINK_ACCEPTANCE_AMBIGUITY: {
             CoverageDomain.SILVER_NORMALIZATION
@@ -4890,6 +5113,114 @@ def _validate_coverage_evidence_id_components(
             or upstream_status is CoverageStatus.COMPLETE
         ):
             raise ValueError("upstream state evidence must match degraded Bronze scope and run.")
+    elif kind is CoverageEvidenceKind.RAW_REJECTION_NORMALIZATION_UNKNOWN:
+        _require_component_count(
+            source,
+            11,
+            identifier_name="raw-rejection normalization-unknown source",
+        )
+        if (
+            source[1] != RawRejectionProjectionMembership.UNKNOWN.value
+            or source[2] != RawRejectionProjectionBoundary.BEFORE_PARSING.value
+            or source[10] != scope.value
+        ):
+            raise ValueError("raw-rejection projection requires unknown membership before parsing.")
+        batch = CoverageMutationBatchId(
+            _component_text(source[3], field_name="coverage_mutation_batch_id")
+        )
+        batch_components = parse_canonical_json_array(
+            batch.value,
+            field_name="coverage_mutation_batch_id",
+        )
+        if batch_components[0] != _COVERAGE_MUTATION_BATCH_ID_VERSION:
+            raise ValueError("raw-rejection projection requires a mutation-batch-v2 ID.")
+        committed = CommittedCoverageStateId(
+            _component_text(source[4], field_name="committed_coverage_state_id")
+        )
+        committed_components = parse_canonical_json_array(
+            committed.value,
+            field_name="committed_coverage_state_id",
+        )
+        result_ordinal = _component_nonnegative_int(source[5], field_name="result_ordinal")
+        batch_target_count = _component_nonnegative_int(
+            batch_components[2],
+            field_name="coverage_mutation_batch_target_count",
+        )
+        committed_details = _committed_coverage_state_id_details(committed)
+        committed_epoch_components = parse_canonical_json_array(
+            _component_text(committed_components[2], field_name="upstream_coverage_epoch_id"),
+            field_name="upstream_coverage_epoch_id",
+        )
+        if (
+            committed_components[0] != _COMMITTED_COVERAGE_STATE_ID_VERSION
+            or committed_details[3] is not CoverageStatus.CONFIRMED_INCOMPLETE
+            or committed_details[2] != run
+            or committed_components[8] != result_ordinal
+            or result_ordinal >= batch_target_count
+            or committed_epoch_components[3] != epoch_components[3]
+        ):
+            raise ValueError("raw-rejection projection committed-state membership is invalid.")
+        bronze_scope = committed_details[1]
+        bronze_components = parse_canonical_json_array(
+            bronze_scope.value,
+            field_name="upstream_coverage_scope_id",
+        )
+        if (
+            bronze_components[1] != CoverageDomain.BRONZE_INGRESS.value
+            or scope_components[1] != CoverageDomain.SILVER_NORMALIZATION.value
+            or not _same_event_scope(bronze_scope, scope)
+        ):
+            raise ValueError("raw-rejection projection must pair exact Bronze/Silver scopes.")
+        rejection = CoverageEvidenceId(
+            _component_text(source[6], field_name="raw_rejection_evidence_id")
+        )
+        rejection_components = parse_canonical_json_array(
+            rejection.value,
+            field_name="raw_rejection_evidence_id",
+        )
+        if (
+            rejection_components[0] != _COVERAGE_EVIDENCE_LEGACY_ID_VERSION
+            or rejection_components[1] != bronze_scope.value
+            or rejection_components[2] != committed_components[2]
+            or rejection_components[3] != run.value
+            or rejection_components[4] != CoverageEvidenceKind.RAW_RECORD_REJECTION.value
+        ):
+            raise ValueError("raw-rejection projection requires exact Bronze rejection evidence.")
+        raw_rejection_boundary = (
+            _canonical_utc_component(
+                rejection_components[6],
+                field_name="raw_rejection_observed_at",
+            ),
+            _component_nonnegative_int(
+                rejection_components[7],
+                field_name="raw_rejection_observed_monotonic_ns",
+            ),
+        )
+        rejection_source = _component_tuple(
+            rejection_components[5],
+            field_name="raw_rejection_source",
+        )
+        if (
+            len(rejection_source) != 3
+            or rejection_source[0] != "raw-record-evidence-v1"
+            or rejection_source[1] != source[8]
+            or rejection_source[2] != bronze_scope.value
+        ):
+            raise ValueError("raw-rejection projection contains foreign raw rejection lineage.")
+        binding = RawCoverageFanoutBindingId(
+            _component_text(source[7], field_name="raw_coverage_fanout_binding_id")
+        )
+        binding_components = parse_canonical_json_array(
+            binding.value,
+            field_name="raw_coverage_fanout_binding_id",
+        )
+        raw = validate_raw(source[8])
+        if binding_components[1] != raw.value or binding_components[2] != batch_components[1]:
+            raise ValueError("raw-rejection projection binding must match its batch and raw ID.")
+        require_sha256(
+            _component_text(source[9], field_name="full_record_integrity_sha256"),
+            field_name="full_record_integrity_sha256",
+        )
     elif kind is CoverageEvidenceKind.NORMALIZATION_FAILURE:
         _require_component_count(source, 2, identifier_name="normalization evidence source")
         failure = NormalizationFailureEvidenceId(
@@ -4982,17 +5313,33 @@ def _validate_coverage_evidence_id_components(
     if kind in {
         CoverageEvidenceKind.UPSTREAM_COVERAGE_TRANSITION,
         CoverageEvidenceKind.UPSTREAM_COVERAGE_STATE,
+        CoverageEvidenceKind.RAW_REJECTION_NORMALIZATION_UNKNOWN,
     }:
+        committed_index = (
+            4 if kind is CoverageEvidenceKind.RAW_REJECTION_NORMALIZATION_UNKNOWN else 1
+        )
         committed = CommittedCoverageStateId(
-            _component_text(source[1], field_name="committed_coverage_state_id")
+            _component_text(source[committed_index], field_name="committed_coverage_state_id")
         )
         upstream_details = _committed_coverage_state_id_details(committed)
         if observed_at < upstream_details[5] or observed_monotonic_ns < upstream_details[6]:
             raise ValueError("downstream evidence cannot precede upstream evidence.")
-    if version == _COVERAGE_EVIDENCE_ID_VERSION:
+    if raw_rejection_boundary is not None and (
+        observed_at < raw_rejection_boundary[0] or observed_monotonic_ns < raw_rejection_boundary[1]
+    ):
+        raise ValueError("downstream evidence cannot precede its raw rejection evidence.")
+    if version in {
+        _COVERAGE_EVIDENCE_ID_VERSION,
+        _LOSSY_RAW_REJECTION_COVERAGE_EVIDENCE_ID_VERSION,
+    }:
+        content_version = (
+            _LOSSY_RAW_REJECTION_COVERAGE_EVIDENCE_CONTENT_VERSION
+            if version == _LOSSY_RAW_REJECTION_COVERAGE_EVIDENCE_ID_VERSION
+            else _COVERAGE_EVIDENCE_CONTENT_VERSION
+        )
         content = canonical_json_array(
             (
-                _COVERAGE_EVIDENCE_CONTENT_VERSION,
+                content_version,
                 scope,
                 epoch,
                 run,
@@ -5045,18 +5392,29 @@ class CoverageEvidence:
         )
         if observed < activation or monotonic < self.epoch.activation_monotonic_ns:
             raise ValueError("coverage evidence cannot precede epoch activation.")
+        verification_context: _BulkCoverageVerificationContext | None = None
+        if isinstance(
+            self.source,
+            (
+                UpstreamCoverageTransitionEvidenceSource,
+                UpstreamCoverageStateEvidenceSource,
+                RawRejectionNormalizationUnknownEvidenceSource,
+            ),
+        ):
+            verification_context = _BulkCoverageVerificationContext()
+            verification_context._validation_active = True
         _validate_coverage_evidence_source(
             kind=self.kind,
             source=self.source,
             scope=self.scope,
             epoch=self.epoch,
+            verification_context=verification_context,
         )
-        verification_context: _BulkCoverageVerificationContext | None = None
         if isinstance(
             self.source,
             (UpstreamCoverageTransitionEvidenceSource, UpstreamCoverageStateEvidenceSource),
         ):
-            verification_context = _BulkCoverageVerificationContext()
+            assert verification_context is not None
             verification_context._verify_committed_state(self.source.committed_state)
             if type(self.source) is UpstreamCoverageTransitionEvidenceSource and (
                 self.source.coverage_transition
@@ -5071,6 +5429,17 @@ class CoverageEvidence:
             )
             if observed < upstream_details[5] or monotonic < upstream_details[6]:
                 raise ValueError("downstream evidence cannot precede upstream evidence.")
+        elif type(self.source) is RawRejectionNormalizationUnknownEvidenceSource:
+            assert verification_context is not None
+            rejection_observed, rejection_monotonic = (
+                _verify_raw_rejection_normalization_unknown_source(
+                    self.source,
+                    scope=self.scope,
+                    verification_context=verification_context,
+                )
+            )
+            if observed < rejection_observed or monotonic < rejection_monotonic:
+                raise ValueError("lossy downstream evidence cannot precede its raw rejection.")
         object.__setattr__(
             self,
             "observed_at",
@@ -5081,20 +5450,40 @@ class CoverageEvidence:
             CoverageEvidenceKind.UPSTREAM_COVERAGE_STATE,
             CoverageEvidenceKind.UPSTREAM_COVERAGE_TRANSITION,
         }
-        if is_upstream:
-            committed = cast(
-                UpstreamCoverageStateEvidenceSource | UpstreamCoverageTransitionEvidenceSource,
-                self.source,
-            ).committed_state
-            committed_components = parse_canonical_json_array(
-                committed.committed_coverage_state_id.value,
-                field_name="committed_coverage_state_id",
+        is_lossy_raw_rejection = (
+            self.kind is CoverageEvidenceKind.RAW_REJECTION_NORMALIZATION_UNKNOWN
+        )
+        if is_upstream or is_lossy_raw_rejection:
+            content_version = (
+                _LOSSY_RAW_REJECTION_COVERAGE_EVIDENCE_CONTENT_VERSION
+                if is_lossy_raw_rejection
+                else _COVERAGE_EVIDENCE_CONTENT_VERSION
             )
-            if committed_components[0] != _COMMITTED_COVERAGE_STATE_ID_VERSION:
-                raise ValueError("new upstream evidence requires a committed-state-v2 parent.")
+            identity_version = (
+                _LOSSY_RAW_REJECTION_COVERAGE_EVIDENCE_ID_VERSION
+                if is_lossy_raw_rejection
+                else _COVERAGE_EVIDENCE_ID_VERSION
+            )
+            if is_lossy_raw_rejection:
+                assert type(self.source) is RawRejectionNormalizationUnknownEvidenceSource
+            else:
+                assert isinstance(
+                    self.source,
+                    (
+                        UpstreamCoverageStateEvidenceSource,
+                        UpstreamCoverageTransitionEvidenceSource,
+                    ),
+                )
+                committed = self.source.committed_state
+                committed_components = parse_canonical_json_array(
+                    committed.committed_coverage_state_id.value,
+                    field_name="committed_coverage_state_id",
+                )
+                if committed_components[0] != _COMMITTED_COVERAGE_STATE_ID_VERSION:
+                    raise ValueError("new upstream evidence requires a committed-state-v2 parent.")
             content = canonical_json_array(
                 (
-                    _COVERAGE_EVIDENCE_CONTENT_VERSION,
+                    content_version,
                     self.scope.coverage_scope_id,
                     self.epoch.coverage_epoch_id,
                     self.epoch.collector_run_id,
@@ -5108,7 +5497,7 @@ class CoverageEvidence:
             digest = sha256_hex(content.encode("utf-8"), field_name="coverage_evidence_content")
             evidence_text = canonical_json_array(
                 (
-                    _COVERAGE_EVIDENCE_ID_VERSION,
+                    identity_version,
                     self.scope.coverage_scope_id,
                     self.epoch.coverage_epoch_id,
                     self.epoch.collector_run_id,
@@ -5144,7 +5533,9 @@ class CoverageEvidence:
     def verify_stored(self) -> None:
         """Rederive every retained parent, canonical byte and stored identity."""
 
-        _BulkCoverageVerificationContext().verify_evidence(self)
+        verification_context = _BulkCoverageVerificationContext()
+        verification_context._validation_active = True
+        verification_context.verify_evidence(self)
 
     @property
     def coverage_scope_id(self) -> CoverageScopeId:
@@ -5190,6 +5581,12 @@ _INITIAL_COVERAGE_MATRIX: Final = frozenset(
             CoverageStatus.UNCERTAIN,
             InitialCoverageReason.UPSTREAM_COVERAGE_DEGRADED,
             CoverageEvidenceKind.UPSTREAM_COVERAGE_STATE,
+        ),
+        (
+            CoverageDomain.SILVER_NORMALIZATION,
+            CoverageStatus.UNCERTAIN,
+            InitialCoverageReason.RAW_REJECTION_NORMALIZATION_UNKNOWN,
+            CoverageEvidenceKind.RAW_REJECTION_NORMALIZATION_UNKNOWN,
         ),
         (
             CoverageDomain.SILVER_NORMALIZATION,
@@ -5461,6 +5858,11 @@ _UNCERTAIN_TRANSITION_EVIDENCE: Final = frozenset(
         ),
         (
             CoverageDomain.SILVER_NORMALIZATION,
+            CoverageReason.RAW_REJECTION_NORMALIZATION_UNKNOWN,
+            CoverageEvidenceKind.RAW_REJECTION_NORMALIZATION_UNKNOWN,
+        ),
+        (
+            CoverageDomain.SILVER_NORMALIZATION,
             CoverageReason.NORMALIZATION_OUTCOME_ACCEPTANCE_UNCERTAIN,
             CoverageEvidenceKind.NORMALIZATION_OUTCOME_SINK_ACCEPTANCE_AMBIGUITY,
         ),
@@ -5554,6 +5956,22 @@ def _validate_upstream_transition_status(
 ) -> None:
     """Require exact status propagation after evidence time-causality validation."""
 
+    if evidence.kind is CoverageEvidenceKind.RAW_REJECTION_NORMALIZATION_UNKNOWN:
+        if type(evidence.source) is not RawRejectionNormalizationUnknownEvidenceSource:
+            raise ValueError("lossy raw-rejection evidence requires its exact typed source.")
+        evidence.source.verify_stored()
+        upstream = evidence.source.committed_state.state_reference
+        if (
+            requested_status is not CoverageStatus.UNCERTAIN
+            or upstream.reference.status is not CoverageStatus.CONFIRMED_INCOMPLETE
+        ):
+            raise ValueError(
+                "only incomplete Bronze raw rejection may project to uncertain Silver."
+            )
+        raw_boundary = evidence.source.raw_rejection_evidence.observed_monotonic_ns
+        if evidence.observed_monotonic_ns < raw_boundary:
+            raise ValueError("lossy downstream evidence cannot precede its raw rejection.")
+        return
     if evidence.kind not in {
         CoverageEvidenceKind.UPSTREAM_COVERAGE_STATE,
         CoverageEvidenceKind.UPSTREAM_COVERAGE_TRANSITION,
@@ -5568,7 +5986,12 @@ def _validate_upstream_transition_status(
         evidence.source,
         (UpstreamCoverageStateEvidenceSource, UpstreamCoverageTransitionEvidenceSource),
     )
-    evidence.source.committed_state.verify_stored()
+    verification_context = _BulkCoverageVerificationContext()
+    verification_context._validation_active = True
+    _reject_generic_raw_rejection_upstream_source(
+        evidence.source,
+        verification_context,
+    )
     upstream = evidence.source.committed_state.state_reference
     if requested_status is not upstream.reference.status:
         raise ValueError("downstream coverage status must exactly match upstream status.")
@@ -5832,6 +6255,40 @@ class CoverageInitializationId(_CanonicalIdentifier):
             ):
                 raise ValueError(
                     "initial downstream coverage must copy exact upstream status and boundary."
+                )
+        elif evidence_kind is CoverageEvidenceKind.RAW_REJECTION_NORMALIZATION_UNKNOWN:
+            _require_component_count(
+                source,
+                11,
+                identifier_name="raw-rejection normalization-unknown source",
+            )
+            committed = CommittedCoverageStateId(
+                _component_text(source[4], field_name="committed_coverage_state_id")
+            )
+            upstream_details = _committed_coverage_state_id_details(committed)
+            rejection = CoverageEvidenceId(
+                _component_text(source[6], field_name="raw_rejection_evidence_id")
+            )
+            rejection_components = parse_canonical_json_array(
+                rejection.value,
+                field_name="raw_rejection_evidence_id",
+            )
+            rejection_observed = _canonical_utc_component(
+                rejection_components[6],
+                field_name="raw_rejection_observed_at",
+            )
+            if (
+                status is not CoverageStatus.UNCERTAIN
+                or upstream_details[3] is not CoverageStatus.CONFIRMED_INCOMPLETE
+                or observed < rejection_observed
+                or observed_monotonic
+                < _component_nonnegative_int(
+                    rejection_components[7],
+                    field_name="raw_rejection_observed_monotonic_ns",
+                )
+            ):
+                raise ValueError(
+                    "only incomplete Bronze raw rejection may initialize uncertain Silver."
                 )
 
 
@@ -6696,7 +7153,9 @@ class CoverageStateReference:
     def verify_stored(self) -> None:
         """Rederive the retained initialization, predecessor and transition chain."""
 
-        _BulkCoverageVerificationContext().verify_state(self)
+        verification_context = _BulkCoverageVerificationContext()
+        verification_context._validation_active = True
+        verification_context.verify_state(self)
 
 
 def _construct_coverage_state_reference(
@@ -6725,6 +7184,7 @@ def _construct_coverage_state_reference(
         in {
             CoverageEvidenceKind.UPSTREAM_COVERAGE_STATE,
             CoverageEvidenceKind.UPSTREAM_COVERAGE_TRANSITION,
+            CoverageEvidenceKind.RAW_REJECTION_NORMALIZATION_UNKNOWN,
         }
         or (previous_state is not None and previous_state.canonical_content is not None)
     )
@@ -7671,9 +8131,11 @@ class CoverageFanoutProof:
             raise TypeError("expected_canonical_content must be a built-in string.")
         if type(expected_proof_id) is not CoverageFanoutProofId:
             raise TypeError("expected_proof_id must be a CoverageFanoutProofId.")
+        verification_context = _BulkCoverageVerificationContext()
+        verification_context._validation_active = True
         _verify_coverage_fanout_proof_retained_fields(
             self,
-            _BulkCoverageVerificationContext(),
+            verification_context,
         )
         if (
             self.canonical_content != expected_canonical_content
@@ -8557,6 +9019,9 @@ def _verify_coverage_fanout_proof_retained_fields(
 ) -> None:
     """Recompute one factory-only fanout proof from all of its retained typed fields."""
 
+    if type(context) is not _BulkCoverageVerificationContext:
+        raise TypeError("context must be a bulk coverage verification context.")
+    context._require_validation_active()
     if type(proof) is not CoverageFanoutProof:
         raise TypeError("fanout_proof must be a CoverageFanoutProof.")
     if type(proof.kind) is not CoverageFanoutKind:
@@ -9118,6 +9583,9 @@ _MUTATION_INITIAL_REASON_BY_TRANSITION_REASON: Final = {
     CoverageReason.TRANSPORT_AMBIGUITY: InitialCoverageReason.TRANSPORT_AMBIGUITY,
     CoverageReason.RAW_ACCEPTANCE_UNCERTAIN: InitialCoverageReason.RAW_ACCEPTANCE_UNCERTAIN,
     CoverageReason.RAW_DEFINITE_REJECTION: InitialCoverageReason.RAW_DEFINITE_REJECTION,
+    CoverageReason.RAW_REJECTION_NORMALIZATION_UNKNOWN: (
+        InitialCoverageReason.RAW_REJECTION_NORMALIZATION_UNKNOWN
+    ),
     CoverageReason.UPSTREAM_COVERAGE_DEGRADED: InitialCoverageReason.UPSTREAM_COVERAGE_DEGRADED,
     CoverageReason.IN_SCOPE_NORMALIZATION_FAILURE: (
         InitialCoverageReason.IN_SCOPE_NORMALIZATION_FAILURE
@@ -9172,6 +9640,7 @@ def _validate_mutation_request_semantics_in_context(
 
     if type(context) is not _BulkCoverageVerificationContext:
         raise TypeError("context must be a bulk coverage verification context.")
+    context._require_validation_active()
     context.verify_scope(request.scope)
     context.verify_epoch(request.epoch, request.scope)
     context.verify_evidence(request.evidence)
@@ -9200,6 +9669,22 @@ def _validate_mutation_request_semantics_in_context(
     )
     if initial_row not in _INITIAL_COVERAGE_MATRIX and transition_row not in allowed:
         raise ValueError("coverage mutation status, reason and evidence are incompatible.")
+    if request.evidence.kind is CoverageEvidenceKind.RAW_REJECTION_NORMALIZATION_UNKNOWN:
+        source = request.evidence.source
+        if type(source) is not RawRejectionNormalizationUnknownEvidenceSource:
+            raise ValueError("lossy raw-rejection evidence requires its exact typed source.")
+        context._verify_committed_state(source.committed_state)
+        upstream_details = context.verify_state(source.committed_state.state_reference)
+        if (
+            request.requested_status is not CoverageStatus.UNCERTAIN
+            or upstream_details.status is not CoverageStatus.CONFIRMED_INCOMPLETE
+            or request.evidence.observed_monotonic_ns
+            < source.raw_rejection_evidence.observed_monotonic_ns
+        ):
+            raise ValueError(
+                "only incomplete Bronze raw rejection may project to uncertain Silver."
+            )
+        return
     if request.evidence.kind in {
         CoverageEvidenceKind.UPSTREAM_COVERAGE_STATE,
         CoverageEvidenceKind.UPSTREAM_COVERAGE_TRANSITION,
@@ -9214,7 +9699,7 @@ def _validate_mutation_request_semantics_in_context(
             source,
             (UpstreamCoverageStateEvidenceSource, UpstreamCoverageTransitionEvidenceSource),
         )
-        context._verify_committed_state(source.committed_state)
+        _reject_generic_raw_rejection_upstream_source(source, context)
         upstream_details = context.verify_state(source.committed_state.state_reference)
         if request.requested_status is not upstream_details.status:
             raise ValueError("downstream coverage status must exactly match upstream status.")
@@ -9232,6 +9717,7 @@ def _verify_coverage_mutation_no_op_in_context(
         raise TypeError("coverage no-op contains an invalid typed value.")
     if type(context) is not _BulkCoverageVerificationContext:
         raise TypeError("context must be a bulk coverage verification context.")
+    context._require_validation_active()
     if type(no_op.current_state) is not CoverageStateReference:
         raise TypeError("coverage no-op contains an invalid current state.")
     context.verify_state(no_op.current_state)
@@ -9362,9 +9848,14 @@ def _validate_fanout_evidence_lineage(
                 NormalizationOutcomeEvidenceSource,
                 SourceEventConflictEvidenceSource,
                 AuthoritativeStateSnapshotEvidenceSource,
+                RawRejectionNormalizationUnknownEvidenceSource,
             ),
         ):
-            raw_record_id = source.raw_record_id
+            raw_record_id = (
+                source.raw_fanout_binding.raw_record_id
+                if type(source) is RawRejectionNormalizationUnknownEvidenceSource
+                else source.raw_record_id
+            )
         if raw_record_id is not None:
             _feed, _run, raw_session_id = _raw_record_feed_run_session(raw_record_id)
             if raw_session_id != fanout.connection_session_id:
@@ -9390,6 +9881,8 @@ def _raw_record_ids_for_requests(
             raw_record_id = source.raw_record_id
         elif type(source) is AuthoritativeStateSnapshotEvidenceSource:
             raw_record_id = source.raw_record_id
+        elif type(source) is RawRejectionNormalizationUnknownEvidenceSource:
+            raw_record_id = source.raw_fanout_binding.raw_record_id
         if raw_record_id is not None:
             raw_record_ids.append(raw_record_id)
     return tuple(sorted(set(raw_record_ids), key=lambda item: item.value))
@@ -9418,6 +9911,57 @@ def _validate_raw_fanout_binding(
         raise ValueError("raw fanout binding must match the prepared coverage fanout.")
     if raw_record_ids and raw_record_ids != (raw_fanout_binding.raw_record_id,):
         raise ValueError("all raw-backed coverage evidence must cite the bound raw record.")
+    raw_rejection_sources = tuple(
+        request.evidence.source
+        for request in requests
+        if type(request.evidence.source) is RawRejectionNormalizationUnknownEvidenceSource
+    )
+    if not raw_rejection_sources:
+        return
+    if len(raw_rejection_sources) != len(requests):
+        raise ValueError("raw-rejection projection cannot mix with another mutation cause.")
+    first_source = raw_rejection_sources[0]
+    upstream_batch_id = first_source.coverage_mutation_batch.coverage_mutation_batch_id
+    upstream_binding = first_source.raw_fanout_binding
+    upstream_fanout = first_source.coverage_mutation_batch.fanout_proof
+    if any(
+        source.coverage_mutation_batch.coverage_mutation_batch_id != upstream_batch_id
+        or source.raw_fanout_binding.raw_coverage_fanout_binding_id
+        != upstream_binding.raw_coverage_fanout_binding_id
+        or source.downstream_scope != request.scope
+        for source, request in zip(raw_rejection_sources, requests, strict=True)
+    ):
+        raise ValueError("raw-rejection projection must retain one exact upstream transcript.")
+    downstream_snapshot_content = canonical_json_array(
+        (
+            _RAW_COVERAGE_SNAPSHOT_CONTENT_VERSION,
+            _attempt_snapshot_rows(fanout.source_attempt_snapshots),
+        ),
+        maximum_length=MAX_SUBSCRIPTION_PLAN_CONTENT_LENGTH,
+    )
+    downstream_snapshot_digest = sha256_hex(
+        downstream_snapshot_content.encode("utf-8"),
+        field_name="subscription_snapshot_content",
+    )
+    if (
+        upstream_fanout.coverage_target_catalog != fanout.coverage_target_catalog
+        or upstream_fanout.subscription_plan_id != fanout.subscription_plan_id
+        or upstream_fanout.coverage_target_catalog_id != fanout.coverage_target_catalog_id
+        or upstream_fanout.connection_session_id != fanout.connection_session_id
+        or upstream_fanout.source_attempt_snapshots != fanout.source_attempt_snapshots
+        or upstream_fanout.selected_attempt_ids != fanout.selected_attempt_ids
+        or upstream_binding.raw_record_id != raw_fanout_binding.raw_record_id
+        or upstream_binding.full_record_integrity_sha256
+        != raw_fanout_binding.full_record_integrity_sha256
+        or upstream_binding.subscription_plan_id != raw_fanout_binding.subscription_plan_id
+        or upstream_binding.connection_session_id != raw_fanout_binding.connection_session_id
+        or upstream_binding.subscription_snapshot_content_sha256
+        != raw_fanout_binding.subscription_snapshot_content_sha256
+        or raw_fanout_binding.subscription_snapshot_content_sha256 != downstream_snapshot_digest
+    ):
+        raise ValueError(
+            "raw-rejection projection requires one exact plan, catalogue, attempt and raw slice."
+        )
 
 
 def _validate_fanout_request_semantics(
@@ -9681,6 +10225,12 @@ def _validate_fanout_request_semantics(
             ),
             (
                 CoverageDomain.SILVER_NORMALIZATION,
+                CoverageStatus.UNCERTAIN,
+                CoverageReason.RAW_REJECTION_NORMALIZATION_UNKNOWN,
+                CoverageEvidenceKind.RAW_REJECTION_NORMALIZATION_UNKNOWN,
+            ),
+            (
+                CoverageDomain.SILVER_NORMALIZATION,
                 CoverageStatus.CONFIRMED_INCOMPLETE,
                 CoverageReason.UPSTREAM_COVERAGE_DEGRADED,
                 CoverageEvidenceKind.UPSTREAM_COVERAGE_STATE,
@@ -9919,23 +10469,37 @@ def _bulk_canonical_json_array(
     return encoded
 
 
+_BULK_CONTEXT_OWNER_CODES: tuple[CodeType, ...]
+
+
+def _is_trusted_bulk_context_owner_code(code: CodeType) -> bool:
+    """Recognize only the exact code objects of complete verification entrypoints."""
+
+    return any(code is trusted for trusted in _BULK_CONTEXT_OWNER_CODES)
+
+
 class _BulkCoverageVerificationContext:
     """One-call successful-parse cache and typed-state verification transcript."""
 
     __slots__ = (
         "_acceptance_indexes",
-        "_batch_verification_started",
+        "_bulk_commit_inputs_verified",
         "_canonical_datetimes",
+        "_catalog_scope_indexes",
         "_compact_identity_bytes",
         "_compact_identity_keys",
+        "_in_progress_batches",
         "_in_progress_committed_states",
         "_in_progress_evidence",
         "_in_progress_initializations",
         "_in_progress_states",
         "_parsed",
         "_quoted",
+        "_validation_owner",
         "_verified_attempt_snapshots",
         "_verified_attempts",
+        "_verified_batch_acceptances",
+        "_verified_batches",
         "_verified_catalogs",
         "_verified_committed_states",
         "_verified_epochs",
@@ -9944,6 +10508,8 @@ class _BulkCoverageVerificationContext:
         "_verified_initializations",
         "_verified_instruments",
         "_verified_plans",
+        "_verified_raw_fanout_bindings",
+        "_verified_raw_fanout_relations",
         "_verified_scopes",
         "_verified_sessions",
         "_verified_specs",
@@ -9951,19 +10517,39 @@ class _BulkCoverageVerificationContext:
     )
 
     def __init__(self) -> None:
-        self._batch_verification_started = False
+        owner_frame = sys._getframe(1)
+        owner_code = owner_frame.f_code
+        self._validation_owner: tuple[int, object] | None = (
+            (id(owner_frame), owner_code)
+            if _is_trusted_bulk_context_owner_code(owner_code)
+            else None
+        )
+        self._bulk_commit_inputs_verified = False
         self._compact_identity_bytes = 0
         self._compact_identity_keys: set[tuple[str, str]] = set()
         self._parsed: dict[tuple[str, int], tuple[CanonicalValue, ...]] = {}
         self._quoted: dict[str, str] = {}
         self._canonical_datetimes: dict[datetime, str] = {}
+        self._catalog_scope_indexes: dict[
+            CoverageTargetCatalogId,
+            dict[tuple[CoverageDomain, tuple[object, ...]], CoverageScope],
+        ] = {}
         self._in_progress_committed_states: set[int] = set()
+        self._in_progress_batches: set[int] = set()
         self._in_progress_evidence: set[int] = set()
         self._in_progress_initializations: set[int] = set()
         self._in_progress_states: set[int] = set()
         self._acceptance_indexes: dict[
             CoverageCommitAcceptanceId,
             tuple[CoverageCommitAcceptance, dict[CoverageStateReferenceId, int]],
+        ] = {}
+        self._verified_batches: dict[
+            CoverageMutationBatchId,
+            tuple[
+                CoverageMutationBatch,
+                tuple[_VerifiedCoverageStateDetails, ...],
+                tuple[RequestedCoverageMutation, ...],
+            ],
         ] = {}
         self._verified_committed_states: dict[
             CommittedCoverageStateId,
@@ -9976,6 +10562,14 @@ class _BulkCoverageVerificationContext:
         self._verified_scopes: dict[CoverageScopeId, CoverageScope] = {}
         self._verified_catalogs: dict[CoverageTargetCatalogId, CoverageTargetCatalog] = {}
         self._verified_plans: dict[SubscriptionPlanId, SubscriptionPlanIdentity] = {}
+        self._verified_raw_fanout_bindings: dict[
+            RawCoverageFanoutBindingId,
+            RawCoverageFanoutBinding,
+        ] = {}
+        self._verified_raw_fanout_relations: dict[
+            tuple[RawCoverageFanoutBindingId, CoverageFanoutProofId],
+            tuple[RawCoverageFanoutBinding, CoverageFanoutProof],
+        ] = {}
         self._verified_feeds: dict[FeedProductId, FeedProductId] = {}
         self._verified_instruments: dict[str, Instrument] = {}
         self._verified_sessions: dict[ConnectionSessionId, ConnectionSessionIdentity] = {}
@@ -9988,6 +10582,10 @@ class _BulkCoverageVerificationContext:
             SubscriptionAttemptId,
             SubscriptionAttemptIdentity,
         ] = {}
+        self._verified_batch_acceptances: dict[
+            tuple[CoverageCommitAcceptanceId, CoverageMutationBatchId],
+            tuple[CoverageCommitAcceptance, CoverageMutationBatch],
+        ] = {}
         self._verified_epochs: dict[CoverageEpochId, CoverageEpochIdentity] = {}
         self._verified_evidence: dict[
             CoverageEvidenceId,
@@ -9997,6 +10595,42 @@ class _BulkCoverageVerificationContext:
             CoverageInitializationId,
             tuple[CoverageInitialization, tuple[str, int]],
         ] = {}
+
+    def _has_lexical_owner(self) -> bool:
+        """Return whether the exact trusted creator frame still owns this call."""
+
+        owner = self._validation_owner
+        if owner is None or not _is_trusted_bulk_context_owner_code(cast(CodeType, owner[1])):
+            return False
+        frame: FrameType | None = sys._getframe(1)
+        while frame is not None:
+            if owner == (id(frame), frame.f_code):
+                return True
+            frame = frame.f_back
+        return False
+
+    @property
+    def _validation_active(self) -> bool:
+        """Expose lexical ownership without storing a caller-settable token."""
+
+        return self._has_lexical_owner()
+
+    @_validation_active.setter
+    def _validation_active(self, value: bool) -> None:
+        """Keep existing factory assertions while refusing caller activation."""
+
+        if value is not True or not self._has_lexical_owner():
+            raise ValueError(
+                "typed coverage verification requires a factory-owned lexical transcript."
+            )
+
+    def _require_validation_active(self) -> None:
+        """Reject contexts outside their one owning synchronous factory frame."""
+
+        if not self._has_lexical_owner():
+            raise ValueError(
+                "typed coverage verification requires a factory-owned lexical transcript."
+            )
 
     def parse(
         self,
@@ -10750,6 +11384,133 @@ class _BulkCoverageVerificationContext:
         self._verified_catalogs[catalog.coverage_target_catalog_id] = catalog
         return catalog
 
+    def catalog_scope_for_event(
+        self,
+        catalog: CoverageTargetCatalog,
+        *,
+        domain: CoverageDomain,
+        event_key: tuple[object, ...],
+    ) -> CoverageScope:
+        """Return one exact catalogue scope through a call-local O(1) index."""
+
+        verified = self.verify_target_catalog(catalog)
+        if type(domain) is not CoverageDomain:
+            raise TypeError("domain must be a CoverageDomain.")
+        if type(event_key) is not tuple:
+            raise TypeError("event_key must be a built-in tuple.")
+        index = self._catalog_scope_indexes.get(verified.coverage_target_catalog_id)
+        if index is None:
+            index = {}
+            for scope in verified.scopes:
+                key = (scope.domain, _coverage_event_scope_key(scope))
+                if key in index:
+                    raise ValueError("coverage catalogue contains a duplicate event scope.")
+                index[key] = scope
+            self._catalog_scope_indexes[verified.coverage_target_catalog_id] = index
+        result = index.get((domain, event_key))
+        if result is None:
+            raise ValueError("coverage catalogue lacks the exact requested event scope.")
+        return result
+
+    def verify_raw_fanout_binding(
+        self,
+        binding: RawCoverageFanoutBinding,
+    ) -> RawCoverageFanoutBinding:
+        """Fully verify one raw binding once in this lexical transcript."""
+
+        if type(binding) is not RawCoverageFanoutBinding:
+            raise TypeError("raw fanout binding must be a RawCoverageFanoutBinding.")
+        cached = self._verified_raw_fanout_bindings.get(binding.raw_coverage_fanout_binding_id)
+        if cached is not None:
+            if cached is not binding and cached != binding:
+                raise ValueError("one raw fanout binding ID cannot represent different values.")
+            return cached
+        _verify_raw_coverage_fanout_binding_retained_fields(binding)
+        self._verified_raw_fanout_bindings[binding.raw_coverage_fanout_binding_id] = binding
+        return binding
+
+    def verify_batch_acceptance(
+        self,
+        acceptance: "CoverageCommitAcceptance",
+        batch: "CoverageMutationBatch",
+    ) -> None:
+        """Fully verify one exact acceptance/batch pair once per transcript."""
+
+        if (
+            type(acceptance) is CoverageCommitAcceptance
+            and type(batch) is CoverageMutationBatch
+            and type(acceptance.coverage_commit_acceptance_id) is CoverageCommitAcceptanceId
+            and type(batch.coverage_mutation_batch_id) is CoverageMutationBatchId
+        ):
+            if (
+                type(acceptance.coverage_mutation_batch) is not CoverageMutationBatch
+                or acceptance.coverage_mutation_batch is not batch
+            ):
+                raise ValueError(
+                    "coverage commit acceptance lacks its exact retained mutation batch."
+                )
+            cache_key = (
+                acceptance.coverage_commit_acceptance_id,
+                batch.coverage_mutation_batch_id,
+            )
+            cached = self._verified_batch_acceptances.get(cache_key)
+            if cached is not None:
+                if (cached[0] is not acceptance and cached[0] != acceptance) or (
+                    cached[1] is not batch and cached[1] != batch
+                ):
+                    raise ValueError("one acceptance/batch pair cannot represent different values.")
+                return
+        _verify_coverage_commit_acceptance_stored_bulk(
+            acceptance,
+            batch=batch,
+            verification_context=self,
+        )
+
+    def verify_raw_fanout_binding_for_verified_fanout(
+        self,
+        binding: RawCoverageFanoutBinding,
+        fanout: CoverageFanoutProof,
+    ) -> RawCoverageFanoutBinding:
+        """Rebind one raw snapshot digest to its already-verified typed fanout."""
+
+        verified_binding = self.verify_raw_fanout_binding(binding)
+        if type(fanout) is not CoverageFanoutProof:
+            raise TypeError("fanout must be a CoverageFanoutProof.")
+        relation_key = (
+            verified_binding.raw_coverage_fanout_binding_id,
+            fanout.coverage_fanout_proof_id,
+        )
+        cached = self._verified_raw_fanout_relations.get(relation_key)
+        if cached is not None:
+            if (cached[0] is not verified_binding and cached[0] != verified_binding) or (
+                cached[1] is not fanout and cached[1] != fanout
+            ):
+                raise ValueError("one raw binding/fanout pair cannot represent different values.")
+            return cached[0]
+        if (
+            verified_binding.coverage_fanout_proof_id != fanout.coverage_fanout_proof_id
+            or verified_binding.subscription_plan_id != fanout.subscription_plan_id
+            or verified_binding.connection_session_id != fanout.connection_session_id
+        ):
+            raise ValueError("raw fanout binding does not name its exact typed fanout parent.")
+        snapshot_content = self.encode(
+            (
+                _RAW_COVERAGE_SNAPSHOT_CONTENT_VERSION,
+                _attempt_snapshot_rows(fanout.source_attempt_snapshots),
+            ),
+            maximum_length=MAX_SUBSCRIPTION_PLAN_CONTENT_LENGTH,
+        )
+        snapshot_digest = sha256_hex(
+            snapshot_content.encode("utf-8"),
+            field_name="subscription_snapshot_content",
+        )
+        if verified_binding.subscription_snapshot_content_sha256 != snapshot_digest:
+            raise ValueError(
+                "raw fanout binding snapshot digest differs from its exact typed fanout parent."
+            )
+        self._verified_raw_fanout_relations[relation_key] = (verified_binding, fanout)
+        return verified_binding
+
     def verify_attempt_snapshot(
         self,
         snapshot: SubscriptionAttemptSnapshot,
@@ -11143,7 +11904,7 @@ class _BulkCoverageVerificationContext:
             source,
             (UpstreamCoverageStateEvidenceSource, UpstreamCoverageTransitionEvidenceSource),
         ):
-            self._verify_committed_state(source.committed_state)
+            _reject_generic_raw_rejection_upstream_source(source, self)
             if type(source) is UpstreamCoverageTransitionEvidenceSource:
                 if (
                     source.committed_state.state_reference.latest_transition is None
@@ -11158,6 +11919,13 @@ class _BulkCoverageVerificationContext:
                     field_name="upstream_coverage_transition_id",
                     maximum_length=_MAX_UPSTREAM_COVERAGE_TRANSITION_ID_LENGTH,
                 )
+            return
+        if type(source) is RawRejectionNormalizationUnknownEvidenceSource:
+            _verify_raw_rejection_normalization_unknown_source(
+                source,
+                scope=scope,
+                verification_context=self,
+            )
             return
         if type(source) is NormalizationFailureEvidenceSource:
             if (
@@ -11278,6 +12046,9 @@ class _BulkCoverageVerificationContext:
                 UpstreamCoverageTransitionEvidenceSource
             ),
             CoverageEvidenceKind.UPSTREAM_COVERAGE_STATE: UpstreamCoverageStateEvidenceSource,
+            CoverageEvidenceKind.RAW_REJECTION_NORMALIZATION_UNKNOWN: (
+                RawRejectionNormalizationUnknownEvidenceSource
+            ),
             CoverageEvidenceKind.NORMALIZATION_FAILURE: NormalizationFailureEvidenceSource,
             CoverageEvidenceKind.NORMALIZATION_OUTCOME_SINK_ACCEPTANCE_AMBIGUITY: (
                 NormalizationOutcomeEvidenceSource
@@ -11307,6 +12078,9 @@ class _BulkCoverageVerificationContext:
                 CoverageDomain.SILVER_NORMALIZATION
             },
             CoverageEvidenceKind.UPSTREAM_COVERAGE_STATE: {CoverageDomain.SILVER_NORMALIZATION},
+            CoverageEvidenceKind.RAW_REJECTION_NORMALIZATION_UNKNOWN: {
+                CoverageDomain.SILVER_NORMALIZATION
+            },
             CoverageEvidenceKind.NORMALIZATION_FAILURE: {CoverageDomain.SILVER_NORMALIZATION},
             CoverageEvidenceKind.NORMALIZATION_OUTCOME_SINK_ACCEPTANCE_AMBIGUITY: {
                 CoverageDomain.SILVER_NORMALIZATION
@@ -11394,6 +12168,7 @@ class _BulkCoverageVerificationContext:
             source,
             (UpstreamCoverageTransitionEvidenceSource, UpstreamCoverageStateEvidenceSource),
         ):
+            _reject_generic_raw_rejection_upstream_source(source, self)
             upstream = source.committed_state.state_reference.reference
             upstream_scope = upstream.scope
             if (
@@ -11419,6 +12194,18 @@ class _BulkCoverageVerificationContext:
                 or upstream.status is CoverageStatus.COMPLETE
             ):
                 raise ValueError("upstream evidence must match degraded Bronze coverage.")
+            return
+        if type(source) is RawRejectionNormalizationUnknownEvidenceSource:
+            upstream = source.committed_state.state_reference.reference
+            if (
+                upstream.scope.domain is not CoverageDomain.BRONZE_INGRESS
+                or scope.domain is not CoverageDomain.SILVER_NORMALIZATION
+                or _coverage_event_scope_key(upstream.scope) != _coverage_event_scope_key(scope)
+                or upstream.epoch.collector_run_id != run
+                or upstream.epoch.epoch_ordinal != epoch.epoch_ordinal
+                or upstream.status is not CoverageStatus.CONFIRMED_INCOMPLETE
+            ):
+                raise ValueError("lossy raw-rejection evidence must match incomplete Bronze.")
             return
         if type(source) is NormalizationFailureEvidenceSource:
             raw_feed, raw_run = raw_feed_run(source.raw_record_id)
@@ -11536,14 +12323,31 @@ class _BulkCoverageVerificationContext:
             evidence.source,
             (UpstreamCoverageStateEvidenceSource, UpstreamCoverageTransitionEvidenceSource),
         )
+        is_lossy_raw_rejection = (
+            type(evidence.source) is RawRejectionNormalizationUnknownEvidenceSource
+        )
         source_components = _coverage_source_components(evidence.source)
-        if is_upstream:
-            source_row = self.encoded_array(
-                tuple(self.quote(cast(str, item)) for item in source_components)
+        if is_upstream or is_lossy_raw_rejection:
+            source_row = (
+                self.encode(source_components)
+                if is_lossy_raw_rejection
+                else self.encoded_array(
+                    tuple(self.quote(cast(str, item)) for item in source_components)
+                )
+            )
+            content_version = (
+                _LOSSY_RAW_REJECTION_COVERAGE_EVIDENCE_CONTENT_VERSION
+                if is_lossy_raw_rejection
+                else _COVERAGE_EVIDENCE_CONTENT_VERSION
+            )
+            identity_version = (
+                _LOSSY_RAW_REJECTION_COVERAGE_EVIDENCE_ID_VERSION
+                if is_lossy_raw_rejection
+                else _COVERAGE_EVIDENCE_ID_VERSION
             )
             content = self.encoded_array(
                 (
-                    self.quote(_COVERAGE_EVIDENCE_CONTENT_VERSION),
+                    self.quote(content_version),
                     self.quote(evidence.scope.coverage_scope_id.value),
                     self.quote(evidence.epoch.coverage_epoch_id.value),
                     self.quote(evidence.epoch.collector_run_id.value),
@@ -11557,7 +12361,7 @@ class _BulkCoverageVerificationContext:
             digest = sha256_hex(content.encode("utf-8"), field_name="coverage_evidence_content")
             expected = self.encoded_array(
                 (
-                    self.quote(_COVERAGE_EVIDENCE_ID_VERSION),
+                    self.quote(identity_version),
                     self.quote(evidence.scope.coverage_scope_id.value),
                     self.quote(evidence.epoch.coverage_epoch_id.value),
                     self.quote(evidence.epoch.collector_run_id.value),
@@ -11570,7 +12374,7 @@ class _BulkCoverageVerificationContext:
                 maximum_length=MAX_COVERAGE_EVIDENCE_V2_ID_LENGTH,
             )
             if evidence.canonical_content != content or evidence.content_sha256 != digest:
-                raise ValueError("upstream coverage evidence content differs from typed parents.")
+                raise ValueError("coverage evidence content differs from its typed parents.")
         else:
             expected = self.encode(
                 (
@@ -11609,10 +12413,19 @@ class _BulkCoverageVerificationContext:
             )
             if observed < upstream_observed or monotonic < upstream_boundary:
                 raise ValueError("downstream evidence cannot precede upstream evidence.")
+        elif is_lossy_raw_rejection:
+            assert type(evidence.source) is RawRejectionNormalizationUnknownEvidenceSource
+            raw_observed, raw_monotonic = _verify_raw_rejection_normalization_unknown_source(
+                evidence.source,
+                scope=evidence.scope,
+                verification_context=self,
+            )
+            if observed < raw_observed or monotonic < raw_monotonic:
+                raise ValueError("lossy downstream evidence cannot precede its raw rejection.")
         result = (observed, monotonic)
-        if is_upstream:
+        if is_upstream or is_lossy_raw_rejection:
             self.charge_compact_identity(
-                role="coverage-evidence-v2",
+                role=("coverage-evidence-v3" if is_lossy_raw_rejection else "coverage-evidence-v2"),
                 value=evidence.coverage_evidence_id.value,
             )
         self._verified_evidence[evidence.coverage_evidence_id] = (evidence, result)
@@ -11661,22 +12474,23 @@ class _BulkCoverageVerificationContext:
         acceptance = committed.commit_acceptance
         if type(acceptance) is not CoverageCommitAcceptance:
             raise TypeError("committed state contains an invalid commit acceptance.")
+        retained_batch = acceptance.coverage_mutation_batch
+        if type(retained_batch) is not CoverageMutationBatch:
+            raise TypeError("commit acceptance contains an invalid retained mutation batch.")
+        verified_batch = self._verified_batches.get(retained_batch.coverage_mutation_batch_id)
+        if verified_batch is None:
+            _verify_coverage_mutation_batch_stored_uncached(
+                retained_batch,
+                expected_canonical_content=retained_batch.canonical_content,
+                expected_batch_id=retained_batch.coverage_mutation_batch_id,
+                verification_context=self,
+            )
+        elif verified_batch[0] is not retained_batch and verified_batch[0] != retained_batch:
+            raise ValueError("commit acceptance retains a foreign mutation batch value.")
+        self.verify_batch_acceptance(acceptance, retained_batch)
         acceptance_entry = self._acceptance_indexes.get(acceptance.coverage_commit_acceptance_id)
         if acceptance_entry is None:
-            verified_acceptance = CoverageCommitAcceptance._verified_value(
-                acceptance.coverage_mutation_batch_id,
-                acceptance.resulting_state_reference_ids,
-            )
-            if verified_acceptance != acceptance:
-                raise ValueError("upstream acceptance differs from its retained typed content.")
-            indexes = {
-                state_id: index
-                for index, state_id in enumerate(acceptance.resulting_state_reference_ids)
-            }
-            if len(indexes) != len(acceptance.resulting_state_reference_ids):
-                raise ValueError("upstream acceptance contains duplicate state references.")
-            acceptance_entry = (acceptance, indexes)
-            self._acceptance_indexes[acceptance.coverage_commit_acceptance_id] = acceptance_entry
+            raise ValueError("committed state lacks a fully verified acceptance index.")
         elif acceptance_entry[0] is not acceptance and acceptance_entry[0] != acceptance:
             raise ValueError("one acceptance ID cannot represent different typed values.")
         result_index = acceptance_entry[1].get(
@@ -11797,6 +12611,16 @@ class _BulkCoverageVerificationContext:
                 raise ValueError(
                     "initial Silver status and boundary must exactly copy upstream Bronze."
                 )
+        elif type(source) is RawRejectionNormalizationUnknownEvidenceSource:
+            upstream = source.committed_state.state_reference
+            raw_boundary = self.verify_evidence(source.raw_rejection_evidence)
+            if (
+                initialization.status is not CoverageStatus.UNCERTAIN
+                or upstream.reference.status is not CoverageStatus.CONFIRMED_INCOMPLETE
+                or observed < raw_boundary[0]
+                or monotonic < raw_boundary[1]
+            ):
+                raise ValueError("raw-rejection projection may initialize only uncertain Silver.")
         if type(initialization.reference) is not CoverageReference:
             raise TypeError("coverage initialization contains an invalid reference.")
         require_nonnegative_int(
@@ -11985,6 +12809,17 @@ class _BulkCoverageVerificationContext:
                     is not transition.new_status
                 ):
                     raise ValueError("upstream transition status differs from downstream status.")
+            elif transition.evidence.kind is (
+                CoverageEvidenceKind.RAW_REJECTION_NORMALIZATION_UNKNOWN
+            ):
+                source = transition.evidence.source
+                if (
+                    type(source) is not RawRejectionNormalizationUnknownEvidenceSource
+                    or source.committed_state.state_reference.reference.status
+                    is not CoverageStatus.CONFIRMED_INCOMPLETE
+                    or transition.new_status is not CoverageStatus.UNCERTAIN
+                ):
+                    raise ValueError("lossy raw rejection may transition only to uncertain.")
             expected_transition_id = self.encoded_array(
                 (
                     self.quote("coverage-transition-v1"),
@@ -12021,6 +12856,7 @@ class _BulkCoverageVerificationContext:
         upstream_derived = evidence.kind in {
             CoverageEvidenceKind.UPSTREAM_COVERAGE_STATE,
             CoverageEvidenceKind.UPSTREAM_COVERAGE_TRANSITION,
+            CoverageEvidenceKind.RAW_REJECTION_NORMALIZATION_UNKNOWN,
         }
         must_be_compact = state.latest_transition is not None or upstream_derived
         if must_be_compact:
@@ -12157,6 +12993,7 @@ def _verify_coverage_mutation_target_decisions(
         maximum_items=MAX_COVERAGE_MUTATION_TARGETS,
     )
     context = verification_context or _BulkCoverageVerificationContext()
+    context._require_validation_active()
     verified_result_details = tuple(
         context.verify_state(state) for state in resulting_state_references
     )
@@ -12338,6 +13175,7 @@ def _coverage_mutation_target_decision_sha256s(
 
     if type(verification_context) is not _BulkCoverageVerificationContext:
         raise TypeError("verification_context must be a bulk coverage verification context.")
+    verification_context._require_validation_active()
     commitments, _verified_results, _verified_requests = _verify_coverage_mutation_target_decisions(
         fanout_proof=fanout_proof,
         expected_pre_state_rows=expected_pre_state_rows,
@@ -12402,6 +13240,24 @@ def _verify_coverage_mutation_batch_stored(
     *,
     expected_canonical_content: str,
     expected_batch_id: CoverageMutationBatchId,
+) -> tuple[_VerifiedCoverageStateDetails, ...]:
+    """Fully rederive one stored batch through a fresh, non-reusable context."""
+
+    verification_context = _BulkCoverageVerificationContext()
+    verification_context._validation_active = True
+    return _verify_coverage_mutation_batch_stored_uncached(
+        batch,
+        expected_canonical_content=expected_canonical_content,
+        expected_batch_id=expected_batch_id,
+        verification_context=verification_context,
+    )
+
+
+def _verify_coverage_mutation_batch_stored_uncached(
+    batch: CoverageMutationBatch,
+    *,
+    expected_canonical_content: str,
+    expected_batch_id: CoverageMutationBatchId,
     verification_context: _BulkCoverageVerificationContext | None = None,
 ) -> tuple[_VerifiedCoverageStateDetails, ...]:
     """Fully rederive one stored batch and return its call-local state transcript."""
@@ -12413,9 +13269,16 @@ def _verify_coverage_mutation_batch_stored(
     if type(expected_batch_id) is not CoverageMutationBatchId:
         raise TypeError("expected_batch_id must be a CoverageMutationBatchId.")
     context = verification_context or _BulkCoverageVerificationContext()
-    if context._batch_verification_started:
-        raise ValueError("a bulk coverage verification context can verify only one batch.")
-    context._batch_verification_started = True
+    context._require_validation_active()
+    if (
+        type(batch.coverage_mutation_batch_id) is CoverageMutationBatchId
+        and batch.coverage_mutation_batch_id in context._verified_batches
+    ):
+        raise ValueError("one verification transcript cannot reverify an accepted batch.")
+    marker = id(batch)
+    if marker in context._in_progress_batches:
+        raise ValueError("coverage mutation batch contains a retained parent cycle.")
+    context._in_progress_batches.add(marker)
     _verify_coverage_fanout_proof_retained_fields(batch.fanout_proof, context)
     if batch.raw_fanout_binding is not None:
         _verify_raw_coverage_fanout_binding_retained_fields(batch.raw_fanout_binding)
@@ -12466,6 +13329,12 @@ def _verify_coverage_mutation_batch_stored(
         or recomputed_id_text != expected_batch_id.value
     ):
         raise ValueError("stored coverage mutation batch does not match its content.")
+    context._verified_batches[batch.coverage_mutation_batch_id] = (
+        batch,
+        verified_results,
+        verified_requests,
+    )
+    context._in_progress_batches.discard(marker)
     return verified_results
 
 
@@ -12514,6 +13383,7 @@ def prepare_coverage_mutation_batch(
     if fanout_components[0] != _COVERAGE_FANOUT_ID_VERSION:
         raise ValueError("current coverage mutation writers require a fanout-v3 proof.")
     verification_context = _BulkCoverageVerificationContext()
+    verification_context._validation_active = True
     _verify_coverage_fanout_proof_retained_fields(fanout_proof, verification_context)
     if raw_fanout_binding is not None:
         _verify_raw_coverage_fanout_binding_retained_fields(raw_fanout_binding)
@@ -12542,7 +13412,7 @@ def prepare_coverage_mutation_batch(
     if any(request.epoch.collector_run_id != fanout_run_id for request in requests):
         raise ValueError("coverage mutation epochs must belong to the fanout collector run.")
     for request in requests:
-        _validate_mutation_request_semantics(request)
+        _validate_mutation_request_semantics_in_context(request, verification_context)
     _validate_fanout_request_semantics(fanout_proof, requests)
     _validate_fanout_evidence_lineage(fanout_proof, requests)
     _validate_raw_fanout_binding(
@@ -12554,6 +13424,193 @@ def prepare_coverage_mutation_batch(
     states_by_scope = {
         item.reference.scope.coverage_scope_id: item for item in current_state_references
     }
+    quoted = verification_context.quote
+    encoded_array = verification_context.encoded_array
+
+    def sealed_state_reference(
+        *,
+        initialization: CoverageInitialization,
+        reference: CoverageReference,
+        previous_state: CoverageStateReference | None,
+        transition: CoverageTransition | None,
+    ) -> CoverageStateReference:
+        """Build one candidate state inside this complete verified transcript."""
+
+        observed_evidence = (
+            transition.evidence if transition is not None else initialization.initial_evidence
+        )
+        observed = verification_context.utc(
+            observed_evidence.observed_at,
+            field_name="coverage_state_observed_at",
+        )
+        monotonic = require_nonnegative_int(
+            observed_evidence.observed_monotonic_ns,
+            field_name="coverage_state_observed_monotonic_ns",
+        )
+        role = "transition" if transition is not None else "initialization"
+        previous_state_id = (
+            previous_state.coverage_state_reference_id if previous_state is not None else None
+        )
+        transition_id = transition.coverage_transition_id if transition is not None else None
+        upstream_derived = observed_evidence.kind in {
+            CoverageEvidenceKind.UPSTREAM_COVERAGE_STATE,
+            CoverageEvidenceKind.UPSTREAM_COVERAGE_TRANSITION,
+            CoverageEvidenceKind.RAW_REJECTION_NORMALIZATION_UNKNOWN,
+        }
+        if transition is not None or upstream_derived:
+            content = encoded_array(
+                (
+                    quoted(_COVERAGE_STATE_REFERENCE_CONTENT_VERSION),
+                    quoted(role),
+                    quoted(initialization.coverage_initialization_id.value),
+                    quoted(previous_state_id.value) if previous_state_id is not None else "null",
+                    quoted(transition_id.value) if transition_id is not None else "null",
+                    quoted(reference.scope.coverage_scope_id.value),
+                    quoted(reference.epoch.coverage_epoch_id.value),
+                    quoted(reference.epoch.collector_run_id.value),
+                    quoted(reference.status.value),
+                    str(reference.transition_ordinal),
+                    quoted(observed),
+                    str(monotonic),
+                ),
+                maximum_length=MAX_COVERAGE_STATE_REFERENCE_V2_CONTENT_LENGTH,
+            )
+            digest = sha256_hex(content.encode("utf-8"), field_name="coverage_state_content")
+            state_id_text = encoded_array(
+                (
+                    quoted(_COVERAGE_STATE_REFERENCE_ID_VERSION),
+                    quoted(reference.scope.coverage_scope_id.value),
+                    quoted(reference.epoch.coverage_epoch_id.value),
+                    quoted(reference.epoch.collector_run_id.value),
+                    quoted(reference.status.value),
+                    str(reference.transition_ordinal),
+                    quoted(observed),
+                    str(monotonic),
+                    quoted(digest),
+                ),
+                maximum_length=MAX_COVERAGE_STATE_REFERENCE_V2_ID_LENGTH,
+            )
+        else:
+            content = None
+            digest = None
+            state_id_text = encoded_array(
+                (
+                    quoted(_COVERAGE_STATE_REFERENCE_LEGACY_ID_VERSION),
+                    quoted("initialization"),
+                    quoted(initialization.coverage_initialization_id.value),
+                )
+            )
+        state_id = object.__new__(CoverageStateReferenceId)
+        object.__setattr__(state_id, "value", state_id_text)
+        state = object.__new__(CoverageStateReference)
+        object.__setattr__(state, "initialization", initialization)
+        object.__setattr__(state, "reference", reference)
+        object.__setattr__(state, "previous_state", previous_state)
+        object.__setattr__(state, "previous_state_reference_id", previous_state_id)
+        object.__setattr__(state, "latest_transition", transition)
+        object.__setattr__(state, "canonical_content", content)
+        object.__setattr__(state, "content_sha256", digest)
+        object.__setattr__(state, "coverage_state_reference_id", state_id)
+        verification_context.verify_state(state)
+        return state
+
+    def sealed_initial_state(
+        request: RequestedCoverageMutation,
+    ) -> tuple[CoverageInitialization, CoverageStateReference]:
+        reference = object.__new__(CoverageReference)
+        object.__setattr__(reference, "scope", request.scope)
+        object.__setattr__(reference, "epoch", request.epoch)
+        object.__setattr__(reference, "transition_ordinal", 0)
+        object.__setattr__(reference, "status", request.requested_status)
+        object.__setattr__(reference, "initial_reason", request.initial_reason)
+        object.__setattr__(reference, "initial_evidence", request.evidence)
+        object.__setattr__(reference, "transition_id", None)
+        initialization_id_text = encoded_array(
+            (
+                quoted("coverage-initialization-v1"),
+                quoted(request.epoch.collector_run_id.value),
+                quoted(request.scope.coverage_scope_id.value),
+                quoted(request.epoch.coverage_epoch_id.value),
+                quoted(request.requested_status.value),
+                quoted(request.initial_reason.value),
+                quoted(
+                    verification_context.utc(
+                        request.epoch.activation_time,
+                        field_name="activation_time",
+                    )
+                ),
+                str(request.epoch.activation_monotonic_ns),
+                quoted(request.evidence.coverage_evidence_id.value),
+                quoted(
+                    verification_context.utc(
+                        request.evidence.observed_at,
+                        field_name="evidence_observed_at",
+                    )
+                ),
+                str(request.evidence.observed_monotonic_ns),
+            )
+        )
+        initialization_id = object.__new__(CoverageInitializationId)
+        object.__setattr__(initialization_id, "value", initialization_id_text)
+        initialization = object.__new__(CoverageInitialization)
+        object.__setattr__(initialization, "scope", request.scope)
+        object.__setattr__(initialization, "epoch", request.epoch)
+        object.__setattr__(initialization, "status", request.requested_status)
+        object.__setattr__(initialization, "initial_reason", request.initial_reason)
+        object.__setattr__(initialization, "initial_evidence", request.evidence)
+        object.__setattr__(initialization, "reference", reference)
+        object.__setattr__(initialization, "coverage_initialization_id", initialization_id)
+        return initialization, sealed_state_reference(
+            initialization=initialization,
+            reference=reference,
+            previous_state=None,
+            transition=None,
+        )
+
+    def sealed_transition_state(
+        *,
+        current: CoverageStateReference,
+        request: RequestedCoverageMutation,
+    ) -> tuple[CoverageTransition, CoverageStateReference]:
+        ordinal = current.reference.transition_ordinal + 1
+        transition_id_text = encoded_array(
+            (
+                quoted("coverage-transition-v1"),
+                quoted(request.scope.coverage_scope_id.value),
+                quoted(request.epoch.coverage_epoch_id.value),
+                str(ordinal),
+                quoted(current.reference.status.value),
+                quoted(request.requested_status.value),
+                quoted(request.transition_reason.value),
+                quoted(request.evidence.coverage_evidence_id.value),
+            )
+        )
+        transition_id = object.__new__(CoverageTransitionId)
+        object.__setattr__(transition_id, "value", transition_id_text)
+        transition = object.__new__(CoverageTransition)
+        object.__setattr__(transition, "scope", request.scope)
+        object.__setattr__(transition, "epoch", request.epoch)
+        object.__setattr__(transition, "transition_ordinal", ordinal)
+        object.__setattr__(transition, "previous_status", current.reference.status)
+        object.__setattr__(transition, "new_status", request.requested_status)
+        object.__setattr__(transition, "reason", request.transition_reason)
+        object.__setattr__(transition, "evidence", request.evidence)
+        object.__setattr__(transition, "coverage_transition_id", transition_id)
+        reference = object.__new__(CoverageReference)
+        object.__setattr__(reference, "scope", request.scope)
+        object.__setattr__(reference, "epoch", request.epoch)
+        object.__setattr__(reference, "transition_ordinal", ordinal)
+        object.__setattr__(reference, "status", request.requested_status)
+        object.__setattr__(reference, "initial_reason", current.reference.initial_reason)
+        object.__setattr__(reference, "initial_evidence", current.reference.initial_evidence)
+        object.__setattr__(reference, "transition_id", transition_id)
+        return transition, sealed_state_reference(
+            initialization=current.initialization,
+            reference=reference,
+            previous_state=current,
+            transition=transition,
+        )
+
     initializations: list[CoverageInitialization] = []
     transitions: list[CoverageTransition] = []
     no_ops: list[CoverageMutationNoOp] = []
@@ -12561,45 +13618,55 @@ def prepare_coverage_mutation_batch(
     for request in requests:
         current = states_by_scope.get(request.scope.coverage_scope_id)
         if current is None:
-            initialization = CoverageInitialization(
-                request.scope,
-                request.epoch,
-                request.requested_status,
-                request.initial_reason,
-                request.evidence,
-            )
+            initialization, state = sealed_initial_state(request)
             initializations.append(initialization)
-            resulting.append(CoverageStateReference.from_initialization(initialization))
+            resulting.append(state)
             continue
         if current.reference.epoch != request.epoch:
             raise ValueError("coverage mutation cannot cross a state epoch.")
         current_severity = _coverage_status_severity(current.reference.status)
         requested_severity = _coverage_status_severity(request.requested_status)
         if requested_severity <= current_severity:
-            no_op = CoverageMutationNoOp(current, request)
+            current_evidence = (
+                current.latest_transition.evidence
+                if current.latest_transition is not None
+                else current.reference.initial_evidence
+            )
+            if (
+                request.evidence.observed_at < current_evidence.observed_at
+                or request.evidence.observed_monotonic_ns < current_evidence.observed_monotonic_ns
+            ):
+                raise ValueError(
+                    "coverage no-op evidence cannot precede the current state boundary."
+                )
+            if (
+                request.requested_status is CoverageStatus.COMPLETE
+                and current.reference.status is not CoverageStatus.COMPLETE
+            ):
+                raise ValueError("coverage recovery cannot be represented as a no-op.")
+            no_op_row = (
+                "coverage-mutation-no-op-v1",
+                request.scope.coverage_scope_id.value,
+                current.coverage_state_reference_id.value,
+                request.requested_status.value,
+                request.initial_reason.value,
+                request.transition_reason.value,
+                request.evidence.coverage_evidence_id.value,
+                "already-at-or-beyond-requested-severity",
+            )
+            no_op = object.__new__(CoverageMutationNoOp)
+            object.__setattr__(no_op, "current_state", current)
+            object.__setattr__(no_op, "request", request)
+            object.__setattr__(no_op, "canonical_row", no_op_row)
             no_ops.append(no_op)
             resulting.append(current)
             continue
-        transition, updated = reduce_coverage(
-            current.reference,
-            RequestedCoverageTransition(
-                scope=request.scope,
-                epoch=request.epoch,
-                previous_status=current.reference.status,
-                next_transition_ordinal=current.reference.transition_ordinal + 1,
-                requested_status=request.requested_status,
-                reason=request.transition_reason,
-            ),
-            request.evidence,
+        transition, state = sealed_transition_state(
+            current=current,
+            request=request,
         )
         transitions.append(transition)
-        resulting.append(
-            CoverageStateReference.from_transition(
-                previous=current,
-                transition=transition,
-                resulting_reference=updated,
-            )
-        )
+        resulting.append(state)
     ordered_initializations = tuple(
         sorted(initializations, key=lambda item: item.scope.coverage_scope_id.value)
     )
@@ -12675,6 +13742,7 @@ class CoverageCommitAcceptance:
     state reference alone is never proof of runtime commit.
     """
 
+    coverage_mutation_batch: CoverageMutationBatch = field(repr=False, compare=False)
     coverage_mutation_batch_id: CoverageMutationBatchId
     resulting_state_reference_ids: tuple[CoverageStateReferenceId, ...]
     resulting_state_item_sha256s: tuple[str, ...] = field(repr=False)
@@ -12689,9 +13757,12 @@ class CoverageCommitAcceptance:
     @classmethod
     def _verified_value(
         cls,
-        coverage_mutation_batch_id: CoverageMutationBatchId,
+        coverage_mutation_batch: CoverageMutationBatch,
         resulting_state_reference_ids: tuple[CoverageStateReferenceId, ...],
     ) -> Self:
+        if type(coverage_mutation_batch) is not CoverageMutationBatch:
+            raise TypeError("coverage_mutation_batch must be a CoverageMutationBatch.")
+        coverage_mutation_batch_id = coverage_mutation_batch.coverage_mutation_batch_id
         if type(coverage_mutation_batch_id) is not CoverageMutationBatchId:
             raise TypeError("coverage_mutation_batch_id must be a CoverageMutationBatchId.")
         if type(resulting_state_reference_ids) is not tuple or any(
@@ -12728,6 +13799,7 @@ class CoverageCommitAcceptance:
             )
         )
         value = object.__new__(cls)
+        object.__setattr__(value, "coverage_mutation_batch", coverage_mutation_batch)
         object.__setattr__(value, "coverage_mutation_batch_id", coverage_mutation_batch_id)
         object.__setattr__(value, "resulting_state_reference_ids", resulting_state_reference_ids)
         object.__setattr__(value, "resulting_state_item_sha256s", item_sha256s)
@@ -12755,7 +13827,7 @@ class CoverageCommitAcceptance:
         if committed_state_references != batch.resulting_state_references:
             raise ValueError("committed states must exactly match the prepared CAS results.")
         return cls._verified_value(
-            batch.coverage_mutation_batch_id,
+            batch,
             tuple(item.coverage_state_reference_id for item in committed_state_references),
         )
 
@@ -12771,11 +13843,21 @@ class CoverageCommitAcceptance:
     ) -> Self:
         """Verify a persisted acceptance against the complete prepared result set."""
 
+        verification_context = _BulkCoverageVerificationContext()
+        verification_context._validation_active = True
+        _verify_coverage_mutation_batch_stored_uncached(
+            batch,
+            expected_canonical_content=batch.canonical_content,
+            expected_batch_id=batch.coverage_mutation_batch_id,
+            verification_context=verification_context,
+        )
         value = cls._verified_value(
-            coverage_mutation_batch_id,
+            batch,
             resulting_state_reference_ids,
         )
-        value.verify_for(batch)
+        if coverage_mutation_batch_id != batch.coverage_mutation_batch_id:
+            raise ValueError("stored acceptance names a foreign mutation batch.")
+        verification_context.verify_batch_acceptance(value, batch)
         if type(expected_canonical_content) is not str:
             raise TypeError("expected_canonical_content must be a built-in string.")
         if type(expected_acceptance_id) is not CoverageCommitAcceptanceId:
@@ -12794,7 +13876,9 @@ class CoverageCommitAcceptance:
             item.coverage_state_reference_id for item in batch.resulting_state_references
         )
         if (
-            self.coverage_mutation_batch_id != batch.coverage_mutation_batch_id
+            type(self.coverage_mutation_batch) is not CoverageMutationBatch
+            or self.coverage_mutation_batch is not batch
+            or self.coverage_mutation_batch_id != batch.coverage_mutation_batch_id
             or self.resulting_state_reference_ids != expected_ids
         ):
             raise ValueError("coverage mutation acceptance does not echo the exact batch results.")
@@ -12850,8 +13934,29 @@ def _verify_coverage_commit_acceptance_stored_bulk(
         raise TypeError("batch must be a CoverageMutationBatch.")
     if type(verification_context) is not _BulkCoverageVerificationContext:
         raise TypeError("verification_context must be a bulk verification context.")
+    verification_context._require_validation_active()
     if type(acceptance.coverage_mutation_batch_id) is not CoverageMutationBatchId:
         raise TypeError("acceptance contains an invalid mutation batch ID.")
+    if type(acceptance.coverage_commit_acceptance_id) is not CoverageCommitAcceptanceId:
+        raise TypeError("acceptance contains an invalid acceptance ID.")
+    if type(batch.coverage_mutation_batch_id) is not CoverageMutationBatchId:
+        raise TypeError("batch contains an invalid mutation batch ID.")
+    if (
+        type(acceptance.coverage_mutation_batch) is not CoverageMutationBatch
+        or acceptance.coverage_mutation_batch is not batch
+    ):
+        raise ValueError("coverage commit acceptance lacks its exact retained mutation batch.")
+    cache_key = (
+        acceptance.coverage_commit_acceptance_id,
+        batch.coverage_mutation_batch_id,
+    )
+    cached = verification_context._verified_batch_acceptances.get(cache_key)
+    if cached is not None:
+        if (cached[0] is not acceptance and cached[0] != acceptance) or (
+            cached[1] is not batch and cached[1] != batch
+        ):
+            raise ValueError("one acceptance/batch pair cannot represent different values.")
+        return
     if type(acceptance.resulting_state_reference_ids) is not tuple or any(
         type(item) is not CoverageStateReferenceId
         for item in acceptance.resulting_state_reference_ids
@@ -12921,6 +14026,7 @@ def _verify_coverage_commit_acceptance_stored_bulk(
         acceptance,
         {state_id: index for index, state_id in enumerate(state_ids)},
     )
+    verification_context._verified_batch_acceptances[cache_key] = (acceptance, batch)
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -12985,13 +14091,8 @@ class CommittedCoverageState:
             != state_reference.coverage_state_reference_id
         ):
             raise ValueError("coverage state is not present at the supplied result ordinal.")
-        verified_acceptance = CoverageCommitAcceptance._verified_value(
-            commit_acceptance.coverage_mutation_batch_id,
-            commit_acceptance.resulting_state_reference_ids,
-        )
-        if verified_acceptance != commit_acceptance:
-            raise ValueError("commit acceptance differs from its retained typed content.")
         verification_context = _BulkCoverageVerificationContext()
+        verification_context._validation_active = True
         verification_context.verify_state(state_reference)
         content, digest, committed_text = _committed_coverage_state_identity(
             state_reference=state_reference,
@@ -13045,7 +14146,79 @@ class CommittedCoverageState:
     def verify_stored(self) -> None:
         """Rederive exact state, acceptance, ordinal, canonical content and ID."""
 
-        _BulkCoverageVerificationContext()._verify_committed_state(self)
+        verification_context = _BulkCoverageVerificationContext()
+        verification_context._validation_active = True
+        verification_context._verify_committed_state(self)
+
+
+def _verified_committed_mutation_request(
+    committed_state: CommittedCoverageState,
+    verification_context: _BulkCoverageVerificationContext,
+) -> RequestedCoverageMutation:
+    """Return the exact accepted request only after full retained-parent verification."""
+
+    if type(committed_state) is not CommittedCoverageState:
+        raise TypeError("committed_state must be a CommittedCoverageState.")
+    if type(verification_context) is not _BulkCoverageVerificationContext:
+        raise TypeError("verification_context must be a bulk coverage verification context.")
+    verification_context._require_validation_active()
+    verification_context._verify_committed_state(committed_state)
+    acceptance = committed_state.commit_acceptance
+    batch = acceptance.coverage_mutation_batch
+    verified_batch = verification_context._verified_batches.get(batch.coverage_mutation_batch_id)
+    if verified_batch is None or (verified_batch[0] is not batch and verified_batch[0] != batch):
+        raise ValueError("committed state lacks its fully verified mutation transcript.")
+    ordinal = require_nonnegative_int(
+        committed_state.result_ordinal,
+        field_name="result_ordinal",
+    )
+    verified_requests = verified_batch[2]
+    if (
+        ordinal >= len(verified_requests)
+        or ordinal >= len(batch.resulting_state_references)
+        or ordinal >= len(acceptance.resulting_state_reference_ids)
+        or batch.resulting_state_references[ordinal] is not committed_state.state_reference
+        or acceptance.resulting_state_reference_ids[ordinal]
+        != committed_state.state_reference.coverage_state_reference_id
+    ):
+        raise ValueError("committed state is absent from its exact mutation result position.")
+    return verified_requests[ordinal]
+
+
+def _is_exact_raw_rejection_request(request: RequestedCoverageMutation) -> bool:
+    """Identify only the closed definite raw-rejection mutation row."""
+
+    if type(request) is not RequestedCoverageMutation:
+        raise TypeError("request must be a RequestedCoverageMutation.")
+    return (
+        request.requested_status is CoverageStatus.CONFIRMED_INCOMPLETE
+        and request.initial_reason is InitialCoverageReason.RAW_DEFINITE_REJECTION
+        and request.transition_reason is CoverageReason.RAW_DEFINITE_REJECTION
+        and request.evidence.kind is CoverageEvidenceKind.RAW_RECORD_REJECTION
+        and type(request.evidence.source) is RawRecordEvidenceSource
+    )
+
+
+def _reject_generic_raw_rejection_upstream_source(
+    source: UpstreamCoverageStateEvidenceSource | UpstreamCoverageTransitionEvidenceSource,
+    verification_context: _BulkCoverageVerificationContext,
+) -> None:
+    """Keep raw rejection out of the generic exact-status upstream relation."""
+
+    if not isinstance(
+        source,
+        (UpstreamCoverageStateEvidenceSource, UpstreamCoverageTransitionEvidenceSource),
+    ):
+        raise TypeError("source must be an ordinary upstream coverage evidence source.")
+    verification_context._require_validation_active()
+    request = _verified_committed_mutation_request(
+        source.committed_state,
+        verification_context,
+    )
+    if _is_exact_raw_rejection_request(request):
+        raise ValueError(
+            "definite raw rejection requires an explicit typed projection-membership route."
+        )
 
 
 def _committed_coverage_state_identity(
@@ -13146,6 +14319,7 @@ def _bulk_committed_coverage_state_identity(
 
     if type(context) is not _BulkCoverageVerificationContext:
         raise TypeError("context must be a bulk coverage verification context.")
+    context._require_validation_active()
     return _committed_coverage_state_identity(
         state_reference=state_reference,
         commit_acceptance=commit_acceptance,
@@ -13159,7 +14333,7 @@ def _verify_bulk_coverage_commit_inputs(
     batch: CoverageMutationBatch,
     commit_acceptance: CoverageCommitAcceptance,
     resulting_state_references: tuple[CoverageStateReference, ...],
-    verification_context: _BulkCoverageVerificationContext | None = None,
+    verification_context: _BulkCoverageVerificationContext,
 ) -> tuple[_VerifiedCoverageStateDetails, ...]:
     """Fully verify one batch-v2 commit exactly once before bulk derivation."""
 
@@ -13176,7 +14350,11 @@ def _verify_bulk_coverage_commit_inputs(
         field_name="resulting_state_references",
         maximum_items=MAX_COVERAGE_MUTATION_TARGETS,
     )
-    context = verification_context or _BulkCoverageVerificationContext()
+    context = verification_context
+    context._require_validation_active()
+    if context._bulk_commit_inputs_verified:
+        raise ValueError("one verification context can verify only one batch commit.")
+    context._bulk_commit_inputs_verified = True
     batch_components = context.parse(
         batch.coverage_mutation_batch_id.value,
         field_name="coverage_mutation_batch_id",
@@ -13191,17 +14369,13 @@ def _verify_bulk_coverage_commit_inputs(
     ):
         raise ValueError("bulk derivation requires current batch-v2 and acceptance-v2 values.")
 
-    verified_results = _verify_coverage_mutation_batch_stored(
+    verified_results = _verify_coverage_mutation_batch_stored_uncached(
         batch,
         expected_canonical_content=batch.canonical_content,
         expected_batch_id=batch.coverage_mutation_batch_id,
         verification_context=context,
     )
-    _verify_coverage_commit_acceptance_stored_bulk(
-        commit_acceptance,
-        batch=batch,
-        verification_context=context,
-    )
+    context.verify_batch_acceptance(commit_acceptance, batch)
     if resulting_state_references != batch.resulting_state_references:
         raise ValueError("bulk results must exactly equal the prepared batch result order.")
     expected_ids = tuple(item.coverage_state_reference_id for item in resulting_state_references)
@@ -13240,26 +14414,147 @@ def _verify_bulk_coverage_commit_inputs(
     return verified_results
 
 
+def _verify_coverage_evidence_leaf_identity(evidence: CoverageEvidence) -> None:
+    """Rederive one selected evidence identity without reopening shared parents."""
+
+    if type(evidence) is not CoverageEvidence:
+        raise TypeError("coverage evidence leaf must be CoverageEvidence.")
+    if type(evidence.kind) is not CoverageEvidenceKind:
+        raise TypeError("coverage evidence leaf contains an invalid kind.")
+    if type(evidence.scope) is not CoverageScope:
+        raise TypeError("coverage evidence leaf contains an invalid scope.")
+    if type(evidence.epoch) is not CoverageEpochIdentity or evidence.epoch.scope != evidence.scope:
+        raise ValueError("coverage evidence leaf epoch must belong to its exact scope.")
+    if type(evidence.coverage_evidence_id) is not CoverageEvidenceId:
+        raise TypeError("coverage evidence leaf contains an invalid identity.")
+    observed = canonical_utc_datetime(evidence.observed_at, field_name="observed_at")
+    monotonic = require_nonnegative_int(
+        evidence.observed_monotonic_ns,
+        field_name="observed_monotonic_ns",
+    )
+    source_components = _coverage_source_components(evidence.source)
+    is_upstream = evidence.kind in {
+        CoverageEvidenceKind.UPSTREAM_COVERAGE_STATE,
+        CoverageEvidenceKind.UPSTREAM_COVERAGE_TRANSITION,
+    }
+    is_lossy = evidence.kind is CoverageEvidenceKind.RAW_REJECTION_NORMALIZATION_UNKNOWN
+    if is_upstream or is_lossy:
+        content_version = (
+            _LOSSY_RAW_REJECTION_COVERAGE_EVIDENCE_CONTENT_VERSION
+            if is_lossy
+            else _COVERAGE_EVIDENCE_CONTENT_VERSION
+        )
+        identity_version = (
+            _LOSSY_RAW_REJECTION_COVERAGE_EVIDENCE_ID_VERSION
+            if is_lossy
+            else _COVERAGE_EVIDENCE_ID_VERSION
+        )
+        content = canonical_json_array(
+            (
+                content_version,
+                evidence.scope.coverage_scope_id,
+                evidence.epoch.coverage_epoch_id,
+                evidence.epoch.collector_run_id,
+                evidence.kind.value,
+                source_components,
+                observed,
+                monotonic,
+            ),
+            maximum_length=MAX_COVERAGE_EVIDENCE_V2_CONTENT_LENGTH,
+        )
+        digest = sha256_hex(content.encode("utf-8"), field_name="coverage_evidence_content")
+        expected_id = canonical_json_array(
+            (
+                identity_version,
+                evidence.scope.coverage_scope_id,
+                evidence.epoch.coverage_epoch_id,
+                evidence.epoch.collector_run_id,
+                evidence.kind.value,
+                source_components,
+                observed,
+                monotonic,
+                digest,
+            ),
+            maximum_length=MAX_COVERAGE_EVIDENCE_V2_ID_LENGTH,
+        )
+        if evidence.canonical_content != content or evidence.content_sha256 != digest:
+            raise ValueError("coverage evidence leaf content differs from its typed value.")
+    else:
+        expected_id = canonical_json_array(
+            (
+                _COVERAGE_EVIDENCE_LEGACY_ID_VERSION,
+                evidence.scope.coverage_scope_id,
+                evidence.epoch.coverage_epoch_id,
+                evidence.epoch.collector_run_id,
+                evidence.kind.value,
+                source_components,
+                observed,
+                monotonic,
+            )
+        )
+        if evidence.canonical_content is not None or evidence.content_sha256 is not None:
+            raise ValueError("legacy coverage evidence leaf has compact content fields.")
+    if evidence.coverage_evidence_id.value != expected_id:
+        raise ValueError("coverage evidence leaf identity differs from its typed value.")
+
+
 def _construct_bulk_verified_upstream_evidence(
     *,
-    source: UpstreamCoverageStateEvidenceSource | UpstreamCoverageTransitionEvidenceSource,
+    derivation: "BatchVerifiedCoverageDerivation",
+    index: int,
     downstream_scope: CoverageScope,
     downstream_epoch: CoverageEpochIdentity,
     observed_at: datetime,
     observed_monotonic_ns: int,
+    current_downstream_state: CoverageStateReference | None,
+    lossy_raw_rejection: bool,
 ) -> CoverageEvidence:
-    """Construct ordinary byte-identical evidence from a verified bulk leaf."""
+    """Verify one selected derivation leaf, then seal byte-identical evidence."""
 
+    if type(derivation) is not BatchVerifiedCoverageDerivation:
+        raise TypeError("derivation must be a BatchVerifiedCoverageDerivation.")
+    if type(lossy_raw_rejection) is not bool:
+        raise TypeError("lossy_raw_rejection must be a built-in boolean.")
     if type(downstream_scope) is not CoverageScope:
         raise TypeError("downstream_scope must be a CoverageScope.")
     if type(downstream_epoch) is not CoverageEpochIdentity:
         raise TypeError("downstream_epoch must be a CoverageEpochIdentity.")
     if downstream_epoch.scope != downstream_scope:
         raise ValueError("downstream epoch must belong to its exact scope.")
+    _committed, state_source, transition_source, raw_source = derivation._verify_leaf_local(index)
+    if lossy_raw_rejection:
+        if raw_source is None or current_downstream_state is not None:
+            raise ValueError("coverage leaf is not an exact committed raw rejection.")
+        source: (
+            UpstreamCoverageStateEvidenceSource
+            | UpstreamCoverageTransitionEvidenceSource
+            | RawRejectionNormalizationUnknownEvidenceSource
+        ) = raw_source
+    else:
+        if raw_source is not None:
+            raise ValueError(
+                "definite raw rejection requires an explicit typed projection-membership route."
+            )
+        if current_downstream_state is not None:
+            if type(current_downstream_state) is not CoverageStateReference:
+                raise TypeError(
+                    "current_downstream_state must be a CoverageStateReference or None."
+                )
+            if (
+                current_downstream_state.reference.scope != downstream_scope
+                or current_downstream_state.reference.epoch != downstream_epoch
+            ):
+                raise ValueError("current downstream state must match its exact scope and epoch.")
+            source = transition_source if transition_source is not None else state_source
+        else:
+            source = state_source
+    is_lossy_raw_rejection = type(source) is RawRejectionNormalizationUnknownEvidenceSource
     if type(source) is UpstreamCoverageTransitionEvidenceSource:
         kind = CoverageEvidenceKind.UPSTREAM_COVERAGE_TRANSITION
     elif type(source) is UpstreamCoverageStateEvidenceSource:
         kind = CoverageEvidenceKind.UPSTREAM_COVERAGE_STATE
+    elif is_lossy_raw_rejection:
+        kind = CoverageEvidenceKind.RAW_REJECTION_NORMALIZATION_UNKNOWN
     else:  # pragma: no cover - private closed call site
         raise TypeError("source must be a verified upstream coverage source.")
 
@@ -13288,32 +14583,139 @@ def _construct_bulk_verified_upstream_evidence(
         or upstream.reference.status is CoverageStatus.COMPLETE
     ):
         raise ValueError("bulk upstream evidence requires matching degraded Bronze/Silver scopes.")
-    if (
-        type(source) is UpstreamCoverageTransitionEvidenceSource
-        and upstream.latest_transition is None
-    ):
-        raise ValueError("upstream transition evidence requires a transitioned state.")
+    if is_lossy_raw_rejection:
+        assert type(source) is RawRejectionNormalizationUnknownEvidenceSource
+        if upstream.reference.epoch.epoch_ordinal != downstream_epoch.epoch_ordinal:
+            raise ValueError("lossy raw rejection evidence must retain the exact upstream epoch.")
+        if (
+            source.downstream_scope != downstream_scope
+            or source.membership is not RawRejectionProjectionMembership.UNKNOWN
+            or source.boundary is not RawRejectionProjectionBoundary.BEFORE_PARSING
+            or upstream.reference.status is not CoverageStatus.CONFIRMED_INCOMPLETE
+        ):
+            raise ValueError(
+                "lossy raw rejection evidence requires its exact UNKNOWN Silver projection."
+            )
+        upstream_evidence = source.raw_rejection_evidence
+        content_version = _LOSSY_RAW_REJECTION_COVERAGE_EVIDENCE_CONTENT_VERSION
+        identity_version = _LOSSY_RAW_REJECTION_COVERAGE_EVIDENCE_ID_VERSION
+    else:
+        if type(source) is UpstreamCoverageTransitionEvidenceSource and (
+            upstream.latest_transition is None
+            or source.coverage_transition != upstream.latest_transition
+        ):
+            raise ValueError("upstream transition evidence requires its exact transitioned state.")
+        upstream_evidence = (
+            upstream.latest_transition.evidence
+            if upstream.latest_transition is not None
+            else upstream.reference.initial_evidence
+        )
+        content_version = _COVERAGE_EVIDENCE_CONTENT_VERSION
+        identity_version = _COVERAGE_EVIDENCE_ID_VERSION
 
     observed = canonical_utc_datetime(observed_at, field_name="observed_at")
     monotonic = require_nonnegative_int(
         observed_monotonic_ns,
         field_name="observed_monotonic_ns",
     )
-    upstream_boundary = (
-        upstream.latest_transition.evidence.observed_monotonic_ns
-        if upstream.latest_transition is not None
-        else upstream.reference.initial_evidence.observed_monotonic_ns
+    activation = canonical_utc_datetime(
+        downstream_epoch.activation_time,
+        field_name="activation_time",
     )
-    if monotonic < downstream_epoch.activation_monotonic_ns or monotonic < upstream_boundary:
+    upstream_observed = canonical_utc_datetime(
+        upstream_evidence.observed_at,
+        field_name="upstream_evidence_observed_at",
+    )
+    if (
+        observed < activation
+        or observed < upstream_observed
+        or monotonic < downstream_epoch.activation_monotonic_ns
+        or monotonic < upstream_evidence.observed_monotonic_ns
+    ):
         raise ValueError("downstream evidence cannot precede its epoch or upstream boundary.")
-    return CoverageEvidence(
-        kind,
-        source,
-        downstream_scope,
-        downstream_epoch,
-        datetime.fromisoformat(observed.replace("Z", "+00:00")),
-        monotonic,
+
+    # ``source`` was selected only after this exact derivation leaf rederived its
+    # typed operation and commitment. Build the canonical value directly so O(1)
+    # leaf access cannot accidentally reverify the shared plan-wide acceptance.
+    # Public standalone construction and ``verify_stored`` still rederive every
+    # retained parent in full.
+    source_components = _coverage_source_components(source)
+    content = canonical_json_array(
+        (
+            content_version,
+            downstream_scope.coverage_scope_id,
+            downstream_epoch.coverage_epoch_id,
+            downstream_epoch.collector_run_id,
+            kind.value,
+            source_components,
+            observed,
+            monotonic,
+        ),
+        maximum_length=MAX_COVERAGE_EVIDENCE_V2_CONTENT_LENGTH,
     )
+    digest = sha256_hex(content.encode("utf-8"), field_name="coverage_evidence_content")
+    evidence_text = canonical_json_array(
+        (
+            identity_version,
+            downstream_scope.coverage_scope_id,
+            downstream_epoch.coverage_epoch_id,
+            downstream_epoch.collector_run_id,
+            kind.value,
+            source_components,
+            observed,
+            monotonic,
+            digest,
+        ),
+        maximum_length=MAX_COVERAGE_EVIDENCE_V2_ID_LENGTH,
+    )
+    evidence_id = object.__new__(CoverageEvidenceId)
+    object.__setattr__(evidence_id, "value", evidence_text)
+    evidence = object.__new__(CoverageEvidence)
+    object.__setattr__(evidence, "kind", kind)
+    object.__setattr__(evidence, "source", source)
+    object.__setattr__(evidence, "scope", downstream_scope)
+    object.__setattr__(evidence, "epoch", downstream_epoch)
+    object.__setattr__(
+        evidence,
+        "observed_at",
+        datetime.fromisoformat(observed.replace("Z", "+00:00")),
+    )
+    object.__setattr__(evidence, "observed_monotonic_ns", monotonic)
+    object.__setattr__(evidence, "canonical_content", content)
+    object.__setattr__(evidence, "content_sha256", digest)
+    object.__setattr__(evidence, "coverage_evidence_id", evidence_id)
+    return evidence
+
+
+def _coverage_mutation_decision_positions(
+    batch: CoverageMutationBatch,
+) -> tuple[tuple[CoverageMutationDisposition, int], ...]:
+    """Index one fully verified batch's typed operations in linear time."""
+
+    positions: dict[CoverageScopeId, tuple[CoverageMutationDisposition, int]] = {}
+    operation_groups = (
+        (
+            CoverageMutationDisposition.INITIALIZATION,
+            tuple(item.scope.coverage_scope_id for item in batch.initializations),
+        ),
+        (
+            CoverageMutationDisposition.TRANSITION,
+            tuple(item.scope.coverage_scope_id for item in batch.transitions),
+        ),
+        (
+            CoverageMutationDisposition.NO_OP,
+            tuple(item.request.scope.coverage_scope_id for item in batch.no_ops),
+        ),
+    )
+    for disposition, scope_ids in operation_groups:
+        for position, scope_id in enumerate(scope_ids):
+            if scope_id in positions:
+                raise ValueError("coverage mutation decisions must be unique by target scope.")
+            positions[scope_id] = (disposition, position)
+    target_scope_ids = tuple(scope.coverage_scope_id for scope in batch.fanout_proof.target_scopes)
+    if set(positions) != set(target_scope_ids) or len(positions) != len(target_scope_ids):
+        raise ValueError("coverage mutation decisions must exactly partition their fanout.")
+    return tuple(positions[scope_id] for scope_id in target_scope_ids)
 
 
 def _verify_and_construct_batch_derivation(
@@ -13328,15 +14730,56 @@ def _verify_and_construct_batch_derivation(
     # call.  Accepting a caller-supplied context would turn its successful-parse
     # caches into a reusable validation token after retained-object tampering.
     context = _BulkCoverageVerificationContext()
+    context._validation_active = True
     verified_results = _verify_bulk_coverage_commit_inputs(
         batch=batch,
         commit_acceptance=commit_acceptance,
         resulting_state_references=resulting_state_references,
         verification_context=context,
     )
+    verified_batch = context._verified_batches.get(batch.coverage_mutation_batch_id)
+    if verified_batch is None:
+        raise ValueError("bulk derivation lacks its verified mutation requests.")
+    verified_requests = verified_batch[2]
+
+    decision_positions = _coverage_mutation_decision_positions(batch)
+
+    def construct_raw_rejection_source(
+        *,
+        committed_state: CommittedCoverageState,
+        raw_rejection_evidence: CoverageEvidence,
+        downstream_scope: CoverageScope,
+    ) -> RawRejectionNormalizationUnknownEvidenceSource:
+        binding, _request = _verify_raw_rejection_normalization_unknown_parents(
+            coverage_mutation_batch=batch,
+            committed_state=committed_state,
+            raw_rejection_evidence=raw_rejection_evidence,
+            downstream_scope=downstream_scope,
+            verification_context=context,
+        )
+        source_row = _raw_rejection_normalization_unknown_source_row(
+            coverage_mutation_batch=batch,
+            committed_state=committed_state,
+            raw_rejection_evidence=raw_rejection_evidence,
+            downstream_scope=downstream_scope,
+            binding=binding,
+        )
+        source = object.__new__(RawRejectionNormalizationUnknownEvidenceSource)
+        object.__setattr__(source, "coverage_mutation_batch", batch)
+        object.__setattr__(source, "committed_state", committed_state)
+        object.__setattr__(source, "raw_rejection_evidence", raw_rejection_evidence)
+        object.__setattr__(source, "downstream_scope", downstream_scope)
+        object.__setattr__(source, "result_ordinal", committed_state.result_ordinal)
+        object.__setattr__(source, "membership", RawRejectionProjectionMembership.UNKNOWN)
+        object.__setattr__(source, "boundary", RawRejectionProjectionBoundary.BEFORE_PARSING)
+        object.__setattr__(source, "raw_fanout_binding", binding)
+        object.__setattr__(source, "canonical_source_row", source_row)
+        return source
+
     committed_states: list[CommittedCoverageState] = []
     state_sources: list[UpstreamCoverageStateEvidenceSource] = []
     transition_sources: list[UpstreamCoverageTransitionEvidenceSource | None] = []
+    raw_rejection_sources: list[RawRejectionNormalizationUnknownEvidenceSource | None] = []
     accepted_ids = commit_acceptance.resulting_state_reference_ids
     for index, (state_reference, details) in enumerate(
         zip(resulting_state_references, verified_results, strict=True)
@@ -13412,13 +14855,37 @@ def _verify_and_construct_batch_derivation(
         committed_states.append(committed)
         state_sources.append(state_source)
         transition_sources.append(transition_source)
+        request = verified_requests[index]
+        raw_rejection_source: RawRejectionNormalizationUnknownEvidenceSource | None = None
+        if (
+            request.requested_status is CoverageStatus.CONFIRMED_INCOMPLETE
+            and request.initial_reason is InitialCoverageReason.RAW_DEFINITE_REJECTION
+            and request.transition_reason is CoverageReason.RAW_DEFINITE_REJECTION
+            and request.evidence.kind is CoverageEvidenceKind.RAW_RECORD_REJECTION
+            and type(request.evidence.source) is RawRecordEvidenceSource
+            and type(batch.raw_fanout_binding) is RawCoverageFanoutBinding
+        ):
+            matching_scope = context.catalog_scope_for_event(
+                batch.fanout_proof.coverage_target_catalog,
+                domain=CoverageDomain.SILVER_NORMALIZATION,
+                event_key=_coverage_event_scope_key(reference.scope),
+            )
+            raw_rejection_source = construct_raw_rejection_source(
+                committed_state=committed,
+                raw_rejection_evidence=request.evidence,
+                downstream_scope=matching_scope,
+            )
+        raw_rejection_sources.append(raw_rejection_source)
     value = object.__new__(BatchVerifiedCoverageDerivation)
     object.__setattr__(value, "coverage_mutation_batch", batch)
     object.__setattr__(value, "commit_acceptance", commit_acceptance)
     object.__setattr__(value, "resulting_state_references", resulting_state_references)
+    object.__setattr__(value, "requested_mutations", verified_requests)
+    object.__setattr__(value, "_decision_positions", decision_positions)
     object.__setattr__(value, "committed_states", tuple(committed_states))
     object.__setattr__(value, "upstream_state_sources", tuple(state_sources))
     object.__setattr__(value, "upstream_transition_sources", tuple(transition_sources))
+    object.__setattr__(value, "raw_rejection_unknown_sources", tuple(raw_rejection_sources))
     return value
 
 
@@ -13438,11 +14905,16 @@ class BatchVerifiedCoverageDerivation:
     coverage_mutation_batch: CoverageMutationBatch = field(repr=False)
     commit_acceptance: CoverageCommitAcceptance = field(repr=False)
     resulting_state_references: tuple[CoverageStateReference, ...] = field(repr=False)
+    requested_mutations: tuple[RequestedCoverageMutation, ...] = field(repr=False)
+    _decision_positions: tuple[tuple[CoverageMutationDisposition, int], ...] = field(repr=False)
     committed_states: tuple[CommittedCoverageState, ...] = field(repr=False)
     upstream_state_sources: tuple[UpstreamCoverageStateEvidenceSource, ...] = field(repr=False)
     upstream_transition_sources: tuple[UpstreamCoverageTransitionEvidenceSource | None, ...] = (
         field(repr=False)
     )
+    raw_rejection_unknown_sources: tuple[
+        RawRejectionNormalizationUnknownEvidenceSource | None, ...
+    ] = field(repr=False)
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         del cls, kwargs
@@ -13473,21 +14945,436 @@ class BatchVerifiedCoverageDerivation:
     def leaf_count(self) -> int:
         return len(self.resulting_state_references)
 
+    def _verify_leaf_local(
+        self,
+        index: int,
+    ) -> tuple[
+        CommittedCoverageState,
+        UpstreamCoverageStateEvidenceSource,
+        UpstreamCoverageTransitionEvidenceSource | None,
+        RawRejectionNormalizationUnknownEvidenceSource | None,
+    ]:
+        """Rederive one selected leaf without repeating shared-set verification."""
+
+        index = require_nonnegative_int(index, field_name="index")
+        count = self.leaf_count
+        if index >= count:
+            raise IndexError("coverage derivation index is outside the verified result set.")
+        tuple_values = (
+            self.resulting_state_references,
+            self.requested_mutations,
+            self._decision_positions,
+            self.committed_states,
+            self.upstream_state_sources,
+            self.upstream_transition_sources,
+            self.raw_rejection_unknown_sources,
+            self.coverage_mutation_batch.expected_pre_state_rows,
+            self.coverage_mutation_batch.initializations,
+            self.coverage_mutation_batch.transitions,
+            self.coverage_mutation_batch.no_ops,
+            self.coverage_mutation_batch.resulting_state_references,
+            self.coverage_mutation_batch.target_decision_sha256s,
+            self.commit_acceptance.resulting_state_reference_ids,
+        )
+        if any(type(value) is not tuple for value in tuple_values):
+            raise TypeError("batch derivation leaf sets must remain exact built-in tuples.")
+        if not (
+            len(self.coverage_mutation_batch.resulting_state_references)
+            == len(self.commit_acceptance.resulting_state_reference_ids)
+            == len(self.coverage_mutation_batch.expected_pre_state_rows)
+            == len(self.coverage_mutation_batch.target_decision_sha256s)
+            == len(self.requested_mutations)
+            == len(self._decision_positions)
+            == len(self.committed_states)
+            == len(self.upstream_state_sources)
+            == len(self.upstream_transition_sources)
+            == len(self.raw_rejection_unknown_sources)
+            == count
+        ):
+            raise ValueError("batch derivation leaf sets no longer have one exact cardinality.")
+        batch = self.coverage_mutation_batch
+        acceptance = self.commit_acceptance
+        state = self.resulting_state_references[index]
+        request = self.requested_mutations[index]
+        committed = self.committed_states[index]
+        if (
+            type(batch) is not CoverageMutationBatch
+            or type(acceptance) is not CoverageCommitAcceptance
+            or type(state) is not CoverageStateReference
+            or type(request) is not RequestedCoverageMutation
+            or type(committed) is not CommittedCoverageState
+            or acceptance.coverage_mutation_batch is not batch
+            or acceptance.coverage_mutation_batch_id != batch.coverage_mutation_batch_id
+            or batch.resulting_state_references[index] is not state
+            or request.scope != state.reference.scope
+            or request.epoch != state.reference.epoch
+            or acceptance.resulting_state_reference_ids[index] != state.coverage_state_reference_id
+            or committed.state_reference is not state
+            or committed.commit_acceptance is not acceptance
+            or committed.result_ordinal != index
+        ):
+            raise ValueError("selected committed leaf differs from its exact batch position.")
+
+        initialization = state.initialization
+        reference = state.reference
+        if (
+            type(initialization) is not CoverageInitialization
+            or type(reference) is not CoverageReference
+            or initialization.scope != reference.scope
+            or initialization.epoch != reference.epoch
+            or initialization.status is not initialization.reference.status
+            or initialization.reference.scope != initialization.scope
+            or initialization.reference.epoch != initialization.epoch
+            or initialization.reference.transition_ordinal != 0
+            or initialization.reference.transition_id is not None
+            or initialization.reference.initial_reason is not initialization.initial_reason
+            or initialization.reference.initial_evidence is not initialization.initial_evidence
+            or reference.initial_reason is not initialization.initial_reason
+            or reference.initial_evidence is not initialization.initial_evidence
+        ):
+            raise ValueError("selected state differs from its retained initialization.")
+        _verify_coverage_evidence_leaf_identity(initialization.initial_evidence)
+        initialization_id = canonical_json_array(
+            (
+                "coverage-initialization-v1",
+                initialization.epoch.collector_run_id,
+                initialization.scope.coverage_scope_id,
+                initialization.epoch.coverage_epoch_id,
+                initialization.status.value,
+                initialization.initial_reason.value,
+                canonical_utc_datetime(
+                    initialization.epoch.activation_time,
+                    field_name="activation_time",
+                ),
+                initialization.epoch.activation_monotonic_ns,
+                initialization.initial_evidence.coverage_evidence_id,
+                canonical_utc_datetime(
+                    initialization.initial_evidence.observed_at,
+                    field_name="evidence_observed_at",
+                ),
+                initialization.initial_evidence.observed_monotonic_ns,
+            )
+        )
+        if (
+            type(initialization.coverage_initialization_id) is not CoverageInitializationId
+            or initialization.coverage_initialization_id.value != initialization_id
+        ):
+            raise ValueError("selected initialization identity differs from its typed content.")
+
+        transition = state.latest_transition
+        if transition is None:
+            if (
+                state.previous_state is not None
+                or state.previous_state_reference_id is not None
+                or reference is not initialization.reference
+            ):
+                raise ValueError("selected initial state has an invalid predecessor.")
+            role = "initialization"
+            previous_id: CoverageStateReferenceId | None = None
+            transition_id: CoverageTransitionId | None = None
+            observed_evidence = initialization.initial_evidence
+        else:
+            previous = state.previous_state
+            if (
+                type(transition) is not CoverageTransition
+                or type(previous) is not CoverageStateReference
+                or type(state.previous_state_reference_id) is not CoverageStateReferenceId
+                or state.previous_state_reference_id != previous.coverage_state_reference_id
+                or previous.initialization is not initialization
+                or transition.scope != reference.scope
+                or transition.epoch != reference.epoch
+                or transition.previous_status is not previous.reference.status
+                or transition.new_status is not reference.status
+                or transition.transition_ordinal != previous.reference.transition_ordinal + 1
+                or transition.transition_ordinal != reference.transition_ordinal
+                or reference.transition_id != transition.coverage_transition_id
+            ):
+                raise ValueError("selected transition differs from its exact predecessor.")
+            _verify_coverage_evidence_leaf_identity(transition.evidence)
+            transition_text = canonical_json_array(
+                (
+                    "coverage-transition-v1",
+                    transition.scope.coverage_scope_id,
+                    transition.epoch.coverage_epoch_id,
+                    transition.transition_ordinal,
+                    transition.previous_status.value,
+                    transition.new_status.value,
+                    transition.reason.value,
+                    transition.evidence.coverage_evidence_id,
+                )
+            )
+            if (
+                type(transition.coverage_transition_id) is not CoverageTransitionId
+                or transition.coverage_transition_id.value != transition_text
+            ):
+                raise ValueError("selected transition identity differs from its typed content.")
+            previous_evidence = (
+                previous.latest_transition.evidence
+                if previous.latest_transition is not None
+                else previous.reference.initial_evidence
+            )
+            if (
+                transition.evidence.observed_at < previous_evidence.observed_at
+                or transition.evidence.observed_monotonic_ns
+                < previous_evidence.observed_monotonic_ns
+            ):
+                raise ValueError("selected transition precedes its retained predecessor.")
+            role = "transition"
+            previous_id = state.previous_state_reference_id
+            transition_id = transition.coverage_transition_id
+            observed_evidence = transition.evidence
+
+        observed = canonical_utc_datetime(
+            observed_evidence.observed_at,
+            field_name="coverage_state_observed_at",
+        )
+        monotonic = require_nonnegative_int(
+            observed_evidence.observed_monotonic_ns,
+            field_name="coverage_state_observed_monotonic_ns",
+        )
+        compact = transition is not None or observed_evidence.kind in {
+            CoverageEvidenceKind.UPSTREAM_COVERAGE_STATE,
+            CoverageEvidenceKind.UPSTREAM_COVERAGE_TRANSITION,
+            CoverageEvidenceKind.RAW_REJECTION_NORMALIZATION_UNKNOWN,
+        }
+        if compact:
+            state_content = canonical_json_array(
+                (
+                    _COVERAGE_STATE_REFERENCE_CONTENT_VERSION,
+                    role,
+                    initialization.coverage_initialization_id,
+                    previous_id,
+                    transition_id,
+                    reference.scope.coverage_scope_id,
+                    reference.epoch.coverage_epoch_id,
+                    reference.epoch.collector_run_id,
+                    reference.status.value,
+                    reference.transition_ordinal,
+                    observed,
+                    monotonic,
+                ),
+                maximum_length=MAX_COVERAGE_STATE_REFERENCE_V2_CONTENT_LENGTH,
+            )
+            state_digest = sha256_hex(
+                state_content.encode("utf-8"),
+                field_name="coverage_state_content",
+            )
+            state_id = canonical_json_array(
+                (
+                    _COVERAGE_STATE_REFERENCE_ID_VERSION,
+                    reference.scope.coverage_scope_id,
+                    reference.epoch.coverage_epoch_id,
+                    reference.epoch.collector_run_id,
+                    reference.status.value,
+                    reference.transition_ordinal,
+                    observed,
+                    monotonic,
+                    state_digest,
+                ),
+                maximum_length=MAX_COVERAGE_STATE_REFERENCE_V2_ID_LENGTH,
+            )
+            if state.canonical_content != state_content or state.content_sha256 != state_digest:
+                raise ValueError("selected compact state content differs from its typed value.")
+        else:
+            state_content = None
+            state_digest = None
+            state_id = canonical_json_array(
+                (
+                    _COVERAGE_STATE_REFERENCE_LEGACY_ID_VERSION,
+                    "initialization",
+                    initialization.coverage_initialization_id,
+                )
+            )
+            if state.canonical_content is not None or state.content_sha256 is not None:
+                raise ValueError("selected legacy state has compact content fields.")
+        if (
+            type(state.coverage_state_reference_id) is not CoverageStateReferenceId
+            or state.coverage_state_reference_id.value != state_id
+        ):
+            raise ValueError("selected state identity differs from its typed value.")
+
+        decision_position = self._decision_positions[index]
+        if (
+            type(decision_position) is not tuple
+            or len(decision_position) != 2
+            or type(decision_position[0]) is not CoverageMutationDisposition
+            or type(decision_position[1]) is not int
+            or decision_position[1] < 0
+        ):
+            raise ValueError("selected mutation decision position is invalid.")
+        disposition, operation_position = decision_position
+        pre_state_row = batch.expected_pre_state_rows[index]
+        if (
+            type(pre_state_row) is not tuple
+            or len(pre_state_row) != 2
+            or pre_state_row[0] != reference.scope.coverage_scope_id.value
+        ):
+            raise ValueError("selected mutation pre-state differs from its exact scope.")
+        decision_initialization_id: str | None
+        selected_transition_id: str | None
+        no_op_row: tuple[object, ...] | None
+        if disposition is CoverageMutationDisposition.INITIALIZATION:
+            if (
+                operation_position >= len(batch.initializations)
+                or batch.initializations[operation_position] is not initialization
+                or pre_state_row[1] is not None
+                or request.requested_status is not initialization.status
+                or request.initial_reason is not initialization.initial_reason
+                or request.transition_reason
+                is not _transition_reason_for_initial_reason(initialization.initial_reason)
+                or request.evidence is not initialization.initial_evidence
+            ):
+                raise ValueError("selected initialization decision differs from its exact request.")
+            decision_initialization_id = initialization.coverage_initialization_id.value
+            selected_transition_id = None
+            no_op_row = None
+        elif disposition is CoverageMutationDisposition.TRANSITION:
+            if (
+                operation_position >= len(batch.transitions)
+                or transition is None
+                or batch.transitions[operation_position] is not transition
+                or type(state.previous_state_reference_id) is not CoverageStateReferenceId
+                or pre_state_row[1] != state.previous_state_reference_id.value
+                or request.requested_status is not transition.new_status
+                or request.initial_reason
+                is not _initial_reason_for_transition_reason(transition.reason)
+                or request.transition_reason is not transition.reason
+                or request.evidence is not transition.evidence
+            ):
+                raise ValueError("selected transition decision differs from its exact request.")
+            decision_initialization_id = None
+            selected_transition_id = transition.coverage_transition_id.value
+            no_op_row = None
+        elif disposition is CoverageMutationDisposition.NO_OP:
+            if operation_position >= len(batch.no_ops):
+                raise ValueError("selected no-op position is outside its typed operation tuple.")
+            no_op = batch.no_ops[operation_position]
+            expected_no_op_row: tuple[object, ...] = (
+                "coverage-mutation-no-op-v1",
+                request.scope.coverage_scope_id.value,
+                state.coverage_state_reference_id.value,
+                request.requested_status.value,
+                request.initial_reason.value,
+                request.transition_reason.value,
+                request.evidence.coverage_evidence_id.value,
+                "already-at-or-beyond-requested-severity",
+            )
+            if (
+                no_op.current_state is not state
+                or no_op.request is not request
+                or no_op.canonical_row != expected_no_op_row
+                or pre_state_row[1] != state.coverage_state_reference_id.value
+                or request.evidence.observed_at < observed_evidence.observed_at
+                or request.evidence.observed_monotonic_ns < observed_evidence.observed_monotonic_ns
+                or _coverage_status_severity(request.requested_status)
+                > _coverage_status_severity(reference.status)
+                or (
+                    request.requested_status is CoverageStatus.COMPLETE
+                    and reference.status is not CoverageStatus.COMPLETE
+                )
+            ):
+                raise ValueError("selected no-op decision differs from its exact request.")
+            _verify_coverage_evidence_leaf_identity(request.evidence)
+            decision_initialization_id = None
+            selected_transition_id = None
+            no_op_row = expected_no_op_row
+        else:  # pragma: no cover - exhaustive closed enum guard
+            raise ValueError("selected mutation decision has an unsupported disposition.")
+        decision_content = canonical_json_array(
+            (
+                _COVERAGE_MUTATION_TARGET_DECISION_CONTENT_VERSION,
+                index,
+                reference.scope.coverage_scope_id.value,
+                pre_state_row[1],
+                disposition.value,
+                decision_initialization_id,
+                selected_transition_id,
+                no_op_row,
+                state.coverage_state_reference_id.value,
+            ),
+            maximum_length=MAX_SUBSCRIPTION_PLAN_CONTENT_LENGTH,
+        )
+        decision_digest = sha256_hex(
+            decision_content.encode("utf-8"),
+            field_name="coverage target decision",
+        )
+        if batch.target_decision_sha256s[index] != decision_digest:
+            raise ValueError("selected mutation decision differs from its exact commitment.")
+
+        committed_content, committed_digest, committed_id = _committed_coverage_state_identity(
+            state_reference=state,
+            commit_acceptance=acceptance,
+            result_ordinal=index,
+        )
+        if (
+            committed.canonical_content != committed_content
+            or committed.content_sha256 != committed_digest
+            or type(committed.committed_coverage_state_id) is not CommittedCoverageStateId
+            or committed.committed_coverage_state_id.value != committed_id
+        ):
+            raise ValueError("selected committed-state identity differs from its typed value.")
+
+        state_source = self.upstream_state_sources[index]
+        transition_source = self.upstream_transition_sources[index]
+        raw_source = self.raw_rejection_unknown_sources[index]
+        exact_raw_rejection = _is_exact_raw_rejection_request(request)
+        if (
+            type(state_source) is not UpstreamCoverageStateEvidenceSource
+            or state_source.committed_state is not committed
+            or (transition is not None and transition_source is None)
+            or (
+                transition_source is not None
+                and (
+                    type(transition_source) is not UpstreamCoverageTransitionEvidenceSource
+                    or transition_source.committed_state is not committed
+                    or transition_source.coverage_transition is not transition
+                )
+            )
+            or (raw_source is not None) != exact_raw_rejection
+        ):
+            raise ValueError("selected upstream evidence source differs from its committed leaf.")
+        if raw_source is not None:
+            if (
+                type(raw_source) is not RawRejectionNormalizationUnknownEvidenceSource
+                or raw_source.coverage_mutation_batch is not batch
+                or raw_source.committed_state is not committed
+                or raw_source.result_ordinal != index
+                or raw_source.membership is not RawRejectionProjectionMembership.UNKNOWN
+                or raw_source.boundary is not RawRejectionProjectionBoundary.BEFORE_PARSING
+                or raw_source.raw_rejection_evidence is not request.evidence
+                or raw_source.raw_fanout_binding is not batch.raw_fanout_binding
+                or raw_source.downstream_scope.domain is not CoverageDomain.SILVER_NORMALIZATION
+                or _coverage_event_scope_key(raw_source.downstream_scope)
+                != _coverage_event_scope_key(reference.scope)
+            ):
+                raise ValueError("selected raw-rejection source differs from its exact leaf.")
+            _verify_coverage_evidence_leaf_identity(raw_source.raw_rejection_evidence)
+            _verify_raw_coverage_fanout_binding_retained_fields(raw_source.raw_fanout_binding)
+            source_row = _raw_rejection_normalization_unknown_source_row(
+                coverage_mutation_batch=batch,
+                committed_state=committed,
+                raw_rejection_evidence=raw_source.raw_rejection_evidence,
+                downstream_scope=raw_source.downstream_scope,
+                binding=raw_source.raw_fanout_binding,
+            )
+            if raw_source.canonical_source_row != source_row:
+                raise ValueError("selected raw-rejection source row differs from its parents.")
+        return committed, state_source, transition_source, raw_source
+
     def committed_state_at(self, index: int) -> CommittedCoverageState:
         """Return one already-derived committed state in O(1)."""
 
-        index = require_nonnegative_int(index, field_name="index")
-        if index >= self.leaf_count:
-            raise IndexError("coverage derivation index is outside the verified result set.")
-        return self.committed_states[index]
+        return self._verify_leaf_local(index)[0]
 
     def upstream_state_source_at(self, index: int) -> UpstreamCoverageStateEvidenceSource:
         """Return one already-derived state evidence source in O(1)."""
 
-        index = require_nonnegative_int(index, field_name="index")
-        if index >= self.leaf_count:
-            raise IndexError("coverage derivation index is outside the verified result set.")
-        return self.upstream_state_sources[index]
+        _committed, state_source, _transition_source, raw_source = self._verify_leaf_local(index)
+        if raw_source is not None:
+            raise ValueError(
+                "definite raw rejection requires an explicit typed projection-membership route."
+            )
+        return state_source
 
     def derive_upstream_evidence_at(
         self,
@@ -13501,35 +15388,37 @@ class BatchVerifiedCoverageDerivation:
     ) -> CoverageEvidence:
         """Derive one ordinary downstream evidence value without shared revalidation."""
 
-        index = require_nonnegative_int(index, field_name="index")
-        if index >= self.leaf_count:
-            raise IndexError("coverage derivation index is outside the verified result set.")
-        if current_downstream_state is not None:
-            if type(current_downstream_state) is not CoverageStateReference:
-                raise TypeError(
-                    "current_downstream_state must be a CoverageStateReference or None."
-                )
-            if (
-                current_downstream_state.reference.scope != downstream_scope
-                or current_downstream_state.reference.epoch != downstream_epoch
-            ):
-                raise ValueError("current downstream state must match its exact scope and epoch.")
-        source: UpstreamCoverageStateEvidenceSource | UpstreamCoverageTransitionEvidenceSource
-        if current_downstream_state is not None:
-            transition_source = self.upstream_transition_sources[index]
-            source = (
-                transition_source
-                if transition_source is not None
-                else self.upstream_state_sources[index]
-            )
-        else:
-            source = self.upstream_state_sources[index]
         return _construct_bulk_verified_upstream_evidence(
-            source=source,
+            derivation=self,
+            index=index,
             downstream_scope=downstream_scope,
             downstream_epoch=downstream_epoch,
             observed_at=observed_at,
             observed_monotonic_ns=observed_monotonic_ns,
+            current_downstream_state=current_downstream_state,
+            lossy_raw_rejection=False,
+        )
+
+    def derive_raw_rejection_normalization_unknown_evidence_at(
+        self,
+        index: int,
+        *,
+        downstream_scope: CoverageScope,
+        downstream_epoch: CoverageEpochIdentity,
+        observed_at: datetime,
+        observed_monotonic_ns: int,
+    ) -> CoverageEvidence:
+        """Derive one opt-in UNKNOWN projection from a verified raw rejection."""
+
+        return _construct_bulk_verified_upstream_evidence(
+            derivation=self,
+            index=index,
+            downstream_scope=downstream_scope,
+            downstream_epoch=downstream_epoch,
+            observed_at=observed_at,
+            observed_monotonic_ns=observed_monotonic_ns,
+            current_downstream_state=None,
+            lossy_raw_rejection=True,
         )
 
 
@@ -13548,6 +15437,211 @@ def _coverage_event_scope_key(scope: CoverageScope) -> tuple[object, ...]:
     )
 
 
+def _verify_raw_rejection_normalization_unknown_parents(
+    *,
+    coverage_mutation_batch: CoverageMutationBatch,
+    committed_state: CommittedCoverageState,
+    raw_rejection_evidence: CoverageEvidence,
+    downstream_scope: CoverageScope,
+    verification_context: _BulkCoverageVerificationContext,
+) -> tuple[RawCoverageFanoutBinding, RequestedCoverageMutation]:
+    """Verify the one exact raw-rejection/unknown-membership parent graph."""
+
+    if type(coverage_mutation_batch) is not CoverageMutationBatch:
+        raise TypeError("coverage_mutation_batch must be a CoverageMutationBatch.")
+    if type(committed_state) is not CommittedCoverageState:
+        raise TypeError("committed_state must be a CommittedCoverageState.")
+    if type(raw_rejection_evidence) is not CoverageEvidence:
+        raise TypeError("raw_rejection_evidence must be a CoverageEvidence.")
+    if type(downstream_scope) is not CoverageScope:
+        raise TypeError("downstream_scope must be a CoverageScope.")
+    if type(verification_context) is not _BulkCoverageVerificationContext:
+        raise TypeError("verification_context must be a bulk coverage verification context.")
+    verification_context._require_validation_active()
+    batch_components = verification_context.parse(
+        coverage_mutation_batch.coverage_mutation_batch_id.value,
+        field_name="coverage_mutation_batch_id",
+    )
+    if batch_components[0] != _COVERAGE_MUTATION_BATCH_ID_VERSION:
+        raise ValueError("raw-rejection projection requires a mutation-batch-v2 parent.")
+    verified_batch = verification_context._verified_batches.get(
+        coverage_mutation_batch.coverage_mutation_batch_id
+    )
+    if verified_batch is None:
+        _verify_coverage_mutation_batch_stored_uncached(
+            coverage_mutation_batch,
+            expected_canonical_content=coverage_mutation_batch.canonical_content,
+            expected_batch_id=coverage_mutation_batch.coverage_mutation_batch_id,
+            verification_context=verification_context,
+        )
+        verification_context.verify_batch_acceptance(
+            committed_state.commit_acceptance,
+            coverage_mutation_batch,
+        )
+        verified_batch = verification_context._verified_batches.get(
+            coverage_mutation_batch.coverage_mutation_batch_id
+        )
+    elif verified_batch[0] is not coverage_mutation_batch and (
+        verified_batch[0] != coverage_mutation_batch
+    ):
+        raise ValueError("one mutation batch ID cannot represent different values.")
+    verification_context.verify_batch_acceptance(
+        committed_state.commit_acceptance,
+        coverage_mutation_batch,
+    )
+    verification_context._verify_committed_state(committed_state)
+    ordinal = require_nonnegative_int(
+        committed_state.result_ordinal,
+        field_name="result_ordinal",
+    )
+    if verified_batch is None:
+        raise ValueError("raw-rejection projection lacks a verified mutation transcript.")
+    verified_requests = verified_batch[2]
+    if ordinal >= len(verified_requests):
+        raise ValueError("raw-rejection result ordinal is outside its mutation batch.")
+    request = verified_requests[ordinal]
+    if (
+        committed_state.commit_acceptance.coverage_mutation_batch_id
+        != coverage_mutation_batch.coverage_mutation_batch_id
+        or coverage_mutation_batch.resulting_state_references[ordinal]
+        != committed_state.state_reference
+        or committed_state.state_reference.reference.status
+        is not CoverageStatus.CONFIRMED_INCOMPLETE
+        or request.scope != committed_state.state_reference.reference.scope
+        or request.epoch != committed_state.state_reference.reference.epoch
+        or request.requested_status is not CoverageStatus.CONFIRMED_INCOMPLETE
+        or request.initial_reason is not InitialCoverageReason.RAW_DEFINITE_REJECTION
+        or request.transition_reason is not CoverageReason.RAW_DEFINITE_REJECTION
+        or request.evidence != raw_rejection_evidence
+        or raw_rejection_evidence.kind is not CoverageEvidenceKind.RAW_RECORD_REJECTION
+        or type(raw_rejection_evidence.source) is not RawRecordEvidenceSource
+    ):
+        raise ValueError(
+            "raw-rejection projection requires its exact accepted Bronze rejection decision."
+        )
+    bronze_scope = request.scope
+    fanout = coverage_mutation_batch.fanout_proof
+    if (
+        fanout.kind is not CoverageFanoutKind.ALL_POSSIBLY_ACTIVE
+        or any(scope.domain is not CoverageDomain.BRONZE_INGRESS for scope in fanout.target_scopes)
+        or fanout.target_scopes[ordinal] != bronze_scope
+        or downstream_scope.domain is not CoverageDomain.SILVER_NORMALIZATION
+        or _coverage_event_scope_key(bronze_scope) != _coverage_event_scope_key(downstream_scope)
+    ):
+        raise ValueError(
+            "raw-rejection projection requires exact possibly-active Bronze/Silver counterparts."
+        )
+    matching_silver_scope = verification_context.catalog_scope_for_event(
+        fanout.coverage_target_catalog,
+        domain=CoverageDomain.SILVER_NORMALIZATION,
+        event_key=_coverage_event_scope_key(bronze_scope),
+    )
+    if matching_silver_scope != downstream_scope:
+        raise ValueError("raw-rejection projection requires one exact catalogued Silver scope.")
+    binding = coverage_mutation_batch.raw_fanout_binding
+    if type(binding) is not RawCoverageFanoutBinding:
+        raise ValueError("raw-rejection projection requires a retained raw fanout binding.")
+    binding = verification_context.verify_raw_fanout_binding_for_verified_fanout(
+        binding,
+        fanout,
+    )
+    raw_source = raw_rejection_evidence.source
+    raw_feed, raw_run, raw_session = _raw_record_feed_run_session(raw_source.raw_record_id)
+    if (
+        binding.coverage_fanout_proof_id != fanout.coverage_fanout_proof_id
+        or binding.subscription_plan_id != fanout.subscription_plan_id
+        or binding.connection_session_id != fanout.connection_session_id
+        or binding.raw_record_id != raw_source.raw_record_id
+        or raw_source.identified_coverage_scope_id != bronze_scope.coverage_scope_id
+        or raw_feed != bronze_scope.feed_product_id
+        or raw_run != request.epoch.collector_run_id
+        or raw_session != fanout.connection_session_id
+    ):
+        raise ValueError("raw-rejection projection has foreign raw, plan or session lineage.")
+    return binding, request
+
+
+def _raw_rejection_normalization_unknown_source_row(
+    *,
+    coverage_mutation_batch: CoverageMutationBatch,
+    committed_state: CommittedCoverageState,
+    raw_rejection_evidence: CoverageEvidence,
+    downstream_scope: CoverageScope,
+    binding: RawCoverageFanoutBinding,
+) -> tuple[object, ...]:
+    """Return the canonical row after the owning factory verified every parent."""
+
+    return (
+        _RAW_REJECTION_NORMALIZATION_UNKNOWN_SOURCE_VERSION,
+        RawRejectionProjectionMembership.UNKNOWN.value,
+        RawRejectionProjectionBoundary.BEFORE_PARSING.value,
+        coverage_mutation_batch.coverage_mutation_batch_id.value,
+        committed_state.committed_coverage_state_id.value,
+        committed_state.result_ordinal,
+        raw_rejection_evidence.coverage_evidence_id.value,
+        binding.raw_coverage_fanout_binding_id.value,
+        binding.raw_record_id.value,
+        binding.full_record_integrity_sha256,
+        downstream_scope.coverage_scope_id.value,
+    )
+
+
+def _verify_raw_rejection_normalization_unknown_source(
+    source: RawRejectionNormalizationUnknownEvidenceSource,
+    *,
+    scope: CoverageScope,
+    verification_context: _BulkCoverageVerificationContext,
+) -> tuple[str, int]:
+    """Rederive every retained parent and the exact compact source row."""
+
+    if type(source) is not RawRejectionNormalizationUnknownEvidenceSource:
+        raise TypeError("source must be raw-rejection normalization evidence.")
+    if type(verification_context) is not _BulkCoverageVerificationContext:
+        raise TypeError("verification_context must be a bulk coverage verification context.")
+    verification_context._require_validation_active()
+    if (
+        source.membership is not RawRejectionProjectionMembership.UNKNOWN
+        or source.boundary is not RawRejectionProjectionBoundary.BEFORE_PARSING
+        or source.downstream_scope != scope
+    ):
+        raise ValueError("raw-rejection projection has an unsupported membership boundary.")
+    source_result_ordinal = require_nonnegative_int(
+        source.result_ordinal,
+        field_name="result_ordinal",
+    )
+    binding, _request = _verify_raw_rejection_normalization_unknown_parents(
+        coverage_mutation_batch=source.coverage_mutation_batch,
+        committed_state=source.committed_state,
+        raw_rejection_evidence=source.raw_rejection_evidence,
+        downstream_scope=source.downstream_scope,
+        verification_context=verification_context,
+    )
+    expected = (
+        _RAW_REJECTION_NORMALIZATION_UNKNOWN_SOURCE_VERSION,
+        RawRejectionProjectionMembership.UNKNOWN.value,
+        RawRejectionProjectionBoundary.BEFORE_PARSING.value,
+        source.coverage_mutation_batch.coverage_mutation_batch_id.value,
+        source.committed_state.committed_coverage_state_id.value,
+        source.committed_state.result_ordinal,
+        source.raw_rejection_evidence.coverage_evidence_id.value,
+        binding.raw_coverage_fanout_binding_id.value,
+        binding.raw_record_id.value,
+        binding.full_record_integrity_sha256,
+        scope.coverage_scope_id.value,
+    )
+    if (
+        source_result_ordinal != source.committed_state.result_ordinal
+        or source.raw_fanout_binding != binding
+        or source.canonical_source_row != expected
+    ):
+        raise ValueError("raw-rejection projection differs from its retained typed parents.")
+    observed = canonical_utc_datetime(
+        source.raw_rejection_evidence.observed_at,
+        field_name="raw_rejection_observed_at",
+    )
+    return observed, source.raw_rejection_evidence.observed_monotonic_ns
+
+
 def _require_matching_bulk_raw_bindings(
     *,
     upstream_binding: RawCoverageFanoutBinding | None,
@@ -13563,6 +15657,17 @@ def _require_matching_bulk_raw_bindings(
     assert downstream_binding is not None
     _verify_raw_coverage_fanout_binding_retained_fields(upstream_binding)
     _verify_raw_coverage_fanout_binding_retained_fields(downstream_binding)
+    downstream_snapshot_content = canonical_json_array(
+        (
+            _RAW_COVERAGE_SNAPSHOT_CONTENT_VERSION,
+            _attempt_snapshot_rows(downstream_fanout.source_attempt_snapshots),
+        ),
+        maximum_length=MAX_SUBSCRIPTION_PLAN_CONTENT_LENGTH,
+    )
+    downstream_snapshot_digest = sha256_hex(
+        downstream_snapshot_content.encode("utf-8"),
+        field_name="subscription_snapshot_content",
+    )
     if (
         upstream_binding.raw_record_id != downstream_binding.raw_record_id
         or upstream_binding.full_record_integrity_sha256
@@ -13571,9 +15676,15 @@ def _require_matching_bulk_raw_bindings(
         or upstream_binding.connection_session_id != downstream_binding.connection_session_id
         or upstream_binding.subscription_snapshot_content_sha256
         != downstream_binding.subscription_snapshot_content_sha256
+        or downstream_binding.subscription_snapshot_content_sha256 != downstream_snapshot_digest
         or downstream_binding.coverage_fanout_proof_id != downstream_fanout.coverage_fanout_proof_id
     ):
         raise ValueError("bulk upstream raw bindings must retain the same exact raw facts.")
+
+
+class _UpstreamPreparationMode(StrEnum):
+    EXACT_STATUS = "exact-status"
+    RAW_REJECTION_UNKNOWN = "raw-rejection-unknown"
 
 
 @final
@@ -13582,8 +15693,10 @@ class BatchVerifiedUpstreamCoveragePreparation:
     """One atomic pure Bronze-to-Silver preparation after shared verification.
 
     The first closed route supports complete ``ALL_POSSIBLY_ACTIVE`` Bronze and
-    Silver slices only. It creates ordinary upstream coverage-evidence-v2 values and one
-    ordinary mutation-batch-v2, but never fabricates commit acceptance.
+    Silver slices only. The exact-status route creates ordinary upstream
+    coverage-evidence-v2 values; the opt-in raw-rejection route creates the
+    narrowly scoped coverage-evidence-v3 value. Both create one ordinary
+    mutation-batch-v2 and never fabricate commit acceptance.
     """
 
     upstream_derivation: BatchVerifiedCoverageDerivation = field(repr=False)
@@ -13597,7 +15710,10 @@ class BatchVerifiedUpstreamCoveragePreparation:
         raise TypeError("batch-verified upstream preparations do not support subclassing.")
 
     def __init__(self, *_args: object, **_kwargs: object) -> None:
-        raise TypeError("use BatchVerifiedUpstreamCoveragePreparation.from_committed_upstream().")
+        raise TypeError(
+            "use BatchVerifiedUpstreamCoveragePreparation.from_committed_upstream() "
+            "or .from_committed_raw_rejection()."
+        )
 
     @classmethod
     def from_committed_upstream(
@@ -13614,8 +15730,65 @@ class BatchVerifiedUpstreamCoveragePreparation:
     ) -> Self:
         """Verify one complete upstream commit and prepare its exact Silver copy."""
 
+        return cls._from_committed(
+            upstream_batch=upstream_batch,
+            upstream_commit_acceptance=upstream_commit_acceptance,
+            upstream_resulting_state_references=upstream_resulting_state_references,
+            downstream_fanout_proof=downstream_fanout_proof,
+            current_downstream_state_references=current_downstream_state_references,
+            observed_at=observed_at,
+            observed_monotonic_ns=observed_monotonic_ns,
+            raw_fanout_binding=raw_fanout_binding,
+            mode=_UpstreamPreparationMode.EXACT_STATUS,
+        )
+
+    @classmethod
+    def from_committed_raw_rejection(
+        cls,
+        *,
+        upstream_batch: CoverageMutationBatch,
+        upstream_commit_acceptance: CoverageCommitAcceptance,
+        upstream_resulting_state_references: tuple[CoverageStateReference, ...],
+        downstream_fanout_proof: CoverageFanoutProof,
+        current_downstream_state_references: tuple[CoverageStateReference, ...],
+        observed_at: datetime,
+        observed_monotonic_ns: int,
+        raw_fanout_binding: RawCoverageFanoutBinding,
+    ) -> Self:
+        """Prepare UNKNOWN Silver coverage from one exact definite raw rejection."""
+
+        return cls._from_committed(
+            upstream_batch=upstream_batch,
+            upstream_commit_acceptance=upstream_commit_acceptance,
+            upstream_resulting_state_references=upstream_resulting_state_references,
+            downstream_fanout_proof=downstream_fanout_proof,
+            current_downstream_state_references=current_downstream_state_references,
+            observed_at=observed_at,
+            observed_monotonic_ns=observed_monotonic_ns,
+            raw_fanout_binding=raw_fanout_binding,
+            mode=_UpstreamPreparationMode.RAW_REJECTION_UNKNOWN,
+        )
+
+    @classmethod
+    def _from_committed(
+        cls,
+        *,
+        upstream_batch: CoverageMutationBatch,
+        upstream_commit_acceptance: CoverageCommitAcceptance,
+        upstream_resulting_state_references: tuple[CoverageStateReference, ...],
+        downstream_fanout_proof: CoverageFanoutProof,
+        current_downstream_state_references: tuple[CoverageStateReference, ...],
+        observed_at: datetime,
+        observed_monotonic_ns: int,
+        raw_fanout_binding: RawCoverageFanoutBinding | None,
+        mode: _UpstreamPreparationMode,
+    ) -> Self:
+        """Run one fully verified lexical transcript for either closed public route."""
+
         if cls is not BatchVerifiedUpstreamCoveragePreparation:
             raise TypeError("batch-verified upstream preparations do not support subclassing.")
+        if type(mode) is not _UpstreamPreparationMode:
+            raise TypeError("mode must be a closed upstream preparation mode.")
         if type(upstream_batch) is not CoverageMutationBatch:
             raise TypeError("upstream_batch must be a CoverageMutationBatch.")
         if type(upstream_commit_acceptance) is not CoverageCommitAcceptance:
@@ -13634,6 +15807,11 @@ class BatchVerifiedUpstreamCoveragePreparation:
             RawCoverageFanoutBinding
         ):
             raise TypeError("raw_fanout_binding must be a RawCoverageFanoutBinding or None.")
+        if mode is _UpstreamPreparationMode.RAW_REJECTION_UNKNOWN and (
+            type(upstream_batch.raw_fanout_binding) is not RawCoverageFanoutBinding
+            or type(raw_fanout_binding) is not RawCoverageFanoutBinding
+        ):
+            raise ValueError("raw-rejection preparation requires exact raw bindings on both sides.")
         require_collection_size(
             upstream_resulting_state_references,
             field_name="upstream_resulting_state_references",
@@ -13671,6 +15849,7 @@ class BatchVerifiedUpstreamCoveragePreparation:
                 "slices."
             )
         context = _BulkCoverageVerificationContext()
+        context._validation_active = True
         _verify_coverage_fanout_proof_retained_fields(downstream_fanout_proof, context)
         if (
             upstream_fanout.coverage_target_catalog
@@ -13702,9 +15881,68 @@ class BatchVerifiedUpstreamCoveragePreparation:
                 resulting_state_references=upstream_resulting_state_references,
                 verification_context=context,
             )
+            verified_batch = context._verified_batches.get(
+                upstream_batch.coverage_mutation_batch_id
+            )
+            if verified_batch is None:
+                raise ValueError("bulk preparation lacks its verified upstream requests.")
+            verified_requests = verified_batch[2]
+            if mode is _UpstreamPreparationMode.EXACT_STATUS and any(
+                request.requested_status is CoverageStatus.CONFIRMED_INCOMPLETE
+                and request.initial_reason is InitialCoverageReason.RAW_DEFINITE_REJECTION
+                and request.transition_reason is CoverageReason.RAW_DEFINITE_REJECTION
+                and request.evidence.kind is CoverageEvidenceKind.RAW_RECORD_REJECTION
+                and type(request.evidence.source) is RawRecordEvidenceSource
+                for request in verified_requests
+            ):
+                raise ValueError(
+                    "definite raw rejection requires an explicit typed projection-membership route."
+                )
+
+            def construct_raw_rejection_source(
+                *,
+                committed_state: CommittedCoverageState,
+                raw_rejection_evidence: CoverageEvidence,
+                downstream_scope: CoverageScope,
+            ) -> RawRejectionNormalizationUnknownEvidenceSource:
+                binding, _request = _verify_raw_rejection_normalization_unknown_parents(
+                    coverage_mutation_batch=upstream_batch,
+                    committed_state=committed_state,
+                    raw_rejection_evidence=raw_rejection_evidence,
+                    downstream_scope=downstream_scope,
+                    verification_context=context,
+                )
+                source_row = _raw_rejection_normalization_unknown_source_row(
+                    coverage_mutation_batch=upstream_batch,
+                    committed_state=committed_state,
+                    raw_rejection_evidence=raw_rejection_evidence,
+                    downstream_scope=downstream_scope,
+                    binding=binding,
+                )
+                source = object.__new__(RawRejectionNormalizationUnknownEvidenceSource)
+                object.__setattr__(source, "coverage_mutation_batch", upstream_batch)
+                object.__setattr__(source, "committed_state", committed_state)
+                object.__setattr__(source, "raw_rejection_evidence", raw_rejection_evidence)
+                object.__setattr__(source, "downstream_scope", downstream_scope)
+                object.__setattr__(source, "result_ordinal", committed_state.result_ordinal)
+                object.__setattr__(
+                    source,
+                    "membership",
+                    RawRejectionProjectionMembership.UNKNOWN,
+                )
+                object.__setattr__(
+                    source,
+                    "boundary",
+                    RawRejectionProjectionBoundary.BEFORE_PARSING,
+                )
+                object.__setattr__(source, "raw_fanout_binding", binding)
+                object.__setattr__(source, "canonical_source_row", source_row)
+                return source
+
             committed_states: list[CommittedCoverageState] = []
             state_sources: list[UpstreamCoverageStateEvidenceSource] = []
             transition_sources: list[UpstreamCoverageTransitionEvidenceSource | None] = []
+            raw_rejection_sources: list[RawRejectionNormalizationUnknownEvidenceSource | None] = []
             accepted_ids = upstream_commit_acceptance.resulting_state_reference_ids
             for index, (state_reference, details) in enumerate(
                 zip(upstream_resulting_state_references, verified_results, strict=True)
@@ -13789,6 +16027,19 @@ class BatchVerifiedUpstreamCoveragePreparation:
                 committed_states.append(committed)
                 state_sources.append(state_source)
                 transition_sources.append(transition_source)
+                raw_rejection_source: RawRejectionNormalizationUnknownEvidenceSource | None = None
+                if mode is _UpstreamPreparationMode.RAW_REJECTION_UNKNOWN:
+                    matching_scope = context.catalog_scope_for_event(
+                        upstream_fanout.coverage_target_catalog,
+                        domain=CoverageDomain.SILVER_NORMALIZATION,
+                        event_key=_coverage_event_scope_key(reference.scope),
+                    )
+                    raw_rejection_source = construct_raw_rejection_source(
+                        committed_state=committed,
+                        raw_rejection_evidence=verified_requests[index].evidence,
+                        downstream_scope=matching_scope,
+                    )
+                raw_rejection_sources.append(raw_rejection_source)
             derivation = object.__new__(BatchVerifiedCoverageDerivation)
             object.__setattr__(derivation, "coverage_mutation_batch", upstream_batch)
             object.__setattr__(
@@ -13801,6 +16052,12 @@ class BatchVerifiedUpstreamCoveragePreparation:
                 "resulting_state_references",
                 upstream_resulting_state_references,
             )
+            object.__setattr__(derivation, "requested_mutations", verified_requests)
+            object.__setattr__(
+                derivation,
+                "_decision_positions",
+                _coverage_mutation_decision_positions(upstream_batch),
+            )
             object.__setattr__(derivation, "committed_states", tuple(committed_states))
             object.__setattr__(
                 derivation,
@@ -13811,6 +16068,11 @@ class BatchVerifiedUpstreamCoveragePreparation:
                 derivation,
                 "upstream_transition_sources",
                 tuple(transition_sources),
+            )
+            object.__setattr__(
+                derivation,
+                "raw_rejection_unknown_sources",
+                tuple(raw_rejection_sources),
             )
             return derivation
 
@@ -13827,6 +16089,10 @@ class BatchVerifiedUpstreamCoveragePreparation:
             upstream_key = _coverage_event_scope_key(upstream_state.reference.scope)
             if (
                 upstream_state.reference.status is CoverageStatus.COMPLETE
+                or (
+                    mode is _UpstreamPreparationMode.RAW_REJECTION_UNKNOWN
+                    and upstream_state.reference.status is not CoverageStatus.CONFIRMED_INCOMPLETE
+                )
                 or upstream_key != _coverage_event_scope_key(downstream_scope)
                 or upstream_key in seen_event_keys
             ):
@@ -13888,7 +16154,11 @@ class BatchVerifiedUpstreamCoveragePreparation:
 
         def sealed_evidence(
             *,
-            source: UpstreamCoverageStateEvidenceSource | UpstreamCoverageTransitionEvidenceSource,
+            source: (
+                UpstreamCoverageStateEvidenceSource
+                | UpstreamCoverageTransitionEvidenceSource
+                | RawRejectionNormalizationUnknownEvidenceSource
+            ),
             kind: CoverageEvidenceKind,
             scope: CoverageScope,
             epoch: CoverageEpochIdentity,
@@ -13899,21 +16169,36 @@ class BatchVerifiedUpstreamCoveragePreparation:
                 evidence_observed_at,
                 field_name="observed_at",
             )
-            source_tag = (
-                _UPSTREAM_COVERAGE_TRANSITION_SOURCE_VERSION
-                if type(source) is UpstreamCoverageTransitionEvidenceSource
-                else _UPSTREAM_COVERAGE_STATE_SOURCE_VERSION
-            )
-            source_tokens = [
-                quoted(source_tag),
-                quoted(source.committed_state.committed_coverage_state_id.value),
-            ]
-            if type(source) is UpstreamCoverageTransitionEvidenceSource:
-                source_tokens.append(quoted(source.coverage_transition_id.value))
-            source_row = encoded_array(tuple(source_tokens))
+            is_lossy_raw_rejection = type(source) is RawRejectionNormalizationUnknownEvidenceSource
+            if is_lossy_raw_rejection:
+                source_row = context.encode(source.canonical_components())
+                content_version = _LOSSY_RAW_REJECTION_COVERAGE_EVIDENCE_CONTENT_VERSION
+                identity_version = _LOSSY_RAW_REJECTION_COVERAGE_EVIDENCE_ID_VERSION
+            else:
+                assert isinstance(
+                    source,
+                    (
+                        UpstreamCoverageStateEvidenceSource,
+                        UpstreamCoverageTransitionEvidenceSource,
+                    ),
+                )
+                source_tag = (
+                    _UPSTREAM_COVERAGE_TRANSITION_SOURCE_VERSION
+                    if type(source) is UpstreamCoverageTransitionEvidenceSource
+                    else _UPSTREAM_COVERAGE_STATE_SOURCE_VERSION
+                )
+                source_tokens = [
+                    quoted(source_tag),
+                    quoted(source.committed_state.committed_coverage_state_id.value),
+                ]
+                if type(source) is UpstreamCoverageTransitionEvidenceSource:
+                    source_tokens.append(quoted(source.coverage_transition_id.value))
+                source_row = encoded_array(tuple(source_tokens))
+                content_version = _COVERAGE_EVIDENCE_CONTENT_VERSION
+                identity_version = _COVERAGE_EVIDENCE_ID_VERSION
             evidence_content = encoded_array(
                 (
-                    quoted(_COVERAGE_EVIDENCE_CONTENT_VERSION),
+                    quoted(content_version),
                     quoted(scope.coverage_scope_id.value),
                     quoted(epoch.coverage_epoch_id.value),
                     quoted(epoch.collector_run_id.value),
@@ -13930,7 +16215,7 @@ class BatchVerifiedUpstreamCoveragePreparation:
             )
             evidence_text = encoded_array(
                 (
-                    quoted(_COVERAGE_EVIDENCE_ID_VERSION),
+                    quoted(identity_version),
                     quoted(scope.coverage_scope_id.value),
                     quoted(epoch.coverage_epoch_id.value),
                     quoted(epoch.collector_run_id.value),
@@ -14149,16 +16434,39 @@ class BatchVerifiedUpstreamCoveragePreparation:
                 if upstream_state.latest_transition is not None
                 else upstream_state.reference.initial_evidence
             )
+            raw_rejection_source = upstream_derivation.raw_rejection_unknown_sources[ordinal]
+            if mode is _UpstreamPreparationMode.RAW_REJECTION_UNKNOWN:
+                if (
+                    type(raw_rejection_source) is not RawRejectionNormalizationUnknownEvidenceSource
+                    or raw_rejection_source.downstream_scope != downstream_scope
+                ):
+                    raise ValueError(
+                        "raw-rejection preparation requires every exact typed projection source."
+                    )
+                causal_upstream_evidence = raw_rejection_source.raw_rejection_evidence
+                requested_status = CoverageStatus.UNCERTAIN
+                initial_reason = InitialCoverageReason.RAW_REJECTION_NORMALIZATION_UNKNOWN
+                transition_reason = CoverageReason.RAW_REJECTION_NORMALIZATION_UNKNOWN
+            else:
+                if raw_rejection_source is not None:
+                    raise ValueError(
+                        "definite raw rejection requires an explicit typed "
+                        "projection-membership route."
+                    )
+                causal_upstream_evidence = latest_upstream_evidence
+                requested_status = upstream_state.reference.status
+                initial_reason = InitialCoverageReason.UPSTREAM_COVERAGE_DEGRADED
+                transition_reason = CoverageReason.UPSTREAM_COVERAGE_DEGRADED
             if current_state is None:
                 downstream_epoch = sealed_epoch(
                     scope=downstream_scope,
                     collector_run_id=upstream_state.reference.epoch.collector_run_id,
                     epoch_ordinal=upstream_state.reference.epoch.epoch_ordinal,
-                    activation_time=latest_upstream_evidence.observed_at,
-                    activation_monotonic_ns=latest_upstream_evidence.observed_monotonic_ns,
+                    activation_time=causal_upstream_evidence.observed_at,
+                    activation_monotonic_ns=causal_upstream_evidence.observed_monotonic_ns,
                 )
-                evidence_observed_at = latest_upstream_evidence.observed_at
-                evidence_monotonic_ns = latest_upstream_evidence.observed_monotonic_ns
+                evidence_observed_at = causal_upstream_evidence.observed_at
+                evidence_monotonic_ns = causal_upstream_evidence.observed_monotonic_ns
             else:
                 assert current_entry is not None
                 current_details = current_entry[1]
@@ -14176,9 +16484,9 @@ class BatchVerifiedUpstreamCoveragePreparation:
                 downstream_epoch = current_state.reference.epoch
                 evidence_observed_at = observed_datetime
                 evidence_monotonic_ns = monotonic
-            upstream_boundary = latest_upstream_evidence.observed_monotonic_ns
+            upstream_boundary = causal_upstream_evidence.observed_monotonic_ns
             upstream_observed_at = context.utc(
-                latest_upstream_evidence.observed_at,
+                causal_upstream_evidence.observed_at,
                 field_name="upstream_observed_at",
             )
             current_boundary = (
@@ -14207,22 +16515,33 @@ class BatchVerifiedUpstreamCoveragePreparation:
                 raise ValueError(
                     "downstream evidence cannot precede its upstream or current boundary."
                 )
-            transition_source = upstream_derivation.upstream_transition_sources[ordinal]
-            requires_transition = current_state is not None and (
-                _coverage_status_severity(upstream_state.reference.status)
-                > _coverage_status_severity(current_state.reference.status)
+            source: (
+                UpstreamCoverageStateEvidenceSource
+                | UpstreamCoverageTransitionEvidenceSource
+                | RawRejectionNormalizationUnknownEvidenceSource
             )
-            if requires_transition and transition_source is None:
-                raise ValueError(
-                    "a Silver transition requires an exact committed upstream transition."
+            if mode is _UpstreamPreparationMode.RAW_REJECTION_UNKNOWN:
+                assert type(raw_rejection_source) is (
+                    RawRejectionNormalizationUnknownEvidenceSource
                 )
-            source: UpstreamCoverageStateEvidenceSource | (UpstreamCoverageTransitionEvidenceSource)
-            if current_state is not None and transition_source is not None:
-                source = transition_source
-                kind = CoverageEvidenceKind.UPSTREAM_COVERAGE_TRANSITION
+                source = raw_rejection_source
+                kind = CoverageEvidenceKind.RAW_REJECTION_NORMALIZATION_UNKNOWN
             else:
-                source = upstream_derivation.upstream_state_sources[ordinal]
-                kind = CoverageEvidenceKind.UPSTREAM_COVERAGE_STATE
+                transition_source = upstream_derivation.upstream_transition_sources[ordinal]
+                requires_transition = current_state is not None and (
+                    _coverage_status_severity(requested_status)
+                    > _coverage_status_severity(current_state.reference.status)
+                )
+                if requires_transition and transition_source is None:
+                    raise ValueError(
+                        "a Silver transition requires an exact committed upstream transition."
+                    )
+                if current_state is not None and transition_source is not None:
+                    source = transition_source
+                    kind = CoverageEvidenceKind.UPSTREAM_COVERAGE_TRANSITION
+                else:
+                    source = upstream_derivation.upstream_state_sources[ordinal]
+                    kind = CoverageEvidenceKind.UPSTREAM_COVERAGE_STATE
             evidence = sealed_evidence(
                 source=source,
                 kind=kind,
@@ -14234,9 +16553,9 @@ class BatchVerifiedUpstreamCoveragePreparation:
             request = RequestedCoverageMutation(
                 scope=downstream_scope,
                 epoch=downstream_epoch,
-                requested_status=upstream_state.reference.status,
-                initial_reason=InitialCoverageReason.UPSTREAM_COVERAGE_DEGRADED,
-                transition_reason=CoverageReason.UPSTREAM_COVERAGE_DEGRADED,
+                requested_status=requested_status,
+                initial_reason=initial_reason,
+                transition_reason=transition_reason,
                 evidence=evidence,
             )
             _validate_mutation_request_semantics_in_context(request, context)
@@ -14520,3 +16839,39 @@ class DeliveryAttemptIdentity:
                 canonical_json_array(("delivery-attempt-v1", destination, batch_id, ordinal))
             ),
         )
+
+
+def _bulk_context_code(value: object) -> CodeType:
+    """Return the exact function code used to seal one verification entrypoint."""
+
+    function = getattr(value, "__func__", value)
+    code = getattr(function, "__code__", None)
+    if type(code) is not CodeType:
+        raise TypeError("bulk verification owner must expose an exact Python code object.")
+    return code
+
+
+_BULK_CONTEXT_OWNER_CODES = tuple(
+    _bulk_context_code(entrypoint)
+    for entrypoint in (
+        UpstreamCoverageTransitionEvidenceSource.__post_init__,
+        UpstreamCoverageStateEvidenceSource.__post_init__,
+        RawRejectionNormalizationUnknownEvidenceSource.from_committed_raw_rejection,
+        RawRejectionNormalizationUnknownEvidenceSource.verify_stored,
+        CoverageEvidence.__post_init__,
+        CoverageEvidence.verify_stored,
+        _validate_upstream_transition_status,
+        CoverageStateReference.verify_stored,
+        CoverageFanoutProof.verify_stored,
+        _verify_coverage_mutation_target_decisions,
+        _verify_coverage_mutation_batch_stored,
+        _verify_coverage_mutation_batch_stored_uncached,
+        prepare_coverage_mutation_batch,
+        CoverageCommitAcceptance.from_stored,
+        CommittedCoverageState.from_commit_at,
+        CommittedCoverageState.verify_stored,
+        _verify_and_construct_batch_derivation,
+        BatchVerifiedUpstreamCoveragePreparation._from_committed,
+    )
+)
+del _bulk_context_code

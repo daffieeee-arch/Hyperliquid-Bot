@@ -374,10 +374,13 @@ Coverage evidence embeds exactly one closed typed source row:
 | `acknowledgement-evidence-v1` | subscription-attempt ID, `acknowledged`, complete `subscription-spec-membership-proof-v1` row |
 | `reconnect-evidence-v1` | feed-product ID, connection-session ID |
 | `authoritative-state-snapshot-evidence-v1` | raw-record ID |
+| `raw-rejection-normalization-unknown-source-v1` | fixed `unknown` membership, fixed `before-parsing` boundary, upstream mutation-batch ID, positional committed-state ID, result ordinal, exact raw-rejection evidence ID, raw fan-out-binding ID, raw-record ID, full-record integrity SHA-256, exact downstream Silver scope ID |
 
 The outer `coverage-evidence-v1` row additionally binds scope ID, epoch ID, collector-run ID,
 evidence kind and injected UTC/monotonic observation boundaries. Thus none of these rows is a free
 label, and membership-bearing evidence can be checked against the exact high-cardinality scope.
+The final source row belongs only to the opt-in 3B1C-1G evidence-v3 route described below; it is not
+accepted by evidence v1 or v2.
 
 Coverage fan-out uses one of these closed kind-specific source rows. New writers bind every kind
 inside `coverage-fanout-proof-content-v3`; v1 remains parser-only for historical non-rejection
@@ -713,6 +716,9 @@ cannot be attached. Delivery state never appears in `NormalizationOutcome`.
 - **3B1C-1D — mixed outcome and bulk derivation closure:** represent simultaneous indexed rejection
   and conflict without precedence loss, and verify one complete committed fan-out once before O(1)
   per-leaf committed-state/upstream-source access.
+- **3B1C-1G — typed lossy raw-rejection projection:** preserve exact Bronze loss while expressing
+  pre-parse unknown Silver membership as uncertainty through one opt-in typed relation; the exact-
+  status route and `EventCoverage` remain strict.
 - **3B1C-2 — coverage runtime:** operationalize immutable Bronze-ingress and Silver-normalization
   coverage and the temporary lossy v2 `is_gap` projection. Existing 3B1B outcomes remain
   transition-empty until this step.
@@ -1403,6 +1409,80 @@ worst ratio is 2.070689029 and the highest peak RSS is 449,732,608 bytes. These 
 TerraPC- and fixture-bound rather than absolute worst-case guarantees. The full 3B1C-2 runtime
 path still must integrate these dormant contracts and prove its separate warm median at or below
 1.0 second.
+
+**3B1C-1G typed lossy raw-rejection projection.** The existing ordinary upstream route deliberately
+requires exact status equality, and `EventCoverage` rejects a Silver state that is less severe than
+its exact committed Bronze parent. That remains correct for a parsed or otherwise classified
+item. It cannot, however, express a definitive raw-sink rejection before parsing without making an
+unsupported claim: Bronze is `CONFIRMED_INCOMPLETE` because the expected raw record was rejected,
+while Silver membership is unknown and therefore Silver can only be `UNCERTAIN`. Treating Silver as
+`CONFIRMED_INCOMPLETE` would claim that a Silver-relevant item was proven lost.
+
+The closed knowledge table is normative:
+
+| Projection membership at the rejection boundary | Silver effect |
+| --- | --- |
+| proven `INCLUDED` | `CONFIRMED_INCOMPLETE` |
+| proven `EXCLUDED` | no Silver degradation from this rejection |
+| `UNKNOWN` because rejection occurred before parsing/projecting | `UNCERTAIN` |
+
+Only the final row is introduced by 3B1C-1G. It uses fixed
+`RawRejectionProjectionMembership.UNKNOWN` and
+`RawRejectionProjectionBoundary.BEFORE_PARSING`; neither is a caller-selected free label. A
+generic `CONFIRMED_INCOMPLETE -> UNCERTAIN` conversion remains forbidden, and the existing
+`BatchVerifiedUpstreamCoveragePreparation.from_committed_upstream(...)` exact-status path and
+general `EventCoverage` invariant remain strict. The exact-status factories reject this pre-parse
+raw-rejection cause because no typed `INCLUDED` proof exists; selecting the older factory cannot
+turn `UNKNOWN` into `INCLUDED`.
+
+`RawRejectionNormalizationUnknownEvidenceSource` retains the complete upstream batch, exact
+positional `CommittedCoverageState`, exact typed raw-record rejection evidence, raw fan-out binding
+and exact matching downstream Silver scope. Its canonical source row is:
+
+```text
+["raw-rejection-normalization-unknown-source-v1", "unknown", "before-parsing",
+ upstream_coverage_mutation_batch_id, committed_coverage_state_id, result_ordinal,
+ raw_rejection_evidence_id, raw_coverage_fanout_binding_id, raw_record_id,
+ full_record_integrity_sha256, downstream_coverage_scope_id]
+```
+
+Only evidence kind `raw-rejection-normalization-unknown` writes the new evidence-v3 identity:
+
+```text
+["coverage-evidence-content-v3", coverage_scope_id, coverage_epoch_id, collector_run_id,
+ "raw-rejection-normalization-unknown", typed_raw_rejection_projection_source_row_v1,
+ canonical_observed_at, observed_monotonic_ns]
+
+["coverage-evidence-v3", coverage_scope_id, coverage_epoch_id, collector_run_id,
+ "raw-rejection-normalization-unknown", typed_raw_rejection_projection_source_row_v1,
+ canonical_observed_at, observed_monotonic_ns, content_sha256]
+```
+
+Stored verification fully rederives the accepted upstream mutation/acceptance/result transcript,
+exact `result_ordinal`, committed state, raw rejection cause, raw record and full-record digest,
+fan-out v3 plan/catalog/session/attempt membership and Bronze-to-Silver scope pairing before
+rederiving the source row, evidence content, digest and ID. A hash or ID without every retained
+typed parent is insufficient. Missing, foreign, reordered, duplicated, cross-run, cross-epoch,
+cross-scope, wrong-version or tampered input fails closed without a partial tuple.
+
+The ordinary positional derivation API and the opt-in
+`BatchVerifiedUpstreamCoveragePreparation.from_committed_raw_rejection(...)` fused API create the
+same evidence, requested mutations, resulting state references and batch identities. The ordinary
+standalone source/evidence factories are the fully reverifying semantic oracle and are not a
+plan-scale composition path. The verified positional ordinary API and fused API each keep one
+call-local transcript across complete preparation and are verified linear for 1, 4, 50 and 1,024
+targets; the fused API remains the integrated atomic convenience boundary. Evidence v1 remains
+writer-active for its existing
+non-upstream kinds, evidence v2 remains writer-active for exact upstream state/transition
+propagation, and v1/v2 golden identities remain byte-exact.
+Evidence v3 is writer-active only for this lossy raw-rejection relation. Initialization v1,
+transition v1, no-op v1, mutation-batch v2, acceptance v2, committed-state v2, state-reference v2,
+fan-out v3, raw binding v1 and normalization-lineage v3 remain unchanged.
+
+This phase adds pure dormant contracts only. The active collector does not import the new path, a
+rejected raw record produces no fabricated normalization outcome or market event, schema v2 and
+`is_gap` remain operational, and market-event v3 remains dormant. Runtime integration remains
+3B1C-2 work; atomic delivery remains 3B1C-3 work. Nothing is deployed or promoted.
 
 **Why:** No deployed dataset or ClickHouse schema depends on v2, so one atomic migration provides a
 clean long-term boundary without permanent compatibility complexity while preserving reviewable,

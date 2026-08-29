@@ -8,14 +8,14 @@ The platform follows two governing principles:
 
 > **Develop away from the 24/7 runtime; deploy tested immutable artifacts.**
 
-The data plane may ingest multiple free public feeds, while authenticated execution is introduced gradually and only where it has a measurable purpose. Source development happens on Windows 11 through WSL2 and Codex. TrueNAS runs pinned Linux container images for persistent data collection, paper trading, observability and eventual live execution.
+The data plane may ingest multiple free public feeds, while authenticated execution is introduced gradually and only where it has a measurable purpose. Source development happens on Windows 11 through WSL2 and Codex. The runtime boundary is host-neutral Linux/amd64 OCI and consumes pinned images; a supported Ubuntu LTS VPS is the intended primary deployment profile, while TrueNAS remains an optional existing profile.
 
 ```mermaid
 flowchart LR
     DEV[Windows 11 + WSL2\nCodex development] --> GH[GitHub PR]
     GH --> CI[GitHub Actions\nTests + image build]
     CI --> REG[Private GHCR\nversioned image + digest]
-    REG --> TN[TrueNAS SCALE\nPAPER / SHADOW / LIVE]
+    REG --> RT[Linux/amd64 OCI runtime\nPAPER / SHADOW / LIVE]
 
     HL[Hyperliquid] --> MD[Market Data Adapters]
     BV[Bitvavo] --> MD
@@ -51,6 +51,67 @@ flowchart LR
 
 See [Development Workflow](DEVELOPMENT.md), [Deployment](DEPLOYMENT.md), and [Venue Strategy](VENUES.md).
 
+## COURSE-1 delivery cut line
+
+The long-term platform shape above remains directional, but it is not the current implementation
+sequence. The repository has a working public-trade decoder and collector plus extensive dormant
+provenance contracts, but no end-to-end replay, strategy, risk, PAPER execution or order/fill
+ledger route. The next product proof therefore uses one reuse-first vertical slice:
+
+```text
+bounded Hyperliquid BTC-PERP replay + identified run configuration
+  -> one deterministic, non-promotable smoke strategy
+  -> pre-trade risk decision and hard exposure cap
+  -> PAPER execution with explicit fee/funding/spread/slippage assumptions
+  -> orders, fills, position, PnL and reconstructable run artifacts
+  -> the same downstream strategy/risk/PAPER path on live public data
+```
+
+This is an engineering route test, not evidence of alpha and not strategy promotion to `PAPER`.
+It requires no exchange credential and cannot submit a venue order. `TESTNET` remains a separate,
+authenticated environment and is not another spelling of PAPER.
+
+The slice is deliberately narrow:
+
+- one Hyperliquid BTC perpetual instrument;
+- one bounded replay representation at the minimum granularity needed by the chosen fill model;
+- one direct mapping from existing data into the selected engine, with no speculative framework
+  abstraction;
+- one process and local files where sufficient;
+- no ClickHouse, Redis, PostgreSQL, FastAPI, cockpit, Grafana or 24/7 deployment dependency;
+- schema v2 may remain the active project boundary; the dormant v3 envelope is not activated.
+
+Before implementing another backtester, paper broker, order-management system or reconciliation
+framework, a short fit gate evaluates an existing engine against these exact needs. NautilusTrader
+is the primary candidate because it is designed around one strategy model across historical,
+sandbox and live contexts and has a Hyperliquid adapter. That is a candidate hypothesis, not an
+adoption decision. The gate must verify, rather than assume:
+
+- an exactly pinned, supportable version and acceptable LGPL-3.0 obligations;
+- deterministic BTC-PERP replay and a credentialless public-data-to-sandbox PAPER composition;
+- explicit fail-closed environment selection, because missing configuration must never default
+  this project into a venue execution environment;
+- required precision, funding, order/fill/position and correlation semantics;
+- restart, persistence and reconciliation boundaries, including what remains project-owned;
+- the data granularity and fill-model limits behind every result.
+
+The official Hyperliquid Python SDK and API documentation are protocol, signing, asset-ID and
+precision references; the SDK is not a backtester or trading engine. Hummingbot remains a possible
+specialized connector/execution candidate, not a second platform core. Freqtrade may be useful as
+a strategy comparator or disposable prototype, but its bot lifecycle is not the platform kernel.
+A thin native implementation is the fallback only if the fit gate identifies a smaller, explicit
+gap than adopting a framework would create.
+
+COURSE-1 defers Phase 1A-3B1C-2, 3B1C-3, 3B1D and the provenance-complete form of 3B2. Existing
+code, tests and ADR-022 remain intact and dormant. Reactivation needs a concrete consumer and a
+new priority decision after the vertical slice; sunk implementation cost is not itself a consumer.
+
+The local slice precedes runtime-host work. Host-neutral Linux/amd64 OCI is the architecture
+boundary and a supported Ubuntu LTS VPS is the intended primary deployment profile. The factual
+VPS migration and definitive runtime ADR follow only after the local slice passes. TrueNAS remains
+an optional existing profile; this course correction neither migrates nor removes existing
+TrueNAS, ClickHouse or Grafana state.
+
 ## Environment separation
 
 ### DEV — Windows 11 + WSL2
@@ -80,7 +141,7 @@ Owns independent verification and release construction:
 
 CI does not directly promote a strategy into live capital.
 
-### PAPER / SHADOW / LIVE — TrueNAS
+### PAPER / SHADOW / LIVE — host-neutral Linux/OCI runtime
 
 Owns:
 
@@ -92,7 +153,10 @@ Owns:
 - runtime secrets;
 - monitoring, alerts, recovery and backups.
 
-These are separately configured deployments. Source code is never edited in place inside the running TrueNAS containers.
+These are separately configured deployments. The intended primary profile is a supported Ubuntu
+LTS VPS; the existing TrueNAS environment is optional. Provisioning and migration wait for the
+local vertical-slice exit gate and the definitive runtime ADR. Source code is never edited in
+place inside running containers.
 
 ## Separation of concerns
 
@@ -113,7 +177,7 @@ MarketData.venue_health(venue)
 
 Initial public adapters target Hyperliquid, Bitvavo, Kraken and selected Binance feeds. Additional venues are added only where they serve a research hypothesis or resilience requirement.
 
-The local development data plane uses mocks, fixtures and disposable services. The TrueNAS data plane is authoritative for self-collected 24/7 history.
+The local development data plane uses mocks, fixtures and disposable services. The selected durable runtime store is authoritative for self-collected 24/7 history; existing TrueNAS/ClickHouse state remains protected until an approved migration exists.
 
 #### Dormant provenance spine and atomic v3 cutover
 
@@ -373,7 +437,7 @@ Research may run:
 
 - locally in WSL2 against bounded sample data;
 - in CI for deterministic regression tests;
-- as a controlled low-priority TrueNAS research worker against larger datasets.
+- as a controlled low-priority runtime research worker against larger datasets.
 
 Research can compare many venues without granting those venues live order permissions.
 
@@ -430,7 +494,7 @@ source branch
   -> merge
   -> release image build
   -> private GHCR
-  -> digest-pinned TrueNAS deployment
+  -> digest-pinned approved runtime deployment
   -> health/soak gates
   -> promotion or rollback
 ```
@@ -508,7 +572,7 @@ Use for append-heavy analytical/time-series data:
 - PnL/equity snapshots;
 - backtest results.
 
-A small disposable ClickHouse container is used in local development. The managed TrueNAS ClickHouse instance holds continuous paper/runtime data in a separate Hyperliquid database and with separate writer/read-only identities.
+A small disposable ClickHouse container is used in local development. A managed runtime ClickHouse instance may later hold continuous paper/runtime data with separate writer/read-only identities. The existing TrueNAS instance remains an optional protected source until migration is explicitly approved.
 
 ### PostgreSQL
 
@@ -553,7 +617,7 @@ flowchart TD
     MW[Master Hardware Wallet] -. authorizes .-> HL
 ```
 
-Withdrawal/funding permissions are never granted to automated Bitvavo/Kraken credentials. The Hyperliquid master wallet seed never resides on Windows, TrueNAS, Docker, GitHub or the browser.
+Withdrawal/funding permissions are never granted to automated Bitvavo/Kraken credentials. The Hyperliquid master wallet seed never resides on Windows/WSL2, any runtime host or container (including TrueNAS), GitHub or the browser.
 
 ## Execution modes
 
@@ -604,7 +668,7 @@ data/
 infra/
   dev/
   images/
-  truenas/
+  truenas/              # optional existing profile
   clickhouse/
   postgres/
   redis/

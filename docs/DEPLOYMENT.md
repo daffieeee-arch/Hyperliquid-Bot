@@ -2,9 +2,14 @@
 
 ## Principle
 
-Source code is developed on Windows/WSL2, tested in CI, packaged into immutable Linux container images and then deployed to TrueNAS.
+Source code is developed on Windows/WSL2, tested in CI and packaged into immutable Linux/amd64 OCI images for an independently operated runtime host.
 
-TrueNAS must not run directly from a mutable development checkout. Production-like services consume versioned images and persistent volumes.
+The runtime must not run directly from a mutable development checkout. Production-like services consume versioned images and persistent volumes.
+
+The architecture boundary is host-neutral Linux/OCI. A supported Ubuntu LTS VPS is the intended
+primary deployment profile; the existing TrueNAS SCALE environment remains optional. The local
+BTC-PERP vertical slice comes first. VPS provisioning, migration and the definitive runtime ADR
+are separate later work and are not authorized by this document correction.
 
 ## Environment matrix
 
@@ -12,10 +17,10 @@ TrueNAS must not run directly from a mutable development checkout. Production-li
 |---|---|---|---|---|
 | DEV | Windows 11 + WSL2 | coding, unit tests, local integration tests, small research | no live exchange credentials | disposable/local |
 | CI | GitHub Actions | independent tests, security checks and image builds | repository-scoped workflow credentials | ephemeral |
-| PAPER | TrueNAS SCALE | 24/7 public data, paper execution, Grafana and cockpit | public data; no live trading key | durable |
-| SHADOW | TrueNAS SCALE | live signals/account observation without submitting orders | read-only/account-scoped where needed | durable and isolated |
-| SMALL LIVE | TrueNAS SCALE or later stable dedicated host | tightly capped real execution | dedicated trade-only credentials | durable and isolated |
-| PRODUCTION | stable runtime host | controlled scaled operation | least-privilege per service | durable, backed up and monitored |
+| PAPER | approved Linux/OCI runtime; Ubuntu LTS VPS intended | 24/7 public data, paper execution, Grafana and cockpit | public data; no live trading key | durable |
+| SHADOW | approved isolated Linux/OCI runtime | live signals/account observation without submitting orders | read-only/account-scoped where needed | durable and isolated |
+| SMALL LIVE | approved supported isolated runtime | tightly capped real execution | dedicated trade-only credentials | durable and isolated |
+| PRODUCTION | approved supported isolated runtime | controlled scaled operation | least-privilege per service | durable, backed up and monitored |
 
 PAPER, SHADOW and LIVE are distinct deployments with separate configuration, secrets, data namespaces and risk limits. A strategy or image approved in PAPER is not implicitly approved for LIVE.
 
@@ -36,7 +41,7 @@ private GHCR image(s)
       ↓
 manual approval
       ↓
-TrueNAS PAPER deployment
+approved runtime PAPER deployment
       ↓
 health/soak validation
       ↓
@@ -119,11 +124,18 @@ ghcr.io/daffieeee-arch/hyperliquid-bot-trader
 ghcr.io/daffieeee-arch/hyperliquid-bot-cockpit
 ```
 
-TrueNAS receives a dedicated registry credential with package-read access only. That credential is not used for Git repository writes and cannot publish packages.
+Each deployment profile receives a dedicated registry credential with package-read access only. That credential is not used for Git repository writes and cannot publish packages.
 
-## TrueNAS deployment
+## Primary Ubuntu LTS VPS profile
 
-Deploy through TrueNAS Custom Apps / Compose YAML using images pulled from GHCR.
+The intended primary profile uses Linux/amd64 OCI images and Compose-compatible declarative
+configuration on a supported Ubuntu LTS VPS. Exact sizing, networking, storage, backup and
+recovery choices are deliberately deferred until the local vertical slice provides evidence and
+the definitive runtime ADR is accepted.
+
+## Optional existing TrueNAS profile
+
+If retained, deploy through TrueNAS Custom Apps / Compose YAML using images pulled from GHCR.
 
 Runtime configuration lives under version control without secret values. TrueNAS supplies:
 
@@ -153,10 +165,10 @@ Exact dataset names are finalized after inspecting the existing TrueNAS and Clic
 
 During early development:
 
-- merge does not automatically deploy to TrueNAS;
+- merge does not automatically deploy to any runtime;
 - release image build is separate from ordinary pull-request CI;
 - PAPER deployment requires explicit operator approval;
-- TrueNAS pulls a specified digest;
+- the approved runtime pulls a specified digest;
 - post-deploy health and data-quality checks run before the deployment is accepted;
 - failed checks trigger rollback to the previous known-good digest.
 
@@ -198,15 +210,18 @@ Where technically possible, promote the exact same image digest from PAPER to SH
 
 Rebuilding from the same source commit creates a new artifact and requires revalidation. Passing paper validation belongs to an artifact/configuration pair, not merely to a Git branch name.
 
-## TrueNAS release maturity
+## Optional TrueNAS profile maturity
 
-TrueNAS 26 BETA.3 is acceptable for the current research and PAPER stage, with backups and monitoring. Material live capital should not depend on an early-release NAS operating system without explicit risk acceptance. Before SMALL LIVE, prefer a stable TrueNAS release or another stable isolated runtime and repeat soak/recovery testing after any operating-system upgrade.
+If retained, TrueNAS 26 BETA.3 is acceptable for research and PAPER with backups and monitoring,
+but it is not the primary deployment profile. Material live capital must use a supported stable
+isolated runtime or have explicit risk acceptance. Repeat soak/recovery testing after any material
+operating-system change.
 
 ## Runtime change authority
 
 Hermes and MCP integrations may manage the environment, but standing privileges remain scoped:
 
-- TrueNAS operational actions are allowed for project datasets/apps within approved scope;
+- TrueNAS operational actions, when that optional profile is used, are allowed for project datasets/apps within approved scope;
 - destructive pool/dataset, update or reboot actions require explicit approval;
 - Grafana MCP may edit the Hyperliquid folder and alerts;
 - datasource credentials remain read-only where possible;

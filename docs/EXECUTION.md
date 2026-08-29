@@ -6,7 +6,7 @@ Convert validated signals into reliable orders with minimal avoidable alpha loss
 
 ## Development versus runtime
 
-Execution code is developed and tested on Windows/WSL2, but authenticated execution runs only in an explicitly authorized TrueNAS environment.
+Execution code is developed and tested on Windows/WSL2, but authenticated execution runs only in an explicitly authorized isolated runtime environment.
 
 Local DEV:
 
@@ -16,7 +16,7 @@ Local DEV:
 - does not need a wallet;
 - may test order-state transitions without submitting real orders.
 
-TrueNAS PAPER/SHADOW/LIVE:
+Approved PAPER/SHADOW/LIVE runtime:
 
 - runs CI-built, digest-pinned images;
 - owns persistent ledgers and reconciliation state;
@@ -32,11 +32,11 @@ Hyperliquid is the initial primary execution venue. Market information may come 
 
 Use an EVM-compatible master wallet for account ownership and authorize dedicated Hyperliquid API/agent wallets for automation.
 
-The master private key/seed must never be stored on Windows, WSL2, TrueNAS, Docker, logs, browser code or GitHub. The runtime execution service receives only the dedicated agent key required for its assigned environment/process/account scope.
+The master private key/seed must never be stored on Windows/WSL2, any runtime host or container (including TrueNAS), logs, browser code or GitHub. The runtime execution service receives only the dedicated agent key required for its assigned environment/process/account scope.
 
 Prefer separate agent wallets per independent trading process to reduce nonce/state conflicts and isolate operational blast radius.
 
-No authenticated wallet or trade key is required during the initial local and TrueNAS PAPER stages.
+No authenticated wallet or trade key is required during local or deployed PAPER stages.
 
 ## Execution interface
 
@@ -153,7 +153,7 @@ Cross-venue multi-leg execution is introduced only after each venue adapter inde
 The execution service is promoted as a versioned image:
 
 ```text
-CI image -> TrueNAS PAPER -> SHADOW -> SMALL LIVE
+CI image -> APPROVED RUNTIME PAPER -> SHADOW -> SMALL LIVE
 ```
 
 Use the same digest through stages where practical. Deployments record the active image and configuration. A failed deployment rolls back to a known-good digest; it is never repaired by editing files inside a running container.

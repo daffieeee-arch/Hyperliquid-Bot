@@ -4,7 +4,11 @@
 
 Grafana is not the primary trading UI. It is the professional observability, research-analysis and forensic layer behind the trading cockpit.
 
-Grafana runs continuously on TrueNAS. Dashboard definitions, datasource provisioning and alert rules are developed/versioned in Git and promoted with the software release. Hermes may also use Grafana MCP to create and refine project dashboards, provided those changes are exported back to version control.
+Grafana runs on the approved continuous runtime. The existing TrueNAS instance remains an optional
+profile and is not changed or migrated before the local slice and definitive runtime ADR.
+Dashboard definitions, datasource provisioning and alert rules are developed/versioned in Git and
+promoted with the software release. Hermes may also use Grafana MCP to create and refine project
+dashboards, provided those changes are exported back to version control.
 
 ## Stack
 
@@ -30,7 +34,7 @@ A disposable local Grafana container may be used in Windows/WSL2 for:
 
 It contains no production credentials and may be recreated at any time.
 
-### TrueNAS runtime
+### Optional existing TrueNAS profile
 
 The existing TrueNAS Grafana instance is reused where practical. Hyperliquid assets live in a dedicated folder and are backed by version-controlled provisioning files.
 

@@ -6,9 +6,64 @@ Development and runtime are deliberately separated:
 
 - **Windows 11 + WSL2 + Codex:** source development, local tests and small research;
 - **GitHub Actions:** independent CI and image construction;
-- **TrueNAS SCALE:** 24/7 data collection, PAPER/SHADOW and eventual LIVE runtime.
+- **Host-neutral Linux/amd64 OCI runtime:** 24/7 data collection and PAPER/SHADOW/LIVE; a supported Ubuntu LTS VPS is the intended primary deployment profile and TrueNAS is optional.
 
 Fases overlap by workstream. A strategy may be in PAPER while another remains in RESEARCH, and production hardening can continue while live-market paper evidence accumulates.
+
+## COURSE-1 — current active priority
+
+Status: **decision gate active; provenance expansion deferred**
+
+The current implementation order is corrected before Phase 1A continues. Existing provenance and
+v3 work is preserved, but Phase 1A-3B1C-2, 3B1C-3, 3B1D and the provenance-complete form of 3B2
+are frozen in the backlog. They are not complete, rejected or scheduled as the next work merely
+because prerequisite contract code already exists. The detailed Phase 1A history below remains an
+accurate record, not the active priority order.
+
+The active sequence is:
+
+1. time-box one fit decision for a reusable replay/PAPER core, with NautilusTrader as the primary
+   candidate, a thin native path as fallback and Hummingbot assessed only where its specialized
+   connector/execution strengths materially help;
+2. record the selected core and direct integration boundary in an ADR only after the fit evidence
+   exists;
+3. build one local Hyperliquid BTC-PERP deterministic replay -> strategy -> risk -> PAPER route;
+4. run the same downstream strategy/risk/PAPER path on live public data without credentials;
+5. after the local route passes, record the definitive runtime ADR and only then perform the VPS migration.
+
+The fit decision is not a benchmark exercise. It checks only the blocking product and safety
+questions: supportable pinned version, licensing, Python/runtime compatibility, Hyperliquid
+instrument and precision handling, deterministic replay, fill-model transparency, credentialless
+PAPER composition, fail-closed environment selection, order/fill/position semantics, persistence,
+restart and reconciliation boundaries. The official Hyperliquid SDK is a conformance reference,
+not a competing platform core.
+
+### Vertical-slice scope
+
+- Hyperliquid BTC perpetual only;
+- one bounded, identified replay dataset and one deterministic run configuration;
+- one explicitly non-promotable smoke strategy;
+- risk-based sizing plus a hard exposure limit and stale-data rejection;
+- explicit fee, funding, spread, slippage and fill assumptions;
+- reproducible signals, risk decisions, orders, fills, final position and PnL;
+- reconstructable run artifacts with strategy/configuration/source/correlation identity;
+- exact `PAPER` startup with no exchange execution client, private key or venue order;
+- no v3 activation, extra venue, ClickHouse, Redis, PostgreSQL, API, cockpit, Grafana or deployment
+  dependency.
+
+Exit gate:
+
+- two runs over the same replay and configuration produce the same business outcomes;
+- invalid or stale input and rejected risk cannot create an order;
+- the run artifacts reconstruct the final PAPER position and cash/PnL state;
+- the same strategy and risk path survives a short live-public-data PAPER soak;
+- the core-engine ADR states accepted gaps and project-owned safety boundaries;
+- no result is presented as profitability, strategy promotion, TESTNET or LIVE readiness.
+
+Runtime-host work follows this exit gate. Host-neutral Linux/amd64 OCI/Compose is the architecture
+boundary and a supported Ubuntu LTS VPS is the intended primary profile. The definitive runtime
+ADR, factual VPS migration and disposition of existing TrueNAS/ClickHouse/Grafana state remain a
+separate, later scope.
 
 ## Phase 0A — Blueprint and project decisions
 
@@ -53,7 +108,7 @@ Exit gate:
 
 ## Phase 1A — Local foundation vertical slice
 
-Status: **started, not complete**
+Status: **started, not complete; reordered by COURSE-1**
 
 Phase 1A-2A's pure Hyperliquid public-trade decoder, schema-v2 normalization boundary and
 deterministic synthetic fixtures were merged through PR #4 in merge commit
@@ -147,6 +202,10 @@ oracle, while fused preparation is the integrated atomic convenience boundary. E
 and golden IDs are unchanged. The collector does not import this path; v2 and `is_gap` remain
 active, market-event v3 remains dormant, and neither 3B1C-2 nor 3B1C-3 is implemented here.
 
+The original Phase 1A target and deliverables below remain historical planning context. They are
+not acceptance criteria for the active COURSE-1 slice; the narrower scope and exit gate above
+control current work.
+
 Target: useful local output within approximately the first 1-2 weeks of active development.
 
 Deliverables:
@@ -205,14 +264,15 @@ comparison, approved advanced feeds, ClickHouse persistence, Grafana/Alloy/OpenT
 forensics and the Bloomberg/EMS-inspired cockpit. None is deployed by this slice; SHADOW/LIVE
 remain disabled. Phase 1A remains started, not complete.
 
-## Phase 1B — TrueNAS 24/7 PAPER deployment
+## Phase 1B — Host-neutral 24/7 PAPER deployment
 
-Target: approximately weeks 2-4, overlapping with completion of Phase 1A.
+Target: only after the COURSE-1 local vertical-slice exit gate.
 
 Deliverables:
 
 - private GHCR image publication;
-- digest-pinned TrueNAS Custom App deployment;
+- digest-pinned Linux/amd64 OCI/Compose deployment on a supported Ubuntu LTS VPS;
+- an explicit retain-or-migrate plan for the optional existing TrueNAS profile;
 - separate paper datasets and configuration;
 - managed ClickHouse Hyperliquid database/users;
 - 24/7 public-data collection;
@@ -226,7 +286,7 @@ Deliverables:
 
 Exit gate:
 
-- the Windows PC can be switched off while the TrueNAS paper environment continues collecting, paper trading and monitoring correctly.
+- the Windows PC can be switched off while the approved PAPER runtime continues collecting, paper trading and monitoring correctly.
 
 ## Phase 2 — First alpha engines
 
@@ -293,7 +353,7 @@ Deliverables:
 - protected software/deployment promotion gates;
 - disaster-recovery and rollback drills.
 
-Development still occurs on Windows/WSL2. Authenticated runtime testing occurs only in the appropriate isolated TrueNAS environment.
+Development still occurs on Windows/WSL2. Authenticated runtime testing occurs only in the appropriate isolated approved runtime environment.
 
 ## Phase 5 — Advanced alpha and portfolio layer
 
@@ -326,7 +386,7 @@ Deliverables:
 - separate runtime secrets and data namespaces;
 - staged allocation increases only when evidence remains consistent.
 
-Before material live capital, prefer a stable TrueNAS release or another stable isolated runtime rather than relying on an early-release operating system without explicit risk acceptance.
+Before material live capital, use a supported stable isolated runtime and repeat soak/recovery tests after material operating-system changes.
 
 ## Parallel workstreams
 
@@ -373,7 +433,7 @@ These workstreams can progress simultaneously after shared contracts are agreed:
 
 ### F. Runtime and operations
 
-- TrueNAS images/datasets;
+- Linux/OCI runtime images and durable datasets;
 - health/restart behavior;
 - backups;
 - deployment/rollback;
@@ -391,10 +451,10 @@ Potential additions only when justified:
 - more advanced portfolio optimization;
 - automated research hypothesis generation;
 - richer multi-monitor terminal workflows;
-- automated but approval-gated TrueNAS deployments.
+- automated but approval-gated runtime deployments.
 
 ## Planning interpretation
 
-The goal is not to spend months before seeing results. The local vertical slice should appear quickly, followed by a 24/7 TrueNAS paper deployment built from the same repository and CI pipeline. Production hardening and out-of-sample evidence then accumulate in parallel.
+The goal is not to spend months before seeing results. The local vertical slice comes first, followed by the definitive runtime ADR and an Ubuntu LTS VPS PAPER deployment built from the same repository and CI pipeline. Production hardening and out-of-sample evidence then accumulate in parallel; TrueNAS remains optional.
 
 Time ranges are engineering/research estimates, not guarantees of strategy profitability.

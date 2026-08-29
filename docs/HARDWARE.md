@@ -1,11 +1,12 @@
 # Hardware & Host Plan
 
-## Two-host model
+## Development and runtime profiles
 
-The project deliberately uses different machines for different jobs:
+The project deliberately separates development from continuous runtime operation:
 
 - **Windows workstation:** interactive development, Codex, frontend work, local tests, disposable containers and optional GPU research.
-- **TrueNAS SCALE host:** 24/7 market-data collection, persistent databases, paper/shadow/live services, Grafana and operational monitoring.
+- **Intended primary runtime profile:** a supported Ubuntu LTS VPS running Linux/amd64 OCI workloads, after the local vertical slice and definitive runtime ADR.
+- **Optional existing profile:** TrueNAS SCALE for retained datasets/services where keeping it is explicitly chosen.
 
 The trading runtime must not depend on the Windows workstation remaining powered on.
 
@@ -56,7 +57,7 @@ The repository and Linux development files should live inside the WSL Linux file
 ~/code/Hyperliquid-Bot
 ```
 
-Do not develop from an SMB-mounted TrueNAS directory or `/mnt/c` when the toolchain runs in WSL. Local Docker volumes are disposable; full runtime history remains on TrueNAS.
+Do not develop from an SMB-mounted TrueNAS directory or `/mnt/c` when the toolchain runs in WSL. Local Docker volumes are disposable; full history belongs on the selected durable runtime store. Existing TrueNAS data remains protected pending an approved retain-or-migrate decision.
 
 ### GPU
 
@@ -69,9 +70,16 @@ The RTX 4070 SUPER is optional capacity for later:
 
 Phase 1 must remain CPU-capable. No core collector, risk or execution process may require the GPU.
 
-## Runtime host
+## Primary runtime profile
 
-The 24/7 platform runs on the existing TrueNAS SCALE system with:
+The architecture target is a host-neutral Linux/amd64 OCI runtime with a supported Ubuntu LTS VPS
+as the intended primary profile. VPS sizing and storage topology must be derived from the working
+local slice. Provisioning, factual migration and the definitive runtime ADR therefore wait until
+that slice passes.
+
+## Optional existing TrueNAS profile
+
+The existing TrueNAS SCALE system may remain an optional runtime/data profile with:
 
 - TrueNAS SCALE 26.0.0-BETA.3 at the current planning point;
 - AMD Ryzen 7 PRO 8845HS, 8 cores / 16 threads;
@@ -88,7 +96,7 @@ The host is powerful enough for the intended first strategies but remains a shar
 
 Prioritize, in order:
 
-1. TrueNAS/ZFS and storage integrity;
+1. host operating-system and storage integrity;
 2. market-data collectors and data-quality guards;
 3. paper/live risk and execution processes;
 4. databases and control API;
@@ -156,7 +164,7 @@ Add complexity only when a measured bottleneck justifies it.
 
 ## Reliability
 
-TrueNAS runs versioned images, not a mutable source checkout. Services use:
+Every runtime profile runs versioned images, not a mutable source checkout. Services use:
 
 - explicit resource limits;
 - health/readiness checks;
@@ -168,13 +176,13 @@ TrueNAS runs versioned images, not a mutable source checkout. Services use:
 
 Restart recovery must never assume that local trading state is authoritative. For authenticated execution, reconcile against the venue before enabling new risk.
 
-## Operating-system maturity
+## Optional TrueNAS operating-system maturity
 
-TrueNAS 26 BETA.3 is suitable for current architecture work, public data and PAPER testing with backups and monitoring. It is an early-release platform and should not carry material live trading risk without explicit acceptance.
+If retained, TrueNAS 26 BETA.3 is suitable for public data and PAPER testing with backups and monitoring. It is an early-release optional profile, not the primary target, and should not carry material live trading risk without explicit acceptance.
 
 Before SMALL LIVE:
 
-- prefer a stable TrueNAS release or another stable isolated runtime;
+- use a supported stable isolated runtime;
 - re-run deployment, soak, recovery and rollback tests after an OS upgrade;
 - confirm Custom Apps, private registry pulls, networking and persistent mounts;
 - verify temperature and memory behavior under sustained load.
@@ -187,7 +195,7 @@ Back up at minimum:
 - strategy/model metadata;
 - Grafana provisioning and dashboard definitions;
 - critical ClickHouse metadata and selected data partitions;
-- TrueNAS deployment configuration;
+- TrueNAS deployment configuration when that optional profile is retained;
 - runtime configuration without secret values;
 - release/image digest history;
 - repository state through GitHub.

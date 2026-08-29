@@ -11,9 +11,11 @@ Primary development environment:
 - Codex agent running in WSL2 Ubuntu;
 - repository stored inside the WSL Linux filesystem.
 
-24/7 runtime environment:
+24/7 runtime boundary:
 
-- TrueNAS SCALE;
+- host-neutral Linux/amd64 OCI runtime;
+- a supported Ubuntu LTS VPS is the intended primary deployment profile after the local vertical slice;
+- the existing TrueNAS SCALE environment remains an optional profile;
 - CI-built Linux container images;
 - PAPER first, later SHADOW and explicitly approved LIVE.
 
@@ -24,14 +26,14 @@ Read `README.md`, `docs/ARCHITECTURE.md`, `docs/DEVELOPMENT.md`, `docs/DEPLOYMEN
 - `PAPER` is the default and initial permitted trading mode.
 - Local development must fail closed if asked to use an unapproved live mode.
 - Never add, request, print, log or commit real private keys or exchange credentials.
-- The Hyperliquid master-wallet key must never reside on Windows, TrueNAS, Docker or GitHub.
+- The Hyperliquid master-wallet key must never reside on Windows/WSL2, any runtime host or container (including TrueNAS), or GitHub.
 - Never expose withdrawal or transfer permissions to the bot.
 - Strategy code must not call venue-specific APIs directly.
 - LLMs may propose strategies and code; deterministic tests/data decide correctness and performance.
 - No martingale or uncontrolled averaging down.
 - Leverage follows risk-based sizing and hard limits.
 - No strategy or agent self-promotes to LIVE.
-- Do not edit source inside running TrueNAS containers.
+- Do not edit source inside running runtime containers.
 - Do not deploy floating `latest` tags.
 - Do not mutate TrueNAS runtime data from ordinary Windows development tasks.
 
@@ -78,7 +80,7 @@ Every quantitative experiment must define:
 
 Never claim profitability from in-sample results alone. Avoid look-ahead, survivorship, selection and execution bias.
 
-Local development uses fixtures, replay and bounded exports. Continuous runtime data belongs on TrueNAS/ClickHouse.
+Local development uses fixtures, replay and bounded exports. Continuous data belongs on the selected durable runtime store. Existing TrueNAS/ClickHouse data remains protected until an approved migration exists.
 
 ## Execution and risk
 
@@ -99,7 +101,8 @@ Browser code and Grafana never sign orders.
 
 - DEV runs in WSL2 and disposable local Docker services.
 - CI builds/tests images.
-- TrueNAS pulls approved image digests and owns persistent runtime volumes.
+- The approved Linux/OCI runtime host pulls image digests and owns persistent runtime volumes.
+- VPS provisioning, migration and the definitive runtime ADR follow only after the local vertical slice.
 - Redis and PostgreSQL are introduced only when their defined responsibilities are required.
 - Reuse the existing TrueNAS ClickHouse safely; never initialize or overwrite it without explicit migration/backup approval.
 - Grafana dashboards and alerts should be version-controlled even when edited through MCP.

@@ -2,7 +2,7 @@
 
 ## Decision
 
-Primary software development happens on the Windows 11 workstation through **WSL2 Ubuntu** with Codex/ChatGPT desktop. TrueNAS is not the interactive source-development machine; it receives tested container images for continuous paper, shadow and later live operation.
+Primary software development happens on the Windows 11 workstation through **WSL2 Ubuntu** with Codex/ChatGPT desktop. The independent Linux/OCI runtime is not an interactive source-development machine; it receives tested container images for continuous paper, shadow and later live operation. A supported Ubuntu LTS VPS is the intended primary deployment profile, while TrueNAS remains optional.
 
 This separation provides faster iteration, better debugging, safer experimentation and a cleaner 24/7 runtime.
 
@@ -18,7 +18,7 @@ Current known workstation:
 - ChatGPT/Codex desktop with ChatGPT Pro;
 - Docker Desktop using the WSL2 backend.
 
-The GPU is not required for Phase 1. It may later support local ML experiments or model training, while production inference should remain lightweight enough for the TrueNAS host unless evidence justifies otherwise.
+The GPU is not required for Phase 1. It may later support local ML experiments or model training, while production inference should remain lightweight enough for the approved runtime profile unless evidence justifies otherwise.
 
 ## Codex environment
 
@@ -146,9 +146,9 @@ Development uses:
 - captured and sanitized public-market samples;
 - deterministic replay files;
 - small local ClickHouse datasets;
-- read-only exports from TrueNAS where explicitly needed.
+- read-only exports from an approved runtime store where explicitly needed.
 
-The full 24/7 dataset remains on TrueNAS. Windows development should not mutate the TrueNAS ClickHouse instance. Heavy research can run as a controlled TrueNAS research job or against a bounded exported dataset.
+The full 24/7 dataset belongs on the selected durable runtime store. Windows development should not mutate a runtime ClickHouse instance. Heavy research can run as a controlled runtime research job or against a bounded exported dataset. Existing TrueNAS/ClickHouse state remains protected pending an explicit retain-or-migrate decision.
 
 Small fixtures suitable for reproducible tests may be committed. Large raw captures, secrets and personal trading/account data must not be committed.
 
@@ -168,9 +168,9 @@ Where a later integration test genuinely needs a non-production secret, inject i
 
 ## Local versus runtime parity
 
-Parity is achieved through containers, contracts and tests—not by editing source directly on TrueNAS.
+Parity is achieved through containers, contracts and tests—not by editing source directly on a runtime host.
 
-Keep consistent across local, CI and TrueNAS:
+Keep consistent across local, CI and every runtime profile:
 
 - Linux/amd64 runtime target;
 - service entrypoints;

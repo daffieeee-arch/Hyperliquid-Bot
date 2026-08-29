@@ -83,7 +83,7 @@ The risk engine receives health signals including:
 
 A mismatch between approved and deployed software/configuration blocks new live risk.
 
-The Windows development workstation is never part of the continuous execution dependency chain. Turning it off must not affect TrueNAS PAPER/SHADOW/LIVE services.
+The Windows development workstation is never part of the continuous execution dependency chain. Turning it off must not affect PAPER/SHADOW/LIVE services on the independently operated runtime.
 
 ## Dynamic risk controls
 
@@ -143,11 +143,11 @@ Before live promotion test scenarios such as:
 - ClickHouse/control database unavailable;
 - Redis unavailable when introduced;
 - wrong/stale image digest or configuration;
-- TrueNAS container restart or host reboot;
+- runtime container restart or host reboot;
 - Windows workstation and Hermes unavailable;
 - rollback during an open paper/shadow position;
 - venue outage while a multi-leg hedge is incomplete.
 
 ## Runtime maturity gate
 
-TrueNAS 26 BETA.3 may be used for PAPER research with monitoring and backups. Before material live risk, prefer a stable runtime release or explicitly approve and document the operating-system risk after soak, recovery and rollback testing.
+The optional existing TrueNAS 26 BETA.3 profile may be used for PAPER research with monitoring and backups. Before material live risk, use a supported stable runtime or explicitly approve and document the operating-system risk after soak, recovery and rollback testing.

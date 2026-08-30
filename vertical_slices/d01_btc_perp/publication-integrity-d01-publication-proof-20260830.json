@@ -1,0 +1,175 @@
+{
+  "candidate_paths": [
+    ".github/workflows/ci.yml",
+    "vertical_slices/__init__.py",
+    "vertical_slices/d01_btc_perp/README.md",
+    "vertical_slices/d01_btc_perp/__init__.py",
+    "vertical_slices/d01_btc_perp/publication-integrity-d01-publication-proof-20260830.json",
+    "vertical_slices/d01_btc_perp/publication.py",
+    "vertical_slices/d01_btc_perp/run_slice.py",
+    "vertical_slices/d01_btc_perp/runs/d01-publication-proof-20260830/completed-run.json",
+    "vertical_slices/d01_btc_perp/runs/d01-publication-proof-20260830/paper.json",
+    "vertical_slices/d01_btc_perp/runs/d01-publication-proof-20260830/replay-1.json",
+    "vertical_slices/d01_btc_perp/runs/d01-publication-proof-20260830/replay-2.json",
+    "vertical_slices/d01_btc_perp/runs/d01-publication-proof-20260830/run-claim.json",
+    "vertical_slices/d01_btc_perp/slice.py",
+    "vertical_slices/d01_btc_perp/test_slice.py"
+  ],
+  "claim_boundary": {
+    "does_not_prove": [
+      "live-public-data soak",
+      "durable persistence",
+      "mid-run recovery",
+      "exactly-once venue submission",
+      "venue reconciliation",
+      "deployment readiness",
+      "profitability"
+    ],
+    "proves": [
+      "local deterministic replay -> credentialless sandbox-PAPER for one bounded BTC-PERP dataset"
+    ]
+  },
+  "dependency_contract": {
+    "distribution_count": 16,
+    "exact_version_pins": {
+      "click": "8.5.0",
+      "fsspec": "2026.2.0",
+      "msgspec": "0.21.1",
+      "nautilus-trader": "1.231.0",
+      "numpy": "2.5.2",
+      "pandas": "3.0.5",
+      "portion": "2.6.2",
+      "pyarrow": "25.0.1",
+      "python-dateutil": "2.9.0.post0",
+      "pytz": "2026.3.post1",
+      "six": "1.17.0",
+      "sortedcontainers": "2.4.0",
+      "tqdm": "4.70.0",
+      "tzdata": "2026.3",
+      "uvloop": "0.22.1",
+      "websockets": "17.0.1"
+    },
+    "nautilus_trader": "1.231.0",
+    "package_bytes_hash_locked": false,
+    "python": "3.13.15",
+    "requirements": "fit_gates/d41_nautilus/requirements.lock",
+    "requirements_sha256": "f253ed46f2da99cfbdda5b2f687a70ba8fe52219e1e564f542c17c303cf408c4",
+    "root_dependency_adoption": false,
+    "uv": "0.12.5"
+  },
+  "hash_algorithm": "sha256",
+  "manifest_self_hash": {
+    "binding": "The final Git commit and tree bind the manifest bytes.",
+    "included": false
+  },
+  "parent_basis": "cf50a77d99893f1f90cd8707ff41e0ce8c8211d9",
+  "publication_files": {
+    ".github/workflows/ci.yml": {
+      "bytes": 6649,
+      "sha256": "01a0aff7f26dd3ff74d0812c7fbfcf923fc8e3e9c832e6fb95306b339d1c0907"
+    },
+    "vertical_slices/__init__.py": {
+      "bytes": 79,
+      "sha256": "fd232da9d6977cd3054540da1e81d4f639ea985ed0b32bb8e0c9e9d60d9c20c4"
+    },
+    "vertical_slices/d01_btc_perp/README.md": {
+      "bytes": 7044,
+      "sha256": "30b18feb42cf8ea9bcfc5b55a7c45bf60a15085fa710c8a125d6ed6dada199ed"
+    },
+    "vertical_slices/d01_btc_perp/__init__.py": {
+      "bytes": 65,
+      "sha256": "5f5f3ea837af9d0374f5cf976221c4a7d949680718f7cc913b6b7376a12f3b2f"
+    },
+    "vertical_slices/d01_btc_perp/publication.py": {
+      "bytes": 9887,
+      "sha256": "1cb5249ed3eaf3a47b4f4354a123398a683870e7ebac54f4622d043f327c4ce5"
+    },
+    "vertical_slices/d01_btc_perp/run_slice.py": {
+      "bytes": 1008,
+      "sha256": "1864540e1d18896ef2eef99ea0a79d27ecb8a5532f8a6e12dbe13582869ff537"
+    },
+    "vertical_slices/d01_btc_perp/runs/d01-publication-proof-20260830/completed-run.json": {
+      "bytes": 5658,
+      "sha256": "33d3828b4c334b47f68320510b65fdd0c804ebf85947e25ac78d8d6881a7328d"
+    },
+    "vertical_slices/d01_btc_perp/runs/d01-publication-proof-20260830/paper.json": {
+      "bytes": 15938,
+      "sha256": "13d493e9985f7a937da577113daad601d022b417330d3a5fc129b5cde5a97f85"
+    },
+    "vertical_slices/d01_btc_perp/runs/d01-publication-proof-20260830/replay-1.json": {
+      "bytes": 15768,
+      "sha256": "97435c71eab10d33cd9c60e39db46eacafe7bd201e3ba01f69af0f9e3507d4cd"
+    },
+    "vertical_slices/d01_btc_perp/runs/d01-publication-proof-20260830/replay-2.json": {
+      "bytes": 15768,
+      "sha256": "6cd75970eee78193be88d8a71bbc17ab23ce107fdb475457b1351d9c94ace4bf"
+    },
+    "vertical_slices/d01_btc_perp/runs/d01-publication-proof-20260830/run-claim.json": {
+      "bytes": 1137,
+      "sha256": "056c4c6b914eeb28b9f2957bcae1df34ee92037fa2a334b6005948cb14be007f"
+    },
+    "vertical_slices/d01_btc_perp/slice.py": {
+      "bytes": 47898,
+      "sha256": "c7ce0e54e2246f8864e3167793915429bbcda44bd6535553579a1803119dd646"
+    },
+    "vertical_slices/d01_btc_perp/test_slice.py": {
+      "bytes": 13172,
+      "sha256": "c5fd560da6b1ecb58e82681e07e29d1a39e0db23c97b9845616fbea6e8ffd73a"
+    }
+  },
+  "reused_runtime_inputs": {
+    ".python-version": {
+      "bytes": 8,
+      "sha256": "861b3dd8083d28f336ef70f6755bc399538ddad627b1d095820ca34cb953cf14"
+    },
+    "fit_gates/__init__.py": {
+      "bytes": 50,
+      "sha256": "d7681cb1cb5d327f9817a6ec95126f1dd7bb03157cbd4dd3ba4a566a1f6c1fdb"
+    },
+    "fit_gates/d41_nautilus/__init__.py": {
+      "bytes": 51,
+      "sha256": "fc9a6e4e2b68abf74c692509987d8476e738b0ef78f451d65a4567544720ada2"
+    },
+    "fit_gates/d41_nautilus/fit_gate.py": {
+      "bytes": 66922,
+      "sha256": "49a7994994acad769ca6d11fef62fe842a6fcc1a8324cf25e2696f6c660a5956"
+    },
+    "fit_gates/d41_nautilus/requirements.lock": {
+      "bytes": 352,
+      "sha256": "f253ed46f2da99cfbdda5b2f687a70ba8fe52219e1e564f542c17c303cf408c4"
+    },
+    "fit_gates/d41_nautilus/runs/20260830T011412Z/dataset.json": {
+      "bytes": 24854,
+      "sha256": "d58ed2c701bff47d57503e554439df97c7a97e165e12c0842bc065792de372a3"
+    },
+    "pyproject.toml": {
+      "bytes": 795,
+      "sha256": "44e321d44192c5a7c858945416fe20637fb31f5c908bde566667d52fedebacef"
+    },
+    "src/hyperliquid_bot/__init__.py": {
+      "bytes": 182,
+      "sha256": "4ab09193abc5442168f3aedd0f539cf9d1b31f3b9896f9a9ced0b5508671160b"
+    },
+    "src/hyperliquid_bot/contracts.py": {
+      "bytes": 7951,
+      "sha256": "1e454e46916757f1b99580247ea9f6c8e25a7638b691ac6b9fcc866d30b1ea4f"
+    },
+    "src/hyperliquid_bot/local_mode.py": {
+      "bytes": 724,
+      "sha256": "a7cc753fd5141ea915ed016562914f14dfcfabb149b19dba98449828ff320899"
+    },
+    "uv.lock": {
+      "bytes": 41557,
+      "sha256": "26e96edfc1c7f80574355ecb4317d126984043b00b2b5c628a101878e4dd1a39"
+    }
+  },
+  "run_binding": {
+    "completion_sha256": "33d3828b4c334b47f68320510b65fdd0c804ebf85947e25ac78d8d6881a7328d",
+    "directory": "vertical_slices/d01_btc_perp/runs/d01-publication-proof-20260830",
+    "restart_probe": "NOOP_ALREADY_COMPLETE",
+    "run_id": "d01-publication-proof-20260830",
+    "run_identity": "77c94c5cba60413fa92e0d442202f72641913dc7cef92e5c993138f63162639c",
+    "verification": "The verifier reloads the dataset, start claim, both replays, PAPER result, and completion; it recomputes source/config/run identities, lifecycle relations, artifact hashes, fills, economics, and the completed-flat verdict."
+  },
+  "schema": "d01-publication-integrity-v1"
+}

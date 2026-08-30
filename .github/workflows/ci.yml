@@ -45,6 +45,78 @@ jobs:
       - name: Test Python
         run: uv run --frozen pytest -q
 
+  d01-publication:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: false
+          python-version: "3.13.15"
+          version: "0.12.5"
+
+      - name: Build exact isolated D01 environment
+        run: |
+          set -euo pipefail
+          d01_venv="${RUNNER_TEMP}/d01-venv"
+          test ! -e "${d01_venv}"
+          uv venv --no-project --python 3.13.15 "${d01_venv}"
+          uv pip sync --no-cache --strict \
+            --python "${d01_venv}/bin/python" \
+            fit_gates/d41_nautilus/requirements.lock
+          uv pip check --python "${d01_venv}/bin/python"
+
+      - name: Run exactly 13 D01 tests
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+          PYTHONPATH: src:.
+          TRADING_MODE: PAPER
+        run: |
+          set -euo pipefail
+          "${RUNNER_TEMP}/d01-venv/bin/python" - <<'PY'
+          import unittest
+
+          expected = 13
+          loader = unittest.TestLoader()
+          suite = loader.loadTestsFromName("vertical_slices.d01_btc_perp.test_slice")
+          if loader.errors:
+              raise SystemExit("D01 collection errors:\n" + "\n".join(loader.errors))
+          collected = suite.countTestCases()
+          print(f"D01_COLLECTED={collected}")
+          if collected != expected:
+              raise SystemExit(f"expected {expected} D01 tests, collected {collected}")
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          print(f"D01_EXECUTED={result.testsRun}")
+          nonpassing = {
+              "failures": len(result.failures),
+              "errors": len(result.errors),
+              "skipped": len(result.skipped),
+              "expected_failures": len(result.expectedFailures),
+              "unexpected_successes": len(result.unexpectedSuccesses),
+          }
+          print(f"D01_NONPASSING={nonpassing}")
+          if result.testsRun != expected:
+              raise SystemExit(f"expected {expected} executions, ran {result.testsRun}")
+          if not result.wasSuccessful() or any(nonpassing.values()):
+              raise SystemExit(f"D01 was not an all-pass run: {nonpassing}")
+          PY
+
+      - name: Verify D01 publication and dependency closure
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+          PYTHONPATH: src:.
+        run: |
+          "${RUNNER_TEMP}/d01-venv/bin/python" \
+            -m vertical_slices.d01_btc_perp.publication verify \
+            --check-installed-dependencies
+
   typescript-foundation:
     runs-on: ubuntu-24.04
     timeout-minutes: 10

@@ -1,0 +1,131 @@
+{
+  "artifacts": {
+    "paper.json": "13d493e9985f7a937da577113daad601d022b417330d3a5fc129b5cde5a97f85",
+    "replay-1.json": "97435c71eab10d33cd9c60e39db46eacafe7bd201e3ba01f69af0f9e3507d4cd",
+    "replay-2.json": "6cd75970eee78193be88d8a71bbc17ab23ce107fdb475457b1351d9c94ace4bf",
+    "run-claim.json": "056c4c6b914eeb28b9f2957bcae1df34ee92037fa2a334b6005948cb14be007f"
+  },
+  "config": {
+    "assumed_stop_distance_fraction": "0.02",
+    "hold_ticks": 5,
+    "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+    "max_abs_position_btc": "0.00013",
+    "max_assumed_loss_usdc": "0.25",
+    "max_entry_notional_usdc": "15",
+    "order_quantity_btc": "0.00013",
+    "paper_duration_seconds": 30,
+    "starting_cash_usdc": "100000",
+    "warmup_ticks": 3
+  },
+  "cost_assumptions": {
+    "funding_payment_usdc": "0",
+    "funding_reason": "No hourly funding settlement boundary is modeled or crossed by the bounded run; Nautilus sandbox ignores FundingRateUpdate for settlement.",
+    "half_spread_bps_per_fill": "0.5",
+    "native_sandbox_extra_slippage": "0",
+    "native_sandbox_fee_model": "MakerTakerFeeModel with Hyperliquid metadata fee=0",
+    "native_sandbox_latency_ns": "0",
+    "slippage_bps_per_fill": "1.0",
+    "taker_fee_bps": "4.5",
+    "usd_usdc_parity_assumption": "1 USD = 1 USDC for the external D41 cost overlay only; the Nautilus sandbox account is an explicit USD accounting proxy"
+  },
+  "dataset": {
+    "capture_claim": "local_capture_integrity_only",
+    "capture_harness": {
+      "algorithm": "sha256",
+      "files": {
+        "capture_public_dataset.py": "6cff092702bbd83c3e7e72561f66a677ede5cb77b5f50c09c080574c9ff46b0d",
+        "fit_gate.py": "c7c060b530f4f175c5d96ee120247a496c9c66867e6b3848bff21c633eee8e0c",
+        "requirements.lock": "f253ed46f2da99cfbdda5b2f687a70ba8fe52219e1e564f542c17c303cf408c4",
+        "run_fit_gate.py": "9a68b250ccf37207b643f25e6adc62edf28d130139e425162b4d027fd09a749f"
+      }
+    },
+    "event_count": 27,
+    "events_sha256": "3ac0f4c0a59d7c1a79e017354b7c19c941c4ea97b2035b123722a71df2583088",
+    "file_sha256": "d58ed2c701bff47d57503e554439df97c7a97e165e12c0842bc065792de372a3",
+    "path": "fit_gates/d41_nautilus/runs/20260830T011412Z/dataset.json"
+  },
+  "decision": "LOCAL_VERTICAL_SLICE_PASSED",
+  "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+  "limitations": [
+    "This is engineering proof, not alpha, profitability, or promotion evidence.",
+    "Nautilus 1.231.0 remains isolated behind D01 and D41 project code; it is not a root dependency.",
+    "Sandbox order, cash, and position state is in memory and has no venue truth.",
+    "USD is an explicit 1:1 USDC accounting proxy for the bounded overlay.",
+    "Funding is zero because no settlement boundary is modeled or crossed.",
+    "Incomplete or ambiguous runs are not resumed; durable recovery and reconciliation remain D22."
+  ],
+  "recomputed": {
+    "completed_intent_keys": [
+      "8f4d0810892342e2b4a4a1b72f7efe4743c8976c0dd0296a13775a2a759a476c",
+      "d85373f52f9cb11978e4a245330dca7e3b0e742c286a5b3a967f6ec8c3b327d5"
+    ],
+    "ending_cash_usdc_assumed": "99999.9878246680",
+    "ending_equity_usdc_assumed": "99999.9878246680",
+    "execution_timing_observation": {
+      "interpretation": "Sandbox asynchronous fill callbacks shift observed ordinals while the strategy/risk semantics and final economics remain equivalent.",
+      "replay": {
+        "fill_observed_ordinals": [
+          4,
+          10
+        ],
+        "intent_submission_ordinals": [
+          4,
+          10
+        ],
+        "signal_decision_ordinals": [
+          3,
+          9
+        ]
+      },
+      "sandbox_paper": {
+        "fill_observed_ordinals": [
+          5,
+          12
+        ],
+        "intent_submission_ordinals": [
+          4,
+          11
+        ],
+        "signal_decision_ordinals": [
+          3,
+          10
+        ]
+      }
+    },
+    "fill_count": 2,
+    "final_position_btc": "0.00000",
+    "net_pnl_usdc_assumed": "-0.0121753320",
+    "order_count": 2,
+    "paper_client_order_ids": [
+      "O-20260830-132259-001-D01-1",
+      "O-20260830-132259-001-D01-2"
+    ],
+    "replay_intent_keys": [
+      "8f4d0810892342e2b4a4a1b72f7efe4743c8976c0dd0296a13775a2a759a476c",
+      "c0c8257332987620ec4c4e02d1b0739ec62576def9498ddd8229f72f96000636"
+    ],
+    "same_strategy_risk_code_completed_equivalent_paper_lifecycle": true,
+    "two_identical_replays": true
+  },
+  "restart_boundary": {
+    "claim": "completed-flat local run only; no mid-run recovery or venue reconciliation",
+    "completed_run_action": "NOOP_ALREADY_COMPLETE",
+    "existing_or_incomplete_run_action": "FAIL_CLOSED_NO_RESUME",
+    "new_submission_intent_keys": []
+  },
+  "route": "MarketEventEnvelope-v2 -> exact adapter -> D01SmokeStrategy -> project risk -> Nautilus replay and credentialless sandbox PAPER",
+  "run_id": "d01-publication-proof-20260830",
+  "run_identity": "77c94c5cba60413fa92e0d442202f72641913dc7cef92e5c993138f63162639c",
+  "schema": "d01-completed-flat-run-v1",
+  "source_identity": {
+    "algorithm": "sha256",
+    "digest": "cdbb4628728f3a47290b8143df495704c74c2831ac793737b3becf1a762b6965",
+    "files": {
+      "fit_gates/d41_nautilus/fit_gate.py": "49a7994994acad769ca6d11fef62fe842a6fcc1a8324cf25e2696f6c660a5956",
+      "fit_gates/d41_nautilus/requirements.lock": "f253ed46f2da99cfbdda5b2f687a70ba8fe52219e1e564f542c17c303cf408c4",
+      "vertical_slices/d01_btc_perp/run_slice.py": "1864540e1d18896ef2eef99ea0a79d27ecb8a5532f8a6e12dbe13582869ff537",
+      "vertical_slices/d01_btc_perp/slice.py": "c7ce0e54e2246f8864e3167793915429bbcda44bd6535553579a1803119dd646"
+    }
+  },
+  "status": "COMPLETED_FLAT"
+}

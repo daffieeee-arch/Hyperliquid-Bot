@@ -35,8 +35,8 @@
       "sha256": "6cff092702bbd83c3e7e72561f66a677ede5cb77b5f50c09c080574c9ff46b0d"
     },
     "fit_gates/d41_nautilus/fit_gate.py": {
-      "bytes": 66981,
-      "sha256": "c7c060b530f4f175c5d96ee120247a496c9c66867e6b3848bff21c633eee8e0c"
+      "bytes": 66922,
+      "sha256": "49a7994994acad769ca6d11fef62fe842a6fcc1a8324cf25e2696f6c660a5956"
     },
     "fit_gates/d41_nautilus/requirements.lock": {
       "bytes": 352,
@@ -55,8 +55,8 @@
       "sha256": "da36dbabfe953372282a7494837775aa07921ef3526ecce7e549fad6a8973b14"
     },
     "fit_gates/d41_nautilus/test_fit_gate.py": {
-      "bytes": 12076,
-      "sha256": "ad13e2d5d976af73f0ddbe6316683ec599bdb4147b68e2a1eb5ed0920414e9ba"
+      "bytes": 12002,
+      "sha256": "393bcb0605eacdaaeec0e32204dc874a4fe975e0448db0fb633e74c90d06ef25"
     }
   },
   "hash_algorithm": "sha256",

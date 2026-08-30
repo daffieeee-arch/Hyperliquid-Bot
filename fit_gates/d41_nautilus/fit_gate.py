@@ -141,8 +141,7 @@ def write_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("x", encoding="utf-8") as stream:
         stream.write(
-            json.dumps(value, ensure_ascii=True, allow_nan=False, sort_keys=True, indent=2)
-            + "\n"
+            json.dumps(value, ensure_ascii=True, allow_nan=False, sort_keys=True, indent=2) + "\n"
         )
 
 
@@ -853,10 +852,7 @@ def _load_dataset(path: Path) -> tuple[dict[str, Any], list[TradeTick]]:
         if raw_record.get("capture_ordinal") != ordinal:
             raise ValueError("Dataset capture ordinals are not contiguous.")
         envelope = record_to_envelope(raw_record)
-        if (
-            prior_monotonic is not None
-            and envelope.received_monotonic_ns < prior_monotonic
-        ):
+        if prior_monotonic is not None and envelope.received_monotonic_ns < prior_monotonic:
             raise ValueError("Dataset receive monotonic time moved backwards.")
         if envelope.source_event_id in source_event_ids:
             raise ValueError("Dataset contains a duplicate source event ID.")
@@ -1168,8 +1164,7 @@ def run_paper(
             "mode": "PAPER",
             "node_environment": "SANDBOX",
             "data_route": (
-                "MarketEventEnvelope-v2 dataset -> envelope_to_trade_tick -> "
-                "Nautilus DataEngine"
+                "MarketEventEnvelope-v2 dataset -> envelope_to_trade_tick -> Nautilus DataEngine"
             ),
             "execution_client_factory": "SandboxLiveExecClientFactory",
             "registered_execution_client_factories": ["SandboxLiveExecClientFactory"],
@@ -1226,10 +1221,7 @@ def captured_public_records_to_dataset(
     source_event_ids: set[str] = set()
     for envelope in envelopes:
         tick = envelope_to_trade_tick(envelope, prior_ts_init=prior_ts_init)
-        if (
-            prior_monotonic is not None
-            and envelope.received_monotonic_ns < prior_monotonic
-        ):
+        if prior_monotonic is not None and envelope.received_monotonic_ns < prior_monotonic:
             raise ValueError("Capture receive monotonic time moved backwards.")
         if envelope.source_event_id in source_event_ids:
             raise ValueError("Capture contains a duplicate source event ID.")
@@ -1420,14 +1412,12 @@ def _validate_lifecycle(
         if (
             primary_fill.get("client_order_id") != order.get("client_order_id")
             or primary_fill.get("order_side") != fill.get("side")
-            or Decimal(str(primary_fill.get("last_qty")))
-            != Decimal(str(fill.get("quantity")))
+            or Decimal(str(primary_fill.get("last_qty"))) != Decimal(str(fill.get("quantity")))
             or Decimal(str(primary_fill.get("last_px"))) != Decimal(str(fill.get("price")))
         ):
             raise ValueError(f"{label} primary fill report is inconsistent.")
     if not positions or not any(
-        position_record.get("side") == "FLAT"
-        and Decimal(str(position_record.get("quantity"))) == 0
+        position_record.get("side") == "FLAT" and Decimal(str(position_record.get("quantity"))) == 0
         for position_record in positions
     ):
         raise ValueError(f"{label} primary position report is not flat.")
@@ -1458,13 +1448,15 @@ def verify_gate(
     replay_one = read_json(artifact_dir / "replay-1.json")
     replay_two = read_json(artifact_dir / "replay-2.json")
     identity = harness_identity()
-    if replay_one.get("run_kind") != "deterministic_replay" or replay_one.get(
-        "run_label"
-    ) != "replay-1":
+    if (
+        replay_one.get("run_kind") != "deterministic_replay"
+        or replay_one.get("run_label") != "replay-1"
+    ):
         raise ValueError("Replay-1 run identity is invalid.")
-    if replay_two.get("run_kind") != "deterministic_replay" or replay_two.get(
-        "run_label"
-    ) != "replay-2":
+    if (
+        replay_two.get("run_kind") != "deterministic_replay"
+        or replay_two.get("run_label") != "replay-2"
+    ):
         raise ValueError("Replay-2 run identity is invalid.")
 
     for label, artifact in (
@@ -1565,9 +1557,13 @@ def verify_gate(
 
     runtime_config = _paper_node_config()
     configured_exec = runtime_config.exec_clients
-    if runtime_config.data_clients or set(configured_exec) != {HYPERLIQUID} or not isinstance(
-        configured_exec[HYPERLIQUID],
-        SandboxExecutionClientConfig,
+    if (
+        runtime_config.data_clients
+        or set(configured_exec) != {HYPERLIQUID}
+        or not isinstance(
+            configured_exec[HYPERLIQUID],
+            SandboxExecutionClientConfig,
+        )
     ):
         raise RuntimeError("Current PAPER runtime is not sandbox-only.")
 

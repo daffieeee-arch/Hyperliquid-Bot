@@ -47,9 +47,7 @@ def envelope(
     delay_seconds: int = 0,
     delay_microseconds: int = 0,
 ) -> MarketEventEnvelope:
-    event_time = datetime(2026, 8, 30, 12, 0, tzinfo=UTC) + timedelta(
-        milliseconds=ordinal * 100
-    )
+    event_time = datetime(2026, 8, 30, 12, 0, tzinfo=UTC) + timedelta(milliseconds=ordinal * 100)
     return MarketEventEnvelope(
         schema_version=MARKET_EVENT_SCHEMA_VERSION,
         instrument=existing_btc_contract(),
@@ -262,9 +260,7 @@ class D41EvidenceTamperTests(unittest.TestCase):
         run_dir = self.copy_run("replay-two")
         self.mutate(
             run_dir / "replay-2.json",
-            lambda value: value["business"]["signals"][0].__setitem__(
-                "current_price", "99999.9"
-            ),
+            lambda value: value["business"]["signals"][0].__setitem__("current_price", "99999.9"),
         )
         with self.assertRaisesRegex(ValueError, "replay-2 signal price"):
             self.verify(run_dir)
@@ -295,9 +291,7 @@ class D41EvidenceTamperTests(unittest.TestCase):
         run_dir = self.copy_run("fills")
         self.mutate(
             run_dir / "paper.json",
-            lambda value: value["nautilus_reports"]["fills"][0].__setitem__(
-                "last_qty", "0.00012"
-            ),
+            lambda value: value["nautilus_reports"]["fills"][0].__setitem__("last_qty", "0.00012"),
         )
         with self.assertRaisesRegex(ValueError, "primary fill report"):
             self.verify(run_dir)

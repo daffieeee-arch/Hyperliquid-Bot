@@ -1,0 +1,27 @@
+{
+  "config_sha256": "4cf8f12887996488639ef188ecd400d66fdff62d10e24d81a6600a6d6d67ba9a",
+  "dataset_events_sha256": "3ac0f4c0a59d7c1a79e017354b7c19c941c4ea97b2035b123722a71df2583088",
+  "dataset_file_sha256": "d58ed2c701bff47d57503e554439df97c7a97e165e12c0842bc065792de372a3",
+  "mode": "PAPER",
+  "preflight_entry_risk": {
+    "approved": true,
+    "assumed_stop_plus_round_trip_cost_loss_usdc": "0.215097532",
+    "max_abs_position_btc": "0.00013",
+    "max_assumed_loss_usdc": "0.25",
+    "max_entry_notional_usdc": "15",
+    "notional_usdc_assumed": "10.146110",
+    "position_before_btc": "0",
+    "projected_position_btc": "0.00013",
+    "quantity_btc": "0.00013",
+    "reasons": [],
+    "reduce_only": false,
+    "risk_price": "78047.0",
+    "side": "BUY"
+  },
+  "resume_policy": "never resume or overwrite an existing D01 run directory",
+  "run_id": "d01-publication-proof-20260830",
+  "run_identity": "77c94c5cba60413fa92e0d442202f72641913dc7cef92e5c993138f63162639c",
+  "schema": "d01-btc-perp-slice-v1",
+  "source_sha256": "cdbb4628728f3a47290b8143df495704c74c2831ac793737b3becf1a762b6965",
+  "state": "STARTED_FAIL_CLOSED"
+}

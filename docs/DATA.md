@@ -231,6 +231,67 @@ and collector cutover occurs atomically only in Phase 1A-3B1D. ClickHouse storag
 Grafana/Alloy/OpenTelemetry observability, FastAPI services and the Bloomberg/EMS-inspired cockpit
 remain downstream. Nothing was deployed, and SHADOW/LIVE remain disabled.
 
+## D10 — multi-venue market data and feed coverage: DATA-1A local slice
+
+DATA-1A is a separate, bounded research path for the four public Hyperliquid BTC perpetual
+subscriptions `trades`, `bbo`, default `l2Book` and `activeAssetCtx`. It deliberately does not
+extend the dormant canonical/provenance contracts or the existing trades-only collector. It uses
+no account, API key, wallet or signing capability and cannot submit orders.
+
+Each inbound WebSocket application message is timestamped immediately when `recv()` returns. Its
+text or binary application payload is copied to immutable bytes before JSON routing; the stored
+BLOB is never a reserialized JSON document. For a text frame this means the exact UTF-8 bytes of
+the string delivered by the WebSocket library, not TLS, TCP, compressed WebSocket or framing
+bytes. Rows also contain schema version 1, venue, product, routed channel, connection-session ID,
+a run-wide local ordinal, UTC and monotonic nanoseconds, direction, frame type, encoding and a
+SHA-256 check value. Outbound subscription/ping payloads and local session, subscription,
+disconnect, reconnect and gap markers use the same flat row shape but are explicitly labelled as
+`outbound` or `local`; their timestamp columns are local observation times, not venue receipt
+claims.
+
+DuckDB is the only added dependency. It binds Python `bytes` directly to `BLOB`, writes native
+ZSTD-Parquet and creates the research catalog, so PyArrow and a separate Zstandard package add no
+necessary DATA-1A capability. The writer buffers a bounded segment and publishes each complete
+part with a same-directory atomic rename. It never appends to Parquet and does not create a file
+per message. A hard process or host crash can lose the active in-memory segment and leave a hidden
+`.partial` file; previously published parts remain queryable and readers ignore partials. A
+lossless WAL and 24/7 durability belong to a later runtime-storage decision, not this local slice.
+
+The bounded command requires an explicit output directory, DuckDB path and duration from 1 through
+600 seconds:
+
+```bash
+PYTHONPATH=src uv run --frozen python -m hyperliquid_bot.hyperliquid_raw_research \
+  --output-dir /tmp/data-1a/raw \
+  --database /tmp/data-1a/research.duckdb \
+  --duration-seconds 60
+```
+
+The command prints counts and byte totals only; it never prints payload contents. The catalog has
+`raw_records`, `trades`, `bbo`, `l2`, `derivative_context`, `sessions`, `subscription_events` and
+`data_quality_events` views. Price, size, funding, open-interest, mark and oracle values remain
+text in the views, including trailing zeros. Example research checks are:
+
+```sql
+SELECT channel, direction, count(*) FROM raw_records GROUP BY ALL ORDER BY ALL;
+SELECT price, size, event_time_ms FROM trades ORDER BY received_monotonic_ns;
+SELECT side, level_index, price, size FROM l2 ORDER BY message_ordinal, side, level_index;
+SELECT event, reason FROM data_quality_events ORDER BY message_ordinal;
+```
+
+Hyperliquid supplies no sequence ID on these feeds. The standard `l2Book` stream is a sequence of
+book snapshots, not L3/MBO and not a trade backfill. A disconnect therefore creates a conservative
+gap marker; a later snapshot restores current L2 state but cannot reconstruct missed trades or
+queue history. A short successful smoke is evidence only for this local route, not 24-hour feed
+reliability or a trading edge.
+
+The immediate next gate under D10 — multi-venue market data and feed coverage is DATA-1B — Kraken
+authenticated L3 capture, because true order-level history cannot be reconstructed later. Any
+future Kraken or Bitvavo credential must be a separate minimal read-only data key with no trading,
+withdrawal, transfer or signing rights and must never enter chat, source, fixtures, artifacts or
+logs. Bitvavo internal personal research does not require a prior redistribution review. OKX is
+the next data-only increment after DATA-1B.
+
 ## Self-collected dataset
 
 After the local slice and definitive runtime ADR, realtime collectors should run on the approved 24/7 runtime and persist data to ClickHouse. This creates a dataset with the same receipt path and timestamp discipline the future live bot will use.

@@ -142,6 +142,23 @@ against venue state. Material mismatches block new risk and trigger an alert unt
 
 PAPER uses an append-only internal ledger and deterministic reconciliation rules so its behavior can be compared with SHADOW/LIVE later.
 
+### D22-A local PAPER boundary
+
+D22-A evaluates one concrete stdlib-SQLite ledger around the D01
+credentialless sandbox route. Under its documented local single-writer SQLite
+settings, it commits the approved intent and local order command before sandbox
+submission, then atomically appends the full IOC fill with derived position,
+assumed USDC cash and PnL. Stable project IDs and exact duplicate no-ops permit
+a new disposable sandbox process to rebuild from the same bounded dataset
+without duplicating durable project-ledger records.
+
+This is local ledger-replay recovery only. It does not restore Nautilus engine
+state or prove external exactly-once submission, partial-fill/cancel recovery,
+venue-authoritative reconciliation, multi-process concurrency or runtime-volume
+durability. No production store decision or new ADR is made in this subphase.
+Full D22 remains incomplete. A possible next gate is **D22-B —
+venue-authoritative crash-window reconciliation**; D22-A does not implement it.
+
 ## Multi-leg trades
 
 Basis/relative-value strategies require explicit leg-risk handling. If only one leg fills, the engine must either complete the hedge within strict bounds or neutralize the unexpected exposure.

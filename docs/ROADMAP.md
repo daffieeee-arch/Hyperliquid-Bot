@@ -12,7 +12,7 @@ Fases overlap by workstream. A strategy may be in PAPER while another remains in
 
 ## COURSE-1 — current active priority
 
-Status: **core fit decision complete; local vertical slice next; provenance expansion deferred**
+Status: **core fit, local D01 and bounded D22-A checkpoint complete; full D22 incomplete; provenance expansion deferred**
 
 The current implementation order is corrected before Phase 1A continues. Existing provenance and
 v3 work is preserved, but Phase 1A-3B1C-2, 3B1C-3, 3B1D and the provenance-complete form of 3B2
@@ -24,9 +24,15 @@ The active sequence is:
 
 1. **Complete:** ADR-023 records `WRAP` for exactly pinned NautilusTrader `1.231.0` behind the
    project-owned boundary; it is not a production-core or root-dependency adoption;
-2. build one local Hyperliquid BTC-PERP deterministic replay -> strategy -> risk -> PAPER route;
-3. run the same downstream strategy/risk/PAPER path on live public data without credentials;
-4. after the local route passes, record the definitive runtime ADR and only then perform the VPS migration.
+2. **Complete:** D01 provides one local Hyperliquid BTC-PERP deterministic replay -> strategy ->
+   risk -> credentialless sandbox-PAPER route;
+3. **Complete:** prove a bounded project-owned local PAPER ledger/restart seam without claiming
+   engine-state or venue-authoritative recovery; full D22 remains incomplete;
+4. if separately authorized, evaluate **D22-B — venue-authoritative crash-window
+   reconciliation**; it is not implemented by D22-A;
+5. run the same downstream strategy/risk/PAPER path on live public data without credentials;
+6. after the local route passes, record the definitive runtime ADR and only then perform the VPS
+   migration.
 
 The fit decision is not a benchmark exercise. It checks only the blocking product and safety
 questions: supportable pinned version, licensing, Python/runtime compatibility, Hyperliquid

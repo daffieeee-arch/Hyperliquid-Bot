@@ -108,6 +108,41 @@ jobs:
               raise SystemExit(f"D01 was not an all-pass run: {nonpassing}")
           PY
 
+      - name: Run exactly 7 D22-A tests
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+          PYTHONPATH: src:.
+          TRADING_MODE: PAPER
+        run: |
+          set -euo pipefail
+          "${RUNNER_TEMP}/d01-venv/bin/python" - <<'PY'
+          import unittest
+
+          expected = 7
+          loader = unittest.TestLoader()
+          suite = loader.loadTestsFromName("vertical_slices.d22a_paper_ledger.test_slice")
+          if loader.errors:
+              raise SystemExit("D22-A collection errors:\n" + "\n".join(loader.errors))
+          collected = suite.countTestCases()
+          print(f"D22A_COLLECTED={collected}")
+          if collected != expected:
+              raise SystemExit(f"expected {expected} D22-A tests, collected {collected}")
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          print(f"D22A_EXECUTED={result.testsRun}")
+          nonpassing = {
+              "failures": len(result.failures),
+              "errors": len(result.errors),
+              "skipped": len(result.skipped),
+              "expected_failures": len(result.expectedFailures),
+              "unexpected_successes": len(result.unexpectedSuccesses),
+          }
+          print(f"D22A_NONPASSING={nonpassing}")
+          if result.testsRun != expected:
+              raise SystemExit(f"expected {expected} executions, ran {result.testsRun}")
+          if not result.wasSuccessful() or any(nonpassing.values()):
+              raise SystemExit(f"D22-A was not an all-pass run: {nonpassing}")
+          PY
+
       - name: Verify D01 publication and dependency closure
         env:
           PYTHONDONTWRITEBYTECODE: "1"

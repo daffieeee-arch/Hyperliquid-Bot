@@ -83,9 +83,10 @@ The slice is deliberately narrow:
 
 Before implementing another backtester, paper broker, order-management system or reconciliation
 framework, a short fit gate evaluates an existing engine against these exact needs. NautilusTrader
-is the primary candidate because it is designed around one strategy model across historical,
-sandbox and live contexts and has a Hyperliquid adapter. That is a candidate hypothesis, not an
-adoption decision. The gate must verify, rather than assume:
+was the primary candidate because it is designed around one strategy model across historical,
+sandbox and live contexts and has a Hyperliquid adapter. ADR-023 records `WRAP` for the bounded
+COURSE-1 slice, not production-core or root-dependency adoption. The gate verifies, rather than
+assumes:
 
 - an exactly pinned, supportable version and acceptable LGPL-3.0 obligations;
 - deterministic BTC-PERP replay and a credentialless public-data-to-sandbox PAPER composition;

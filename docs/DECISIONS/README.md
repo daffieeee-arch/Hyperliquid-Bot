@@ -1512,14 +1512,51 @@ coverage are not sufficient reasons by themselves.
 
 ---
 
+## ADR-023 — Wrap NautilusTrader for the COURSE-1 BTC-PERP slice
+
+**Decision:** Use exactly `nautilus-trader==1.231.0` for the bounded COURSE-1 BTC-PERP replay and
+sandbox-PAPER slice, behind a project-owned boundary. The decision is `WRAP`, not `ADOPT`:
+NautilusTrader is not the production core, is not a root dependency and receives no authority to
+sign or send venue orders.
+
+**Evidence:** The bounded D41 run `20260830T011412Z` uses one locally captured public
+`MarketEventEnvelope-v2` dataset for two deterministic replays and credentialless sandbox PAPER.
+The verifier independently recomputes the primary event, order, fill, position and economics
+relations. Its compact gate summary and publication integrity manifest are retained with the D41
+fit-gate. The result is engineering-fit evidence only, not alpha, profitability or promotion
+evidence.
+
+**Project-owned boundary:** The project, not NautilusTrader, remains authoritative for:
+
+- exact BTC-PERP precision plus fail-closed stale, future and gap handling;
+- USDC-denominated economics and explicit fee, funding, spread and slippage assumptions;
+- risk and mode policy outside this bounded fit gate;
+- durable persistence, idempotent restart, reconciliation and ambiguous-shutdown recovery;
+- reconstructable evidence and the mapping to project correlation and source identity.
+
+**Constraints:** No signing client, wallet, private key, venue execution client, TESTNET order,
+SHADOW order or LIVE order is approved. PAPER remains the only permitted D41 execution mode and
+uses local sandbox execution. Direct production adoption requires a separate decision and evidence.
+
+**Version and license risk:** `1.231.0` declares LGPL-3.0-or-later, remains upstream Beta and is the
+last legacy-v1 line while upstream development moves to v2. The pin stays isolated in the D41 lock;
+root `pyproject.toml` and `uv.lock` remain unchanged. No upstream source is vendored or modified.
+Any later distributable image that includes NautilusTrader requires a packaging-time LGPL
+compliance review, including applicable license, notice, source and replacement/relinking duties.
+
+**Reopen when:** the project-owned wrapper becomes a second trading framework in size or lifecycle
+ownership; Nautilus order/fill/position, funding, precision or reconciliation semantics cannot
+preserve project invariants; v2 migration breaks the bounded mapping; the pinned line becomes
+unsupported or unsafe; licensing or distribution changes; or production-core adoption is proposed.
+An unsuitable result reopens the thin-native fallback rather than silently expanding the wrapper.
+
+---
+
 ## Pending ADR gates — not yet decisions
 
-Two material choices still require evidence and therefore are not recorded as accepted ADRs here:
+One material choice still requires evidence and therefore is not recorded as an accepted ADR:
 
-1. **Trading core:** after the time-boxed fit gate proves or rejects the primary candidate, record
-   the selected replay/sandbox/live engine, version line, licensing outcome, direct mapping
-   boundary, fail-closed rules and explicitly project-owned safety/reconciliation gaps.
-2. **Runtime deployment:** after the local replay-to-PAPER route passes, record the supported
+1. **Runtime deployment:** after the local replay-to-PAPER route passes, record the supported
    Ubuntu LTS VPS/OCI/Compose profile, operational and rollback requirements, and how existing
    TrueNAS, ClickHouse and Grafana assets are retained or migrated without mutation by ordinary
    development tasks.

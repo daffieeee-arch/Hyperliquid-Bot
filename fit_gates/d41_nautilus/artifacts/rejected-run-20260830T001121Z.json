@@ -1,0 +1,56 @@
+{
+  "registered_at_utc": "2026-08-30T00:50:05Z",
+  "review_status": "NOT PASSED",
+  "schema": "d41-rejected-run-v1",
+  "supersedes_reported_verdict": {
+    "all_hard_gates_passed": true,
+    "recommendation": "WRAP",
+    "source": "gate-summary.json"
+  },
+  "rejection_reasons": [
+    "PAPER did not pass through the replay envelope, gap and staleness boundary.",
+    "Invalid price and quantity precision was silently rounded.",
+    "The diagnostic dataset-from-paper fallback could be reported as real public capture evidence.",
+    "The verifier trusted self-reported artifact fields instead of recomputing decisive relationships.",
+    "The documented reproduction commands could overwrite the evidence in place."
+  ],
+  "preserved_evidence": {
+    "algorithm": "sha256",
+    "files": {
+      "determinism.json": {
+        "bytes": 333,
+        "sha256": "1b16ac5b54fc98493ae4c074a54e260442b2d57d7e18297bd0ef7b69ff55ea7c"
+      },
+      "gate-summary.json": {
+        "bytes": 1421,
+        "sha256": "da07652441b7b70a1fb1992abe433ace87956088f6db467ffdc2cc5ebc43d98c"
+      },
+      "paper.json": {
+        "bytes": 28832,
+        "sha256": "3a4a2f9e454bff6a18aebf0f406abbab23d66e663d91f23ed3c0940418c18b93"
+      },
+      "replay-1.json": {
+        "bytes": 14190,
+        "sha256": "fcf2f94c8254c2224944c801fef47b1b831cddbc51a3b39a164a5260ae847c2b"
+      },
+      "replay-2.json": {
+        "bytes": 14190,
+        "sha256": "b644c9784db3033bec0741eff2788af0d79e8f71b139a29bc221818fdaadbbc2"
+      },
+      "../data/btc_perp_public_trades.json": {
+        "bytes": 12629,
+        "sha256": "2ba7ff4597e61627878d3f27c3fd7d48a642b7d626a05b3df00c9e3896b13c9b"
+      }
+    }
+  },
+  "original_harness_hashes": {
+    "algorithm": "sha256",
+    "files": {
+      "../capture_public_dataset.py": "b95f833f1207728507e8b4ad3333734431dffaf2f23dc1e5496725f39a1021be",
+      "../fit_gate.py": "b16e610cd6e8aa229b5c204aa24e2124fe220f2344d5a7c8f014da3ac39810e3",
+      "../requirements.lock": "f253ed46f2da99cfbdda5b2f687a70ba8fe52219e1e564f542c17c303cf408c4",
+      "../run_fit_gate.py": "5fcc4e4990e646caad3384611f916751abd4561176038dbcba09589650a1c298",
+      "../test_fit_gate.py": "4c053ff795c912bc69f169796e14332b6f1459f16efa6286160b606b776567d2"
+    }
+  }
+}

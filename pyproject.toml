@@ -4,6 +4,7 @@ version = "0.0.0"
 description = "PAPER-first multi-venue quantitative crypto trading platform foundation"
 requires-python = ">=3.13,<3.14"
 dependencies = [
+    "duckdb==1.5.5",
     "websockets==17.0.1",
 ]
 

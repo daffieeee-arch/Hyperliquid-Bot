@@ -1,0 +1,34 @@
+{
+  "all_hard_gates_passed": true,
+  "created_at_utc": "2026-08-30T01:15:45+00:00",
+  "forbidden_runtime_imports": [],
+  "gates": {
+    "credentialless_sandbox_paper": true,
+    "exact_pin": true,
+    "local_capture_integrity": true,
+    "no_open_sandbox_orders": true,
+    "no_stale_or_future_strategy_input": true,
+    "no_venue_execution_factory": true,
+    "one_instrument": true,
+    "paper_within_10_minutes": true,
+    "primary_order_fill_position_lifecycle": true,
+    "recomputed_economics": true,
+    "same_fail_closed_input_boundary": true,
+    "two_recomputed_identical_replays": true
+  },
+  "recommendation": "WRAP",
+  "recommendation_basis": [
+    "The same accepted MarketEventEnvelope-v2 records drive deterministic replay and credentialless sandbox PAPER.",
+    "Project-owned economics overlay is required for fees, spread, slippage and funding.",
+    "Project-owned persistence/restart/reconciliation boundary is still required.",
+    "v1.231.0 is Beta and the final legacy-v1 line before v2 migration."
+  ],
+  "recomputed": {
+    "dataset_event_count": 27,
+    "dataset_events_sha256": "3ac0f4c0a59d7c1a79e017354b7c19c941c4ea97b2035b123722a71df2583088",
+    "max_input_age_ns": 4995580000,
+    "paper_input_sample_sha256": "fda54bf36d775d5e86d0b997a2ea67800d296873842144390aac8a59cb5f80b1",
+    "replay_business_sha256": "51bdd7bd883fe0228d5d286a8fd7b9a766340aafba1cb60bd476739788f28229"
+  },
+  "schema": "d41-nautilus-fit-v1"
+}

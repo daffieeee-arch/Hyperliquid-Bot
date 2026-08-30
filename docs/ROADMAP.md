@@ -12,7 +12,7 @@ Fases overlap by workstream. A strategy may be in PAPER while another remains in
 
 ## COURSE-1 — current active priority
 
-Status: **decision gate active; provenance expansion deferred**
+Status: **core fit decision complete; local vertical slice next; provenance expansion deferred**
 
 The current implementation order is corrected before Phase 1A continues. Existing provenance and
 v3 work is preserved, but Phase 1A-3B1C-2, 3B1C-3, 3B1D and the provenance-complete form of 3B2
@@ -22,14 +22,11 @@ accurate record, not the active priority order.
 
 The active sequence is:
 
-1. time-box one fit decision for a reusable replay/PAPER core, with NautilusTrader as the primary
-   candidate, a thin native path as fallback and Hummingbot assessed only where its specialized
-   connector/execution strengths materially help;
-2. record the selected core and direct integration boundary in an ADR only after the fit evidence
-   exists;
-3. build one local Hyperliquid BTC-PERP deterministic replay -> strategy -> risk -> PAPER route;
-4. run the same downstream strategy/risk/PAPER path on live public data without credentials;
-5. after the local route passes, record the definitive runtime ADR and only then perform the VPS migration.
+1. **Complete:** ADR-023 records `WRAP` for exactly pinned NautilusTrader `1.231.0` behind the
+   project-owned boundary; it is not a production-core or root-dependency adoption;
+2. build one local Hyperliquid BTC-PERP deterministic replay -> strategy -> risk -> PAPER route;
+3. run the same downstream strategy/risk/PAPER path on live public data without credentials;
+4. after the local route passes, record the definitive runtime ADR and only then perform the VPS migration.
 
 The fit decision is not a benchmark exercise. It checks only the blocking product and safety
 questions: supportable pinned version, licensing, Python/runtime compatibility, Hyperliquid

@@ -1,0 +1,1 @@
+{"channel":"book","type":"snapshot","data":[{"symbol":"BTC/EUR","bids":[{"price":60000.1000,"qty":1.20000000},{"price":59999.9000,"qty":0.30000000}],"asks":[{"price":60000.2000,"qty":0.80000000},{"price":60000.3000,"qty":2.00000000}],"checksum":3124197824,"timestamp":"2026-08-31T10:00:00.000000300Z"}]}

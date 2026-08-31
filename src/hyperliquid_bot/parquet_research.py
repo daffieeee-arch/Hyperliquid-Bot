@@ -30,6 +30,9 @@ RESEARCH_VIEW_NAMES: Final = (
     "okx_swap_bbo",
     "okx_swap_l2_events",
     "okx_swap_derivative_context",
+    "bitvavo_spot_trades",
+    "bitvavo_spot_bbo",
+    "bitvavo_spot_l2_events",
 )
 
 _CREATE_SEGMENT_TABLE: Final = """
@@ -399,6 +402,7 @@ def _create_payload_views(connection: duckdb.DuckDBPyConnection) -> None:
     )
     _create_kraken_payload_views(connection)
     _create_okx_payload_views(connection)
+    _create_bitvavo_payload_views(connection)
 
 
 def _create_kraken_payload_views(connection: duckdb.DuckDBPyConnection) -> None:
@@ -743,6 +747,165 @@ def _create_okx_payload_views(connection: duckdb.DuckDBPyConnection) -> None:
               'normalized_mark-price',
               'normalized_index-tickers'
           )
+          AND raw.direction = 'local'
+          AND raw.frame_type = 'marker'
+        """
+    )
+
+
+def _create_bitvavo_payload_views(connection: duckdb.DuckDBPyConnection) -> None:
+    """Create DATA-1D Standard views from string-preserving local normalizations."""
+
+    connection.execute(
+        """
+        CREATE OR REPLACE VIEW bitvavo_spot_trades AS
+        SELECT
+            raw.session_id,
+            raw.message_ordinal AS normalization_message_ordinal,
+            CAST(
+                json_extract_string(decode(raw.payload_bytes), '$.raw_message_ordinal')
+                AS BIGINT
+            ) AS raw_message_ordinal,
+            source.received_utc_ns,
+            source.received_monotonic_ns,
+            source.frame_type,
+            source.payload_sha256,
+            'standard' AS feed_product,
+            CAST(json_extract_string(event.value, '$.event_index') AS BIGINT) AS event_index,
+            json_extract_string(event.value, '$.market') AS market,
+            json_extract_string(event.value, '$.trade_id') AS trade_id,
+            json_extract_string(event.value, '$.price') AS price,
+            json_extract_string(event.value, '$.quantity') AS quantity,
+            json_extract_string(event.value, '$.taker_side') AS taker_side,
+            json_extract_string(event.value, '$.event_time_ms') AS event_time_ms,
+            json_extract_string(event.value, '$.event_time_ns') AS event_time_ns
+        FROM raw_records AS raw
+        JOIN raw_records AS source
+          ON source.session_id = raw.session_id
+         AND source.message_ordinal = CAST(
+             json_extract_string(decode(raw.payload_bytes), '$.raw_message_ordinal') AS BIGINT
+         )
+         AND source.venue = 'bitvavo'
+         AND source.product = 'BTC-EUR'
+         AND source.channel = 'trades'
+         AND source.direction = 'inbound',
+             LATERAL json_each(decode(raw.payload_bytes), '$.events') AS event
+        WHERE raw.venue = 'bitvavo'
+          AND raw.product = 'BTC-EUR'
+          AND raw.channel = 'normalized_trades'
+          AND raw.direction = 'local'
+          AND raw.frame_type = 'marker'
+        """
+    )
+    connection.execute(
+        """
+        CREATE OR REPLACE VIEW bitvavo_spot_bbo AS
+        WITH updates AS (
+            SELECT
+                raw.session_id,
+                raw.message_ordinal AS normalization_message_ordinal,
+                CAST(
+                    json_extract_string(decode(raw.payload_bytes), '$.raw_message_ordinal')
+                    AS BIGINT
+                ) AS raw_message_ordinal,
+                source.received_utc_ns,
+                source.received_monotonic_ns,
+                source.frame_type,
+                source.payload_sha256,
+                'standard' AS feed_product,
+                json_extract_string(decode(raw.payload_bytes), '$.market') AS market,
+                json_extract_string(decode(raw.payload_bytes), '$.bid_price')
+                    AS bid_price_update,
+                json_extract_string(decode(raw.payload_bytes), '$.bid_quantity')
+                    AS bid_quantity_update,
+                json_extract_string(decode(raw.payload_bytes), '$.ask_price')
+                    AS ask_price_update,
+                json_extract_string(decode(raw.payload_bytes), '$.ask_quantity')
+                    AS ask_quantity_update,
+                json_extract_string(decode(raw.payload_bytes), '$.last_price')
+                    AS last_price_update
+            FROM raw_records AS raw
+            JOIN raw_records AS source
+              ON source.session_id = raw.session_id
+             AND source.message_ordinal = CAST(
+                 json_extract_string(decode(raw.payload_bytes), '$.raw_message_ordinal') AS BIGINT
+             )
+             AND source.venue = 'bitvavo'
+             AND source.product = 'BTC-EUR'
+             AND source.channel = 'ticker'
+             AND source.direction = 'inbound'
+            WHERE raw.venue = 'bitvavo'
+              AND raw.product = 'BTC-EUR'
+              AND raw.channel = 'normalized_ticker'
+              AND raw.direction = 'local'
+              AND raw.frame_type = 'marker'
+        ), states AS (
+            SELECT
+                updates.*,
+                last_value(bid_price_update IGNORE NULLS) OVER feed_order AS bid_price,
+                last_value(bid_quantity_update IGNORE NULLS) OVER feed_order AS bid_quantity,
+                last_value(ask_price_update IGNORE NULLS) OVER feed_order AS ask_price,
+                last_value(ask_quantity_update IGNORE NULLS) OVER feed_order AS ask_quantity,
+                last_value(last_price_update IGNORE NULLS) OVER feed_order AS last_price
+            FROM updates
+            WINDOW feed_order AS (
+                PARTITION BY session_id
+                ORDER BY raw_message_ordinal
+                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+            )
+        )
+        SELECT
+            *,
+            bid_price IS NOT NULL AND ask_price IS NOT NULL AS bbo_complete
+        FROM states
+        """
+    )
+    connection.execute(
+        """
+        CREATE OR REPLACE VIEW bitvavo_spot_l2_events AS
+        SELECT
+            raw.session_id,
+            raw.message_ordinal AS normalization_message_ordinal,
+            CAST(
+                json_extract_string(decode(raw.payload_bytes), '$.raw_message_ordinal')
+                AS BIGINT
+            ) AS raw_message_ordinal,
+            source.received_utc_ns,
+            source.received_monotonic_ns,
+            source.frame_type,
+            source.payload_sha256,
+            'standard' AS feed_product,
+            json_extract_string(decode(raw.payload_bytes), '$.source_channel') AS source_channel,
+            json_extract_string(decode(raw.payload_bytes), '$.market') AS market,
+            json_extract_string(decode(raw.payload_bytes), '$.message_type') AS message_type,
+            json_extract_string(decode(raw.payload_bytes), '$.nonce') AS nonce,
+            json_extract_string(decode(raw.payload_bytes), '$.venue_timestamp_ns')
+                AS venue_timestamp_ns,
+            json_extract_string(decode(raw.payload_bytes), '$.sequence_event')
+                AS sequence_event,
+            CAST(json_extract_string(event.value, '$.wire_order') AS BIGINT) AS wire_order,
+            json_extract_string(event.value, '$.side') AS side,
+            CAST(json_extract_string(event.value, '$.side_index') AS BIGINT) AS side_index,
+            json_extract_string(event.value, '$.action') AS action,
+            json_extract_string(event.value, '$.price') AS price,
+            json_extract_string(event.value, '$.quantity') AS quantity
+        FROM raw_records AS raw
+        JOIN raw_records AS source
+          ON source.session_id = raw.session_id
+         AND source.message_ordinal = CAST(
+             json_extract_string(decode(raw.payload_bytes), '$.raw_message_ordinal') AS BIGINT
+         )
+         AND source.venue = 'bitvavo'
+         AND source.product = 'BTC-EUR'
+         AND source.channel = json_extract_string(
+             decode(raw.payload_bytes), '$.source_channel'
+         )
+         AND source.direction = 'inbound'
+        LEFT JOIN LATERAL json_each(decode(raw.payload_bytes), '$.events') AS event
+          ON true
+        WHERE raw.venue = 'bitvavo'
+          AND raw.product = 'BTC-EUR'
+          AND raw.channel IN ('normalized_book', 'normalized_book_snapshot')
           AND raw.direction = 'local'
           AND raw.frame_type = 'marker'
         """

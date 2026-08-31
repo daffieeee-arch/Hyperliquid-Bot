@@ -26,6 +26,10 @@ RESEARCH_VIEW_NAMES: Final = (
     "kraken_spot_l2_events",
     "kraken_spot_l3_order_events",
     "kraken_spot_l3_order_lifecycle",
+    "okx_swap_trades",
+    "okx_swap_bbo",
+    "okx_swap_l2_events",
+    "okx_swap_derivative_context",
 )
 
 _CREATE_SEGMENT_TABLE: Final = """
@@ -365,7 +369,9 @@ def _create_payload_views(connection: duckdb.DuckDBPyConnection) -> None:
             COALESCE(
                 json_extract_string(decode(payload_bytes), '$.subscription_type'),
                 json_extract_string(decode(payload_bytes), '$.subscription.type'),
-                json_extract_string(decode(payload_bytes), '$.data.subscription.type')
+                json_extract_string(decode(payload_bytes), '$.data.subscription.type'),
+                json_extract_string(decode(payload_bytes), '$.arg.channel'),
+                json_extract_string(decode(payload_bytes), '$.args[0].channel')
             ) AS subscription_type,
             decode(payload_bytes) AS payload_text
         FROM raw_records
@@ -392,6 +398,7 @@ def _create_payload_views(connection: duckdb.DuckDBPyConnection) -> None:
         """
     )
     _create_kraken_payload_views(connection)
+    _create_okx_payload_views(connection)
 
 
 def _create_kraken_payload_views(connection: duckdb.DuckDBPyConnection) -> None:
@@ -547,6 +554,197 @@ def _create_kraken_payload_views(connection: duckdb.DuckDBPyConnection) -> None:
                 ORDER BY raw_message_ordinal, data_index, wire_order NULLS LAST
             ) AS previous_order_quantity
         FROM kraken_spot_l3_order_events
+        """
+    )
+
+
+def _create_okx_payload_views(connection: duckdb.DuckDBPyConnection) -> None:
+    """Create DATA-1C views from local string-preserving validated markers."""
+
+    connection.execute(
+        """
+        CREATE OR REPLACE VIEW okx_swap_trades AS
+        SELECT
+            raw.session_id,
+            raw.message_ordinal AS normalization_message_ordinal,
+            CAST(
+                json_extract_string(decode(raw.payload_bytes), '$.raw_message_ordinal')
+                AS BIGINT
+            ) AS raw_message_ordinal,
+            source.received_utc_ns,
+            source.received_monotonic_ns,
+            source.frame_type,
+            source.payload_sha256,
+            CAST(json_extract_string(event.value, '$.event_index') AS BIGINT) AS event_index,
+            json_extract_string(event.value, '$.instrument_id') AS instrument_id,
+            json_extract_string(event.value, '$.trade_id') AS trade_id,
+            json_extract_string(event.value, '$.price') AS price,
+            json_extract_string(event.value, '$.quantity') AS quantity,
+            json_extract_string(event.value, '$.side') AS side,
+            json_extract_string(event.value, '$.source') AS source,
+            json_extract_string(event.value, '$.event_time_ms') AS event_time_ms
+        FROM raw_records AS raw
+        JOIN raw_records AS source
+          ON source.session_id = raw.session_id
+         AND source.message_ordinal = CAST(
+             json_extract_string(decode(raw.payload_bytes), '$.raw_message_ordinal') AS BIGINT
+         )
+         AND source.venue = 'okx'
+         AND source.product = 'BTC-USDT-SWAP'
+         AND source.channel = 'trades-all'
+         AND source.direction = 'inbound',
+             LATERAL json_each(decode(raw.payload_bytes), '$.events') AS event
+        WHERE raw.venue = 'okx'
+          AND raw.product = 'BTC-USDT-SWAP'
+          AND raw.channel = 'normalized_trades-all'
+          AND raw.direction = 'local'
+          AND raw.frame_type = 'marker'
+        """
+    )
+    connection.execute(
+        """
+        CREATE OR REPLACE VIEW okx_swap_bbo AS
+        SELECT
+            raw.session_id,
+            raw.message_ordinal AS normalization_message_ordinal,
+            CAST(
+                json_extract_string(decode(raw.payload_bytes), '$.raw_message_ordinal')
+                AS BIGINT
+            ) AS raw_message_ordinal,
+            source.received_utc_ns,
+            source.received_monotonic_ns,
+            source.frame_type,
+            source.payload_sha256,
+            json_extract_string(decode(raw.payload_bytes), '$.instrument_id') AS instrument_id,
+            json_extract_string(decode(raw.payload_bytes), '$.event_time_ms') AS event_time_ms,
+            json_extract_string(decode(raw.payload_bytes), '$.seq_id') AS seq_id,
+            CAST(json_extract_string(event.value, '$.wire_order') AS BIGINT) AS wire_order,
+            json_extract_string(event.value, '$.side') AS side,
+            CAST(json_extract_string(event.value, '$.side_index') AS BIGINT) AS side_index,
+            json_extract_string(event.value, '$.price') AS price,
+            json_extract_string(event.value, '$.quantity') AS quantity,
+            json_extract_string(event.value, '$.order_count') AS order_count
+        FROM raw_records AS raw
+        JOIN raw_records AS source
+          ON source.session_id = raw.session_id
+         AND source.message_ordinal = CAST(
+             json_extract_string(decode(raw.payload_bytes), '$.raw_message_ordinal') AS BIGINT
+         )
+         AND source.venue = 'okx'
+         AND source.product = 'BTC-USDT-SWAP'
+         AND source.channel = 'bbo-tbt'
+         AND source.direction = 'inbound',
+             LATERAL json_each(decode(raw.payload_bytes), '$.events') AS event
+        WHERE raw.venue = 'okx'
+          AND raw.product = 'BTC-USDT-SWAP'
+          AND raw.channel = 'normalized_bbo-tbt'
+          AND raw.direction = 'local'
+          AND raw.frame_type = 'marker'
+        """
+    )
+    connection.execute(
+        """
+        CREATE OR REPLACE VIEW okx_swap_l2_events AS
+        SELECT
+            raw.session_id,
+            raw.message_ordinal AS normalization_message_ordinal,
+            CAST(
+                json_extract_string(decode(raw.payload_bytes), '$.raw_message_ordinal')
+                AS BIGINT
+            ) AS raw_message_ordinal,
+            source.received_utc_ns,
+            source.received_monotonic_ns,
+            source.frame_type,
+            source.payload_sha256,
+            json_extract_string(decode(raw.payload_bytes), '$.instrument_id') AS instrument_id,
+            json_extract_string(decode(raw.payload_bytes), '$.message_type') AS message_type,
+            json_extract_string(decode(raw.payload_bytes), '$.event_time_ms') AS event_time_ms,
+            json_extract_string(decode(raw.payload_bytes), '$.checksum_wire') AS checksum_wire,
+            json_extract_string(decode(raw.payload_bytes), '$.prev_seq_id') AS prev_seq_id,
+            json_extract_string(decode(raw.payload_bytes), '$.seq_id') AS seq_id,
+            json_extract_string(decode(raw.payload_bytes), '$.sequence_event') AS sequence_event,
+            CAST(json_extract_string(event.value, '$.wire_order') AS BIGINT) AS wire_order,
+            json_extract_string(event.value, '$.side') AS side,
+            CAST(json_extract_string(event.value, '$.side_index') AS BIGINT) AS side_index,
+            json_extract_string(event.value, '$.action') AS action,
+            json_extract_string(event.value, '$.price') AS price,
+            json_extract_string(event.value, '$.quantity') AS quantity,
+            json_extract_string(event.value, '$.order_count') AS order_count
+        FROM raw_records AS raw
+        JOIN raw_records AS source
+          ON source.session_id = raw.session_id
+         AND source.message_ordinal = CAST(
+             json_extract_string(decode(raw.payload_bytes), '$.raw_message_ordinal') AS BIGINT
+         )
+         AND source.venue = 'okx'
+         AND source.product = 'BTC-USDT-SWAP'
+         AND source.channel = 'books'
+         AND source.direction = 'inbound'
+        LEFT JOIN LATERAL json_each(decode(raw.payload_bytes), '$.events') AS event
+          ON true
+        WHERE raw.venue = 'okx'
+          AND raw.product = 'BTC-USDT-SWAP'
+          AND raw.channel = 'normalized_books'
+          AND raw.direction = 'local'
+          AND raw.frame_type = 'marker'
+        """
+    )
+    connection.execute(
+        """
+        CREATE OR REPLACE VIEW okx_swap_derivative_context AS
+        SELECT
+            raw.session_id,
+            raw.message_ordinal AS normalization_message_ordinal,
+            CAST(
+                json_extract_string(decode(raw.payload_bytes), '$.raw_message_ordinal')
+                AS BIGINT
+            ) AS raw_message_ordinal,
+            source.received_utc_ns,
+            source.received_monotonic_ns,
+            source.frame_type,
+            source.payload_sha256,
+            json_extract_string(decode(raw.payload_bytes), '$.source_channel') AS source_channel,
+            json_extract_string(decode(raw.payload_bytes), '$.context_type') AS context_type,
+            json_extract_string(decode(raw.payload_bytes), '$.instrument_id') AS instrument_id,
+            json_extract_string(decode(raw.payload_bytes), '$.event_time_ms') AS event_time_ms,
+            json_extract_string(decode(raw.payload_bytes), '$.funding_rate') AS funding_rate,
+            json_extract_string(decode(raw.payload_bytes), '$.next_funding_rate')
+                AS next_funding_rate,
+            json_extract_string(decode(raw.payload_bytes), '$.funding_time_ms')
+                AS funding_time_ms,
+            json_extract_string(decode(raw.payload_bytes), '$.next_funding_time_ms')
+                AS next_funding_time_ms,
+            json_extract_string(decode(raw.payload_bytes), '$.premium') AS premium,
+            json_extract_string(decode(raw.payload_bytes), '$.open_interest_contracts')
+                AS open_interest_contracts,
+            json_extract_string(decode(raw.payload_bytes), '$.open_interest_currency')
+                AS open_interest_currency,
+            json_extract_string(decode(raw.payload_bytes), '$.open_interest_usd')
+                AS open_interest_usd,
+            json_extract_string(decode(raw.payload_bytes), '$.mark_price') AS mark_price,
+            json_extract_string(decode(raw.payload_bytes), '$.index_price') AS index_price
+        FROM raw_records AS raw
+        JOIN raw_records AS source
+          ON source.session_id = raw.session_id
+         AND source.message_ordinal = CAST(
+             json_extract_string(decode(raw.payload_bytes), '$.raw_message_ordinal') AS BIGINT
+         )
+         AND source.venue = 'okx'
+         AND source.product = 'BTC-USDT-SWAP'
+         AND source.channel = json_extract_string(
+             decode(raw.payload_bytes), '$.source_channel'
+         )
+         AND source.direction = 'inbound'
+        WHERE raw.venue = 'okx'
+          AND raw.product = 'BTC-USDT-SWAP'
+          AND raw.channel IN (
+              'normalized_funding-rate',
+              'normalized_open-interest',
+              'normalized_mark-price',
+              'normalized_index-tickers'
+          )
+          AND raw.direction = 'local'
+          AND raw.frame_type = 'marker'
         """
     )
 

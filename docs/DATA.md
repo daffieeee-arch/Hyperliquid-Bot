@@ -396,6 +396,93 @@ Official contracts used for this slice:
 - https://github.com/krakenfx/kraken-cli/blob/aa56e5976be5afa6d8267eb6741f3a8844678fe9/crates/kraken-core/src/subscribe/message/level3.rs
 - https://github.com/krakenfx/kraken-cli/blob/aa56e5976be5afa6d8267eb6741f3a8844678fe9/crates/kraken-core/src/response/result.rs
 
+### DATA-1C — OKX BTC-USDT-SWAP public research slice
+
+Phase 1 of DATA-1C under D10 — multi-venue market data and feed coverage is an offline-only,
+credential-free adapter for the EEA production contracts. It fixes the product to
+`BTC-USDT-SWAP` and uses the public socket at
+`wss://wseea.okx.com:8443/ws/v5/public` for `bbo-tbt`, ordinary `books`, `funding-rate`,
+`open-interest`, `mark-price`, and the `BTC-USDT` `index-tickers` reference. Individual
+`trades-all` messages use the separate public business socket at
+`wss://wseea.okx.com:8443/ws/v5/business`. No VIP channel, API key, account, signing, execution
+path, SDK, MCP, command, or live smoke is part of this phase.
+
+Every received application frame is timestamped and copied to immutable bytes at callback entry
+before JSON decoding, then written through the shared DATA-1A raw record and ZSTD-Parquet writer.
+The two sockets share one run-wide local ordinal while each connection or reconnect receives a
+fresh session ID. Subscription sends and acknowledgements, disconnects, reconnects, gaps,
+snapshots, resnapshots, and documented sequence resets remain explicit local markers. Validated
+local normalization preserves every decimal lexeme as text and adds only four research views:
+
+```text
+okx_swap_trades
+okx_swap_bbo
+okx_swap_l2_events
+okx_swap_derivative_context
+```
+
+Ordinary `books` is a public 400-level snapshot-plus-incremental L2 feed, not L3/MBO. DATA-1C
+requires the first `snapshot`, `prevSeqId=-1`, and thereafter an exact
+`prevSeqId`-to-previous-`seqId` chain. It accepts only the documented empty no-update message and
+maintenance sequence reset exceptions. An unexplained break, update before snapshot, wrong
+channel/instrument, malformed schema, oversize/truncated input, or writer failure stops the whole
+slice; reconnect starts empty state and requires a new snapshot. Since 23 June 2026 the JSON
+`books` checksum field is fixed to `0`; the adapter checks that wire contract but never calculates
+or uses it for integrity. `bbo-tbt` has only its documented `seqId`, so DATA-1C does not invent a
+`prevSeqId` or checksum for BBO.
+
+The ordinary `books` and `bbo-tbt` feeds exclude RPI liquidity and therefore represent only the
+organic book. `trades-all` can still report RPI executions through `source=1`, including an
+execution outside the organic BBO. Even the separate consolidated `books-rpi` feed can omit
+temporarily hidden but tradeable RPI orders; DATA-1C does not subscribe to it and makes no
+complete-book claim.
+
+The public `liquidation-orders` channel was audited and deliberately deferred. Its SWAP
+subscription is not filterable to one instrument, its data is explicitly incomplete, and records
+are not chronological. Adding that SWAP-wide stream would widen this BTC-only slice; whenever it
+is added later, absence must never be interpreted as zero liquidations.
+
+All fixtures and transport tests in phase 1 are synthetic adaptations of the official schemas.
+They prove bounded offline parsing, exact-byte storage, sequencing, reconnect and query behavior;
+they do not prove endpoint reachability, continuous trade or context coverage, 24-hour
+reliability, hard-crash durability, a strategy edge, deployment readiness, or production
+suitability. No dependency, canonical/provenance contract, D15 — reproducible Gold features and
+aggregates, or D22 — durable PAPER ledger and reconciliation is extended.
+
+On 2026-08-31, a credential-free 150-second phase-2 acceptance smoke used one public and one
+business WebSocket session without a reconnect. All seven subscriptions received positive
+acknowledgements and produced inbound frames: 4,015 `trades-all`, 5,036 `bbo-tbt`, 1,458 `books`,
+3 funding-rate, 13 open-interest, 728 mark-price, and 629 index-tickers frames. The `books` stream
+started with one fresh snapshot and then delivered 1,457 validated incremental updates with an
+unbroken `prevSeqId` to `seqId` chain; every deprecated checksum value was the required literal
+`0`. Live evidence also confirmed that the documented 400-level limit applies to the initial
+snapshot, while a 100-ms incremental change batch can contain more than 400 entries on one side.
+The adapter therefore retains the 400-level snapshot bound and validates complete incremental
+batches within the application-payload bound.
+
+All 23,801 run-wide ordinals and their exact payload bytes and SHA-256 values survived readback.
+Six atomically published ZSTD-Parquet parts contained 20,967,047 raw payload bytes in 3,292,982
+bytes on disk, with no partial files; all four DuckDB views were queryable and non-empty. Writer,
+schema, sequence, truncation, reconnect, and secret checks were clean. This short smoke proves only
+current public endpoint reachability and the observed payload, sequence, storage, and query paths.
+It does not prove 24-hour reliability, hard-crash durability, complete trade or context coverage,
+RPI or liquidation coverage, a strategy edge, deployment readiness, or production suitability.
+
+Official contracts used for this slice:
+
+- https://my.okx.com/docs-v5/en/#overview-production-trading-services
+- https://my.okx.com/docs-v5/en/#overview-websocket
+- https://my.okx.com/docs-v5/en/#order-book-trading-market-data-ws-all-trades-channel
+- https://my.okx.com/docs-v5/en/#order-book-trading-market-data-ws-order-book-channel
+- https://my.okx.com/docs-v5/en/#public-data-websocket-funding-rate-channel
+- https://my.okx.com/docs-v5/en/#public-data-websocket-open-interest-channel
+- https://my.okx.com/docs-v5/en/#public-data-websocket-mark-price-channel
+- https://my.okx.com/docs-v5/en/#order-book-trading-market-data-ws-index-tickers-channel
+- https://my.okx.com/docs-v5/en/#public-data-websocket-liquidation-orders-channel
+- https://www.okx.com/en-us/help/okx-order-book-channels-checksum-field-deprecation
+- https://www.okx.com/en-eu/help/okx-retail-price-improvement-program-rpi
+- https://www.okx.com/docs-v5/log_en/#2026-07-28
+
 ## Self-collected dataset
 
 After the local slice and definitive runtime ADR, realtime collectors should run on the approved 24/7 runtime and persist data to ClickHouse. This creates a dataset with the same receipt path and timestamp discipline the future live bot will use.

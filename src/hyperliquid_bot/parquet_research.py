@@ -33,6 +33,7 @@ RESEARCH_VIEW_NAMES: Final = (
     "bitvavo_spot_trades",
     "bitvavo_spot_bbo",
     "bitvavo_spot_l2_events",
+    "bitvavo_mdpro_spot_l2_events",
 )
 
 _CREATE_SEGMENT_TABLE: Final = """
@@ -403,6 +404,7 @@ def _create_payload_views(connection: duckdb.DuckDBPyConnection) -> None:
     _create_kraken_payload_views(connection)
     _create_okx_payload_views(connection)
     _create_bitvavo_payload_views(connection)
+    _create_bitvavo_mdpro_payload_view(connection)
 
 
 def _create_kraken_payload_views(connection: duckdb.DuckDBPyConnection) -> None:
@@ -908,6 +910,96 @@ def _create_bitvavo_payload_views(connection: duckdb.DuckDBPyConnection) -> None
           AND raw.channel IN ('normalized_book', 'normalized_book_snapshot')
           AND raw.direction = 'local'
           AND raw.frame_type = 'marker'
+        """
+    )
+
+
+def _create_bitvavo_mdpro_payload_view(connection: duckdb.DuckDBPyConnection) -> None:
+    """Create the isolated DATA-1E Market Data Pro L2 event view."""
+
+    connection.execute(
+        """
+        CREATE OR REPLACE VIEW bitvavo_mdpro_spot_l2_events AS
+        WITH normalized AS MATERIALIZED (
+            SELECT
+                raw.session_id,
+                raw.message_ordinal AS normalization_message_ordinal,
+                json_transform(
+                    decode(raw.payload_bytes),
+                    '{
+                        "raw_message_ordinal":"BIGINT",
+                        "source_channel":"VARCHAR",
+                        "market":"VARCHAR",
+                        "message_type":"VARCHAR",
+                        "deprecated_nonce":"VARCHAR",
+                        "venue_timestamp_ns":"VARCHAR",
+                        "sequence_start":"VARCHAR",
+                        "sequence_end":"VARCHAR",
+                        "sequence_event":"VARCHAR",
+                        "events":[{
+                            "wire_order":"BIGINT",
+                            "side":"VARCHAR",
+                            "side_index":"BIGINT",
+                            "action":"VARCHAR",
+                            "price":"VARCHAR",
+                            "quantity":"VARCHAR"
+                        }]
+                    }'
+                ) AS payload
+            FROM raw_records AS raw
+            WHERE raw.venue = 'bitvavo'
+              AND raw.product = 'BTC-EUR'
+              AND raw.channel = 'normalized_mdpro_book'
+              AND raw.direction = 'local'
+              AND raw.frame_type = 'marker'
+        ),
+        expanded AS (
+            SELECT
+                normalized.session_id,
+                normalized.normalization_message_ordinal,
+                normalized.payload.raw_message_ordinal AS raw_message_ordinal,
+                normalized.payload.source_channel AS source_channel,
+                normalized.payload.market AS market,
+                normalized.payload.message_type AS message_type,
+                normalized.payload.deprecated_nonce AS deprecated_nonce,
+                normalized.payload.venue_timestamp_ns AS venue_timestamp_ns,
+                normalized.payload.sequence_start AS sequence_start,
+                normalized.payload.sequence_end AS sequence_end,
+                normalized.payload.sequence_event AS sequence_event,
+                unnest(normalized.payload.events) AS event
+            FROM normalized
+        )
+        SELECT
+            expanded.session_id,
+            expanded.normalization_message_ordinal,
+            expanded.raw_message_ordinal,
+            source.received_utc_ns,
+            source.received_monotonic_ns,
+            source.frame_type,
+            source.payload_sha256,
+            'market_data_pro' AS feed_product,
+            expanded.source_channel,
+            expanded.market,
+            expanded.message_type,
+            expanded.deprecated_nonce,
+            expanded.venue_timestamp_ns,
+            expanded.sequence_start,
+            expanded.sequence_end,
+            expanded.sequence_event,
+            expanded.event.wire_order,
+            expanded.event.side,
+            expanded.event.side_index,
+            expanded.event.action,
+            expanded.event.price,
+            expanded.event.quantity
+        FROM expanded
+        JOIN raw_records AS source
+          ON source.session_id = expanded.session_id
+         AND source.message_ordinal = expanded.raw_message_ordinal
+         AND source.venue = 'bitvavo'
+         AND source.product = 'BTC-EUR'
+         AND source.channel = expanded.source_channel
+         AND source.direction = 'inbound'
         """
     )
 

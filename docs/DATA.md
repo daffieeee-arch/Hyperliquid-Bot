@@ -87,9 +87,9 @@ Use Bitvavo Standard as a free public data source for EUR and available USDC spo
 - market metadata, precision and order capabilities;
 - EUR/USDC and asset quote-route comparison.
 
-Bitvavo Market Data Pro is a distinct, committed future authenticated read-only comparison feed,
-not part of the free public Standard feed. Its future access and simultaneous Standard/Pro
-collection requirements are defined under feed-product identity below.
+Bitvavo Market Data Pro is a distinct authenticated read-only comparison feed, not part of the
+free public Standard feed. DATA-1E implements its bounded BTC-EUR Pro book adapter and smoke;
+simultaneous Standard/Pro collection requirements remain defined under feed-product identity below.
 
 Primary research uses:
 
@@ -169,11 +169,11 @@ contract must distinguish public, authenticated read-only, account- or tier-gate
 and node-provided products, including their L2, L3, order-level/L4, trade, BBO, snapshot, delta,
 funding, open-interest, liquidation, option, implied-volatility and Greek capabilities.
 
-Bitvavo Standard and Market Data Pro are distinct feeds. Market Data Pro is a committed future
-authenticated read-only comparison feed. Any future Pro key is dedicated to data only, receives no
-Trade or Withdraw permission, is IP-allowlisted where possible, is never reused as an execution
-key, and may never silently fall back to Standard while claiming Pro identity. Standard and Pro
-must later support simultaneous A/B collection. This phase creates no Bitvavo key or integration.
+Bitvavo Standard and Market Data Pro are distinct feeds. DATA-1E provides one bounded authenticated
+Pro book adapter and smoke; it does not create a persistent account or credential integration. Any
+Pro key is dedicated to data only, receives no Trade or Withdraw permission, is IP-allowlisted
+where possible, is never reused as an execution key, and may never silently fall back to Standard
+while claiming Pro identity. Standard and Pro must later support simultaneous A/B collection.
 
 Potential future gated candidates include Kraken L3; Coinbase Exchange full/L3/direct; Deribit raw;
 OKX higher-tier 10-ms/SBE feeds; Bybit institutional feeds; and Hyperliquid node/L4 data. Listing
@@ -571,6 +571,99 @@ Official contracts checked for this slice:
 - https://docs.bitvavo.com/docs/faqs/
 - https://docs.bitvavo.com/docs/rate-limits/
 - https://docs.bitvavo.com/api-specs/exchange-websocket-api.yaml
+
+### DATA-1E — Bitvavo Market Data Pro BTC-EUR research slice
+
+Phase 1 of DATA-1E under D10 — multi-venue market data and feed coverage is an offline-only,
+authenticated-boundary adapter for the `book` channel and in-band `getBook` snapshot at
+`wss://ws-mdpro.bitvavo.com/v2/`. It fixes the product to `BTC-EUR` and deliberately excludes Pro
+trades and ticker: DATA-1D already captures their public Standard counterparts, while the distinct
+documented value of Market Data Pro for this slice is non-conflated price-level L2 with explicit
+sequence ranges. This is L2, never L3/MBO. There is no documented checksum, and the deprecated Pro
+`nonce` is retained only as an optional source field; it is neither an integrity input nor
+comparable to Standard or REST nonces.
+
+Every connection must authenticate before subscription. The signed preimage is exactly
+`<timestamp_ms>GET/v2/websocket`, with a hexadecimal HMAC-SHA256 signature. The implementation uses
+only the standard library plus the existing WebSocket dependency. The official Bitvavo SDKs do not
+currently implement this Pro endpoint, so no SDK or dependency is added. Authentication requests,
+signatures, authentication responses/errors, and subscription controls are never stored as exact
+raw data. They produce only fixed, sanitized local markers. Every inbound market-data application
+frame is timestamped and copied to immutable bytes at callback entry before decoding and uses the
+existing DATA-1A raw-record and atomic ZSTD-Parquet path.
+
+The official Pro schema uses `event="book"` for the book confirmation while the sibling Pro
+subscription schemas use `event="subscribed"`. The adapter accepts only those two documented event
+forms and still requires the subscriptions map to equal exactly `{"book":["BTC-EUR"]}`; neither
+form can be mistaken for a market-data update because an update must carry the market and book
+fields instead.
+
+The one new source-linked DuckDB view is:
+
+```text
+bitvavo_mdpro_spot_l2_events
+```
+
+It exposes `feed_product='market_data_pro'`, the exact source ordinal and receipt clocks, payload
+SHA-256, snapshot or update type, deprecated nonce, venue nanosecond timestamp, start/end sequence,
+wire order, side, action, and unchanged decimal strings. Distinct `mdpro_book` and
+`mdpro_book_snapshot` source channels prevent this view from selecting DATA-1D Standard rows. A
+Pro capture still uses a separate Parquet corpus; no Standard/Pro equivalence is implied.
+
+The snapshot `mdSeqNo` is the last engine event included. A buffered update wholly covered by that
+snapshot (`endMdSeqNo <= mdSeqNo`) is discarded. The first retained update must start at
+`mdSeqNo + 1`; each active update must then start exactly at the previous `endMdSeqNo + 1`, after
+which the local sequence advances to its own `endMdSeqNo`. Bitvavo documents that a single message
+may group multiple engine events under load. DATA-1E keeps that range as one wire event and never
+fabricates intermediate changes. The official guide does not safely define a range that straddles
+the snapshot boundary (`startMdSeqNo <= mdSeqNo < endMdSeqNo`), so that case fails closed instead
+of being skipped or partially replayed. Duplicate, stale, out-of-order, gap, identity, schema,
+buffer, truncation, sensitive-frame, or writer failures stop the capture and require a new
+snapshot. A reconnect creates a new session, new signature/authentication boundary, empty state,
+and fresh snapshot; it never falls back to Standard.
+
+Fixtures are synthetic and credential-free adaptations of the official schemas. Phase 1 proves
+only deterministic authentication-message construction, redaction, snapshot/range validation,
+reconnect isolation, decimal preservation, exact market-byte/SHA Parquet round-trip, and local
+query behavior. It uses no real credential and makes no live access, entitlement, completeness,
+latency, 24-hour reliability, hard-crash durability, strategy-edge, deployment, production, or
+execution claim.
+
+Any bounded phase-2 smoke requires a dedicated Bitvavo key with only the UI `View access`
+permission (called `Read-only` in the Pro introduction), all trade, withdrawal, transfer,
+administrative, and subaccount permissions disabled, and IP allowlisting where practical. That
+permission can expose account information even though this adapter calls only authenticate,
+subscribe, and `getBook`; the key is therefore still sensitive. It may enter only through hidden
+local `/dev/tty` prompts, never chat, environment variables, arguments, files, fixtures, logs, or
+artifacts. Authentication or access rejection defers DATA-1E; it never justifies broader rights.
+
+On 2026-08-31, the final bounded phase-2 smoke completed two short authenticated BTC-EUR Pro book
+sessions with one controlled session restart and no automatic reconnect. Each session received
+positive authentication and book-subscription acknowledgements, built a fresh depth-1,000
+`getBook` snapshot, and validated at least one strictly post-snapshot update with an exact
+`mdSeqNo` range transition. The run received 26 book-update frames and two snapshots. All 50
+run-wide raw ordinals and payload SHA-256 values survived exact readback; one atomically published
+ZSTD-Parquet part stored 94,522 inbound payload bytes in 50,394 bytes without a partial or writer
+failure. Full materialization of the 4,003-row price-level event view, source linkage, and the
+generic DuckDB views passed. The in-process exact credential scan completed over physical and
+decompressed artifacts and reported no API key, secret, or generated signature material.
+
+This controlled restart is not evidence for spontaneous transport-reconnect reliability. The
+smoke does not prove checksum coverage, price levels beyond the requested snapshot depth, live Pro
+trades or ticker coverage, every possible update shape, continuous completeness, 24-hour
+reliability, hard-crash durability, strategy edge, deployment readiness, production suitability,
+or execution capability. It remains L2 price-level research data, never L3/MBO.
+
+Official contracts checked for this slice:
+
+- https://docs.bitvavo.com/docs/ws-market-data-pro-api/introduction/
+- https://docs.bitvavo.com/docs/ws-market-data-pro-sync/
+- https://docs.bitvavo.com/docs/ws-market-data-pro-api/book-subscription/
+- https://docs.bitvavo.com/docs/ws-market-data-pro-api/get-order-book/
+- https://docs.bitvavo.com/api-specs/ws-market-data-pro-api.yaml
+- https://docs.bitvavo.com/docs/get-started/
+- https://docs.bitvavo.com/docs/rate-limits/
+- https://docs.bitvavo.com/docs/errors/
 
 ## Self-collected dataset
 

@@ -665,6 +665,101 @@ Official contracts checked for this slice:
 - https://docs.bitvavo.com/docs/rate-limits/
 - https://docs.bitvavo.com/docs/errors/
 
+### DATA-1F — Binance BTCUSDT public research slice
+
+Phase 1 of DATA-1F under D10 — multi-venue market data and feed coverage is offline-only and
+credential-free. It fixes two distinct products that share the native symbol `BTCUSDT`: Spot and
+the USDⓈ-M perpetual. Spot uses the market-data-only domain for individual `trade`, BBO
+`bookTicker`, and 100-ms diff-depth joined to one public depth-1,000 REST snapshot. USDⓈ-M uses
+the current routed `/market` socket for 100-ms `aggTrade`, `markPrice@1s`, and `forceOrder`, the
+routed `/public` socket for `bookTicker`, and one public current-open-interest REST response. It
+does not use an account, API key, signing, user-data stream, SBE, SDK, order method, or execution
+path, and it adds no dependency or canonical/provenance contract.
+
+Every returned WebSocket application frame is timestamped and copied to immutable bytes before
+JSON parsing. A successful REST response is similarly timestamped at response completion and kept
+as the exact returned body. All source frames then use the shared DATA-1A raw record and atomic
+ZSTD-Parquet writer. Three WebSocket connections have distinct session IDs but share one run-wide
+ordinal. Direct combined-stream URLs have no subscription acknowledgement, so DATA-1F records
+honest local `subscription_requested` and first-frame `subscription_observed` markers rather than
+inventing an ACK. A reconnect creates a fresh session and, for Spot depth, empty book state and a
+fresh REST snapshot. The documented Spot `!serverShutdown` control event is retained byte-exactly,
+then creates an explicit disconnect/gap and bounded reconnect rather than a false schema error.
+
+The Spot book follows Binance's documented bootstrap. It buffers diff events, retries a snapshot
+only while `lastUpdateId` is older than the first buffered `U`, discards updates ending at or before
+the snapshot ID, requires the first retained update to cover the snapshot ID, and thereafter fails
+closed when `U > local_update_id + 1`. An ongoing event is ignored only when `u` is strictly less
+than the local ID; equal-`u` absolute changes are retained as an explicit reapplication without
+advancing the acceptance counter. Quantities are absolute and `"0"` deletes a price level.
+No checksum exists in the selected JSON contract, so DATA-1F validates only documented `U`/`u`
+ordering and never fabricates a checksum. The initial 1,000-level snapshot does not prove deeper
+book completeness. Spot `trade` is an individual-trade stream but Binance separately publishes a
+`blockTrade` stream without documenting its overlap, so DATA-1F does not call `trade` an
+all-execution tape.
+
+The USDⓈ-M `aggTrade` stream is not an individual-trade tape: it aggregates same-price,
+same-taking-side fills within 100 ms, excludes insurance-fund and ADL trades, and can include RPI
+quantity that `nq` separately excludes. Standard USDⓈ-M BBO excludes RPI orders. `forceOrder`
+publishes only one exchange-selected liquidation snapshot per symbol and 1,000-ms window; silence
+never means zero liquidations or a complete tape. Mark price carries index price, estimated
+settlement, funding rate, moving average, and next funding time. Current OI is one point-in-time
+REST observation, not history. The four source-linked, string-preserving research views are:
+
+```text
+binance_spot_trades
+binance_spot_bbo
+binance_spot_l2_events
+binance_usdm_context
+```
+
+The synthetic fixtures prove only deterministic offline parsing, byte/SHA round-trip, sequence
+handling, reconnect isolation, bounded failure, and query behavior. The selected endpoints are
+official public market-data routes and require no account or API key. This project uses them only
+for passive internal analysis from the Netherlands; Binance trading, account access, VPN/proxy use,
+and geographic bypass remain prohibited and out of scope. One short credential-free public-data
+smoke may establish bounded endpoint reachability and schema compatibility, but not platform or
+trading eligibility. Phase 1 does not prove reachability, continuous or complete
+trade/depth/context coverage, 24-hour reliability, hard-crash durability, strategy edge,
+deployment readiness, production suitability, account availability, or permission to trade.
+
+On 2026-08-31 UTC, one credential-free 60-second public smoke reached the fixed Spot
+market-data-only and routed USDⓈ-M endpoints without a proxy, account, or reconnect. Spot produced
+trade, BBO, diff-depth, and one depth-1,000 snapshot; the snapshot joined its buffered sequence and
+at least one delta was applied under the documented `U`/`u` rule. USDⓈ-M produced aggregate
+trades, BBO, mark/index/funding context, one current-open-interest response, and one sparse
+`forceOrder` event. All required channels were observed, while direct combined-stream observation
+remained distinct from a venue subscription ACK.
+
+The run retained 25,436 raw and local-marker records with contiguous run-wide ordinals and
+8,259,571 payload bytes. Exact payload hashes survived direct Parquet and DuckDB readback. Three
+atomically published ZSTD-Parquet parts occupied 1,642,926 bytes; no partial, writer, schema,
+sequence, truncation, quality, or reconnect event occurred. All four Binance views were queryable.
+The capture completed before a private validation runner encountered an unsupported parameterized
+DuckDB `CREATE VIEW`; readback was corrected and rerun over the same published parts without a
+second network capture.
+
+This short smoke proves only bounded public endpoint reachability, current schema compatibility,
+and one successful Spot snapshot/delta bootstrap. It does not prove an all-execution Spot tape,
+full-book depth, lossless or complete USDⓈ-M aggregate-trade or liquidation coverage, historical
+open interest, 24-hour reliability, spontaneous reconnect recovery, hard-crash durability,
+strategy edge, deployment readiness, production suitability, account availability, or permission
+to trade. The observed `forceOrder` frame is one incomplete exchange-selected snapshot; its
+presence does not establish liquidation completeness, just as silence would not mean zero.
+
+Official contracts checked for this slice:
+
+- https://developers.binance.com/en/docs/products/spot/faqs/market_data_only
+- https://developers.binance.com/en/docs/products/spot/market-data/web-socket-streams
+- https://developers.binance.com/en/docs/products/spot/market-data/rest-api/Order-Book
+- https://developers.binance.com/en/docs/products/derivatives-trading-usds-futures/websocket-market-streams/Connect
+- https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/ws-streams/public
+- https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/ws-streams/market
+- https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/market-data
+- https://developers.binance.com/docs/derivatives/change-log
+- https://www.binance.com/en/terms
+- https://www.binance.com/en/legal/list-of-prohibited-countries
+
 ## Self-collected dataset
 
 After the local slice and definitive runtime ADR, realtime collectors should run on the approved 24/7 runtime and persist data to ClickHouse. This creates a dataset with the same receipt path and timestamp discipline the future live bot will use.

@@ -34,6 +34,10 @@ RESEARCH_VIEW_NAMES: Final = (
     "bitvavo_spot_bbo",
     "bitvavo_spot_l2_events",
     "bitvavo_mdpro_spot_l2_events",
+    "binance_spot_trades",
+    "binance_spot_bbo",
+    "binance_spot_l2_events",
+    "binance_usdm_context",
 )
 
 _CREATE_SEGMENT_TABLE: Final = """
@@ -405,6 +409,7 @@ def _create_payload_views(connection: duckdb.DuckDBPyConnection) -> None:
     _create_okx_payload_views(connection)
     _create_bitvavo_payload_views(connection)
     _create_bitvavo_mdpro_payload_view(connection)
+    _create_binance_payload_views(connection)
 
 
 def _create_kraken_payload_views(connection: duckdb.DuckDBPyConnection) -> None:
@@ -1000,6 +1005,226 @@ def _create_bitvavo_mdpro_payload_view(connection: duckdb.DuckDBPyConnection) ->
          AND source.product = 'BTC-EUR'
          AND source.channel = expanded.source_channel
          AND source.direction = 'inbound'
+        """
+    )
+
+
+def _create_binance_payload_views(connection: duckdb.DuckDBPyConnection) -> None:
+    """Create DATA-1F views from source-linked, string-preserving local markers."""
+
+    connection.execute(
+        """
+        CREATE OR REPLACE VIEW binance_spot_trades AS
+        SELECT
+            marker.session_id,
+            marker.message_ordinal AS normalization_message_ordinal,
+            CAST(json_extract_string(decode(marker.payload_bytes), '$.raw_message_ordinal')
+                AS BIGINT) AS raw_message_ordinal,
+            source.received_utc_ns,
+            source.received_monotonic_ns,
+            source.frame_type,
+            source.payload_sha256,
+            json_extract_string(decode(marker.payload_bytes), '$.symbol') AS symbol,
+            json_extract_string(decode(marker.payload_bytes), '$.trade_id') AS trade_id,
+            json_extract_string(decode(marker.payload_bytes), '$.price') AS price,
+            json_extract_string(decode(marker.payload_bytes), '$.quantity') AS quantity,
+            json_extract_string(decode(marker.payload_bytes), '$.exchange_event_time')
+                AS exchange_event_time,
+            json_extract_string(decode(marker.payload_bytes), '$.trade_time') AS trade_time,
+            json_extract_string(decode(marker.payload_bytes), '$.timestamp_unit')
+                AS timestamp_unit,
+            CAST(json_extract(decode(marker.payload_bytes), '$.buyer_was_maker') AS BOOLEAN)
+                AS buyer_was_maker,
+            json_extract_string(decode(marker.payload_bytes), '$.aggressor_side')
+                AS aggressor_side
+        FROM raw_records AS marker
+        JOIN raw_records AS source
+          ON source.session_id = marker.session_id
+         AND source.message_ordinal = CAST(
+             json_extract_string(decode(marker.payload_bytes), '$.raw_message_ordinal') AS BIGINT
+         )
+         AND source.venue = 'binance'
+         AND source.product = 'BTCUSDT-SPOT'
+         AND source.channel = json_extract_string(
+             decode(marker.payload_bytes), '$.source_channel'
+         )
+         AND source.direction = 'inbound'
+        WHERE marker.venue = 'binance'
+          AND marker.product = 'BTCUSDT-SPOT'
+          AND marker.channel = 'normalized_spot_trade'
+          AND marker.direction = 'local'
+          AND marker.frame_type = 'marker'
+        """
+    )
+    connection.execute(
+        """
+        CREATE OR REPLACE VIEW binance_spot_bbo AS
+        SELECT
+            marker.session_id,
+            marker.message_ordinal AS normalization_message_ordinal,
+            CAST(json_extract_string(decode(marker.payload_bytes), '$.raw_message_ordinal')
+                AS BIGINT) AS raw_message_ordinal,
+            source.received_utc_ns,
+            source.received_monotonic_ns,
+            source.frame_type,
+            source.payload_sha256,
+            json_extract_string(decode(marker.payload_bytes), '$.symbol') AS symbol,
+            json_extract_string(decode(marker.payload_bytes), '$.update_id') AS update_id,
+            json_extract_string(decode(marker.payload_bytes), '$.bid_price') AS bid_price,
+            json_extract_string(decode(marker.payload_bytes), '$.bid_quantity') AS bid_quantity,
+            json_extract_string(decode(marker.payload_bytes), '$.ask_price') AS ask_price,
+            json_extract_string(decode(marker.payload_bytes), '$.ask_quantity') AS ask_quantity
+        FROM raw_records AS marker
+        JOIN raw_records AS source
+          ON source.session_id = marker.session_id
+         AND source.message_ordinal = CAST(
+             json_extract_string(decode(marker.payload_bytes), '$.raw_message_ordinal') AS BIGINT
+         )
+         AND source.venue = 'binance'
+         AND source.product = 'BTCUSDT-SPOT'
+         AND source.channel = json_extract_string(
+             decode(marker.payload_bytes), '$.source_channel'
+         )
+         AND source.direction = 'inbound'
+        WHERE marker.venue = 'binance'
+          AND marker.product = 'BTCUSDT-SPOT'
+          AND marker.channel = 'normalized_spot_bbo'
+          AND marker.direction = 'local'
+          AND marker.frame_type = 'marker'
+        """
+    )
+    connection.execute(
+        """
+        CREATE OR REPLACE VIEW binance_spot_l2_events AS
+        SELECT
+            marker.session_id,
+            marker.message_ordinal AS normalization_message_ordinal,
+            CAST(json_extract_string(decode(marker.payload_bytes), '$.raw_message_ordinal')
+                AS BIGINT) AS raw_message_ordinal,
+            source.received_utc_ns,
+            source.received_monotonic_ns,
+            source.frame_type,
+            source.payload_sha256,
+            json_extract_string(decode(marker.payload_bytes), '$.source_channel')
+                AS source_channel,
+            json_extract_string(decode(marker.payload_bytes), '$.message_type') AS message_type,
+            json_extract_string(decode(marker.payload_bytes), '$.symbol') AS symbol,
+            json_extract_string(decode(marker.payload_bytes), '$.exchange_event_time')
+                AS exchange_event_time,
+            json_extract_string(decode(marker.payload_bytes), '$.last_update_id')
+                AS last_update_id,
+            json_extract_string(decode(marker.payload_bytes), '$.first_update_id')
+                AS first_update_id,
+            json_extract_string(decode(marker.payload_bytes), '$.final_update_id')
+                AS final_update_id,
+            json_extract_string(decode(marker.payload_bytes), '$.sequence_event')
+                AS sequence_event,
+            CAST(json_extract_string(event.value, '$.wire_order') AS BIGINT) AS wire_order,
+            json_extract_string(event.value, '$.side') AS side,
+            CAST(json_extract_string(event.value, '$.side_index') AS BIGINT) AS side_index,
+            json_extract_string(event.value, '$.action') AS action,
+            json_extract_string(event.value, '$.price') AS price,
+            json_extract_string(event.value, '$.quantity') AS quantity
+        FROM raw_records AS marker
+        JOIN raw_records AS source
+          ON source.session_id = marker.session_id
+         AND source.message_ordinal = CAST(
+             json_extract_string(decode(marker.payload_bytes), '$.raw_message_ordinal') AS BIGINT
+         )
+         AND source.venue = 'binance'
+         AND source.product = 'BTCUSDT-SPOT'
+         AND source.channel = json_extract_string(
+             decode(marker.payload_bytes), '$.source_channel'
+         )
+         AND source.direction = 'inbound'
+        LEFT JOIN LATERAL json_each(decode(marker.payload_bytes), '$.events') AS event
+          ON true
+        WHERE marker.venue = 'binance'
+          AND marker.product = 'BTCUSDT-SPOT'
+          AND marker.channel = 'normalized_spot_depth'
+          AND marker.direction = 'local'
+          AND marker.frame_type = 'marker'
+        """
+    )
+    connection.execute(
+        """
+        CREATE OR REPLACE VIEW binance_usdm_context AS
+        SELECT
+            marker.session_id,
+            marker.message_ordinal AS normalization_message_ordinal,
+            CAST(json_extract_string(decode(marker.payload_bytes), '$.raw_message_ordinal')
+                AS BIGINT) AS raw_message_ordinal,
+            source.received_utc_ns,
+            source.received_monotonic_ns,
+            source.frame_type,
+            source.payload_sha256,
+            json_extract_string(decode(marker.payload_bytes), '$.source_channel')
+                AS source_channel,
+            json_extract_string(decode(marker.payload_bytes), '$.context_type') AS context_type,
+            json_extract_string(decode(marker.payload_bytes), '$.symbol') AS symbol,
+            json_extract_string(decode(marker.payload_bytes), '$.exchange_event_time')
+                AS exchange_event_time,
+            json_extract_string(decode(marker.payload_bytes), '$.transaction_time')
+                AS transaction_time,
+            json_extract_string(decode(marker.payload_bytes), '$.update_id') AS update_id,
+            json_extract_string(decode(marker.payload_bytes), '$.aggregate_trade_id')
+                AS aggregate_trade_id,
+            json_extract_string(decode(marker.payload_bytes), '$.first_trade_id')
+                AS first_trade_id,
+            json_extract_string(decode(marker.payload_bytes), '$.last_trade_id') AS last_trade_id,
+            json_extract_string(decode(marker.payload_bytes), '$.price') AS price,
+            json_extract_string(decode(marker.payload_bytes), '$.quantity') AS quantity,
+            json_extract_string(decode(marker.payload_bytes), '$.normal_quantity')
+                AS normal_quantity,
+            json_extract_string(decode(marker.payload_bytes), '$.bid_price') AS bid_price,
+            json_extract_string(decode(marker.payload_bytes), '$.bid_quantity') AS bid_quantity,
+            json_extract_string(decode(marker.payload_bytes), '$.ask_price') AS ask_price,
+            json_extract_string(decode(marker.payload_bytes), '$.ask_quantity') AS ask_quantity,
+            json_extract_string(decode(marker.payload_bytes), '$.mark_price') AS mark_price,
+            json_extract_string(decode(marker.payload_bytes), '$.index_price') AS index_price,
+            json_extract_string(decode(marker.payload_bytes), '$.estimated_settle_price')
+                AS estimated_settle_price,
+            json_extract_string(decode(marker.payload_bytes), '$.mark_moving_average')
+                AS mark_moving_average,
+            json_extract_string(decode(marker.payload_bytes), '$.funding_rate') AS funding_rate,
+            json_extract_string(decode(marker.payload_bytes), '$.next_funding_time')
+                AS next_funding_time,
+            json_extract_string(decode(marker.payload_bytes), '$.open_interest')
+                AS open_interest,
+            json_extract_string(decode(marker.payload_bytes), '$.side') AS side,
+            json_extract_string(decode(marker.payload_bytes), '$.order_type') AS order_type,
+            json_extract_string(decode(marker.payload_bytes), '$.time_in_force') AS time_in_force,
+            json_extract_string(decode(marker.payload_bytes), '$.order_status') AS order_status,
+            json_extract_string(decode(marker.payload_bytes), '$.average_price') AS average_price,
+            json_extract_string(decode(marker.payload_bytes), '$.last_filled_quantity')
+                AS last_filled_quantity,
+            json_extract_string(decode(marker.payload_bytes), '$.accumulated_filled_quantity')
+                AS accumulated_filled_quantity,
+            CAST(json_extract(decode(marker.payload_bytes), '$.buyer_was_maker') AS BOOLEAN)
+                AS buyer_was_maker,
+            json_extract_string(decode(marker.payload_bytes), '$.aggressor_side')
+                AS aggressor_side,
+            CAST(json_extract(decode(marker.payload_bytes), '$.rpi_excluded') AS BOOLEAN)
+                AS rpi_excluded,
+            CAST(json_extract(decode(marker.payload_bytes), '$.incomplete_snapshot') AS BOOLEAN)
+                AS incomplete_snapshot
+        FROM raw_records AS marker
+        JOIN raw_records AS source
+          ON source.session_id = marker.session_id
+         AND source.message_ordinal = CAST(
+             json_extract_string(decode(marker.payload_bytes), '$.raw_message_ordinal') AS BIGINT
+         )
+         AND source.venue = 'binance'
+         AND source.product = 'BTCUSDT-USDS-M-PERPETUAL'
+         AND source.channel = json_extract_string(
+             decode(marker.payload_bytes), '$.source_channel'
+         )
+         AND source.direction = 'inbound'
+        WHERE marker.venue = 'binance'
+          AND marker.product = 'BTCUSDT-USDS-M-PERPETUAL'
+          AND marker.channel = 'normalized_usdm_context'
+          AND marker.direction = 'local'
+          AND marker.frame_type = 'marker'
         """
     )
 

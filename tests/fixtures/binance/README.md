@@ -1,4 +1,4 @@
-# Binance Spot raw-trade fixture
+# Binance public research fixtures
 
 `spot_trade_event.json` is a small deterministic synthetic fixture shaped after Binance Spot's
 individual JSON raw Trade Stream (`<lowercase-symbol>@trade`). The schema basis was reviewed on
@@ -26,3 +26,27 @@ Official schema basis:
 - https://github.com/binance/binance-spot-api-docs/blob/master/web-socket-streams.md
 - https://github.com/binance/binance-spot-api-docs/blob/master/faqs/market_data_only.md
 - https://github.com/binance/binance-spot-api-docs/blob/master/sbe-market-data-streams.md
+
+The additional `public_*` fixtures are deterministic synthetic frames for DATA-1F. The Spot
+WebSocket frames use the documented combined-stream envelope and microsecond timestamp option.
+The depth snapshot is shaped after public REST `GET /api/v3/depth`; diff-depth quantities are
+absolute price-level quantities and `"0"` means deletion. The USDⓈ-M frames use the current
+routed `/market` or `/public` JSON stream contracts. USDⓈ-M `aggTrade` is a 100-ms server
+aggregate, not an individual trade; `nq` excludes RPI quantity while `q` can include it. Public
+USDⓈ-M `bookTicker` excludes RPI liquidity. `forceOrder` exposes at most one exchange-selected
+liquidation snapshot for a symbol in each 1,000-ms interval; current generated documentation and
+the effective changelog differ on whether that means latest or largest. Silence cannot mean zero
+liquidations.
+
+All additional values are synthetic. No frame was captured from Binance, and no account, API key,
+credential, order, wallet, or private data is present.
+
+Additional official schema basis, reviewed 2026-08-31:
+
+- https://developers.binance.com/en/docs/products/spot/faqs/market_data_only
+- https://developers.binance.com/en/docs/products/spot/market-data/web-socket-streams
+- https://developers.binance.com/en/docs/products/spot/market-data/rest-api/Order-Book
+- https://developers.binance.com/en/docs/products/derivatives-trading-usds-futures/websocket-market-streams/Connect
+- https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/ws-streams/public
+- https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/ws-streams/market
+- https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/market-data

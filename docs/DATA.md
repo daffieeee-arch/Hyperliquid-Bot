@@ -483,6 +483,95 @@ Official contracts used for this slice:
 - https://www.okx.com/en-eu/help/okx-retail-price-improvement-program-rpi
 - https://www.okx.com/docs-v5/log_en/#2026-07-28
 
+### DATA-1D — Bitvavo Standard BTC-EUR public research slice
+
+Phase 1 of DATA-1D under D10 — multi-venue market data and feed coverage is an offline-only,
+credential-free adapter for public Bitvavo Standard data at `wss://ws.bitvavo.com/v2/`. Its fixed
+scope is `BTC-EUR`: individual `trades`, incremental `ticker` BBO/last-price fields, and price-level `book`
+updates joined to a public WebSocket `getBook` snapshot with depth 1,000. It does not authenticate,
+use an account, call a trading or account action, use the Market Data Pro endpoint, or silently
+substitute Standard data for Pro evidence. No SDK or new dependency is needed.
+
+Each received application frame is timestamped and copied to immutable bytes at callback entry
+before JSON decoding, then written through the existing DATA-1A raw record and atomic
+ZSTD-Parquet path. One run-wide ordinal spans all sessions. Every transport reconnect gets a new
+session ID, empty acknowledgements and book state, a fresh subscription, and a fresh snapshot;
+disconnects and the resulting unknowable interval remain explicit gap events. The adapter exposes
+only three source-linked, string-preserving DuckDB views:
+
+```text
+bitvavo_spot_trades
+bitvavo_spot_bbo
+bitvavo_spot_l2_events
+```
+
+The Standard book is aggregated price-level L2, never L3/MBO. It has no documented checksum. A
+`nonce` is the sequential version of one market book: after bootstrap, every update must be exactly
+the previous nonce plus one. Duplicate, out-of-order, reset, or skipped nonces, an identity/schema
+error, an oversize or truncated application frame, or a writer failure stops fail-closed. A new
+snapshot is required after reconnect. Quantity `"0"` means deletion; side order and wire order are
+retained, and all prices, quantities, IDs, timestamps, and nonce lexemes avoid float conversion.
+Ticker has neither a venue timestamp nor a sequence. Its fields are optional update fields: live
+evidence can carry only the changed bid pair, ask pair, or last price. The BBO view therefore
+forward-fills each observed field only within one session and exposes `bbo_complete`; it never
+fills across a reconnect or presents an incomplete initial state as a full BBO. Trades have a
+unique ID but no documented gap sequence, so their live completeness cannot be inferred from IDs
+or event counts.
+
+The current local-book guide has a notable internal tension: its example shows an initial update
+newer than the snapshot, while its written rule says the snapshot must be strictly newer than the
+first buffered update. DATA-1D follows the written rule without guessing. It waits for the first
+buffered update before requesting `getBook`, accepts only `snapshot_nonce > first_buffered_nonce`,
+discards buffered updates covered by that snapshot, and then requires an exact `+1` join. A stale
+or equal snapshot may be requested again only within a small configured bound. The accepted
+phase-2 public smoke used one snapshot request and was configured to fail rather than retry; it
+therefore tested the live contract without masking a mismatch.
+
+The depth-1,000 snapshot is not proof of a complete order book outside that captured depth. The
+`timestamp` on Standard book events and WebSocket snapshots is documented as the nanosecond time
+of the last transaction event, not local receipt time and not necessarily snapshot generation
+time. It remains nullable because the local-book guide and formal examples do not consistently
+require it. Standard and a future Pro capture must use separate Parquet corpora; this catalog labels
+the three views `feed_product='standard'` and makes no equivalence claim.
+
+Phase 1 fixtures are sanitized synthetic adaptations of the official public schemas. They prove
+only deterministic offline parsing, callback-entry byte capture, bounded buffering, nonce-chain
+validation, reconnect state isolation, Parquet byte/SHA round-trip, and local query behavior. No
+accepted public smoke is part of that offline proof. An initial phase-2 attempt opened the public
+socket and stopped fail-closed when a live ticker carried only a bid pair, which the initial parser
+incorrectly required to be a complete BBO. The targeted repair accepts only structurally paired
+partial updates and tests causal, session-scoped reconstruction.
+
+On 2026-08-31, the one allowed repair smoke then ran the public socket for 90 seconds in one
+session, with one snapshot request and no reconnect. All three requested channels were positively
+acknowledged. The capture observed 26 trades, 1,601 ticker updates, 895 book updates, and one
+wrapped book snapshot. The book path installed one fresh snapshot and validated 893
+post-snapshot updates with an unbroken `+1` nonce chain. After each side had been observed, 1,599
+ticker rows exposed a complete session-local BBO state; this is causal forward-fill evidence, not
+a venue sequence or completeness guarantee.
+
+All 5,059 run-wide ordinals and exact payload bytes/SHA-256 values survived readback. Three
+atomically published ZSTD-Parquet parts stored 2,500,969 payload bytes in 493,678 bytes with no
+partial file, and the trades, BBO, and L2 DuckDB views were queryable and non-empty. There was no
+schema, sequence, writer, truncation, gap, reconnect, retry, credential, or secret event. The
+bounded run took 94.8 seconds including catalog creation and readback. It proves only the observed
+public endpoint, wire shapes, sequence path, storage path, and query path. It does not prove
+continuous or complete trades/BBO coverage, full-depth completeness, checksum coverage, 24-hour
+reliability, hard-crash durability, Market Data Pro behavior, strategy edge, deployment readiness,
+or production suitability.
+
+Official contracts checked for this slice:
+
+- https://docs.bitvavo.com/docs/websocket-api/
+- https://docs.bitvavo.com/docs/websocket-api/trades-subscription/
+- https://docs.bitvavo.com/docs/websocket-api/ticker-subscription/
+- https://docs.bitvavo.com/docs/websocket-api/book-subscription/
+- https://docs.bitvavo.com/docs/websocket-api/get-order-book/
+- https://docs.bitvavo.com/docs/manage-order-book/
+- https://docs.bitvavo.com/docs/faqs/
+- https://docs.bitvavo.com/docs/rate-limits/
+- https://docs.bitvavo.com/api-specs/exchange-websocket-api.yaml
+
 ## Self-collected dataset
 
 After the local slice and definitive runtime ADR, realtime collectors should run on the approved 24/7 runtime and persist data to ClickHouse. This creates a dataset with the same receipt path and timestamp discipline the future live bot will use.

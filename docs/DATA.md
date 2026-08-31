@@ -288,9 +288,113 @@ reliability or a trading edge.
 The immediate next gate under D10 — multi-venue market data and feed coverage is DATA-1B — Kraken
 authenticated L3 capture, because true order-level history cannot be reconstructed later. Any
 future Kraken or Bitvavo credential must be a separate minimal read-only data key with no trading,
-withdrawal, transfer or signing rights and must never enter chat, source, fixtures, artifacts or
-logs. Bitvavo internal personal research does not require a prior redistribution review. OKX is
-the next data-only increment after DATA-1B.
+withdrawal or transfer authority and must never enter chat, source, fixtures, artifacts or logs.
+Bitvavo internal personal research does not require a prior redistribution review. OKX is the next
+data-only increment after DATA-1B.
+
+### DATA-1B — Kraken BTC/EUR authenticated L3 research slice
+
+Phase 1 of DATA-1B under D10 — multi-venue market data and feed coverage is deliberately offline.
+It adds no credential loader or command and performs no authenticated smoke. The Kraken adapter is
+fixed to Spot `BTC/EUR` and runs two required connections as one fail-closed capture:
+
+- public `trade` and depth-10 `book` at `wss://ws.kraken.com/v2`;
+- token-gated depth-10 `level3` at `wss://ws-l3.kraken.com/v2`.
+
+The channel-specific L3 reference and Kraken's 2 December 2025 changelog are authoritative for the
+second endpoint; the generic Spot WebSocket overview still lists `ws-auth` as the private endpoint.
+No silent endpoint substitution or downgrade from L3 to public L2 is allowed.
+
+The only permission needed to request the temporary token is `WebSocket interface - On`, named
+`Access WebSockets API` in the current permission guide. Query Funds, order/trade queries, ledger,
+export, order create/modify/cancel, deposit, withdrawal, transfer, Earn and account-management
+permissions stay off. `API-Sign` is only the HMAC authentication header for
+`GetWebSocketsToken`; it grants no order-signing or trading authority. The adapter form-encodes one
+strictly increasing nonce and implements the official HMAC-SHA512 algorithm with Python's standard
+library. A fresh token is obtained for every L3 connect or reconnect. The request, response and
+token never enter the raw sink; the token-bearing subscription exists only in memory and is
+represented on disk by a local marker containing channel, product and `authenticated=true`.
+
+Only recognized inbound market-data frames are stored byte-exactly. Subscription acknowledgements
+are reduced to non-secret local markers and heartbeats are validated then ignored in memory. Kraken
+automatically sends `status` on every successful WebSocket connection; it is validated and reduced
+to a local `venue_status` session marker rather than being classified as raw market data. Before
+any inbound L3 bytes can be persisted, the active token is checked against the frame so an
+unexpected token echo fails closed. Every new public or L3 connection receives a new session ID.
+L3 reconnect also creates a new authentication boundary, discards old state and requires a fresh
+snapshot. Transport disconnects create gap markers; invalid auth, failed reconnect,
+oversize/truncated input, malformed schema, ordering failure or checksum mismatch stops the combined
+capture. On a terminal failure, the peer stream exits through its stop boundary so an in-progress
+atomic Parquet publication is not cancelled.
+
+A bounded run is successful only after both public subscription acknowledgements, a valid L2
+snapshot, the authenticated L3 acknowledgement and a valid L3 snapshot. Reaching the duration or
+an external stop before those gates is a visible subscription/authentication or missing-snapshot
+failure; it never becomes a public-L2-only success. Token request, send, echo and unexpected
+authenticated transport failures are collapsed at the outer boundary to context-free errors so
+credential-bearing lower frames and locals cannot reach logs or tracebacks.
+
+The subscription acknowledgement's `depth` is checked against the request when Kraken includes it,
+but its documented omission is accepted. A supplied wrong depth still fails closed. Each L3 order
+timestamp remains mandatory; the message-level L3 timestamp is nullable because Kraken's current
+official client records that field as absent in captured payloads.
+
+Kraken's L2 and L3 checksums are validated after applying every update in wire-array order and
+truncating to subscribed depth. CRC32 always covers the best ten price levels, asks before bids.
+For L3 it covers every visible order in timestamp priority within a level, so it also checks queue
+state. This follows Kraken's official Go client, which updates an order timestamp on `modify` and
+then re-sorts that level. Equal timestamps retain local arrival order as a deterministic tie-break;
+a checksum mismatch still stops capture. Kraken provides no numeric L2 or L3 sequence ID, so
+DATA-1B invents none. The sequential `trade_id` is preserved only with its documented trade-feed
+meaning. Local `message_ordinal`, `data_index`, `side_index` and `wire_order` are labelled as local
+structure, not venue sequence.
+
+Kraken can encode decimal fields as JSON numbers. Direct DuckDB JSON extraction would therefore
+round or canonicalize some values. After validating each exact raw frame, the adapter writes one
+explicitly local normalized-frame record whose prices and quantities are the original JSON number
+lexemes represented as strings. This is the small research layer, not a second recorder or a new
+canonical/provenance contract. The shared DATA-1A Parquet writer still provides batching, ZSTD,
+atomic publication and crash behavior. The additive catalog views are:
+
+```text
+kraken_spot_trades
+kraken_spot_l2_events
+kraken_spot_l3_order_events
+kraken_spot_l3_order_lifecycle
+```
+
+The lifecycle is only what was observed inside subscribed depth. Snapshot orders may predate the
+session, `add` may mean a previously out-of-scope level became visible, out-of-depth truncation has
+no wire `delete`, and `delete` does not distinguish cancel from full fill. Local
+`scope_truncate` events are labelled `event_source=local_scope`; no strategy edge or complete order
+history is claimed.
+
+On 2026-08-31, a bounded phase 2 smoke completed two short authenticated BTC/EUR L3 sessions
+using two token requests and one controlled session restart. Each session received a positive
+acknowledgement, built a fresh snapshot before updates, validated CRC32, and validated
+post-snapshot updates. Exact raw-byte round-trip, Parquet/DuckDB readback, and credential-redaction
+checks passed. The public `trade` channel produced zero messages, so the smoke does not establish
+live trade coverage. The 48 `scope_truncate` events with `event_source=local_scope` were normal
+local depth-10 scope accounting, not corrupted frames, feed gaps, or payload truncation. The smoke
+did not establish live `modify` coverage, 24-hour reliability, hard-crash durability, a strategy
+edge, deployment readiness, or production suitability.
+
+Official contracts used for this slice:
+
+- https://docs.kraken.com/exchange/api-reference/spot-websocket-v2/level3
+- https://docs.kraken.com/exchange/api-reference/spot-websocket-v2/book
+- https://docs.kraken.com/exchange/api-reference/spot-websocket-v2/trade
+- https://docs.kraken.com/exchange/api-reference/spot-websocket-v2/status
+- https://docs.kraken.com/exchange/guides/websockets/l3-checksum-v2
+- https://docs.kraken.com/exchange/guides/websockets/book-checksum-v2
+- https://docs.kraken.com/exchange/guides/rest/authentication
+- https://docs.kraken.com/api-reference/trading/get-websockets-token
+- https://docs.kraken.com/exchange/guides/rest/api-keys
+- https://docs.kraken.com/exchange/changelog
+- https://github.com/krakenfx/api-go/blob/a8484bc5ec985fd5ce5bcc0580f659727d8f7603/pkg/book/level.go
+- https://github.com/krakenfx/api-go/blob/a8484bc5ec985fd5ce5bcc0580f659727d8f7603/pkg/book/checksum.go
+- https://github.com/krakenfx/kraken-cli/blob/aa56e5976be5afa6d8267eb6741f3a8844678fe9/crates/kraken-core/src/subscribe/message/level3.rs
+- https://github.com/krakenfx/kraken-cli/blob/aa56e5976be5afa6d8267eb6741f3a8844678fe9/crates/kraken-core/src/response/result.rs
 
 ## Self-collected dataset
 

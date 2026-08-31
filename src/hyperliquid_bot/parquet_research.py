@@ -22,6 +22,10 @@ RESEARCH_VIEW_NAMES: Final = (
     "sessions",
     "subscription_events",
     "data_quality_events",
+    "kraken_spot_trades",
+    "kraken_spot_l2_events",
+    "kraken_spot_l3_order_events",
+    "kraken_spot_l3_order_lifecycle",
 )
 
 _CREATE_SEGMENT_TABLE: Final = """
@@ -385,6 +389,164 @@ def _create_payload_views(connection: duckdb.DuckDBPyConnection) -> None:
         WHERE channel = 'data_quality'
           AND direction = 'local'
           AND frame_type = 'marker'
+        """
+    )
+    _create_kraken_payload_views(connection)
+
+
+def _create_kraken_payload_views(connection: duckdb.DuckDBPyConnection) -> None:
+    """Create DATA-1B views from explicitly local, string-preserving normalizations."""
+
+    connection.execute(
+        """
+        CREATE OR REPLACE VIEW kraken_spot_trades AS
+        SELECT
+            raw.session_id,
+            raw.message_ordinal AS normalization_message_ordinal,
+            CAST(
+                json_extract_string(decode(raw.payload_bytes), '$.raw_message_ordinal')
+                AS BIGINT
+            ) AS raw_message_ordinal,
+            source.received_utc_ns,
+            source.received_monotonic_ns,
+            source.frame_type,
+            source.payload_sha256,
+            json_extract_string(decode(raw.payload_bytes), '$.message_type') AS message_type,
+            CAST(json_extract_string(event.value, '$.event_index') AS BIGINT) AS event_index,
+            json_extract_string(event.value, '$.symbol') AS symbol,
+            json_extract_string(event.value, '$.side') AS side,
+            json_extract_string(event.value, '$.price') AS price,
+            json_extract_string(event.value, '$.qty') AS quantity,
+            json_extract_string(event.value, '$.order_type') AS order_type,
+            json_extract_string(event.value, '$.trade_id') AS trade_id,
+            json_extract_string(event.value, '$.timestamp') AS event_timestamp
+        FROM raw_records AS raw
+        JOIN raw_records AS source
+          ON source.session_id = raw.session_id
+         AND source.message_ordinal = CAST(
+             json_extract_string(decode(raw.payload_bytes), '$.raw_message_ordinal') AS BIGINT
+         )
+         AND source.venue = 'kraken'
+         AND source.product = 'BTC/EUR'
+         AND source.channel = 'trade'
+         AND source.direction = 'inbound',
+             LATERAL json_each(decode(raw.payload_bytes), '$.events') AS event
+        WHERE raw.venue = 'kraken'
+          AND raw.product = 'BTC/EUR'
+          AND raw.channel = 'normalized_trade'
+          AND raw.direction = 'local'
+          AND raw.frame_type = 'marker'
+        """
+    )
+    connection.execute(
+        """
+        CREATE OR REPLACE VIEW kraken_spot_l2_events AS
+        SELECT
+            raw.session_id,
+            raw.message_ordinal AS normalization_message_ordinal,
+            CAST(
+                json_extract_string(decode(raw.payload_bytes), '$.raw_message_ordinal')
+                AS BIGINT
+            ) AS raw_message_ordinal,
+            source.received_utc_ns,
+            source.received_monotonic_ns,
+            source.frame_type,
+            source.payload_sha256,
+            json_extract_string(decode(raw.payload_bytes), '$.message_type') AS message_type,
+            json_extract_string(decode(raw.payload_bytes), '$.symbol') AS symbol,
+            json_extract_string(decode(raw.payload_bytes), '$.message_timestamp')
+                AS message_timestamp,
+            json_extract_string(decode(raw.payload_bytes), '$.checksum') AS checksum,
+            CAST(json_extract_string(event.value, '$.data_index') AS BIGINT) AS data_index,
+            CAST(json_extract_string(event.value, '$.wire_order') AS BIGINT) AS wire_order,
+            json_extract_string(event.value, '$.side') AS side,
+            CAST(json_extract_string(event.value, '$.side_index') AS BIGINT) AS side_index,
+            json_extract_string(event.value, '$.action') AS action,
+            json_extract_string(event.value, '$.price') AS price,
+            json_extract_string(event.value, '$.qty') AS quantity
+        FROM raw_records AS raw
+        JOIN raw_records AS source
+          ON source.session_id = raw.session_id
+         AND source.message_ordinal = CAST(
+             json_extract_string(decode(raw.payload_bytes), '$.raw_message_ordinal') AS BIGINT
+         )
+         AND source.venue = 'kraken'
+         AND source.product = 'BTC/EUR'
+         AND source.channel = 'book'
+         AND source.direction = 'inbound',
+             LATERAL json_each(decode(raw.payload_bytes), '$.events') AS event
+        WHERE raw.venue = 'kraken'
+          AND raw.product = 'BTC/EUR'
+          AND raw.channel = 'normalized_book'
+          AND raw.direction = 'local'
+          AND raw.frame_type = 'marker'
+        """
+    )
+    connection.execute(
+        """
+        CREATE OR REPLACE VIEW kraken_spot_l3_order_events AS
+        SELECT
+            raw.session_id,
+            raw.message_ordinal AS normalization_message_ordinal,
+            CAST(
+                json_extract_string(decode(raw.payload_bytes), '$.raw_message_ordinal')
+                AS BIGINT
+            ) AS raw_message_ordinal,
+            source.received_utc_ns,
+            source.received_monotonic_ns,
+            source.frame_type,
+            source.payload_sha256,
+            json_extract_string(decode(raw.payload_bytes), '$.message_type') AS message_type,
+            json_extract_string(decode(raw.payload_bytes), '$.symbol') AS symbol,
+            json_extract_string(decode(raw.payload_bytes), '$.message_timestamp')
+                AS message_timestamp,
+            json_extract_string(decode(raw.payload_bytes), '$.checksum') AS checksum,
+            CAST(json_extract_string(event.value, '$.data_index') AS BIGINT) AS data_index,
+            CAST(json_extract_string(event.value, '$.wire_order') AS BIGINT) AS wire_order,
+            json_extract_string(event.value, '$.side') AS side,
+            CAST(json_extract_string(event.value, '$.side_index') AS BIGINT) AS side_index,
+            json_extract_string(event.value, '$.event') AS event,
+            json_extract_string(event.value, '$.event_source') AS event_source,
+            json_extract_string(event.value, '$.order_id') AS order_id,
+            json_extract_string(event.value, '$.limit_price') AS limit_price,
+            json_extract_string(event.value, '$.order_qty') AS order_quantity,
+            json_extract_string(event.value, '$.timestamp') AS order_timestamp
+        FROM raw_records AS raw
+        JOIN raw_records AS source
+          ON source.session_id = raw.session_id
+         AND source.message_ordinal = CAST(
+             json_extract_string(decode(raw.payload_bytes), '$.raw_message_ordinal') AS BIGINT
+         )
+         AND source.venue = 'kraken'
+         AND source.product = 'BTC/EUR'
+         AND source.channel = 'level3'
+         AND source.direction = 'inbound',
+             LATERAL json_each(decode(raw.payload_bytes), '$.events') AS event
+        WHERE raw.venue = 'kraken'
+          AND raw.product = 'BTC/EUR'
+          AND raw.channel = 'normalized_level3'
+          AND raw.direction = 'local'
+          AND raw.frame_type = 'marker'
+        """
+    )
+    connection.execute(
+        """
+        CREATE OR REPLACE VIEW kraken_spot_l3_order_lifecycle AS
+        SELECT
+            *,
+            row_number() OVER (
+                PARTITION BY session_id, order_id
+                ORDER BY raw_message_ordinal, data_index, wire_order NULLS LAST
+            ) AS observation_index,
+            lag(event) OVER (
+                PARTITION BY session_id, order_id
+                ORDER BY raw_message_ordinal, data_index, wire_order NULLS LAST
+            ) AS previous_event,
+            lag(order_quantity) OVER (
+                PARTITION BY session_id, order_id
+                ORDER BY raw_message_ordinal, data_index, wire_order NULLS LAST
+            ) AS previous_order_quantity
+        FROM kraken_spot_l3_order_events
         """
     )
 

@@ -38,6 +38,10 @@ RESEARCH_VIEW_NAMES: Final = (
     "binance_spot_bbo",
     "binance_spot_l2_events",
     "binance_usdm_context",
+    "deribit_btc_trades",
+    "deribit_btc_l2_events",
+    "deribit_btc_derivative_context",
+    "deribit_btc_option_sample",
 )
 
 _CREATE_SEGMENT_TABLE: Final = """
@@ -410,6 +414,7 @@ def _create_payload_views(connection: duckdb.DuckDBPyConnection) -> None:
     _create_bitvavo_payload_views(connection)
     _create_bitvavo_mdpro_payload_view(connection)
     _create_binance_payload_views(connection)
+    _create_deribit_payload_views(connection)
 
 
 def _create_kraken_payload_views(connection: duckdb.DuckDBPyConnection) -> None:
@@ -1225,6 +1230,217 @@ def _create_binance_payload_views(connection: duckdb.DuckDBPyConnection) -> None
           AND marker.channel = 'normalized_usdm_context'
           AND marker.direction = 'local'
           AND marker.frame_type = 'marker'
+        """
+    )
+
+
+def _create_deribit_payload_views(connection: duckdb.DuckDBPyConnection) -> None:
+    """Create DATA-1H views from exact source-linked local normalizations."""
+
+    connection.execute(
+        """
+        CREATE OR REPLACE VIEW deribit_btc_trades AS
+        SELECT
+            raw.session_id,
+            raw.message_ordinal AS normalization_message_ordinal,
+            CAST(
+                json_extract_string(decode(raw.payload_bytes), '$.raw_message_ordinal')
+                AS BIGINT
+            ) AS raw_message_ordinal,
+            source.received_utc_ns,
+            source.received_monotonic_ns,
+            source.frame_type,
+            source.payload_sha256,
+            json_extract_string(decode(raw.payload_bytes), '$.source_channel') AS source_channel,
+            CAST(json_extract_string(event.value, '$.wire_order') AS BIGINT) AS wire_order,
+            json_extract_string(event.value, '$.trade_seq') AS trade_seq,
+            json_extract_string(event.value, '$.trade_id') AS trade_id,
+            json_extract_string(event.value, '$.direction') AS direction,
+            json_extract_string(event.value, '$.price') AS price,
+            json_extract_string(event.value, '$.amount') AS amount,
+            json_extract_string(event.value, '$.event_time_ms') AS event_time_ms,
+            json_extract_string(event.value, '$.tick_direction') AS tick_direction,
+            json_extract_string(event.value, '$.index_price') AS index_price,
+            json_extract_string(event.value, '$.mark_price') AS mark_price,
+            json_extract_string(event.value, '$.contracts') AS contracts,
+            json_extract_string(event.value, '$.liquidation') AS liquidation,
+            json_extract_string(event.value, '$.iv') AS implied_volatility
+        FROM raw_records AS raw
+        JOIN raw_records AS source
+          ON source.session_id = raw.session_id
+         AND source.message_ordinal = CAST(
+             json_extract_string(decode(raw.payload_bytes), '$.raw_message_ordinal') AS BIGINT
+         )
+         AND source.venue = 'deribit'
+         AND source.product = 'BTC-DERIVATIVES'
+         AND source.channel = json_extract_string(
+             decode(raw.payload_bytes), '$.source_channel'
+         )
+         AND source.direction = 'inbound',
+             LATERAL json_each(decode(raw.payload_bytes), '$.events') AS event
+        WHERE raw.venue = 'deribit'
+          AND raw.product = 'BTC-DERIVATIVES'
+          AND raw.channel = 'normalized_trades'
+          AND raw.direction = 'local'
+          AND raw.frame_type = 'marker'
+        """
+    )
+    connection.execute(
+        """
+        CREATE OR REPLACE VIEW deribit_btc_l2_events AS
+        SELECT
+            raw.session_id,
+            raw.message_ordinal AS normalization_message_ordinal,
+            CAST(
+                json_extract_string(decode(raw.payload_bytes), '$.raw_message_ordinal')
+                AS BIGINT
+            ) AS raw_message_ordinal,
+            source.received_utc_ns,
+            source.received_monotonic_ns,
+            source.frame_type,
+            source.payload_sha256,
+            json_extract_string(decode(raw.payload_bytes), '$.source_channel') AS source_channel,
+            json_extract_string(decode(raw.payload_bytes), '$.instrument_name') AS instrument_name,
+            json_extract_string(decode(raw.payload_bytes), '$.message_type') AS message_type,
+            json_extract_string(decode(raw.payload_bytes), '$.event_time_ms') AS event_time_ms,
+            json_extract_string(decode(raw.payload_bytes), '$.change_id') AS change_id,
+            json_extract_string(decode(raw.payload_bytes), '$.prev_change_id') AS prev_change_id,
+            CAST(json_extract_string(event.value, '$.wire_order') AS BIGINT) AS wire_order,
+            json_extract_string(event.value, '$.side') AS side,
+            CAST(json_extract_string(event.value, '$.side_index') AS BIGINT) AS side_index,
+            json_extract_string(event.value, '$.action') AS action,
+            json_extract_string(event.value, '$.price') AS price,
+            json_extract_string(event.value, '$.quantity') AS quantity
+        FROM raw_records AS raw
+        JOIN raw_records AS source
+          ON source.session_id = raw.session_id
+         AND source.message_ordinal = CAST(
+             json_extract_string(decode(raw.payload_bytes), '$.raw_message_ordinal') AS BIGINT
+         )
+         AND source.venue = 'deribit'
+         AND source.product = 'BTC-DERIVATIVES'
+         AND source.channel = json_extract_string(
+             decode(raw.payload_bytes), '$.source_channel'
+         )
+         AND source.direction = 'inbound',
+             LATERAL json_each(decode(raw.payload_bytes), '$.events') AS event
+        WHERE raw.venue = 'deribit'
+          AND raw.product = 'BTC-DERIVATIVES'
+          AND raw.channel = 'normalized_book'
+          AND raw.direction = 'local'
+          AND raw.frame_type = 'marker'
+        """
+    )
+    connection.execute(
+        """
+        CREATE OR REPLACE VIEW deribit_btc_derivative_context AS
+        SELECT
+            raw.session_id,
+            raw.message_ordinal AS normalization_message_ordinal,
+            CAST(
+                json_extract_string(decode(raw.payload_bytes), '$.raw_message_ordinal')
+                AS BIGINT
+            ) AS raw_message_ordinal,
+            source.received_utc_ns,
+            source.received_monotonic_ns,
+            source.frame_type,
+            source.payload_sha256,
+            json_extract_string(decode(raw.payload_bytes), '$.source_channel') AS source_channel,
+            CASE raw.channel
+                WHEN 'normalized_derivative_ticker' THEN 'ticker'
+                WHEN 'normalized_index' THEN 'index_price'
+                WHEN 'normalized_dvol' THEN 'volatility_index'
+            END AS context_type,
+            json_extract_string(decode(raw.payload_bytes), '$.instrument_name') AS instrument_name,
+            json_extract_string(decode(raw.payload_bytes), '$.instrument_kind') AS instrument_kind,
+            json_extract_string(decode(raw.payload_bytes), '$.index_name') AS index_name,
+            json_extract_string(decode(raw.payload_bytes), '$.event_time_ms') AS event_time_ms,
+            json_extract_string(decode(raw.payload_bytes), '$.state') AS state,
+            json_extract_string(decode(raw.payload_bytes), '$.mark_price') AS mark_price,
+            json_extract_string(decode(raw.payload_bytes), '$.index_price') AS index_price,
+            json_extract_string(decode(raw.payload_bytes), '$.open_interest') AS open_interest,
+            json_extract_string(decode(raw.payload_bytes), '$.current_funding') AS current_funding,
+            json_extract_string(decode(raw.payload_bytes), '$.funding_8h') AS funding_8h,
+            json_extract_string(decode(raw.payload_bytes), '$.best_bid_price') AS best_bid_price,
+            json_extract_string(decode(raw.payload_bytes), '$.best_bid_amount') AS best_bid_amount,
+            json_extract_string(decode(raw.payload_bytes), '$.best_ask_price') AS best_ask_price,
+            json_extract_string(decode(raw.payload_bytes), '$.best_ask_amount') AS best_ask_amount,
+            json_extract_string(decode(raw.payload_bytes), '$.volatility') AS volatility
+        FROM raw_records AS raw
+        JOIN raw_records AS source
+          ON source.session_id = raw.session_id
+         AND source.message_ordinal = CAST(
+             json_extract_string(decode(raw.payload_bytes), '$.raw_message_ordinal') AS BIGINT
+         )
+         AND source.venue = 'deribit'
+         AND source.product = 'BTC-DERIVATIVES'
+         AND source.channel = json_extract_string(
+             decode(raw.payload_bytes), '$.source_channel'
+         )
+         AND source.direction = 'inbound'
+        WHERE raw.venue = 'deribit'
+          AND raw.product = 'BTC-DERIVATIVES'
+          AND raw.channel IN ('normalized_derivative_ticker', 'normalized_index', 'normalized_dvol')
+          AND raw.direction = 'local'
+          AND raw.frame_type = 'marker'
+        """
+    )
+    connection.execute(
+        """
+        CREATE OR REPLACE VIEW deribit_btc_option_sample AS
+        SELECT
+            raw.session_id,
+            raw.message_ordinal AS normalization_message_ordinal,
+            CAST(
+                json_extract_string(decode(raw.payload_bytes), '$.raw_message_ordinal')
+                AS BIGINT
+            ) AS raw_message_ordinal,
+            source.received_utc_ns,
+            source.received_monotonic_ns,
+            source.frame_type,
+            source.payload_sha256,
+            json_extract_string(decode(raw.payload_bytes), '$.source_channel') AS source_channel,
+            json_extract_string(decode(raw.payload_bytes), '$.instrument_name') AS instrument_name,
+            json_extract_string(decode(raw.payload_bytes), '$.expiry_code') AS expiry_code,
+            json_extract_string(decode(raw.payload_bytes), '$.strike') AS strike,
+            json_extract_string(decode(raw.payload_bytes), '$.option_type') AS option_type,
+            json_extract_string(decode(raw.payload_bytes), '$.event_time_ms') AS event_time_ms,
+            json_extract_string(decode(raw.payload_bytes), '$.state') AS state,
+            json_extract_string(decode(raw.payload_bytes), '$.underlying_index')
+                AS underlying_index,
+            json_extract_string(decode(raw.payload_bytes), '$.underlying_price')
+                AS underlying_price,
+            json_extract_string(decode(raw.payload_bytes), '$.mark_price') AS mark_price,
+            json_extract_string(decode(raw.payload_bytes), '$.mark_iv') AS mark_iv,
+            json_extract_string(decode(raw.payload_bytes), '$.bid_iv') AS bid_iv,
+            json_extract_string(decode(raw.payload_bytes), '$.ask_iv') AS ask_iv,
+            json_extract_string(decode(raw.payload_bytes), '$.best_bid_price') AS best_bid_price,
+            json_extract_string(decode(raw.payload_bytes), '$.best_bid_amount') AS best_bid_amount,
+            json_extract_string(decode(raw.payload_bytes), '$.best_ask_price') AS best_ask_price,
+            json_extract_string(decode(raw.payload_bytes), '$.best_ask_amount') AS best_ask_amount,
+            json_extract_string(decode(raw.payload_bytes), '$.open_interest') AS open_interest,
+            json_extract_string(decode(raw.payload_bytes), '$.greeks.delta') AS delta,
+            json_extract_string(decode(raw.payload_bytes), '$.greeks.gamma') AS gamma,
+            json_extract_string(decode(raw.payload_bytes), '$.greeks.vega') AS vega,
+            json_extract_string(decode(raw.payload_bytes), '$.greeks.theta') AS theta,
+            json_extract_string(decode(raw.payload_bytes), '$.greeks.rho') AS rho
+        FROM raw_records AS raw
+        JOIN raw_records AS source
+          ON source.session_id = raw.session_id
+         AND source.message_ordinal = CAST(
+             json_extract_string(decode(raw.payload_bytes), '$.raw_message_ordinal') AS BIGINT
+         )
+         AND source.venue = 'deribit'
+         AND source.product = 'BTC-DERIVATIVES'
+         AND source.channel = json_extract_string(
+             decode(raw.payload_bytes), '$.source_channel'
+         )
+         AND source.direction = 'inbound'
+        WHERE raw.venue = 'deribit'
+          AND raw.product = 'BTC-DERIVATIVES'
+          AND raw.channel = 'normalized_option_ticker'
+          AND raw.direction = 'local'
+          AND raw.frame_type = 'marker'
         """
     )
 

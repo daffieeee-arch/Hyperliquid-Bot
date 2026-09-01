@@ -760,6 +760,124 @@ Official contracts checked for this slice:
 - https://www.binance.com/en/terms
 - https://www.binance.com/en/legal/list-of-prohibited-countries
 
+### DATA-1H — Deribit BTC derivatives public research slice
+
+Phase 1 of DATA-1H under D10 — multi-venue market data and feed coverage is an entirely
+offline, credential-free adapter for a bounded BTC derivatives sample. Its corpus identity is
+`BTC-DERIVATIVES`: `BTC-PERPETUAL` full price-level L2 and public trades at the aggregated
+`100ms` interval, perpetual and one dated-future ticker, `btc_usd` index and volatility-index
+updates, and at most twelve explicitly selected option tickers. It does not authenticate, use an
+account, call an order or private method, or subscribe to an authorized `raw` channel.
+
+The option boundary is deliberately small. Given a strictly decoded point-in-time instrument
+catalogue and BTC index price, a pure selector chooses the nearest active dated future and, for
+the two nearest eligible option expiries, the three paired call/put strikes closest to the index.
+The resulting sample supports limited cross-strike and term comparisons; it is not a full smile
+or surface. The whole-chain `markprice.options.btc_usd` channel is excluded. Dynamic discovery
+would require one current full instrument-metadata response because the official API offers no
+strike-filter endpoint; no discovery request or live metadata is part of phase 1.
+
+Every injected inbound application frame is timestamped and copied to immutable bytes at callback
+entry before strict JSON decoding, then written through the shared DATA-1A raw-record and atomic
+ZSTD-Parquet boundary. One run-wide ordinal spans initial and reconnect sessions. The local
+normalization retains numeric JSON lexemes as strings and source-links every row to its exact raw
+session, ordinal, channel, receipt clocks, and SHA-256. The research catalogue adds four views:
+
+```text
+deribit_btc_trades
+deribit_btc_l2_events
+deribit_btc_derivative_context
+deribit_btc_option_sample
+```
+
+`book.BTC-PERPETUAL.100ms` is aggregated price-level L2, never L3/MBO. The first notification
+must be a fresh complete `snapshot` without `prev_change_id`; every later `change` must have
+`prev_change_id` equal to the preceding `change_id`. The adapter does not require consecutive
+IDs because the documented aggregation can make IDs jump. The standard JSON channel has no
+documented checksum, so none is invented. A second unsolicited snapshot, update before snapshot,
+unexplained link break, wrong instrument/channel, malformed action/schema, oversized or truncated
+frame, or writer failure stops fail-closed. A reconnect creates a new session and empty book state,
+records the unknowable interval as a gap, and requires a new snapshot.
+
+The public trade channel exposes `trade_seq` as the sequence within the instrument. The first
+observed trade in a session establishes a baseline; every later observed trade, within or across
+aggregated notifications, must advance by exactly one. A duplicate, reversal, or positive gap
+stops fail-closed, without a REST repair in this slice. This validates only continuity after that
+baseline and does not prove pre-subscription or complete historical trade coverage. Ticker, index,
+and volatility-index channels have no documented sequence or checksum. Option quotes and bid/ask
+IV can be absent or null; absence remains null and is never converted to zero. Perpetual
+`current_funding` and `funding_8h`, mark/index prices, open interest, option mark/bid/ask IV, and
+Greeks are source context rather than Gold features under D15 — reproducible Gold features and
+aggregates.
+
+Venue units remain explicit instead of being silently normalized: inverse BTC perpetual/future
+book and trade amounts and open interest are reported in USD amount units, inverse-option prices
+are in BTC, and option IV values retain Deribit's venue convention. A successful bounded session
+requires the exact subscription-set acknowledgement, one observation from every configured
+non-trade channel, a fresh perpetual-book snapshot, and at least one correctly linked later book
+change. Public trades may be zero and therefore are never inferred to have live coverage.
+
+No production transport factory is included in phase 1. On 2026-09-01 the repository owner
+reported that Deribit customer support had expressly confirmed personal use of the public API for
+this market-data analysis. That user-attested clarification is the permission boundary for one
+bounded public research smoke; no support screenshot, transcript, name, account detail, or other
+private correspondence is retained or published. It is not a general legal precedent, a trading
+eligibility claim, or permission to redistribute captured data. Live payloads remain temporary
+outside the repository and are not distributed. No Deribit endpoint was contacted for phase 1.
+
+On 2026-08-31 UTC (2026-09-01 Europe/Amsterdam), one credential-free public phase-2 smoke used
+exactly one instrument-discovery request, one index-price request, and one WebSocket session. The
+single batch subscription returned an exact positive acknowledgement for all eighteen configured
+channels. The session received a fresh complete `BTC-PERPETUAL` L2 snapshot, one later change with
+valid `prev_change_id` linkage, perpetual and dated-future tickers, the BTC index and volatility
+index, and all twelve selected option tickers. The public trade channel produced zero frames; this
+is allowed by the gate and does not prove live trade coverage.
+
+The run retained 45 contiguous raw/local ordinals, including 19 inbound application frames and
+55,746 inbound payload bytes. Exact payload SHA-256 readback succeeded. One atomically published
+ZSTD-Parquet part occupied 41,419 bytes with no partial, writer, truncation, schema, sequence,
+quality, reconnect, credential, or execution event. All four DuckDB views were queryable: the L2
+event view contained 1,973 price-level rows, derivative context contained four rows, the bounded
+option sample contained twelve rows, and the trade view contained zero rows. The temporary runner
+first stopped after capture because its outbound-scope validator mixed a text literal with bytes;
+that validator was corrected offline and the same already-published Parquet part was re-read. No
+second endpoint request or WebSocket capture was made.
+
+This short smoke proves only bounded public endpoint reachability, current schema compatibility,
+one exact subscription acknowledgement, one snapshot/change link, and the observed storage/query
+path. The selected JSON book has no documented checksum, so checksum evidence is not claimed. It
+does not prove complete or continuous trades, a full option surface, cross-channel simultaneity,
+24-hour reliability, reconnect recovery, hard-crash durability, strategy edge, deployment
+readiness, production suitability, redistribution rights, account or trading eligibility, or any
+execution capability.
+
+All fixtures are synthetic adaptations of the official schemas. Offline tests prove strict
+selection, parsing, exact-byte storage, snapshot/change linkage, reconnect isolation, fail-closed
+behavior, Parquet round-trip, and DuckDB queryability. They do not prove endpoint reachability,
+live trades or option coverage, full-surface quality, continuity across channels, 24-hour
+reliability, hard-crash durability, redistribution rights, a strategy edge, deployment readiness,
+production suitability, or any execution capability.
+
+Official sources checked for this slice:
+
+- https://docs.deribit.com/articles/json-rpc-overview
+- https://docs.deribit.com/articles/notifications
+- https://docs.deribit.com/subscriptions/orderbook/bookinstrument_nameinterval
+- https://docs.deribit.com/subscriptions/trades/tradesinstrument_nameinterval
+- https://docs.deribit.com/api-reference/market-data/public-get_last_trades_by_instrument
+- https://docs.deribit.com/articles/market-data-collection-best-practices
+- https://docs.deribit.com/subscriptions/market-data/tickerinstrument_nameinterval
+- https://docs.deribit.com/subscriptions/market-data/deribit_price_indexindex_name
+- https://docs.deribit.com/subscriptions/market-data/deribit_volatility_indexindex_name
+- https://docs.deribit.com/api-reference/market-data/public-get_instruments
+- https://docs.deribit.com/articles/options-data-collection-best-practices
+- https://docs.deribit.com/articles/api-usage-policy
+- https://docs.deribit.com/articles/rate-limits
+- https://support.deribit.com/hc/en-us/articles/25944487427741-Restricted-Jurisdictions
+- https://support.deribit.com/hc/en-us/articles/25944471089437-Terms-of-Service-DRB-Panama-Inc
+- https://support.deribit.com/hc/en-us/articles/25944532191645-Deribit-Exchange-Membership-Terms-Deribit-FZE
+
+
 ## Self-collected dataset
 
 After the local slice and definitive runtime ADR, realtime collectors should run on the approved 24/7 runtime and persist data to ClickHouse. This creates a dataset with the same receipt path and timestamp discipline the future live bot will use.

@@ -878,6 +878,156 @@ Official sources checked for this slice:
 - https://support.deribit.com/hc/en-us/articles/25944532191645-Deribit-Exchange-Membership-Terms-Deribit-FZE
 
 
+### DATA-1I — Polymarket BTC/crypto prediction-market research slice
+
+Phase 1 of DATA-1I under D10 — multi-venue market data and feed coverage is an entirely
+offline adapter for one bounded, explicitly mapped, active binary BTC/crypto condition under the
+local product label `BTC-CRYPTO-RESEARCH`. Its one canonical `condition_id` has exactly two
+outcomes and two unique outcome-token IDs. Each explicit outcome record binds its original label to
+its exact token string; token ordering is never used to infer a label. The supplied market metadata
+is sanitized local configuration, not an exact Gamma REST response and not a new canonical identity
+contract. No Gamma discovery,
+Data API, RTDS, account, wallet, signer, credential, order, relayer, bridge, on-chain transaction,
+execution path, default network factory, VPN, proxy, or geographic bypass is included.
+
+The dormant transport boundary is the documented public market socket at
+`wss://ws-subscriptions-clob.polymarket.com/ws/market`. A caller must inject the connection
+factory explicitly. One initial subscription frame requests both explicitly mapped outcome-token
+IDs together. There is no dynamic sibling subscription.
+It explicitly requests level `2` and leaves `custom_feature_enabled=false`, so standalone
+`best_bid_ask`, `new_market`, and `market_resolved` events are not requested. Level `2` is the
+documented default; the `book` payload is L2 because it contains aggregated price levels, not
+because any undocumented order-level meaning is inferred from that numeric setting.
+There is no documented subscription acknowledgement: a fresh full `book` for every configured
+token is the only subscription-evidence gate, while `PONG` proves only an application heartbeat.
+The client schedules text `PING` frames independently of market traffic at a configurable interval
+of at most ten seconds and fails closed when the corresponding `PONG` deadline expires.
+Every inbound application frame is timestamped and copied to immutable bytes at callback entry
+before strict JSON decoding, then written through the shared DATA-1A exact-raw and atomic
+ZSTD-Parquet boundary. One run-wide ordinal spans initial and reconnect sessions.
+
+The Market Channel transport envelope may be either one event object or a top-level array of
+event objects. Polymarket's official TypeScript and Rust clients both implement that object-or-array
+boundary even though the event documentation models each individual event as an object. DATA-1I
+stores either wire form exactly once. An array source record uses `channel=market_batch`; every
+derived row retains the same raw ordinal plus its top-level `frame_wire_order`. Initial arrays are
+non-empty, contain only `book` events, contain no repeated outcome asset, and are bounded by the
+two subscribed assets. The two snapshots may arrive in either array order or as separate frames;
+initialization completes only after both tokens have an independent fresh snapshot. After that gate,
+an array may contain the already supported event types in wire order and is bounded to 64 event
+objects.
+
+An entire frame is decoded and normalized against a copied session state before any derived row is
+written or the active state is replaced. Therefore an invalid later array element cannot leave a
+partial book mutation or normalized prefix. Empty or oversized arrays, non-object elements,
+unknown or duplicate assets, wrong market identity, mixed pre-snapshot event types, unsupported
+post-snapshot event types, and any invalid later element stop fail-closed. Unlike the official
+clients' tolerant dispatch behavior, this adapter never skips an invalid batch element. The shared
+append-only sink is not a multi-row transaction: a writer failure can still leave an already
+accepted derived prefix, after which the existing sticky sink boundary terminates capture.
+
+The active subscription accepts the documented `book`, `price_change`, `last_trade_price`, and
+`tick_size_change` objects and defensively validates the documented custom-feature envelopes if
+the venue sends one unexpectedly. A `book` is a full aggregated price-level L2 snapshot; a later `book`
+is a legitimate full resnapshot and replaces the token's local state. A `price_change` carries the
+new aggregate size for a level and size `"0"` deletes it. It is a condition-level frame: it must name
+the configured condition and may contain one or both mapped tokens. Every nested entry is strictly
+validated before any normalized row or active state is published, no sibling entry is filtered, and
+an unknown third token fails closed. Every referenced token requires its own fresh snapshot. A
+missing or null `price_change` timestamp or nested opaque hash normalizes to null; an empty nested
+`best_bid` or `best_ask` means that side was absent, while malformed non-empty values still fail.
+Reconnect discards all state, records the unknowable interval as a gap, and requires fresh snapshots.
+Wrong market/token identity, malformed or duplicate JSON, a
+duplicate snapshot level, non-string or non-finite decimals, an out-of-range price, negative
+size, non-text frame, oversized or truncated payload, or writer failure stops fail-closed.
+
+Polymarket documents no sequence ID, previous-sequence link, replay cursor, or checksum algorithm
+for this stream. The provided `hash` values remain opaque source fields and are not treated as a
+checksum or continuity proof. Silent loss therefore cannot be detected from the feed contract,
+and the order book is L2 rather than order-level L3/MBO. Wire ordering is retained, but BBO is not
+derived by trusting venue array sort direction. Outcome prices lie between zero and one and may be
+described as market-implied probabilities; they are not calibrated probabilities, executable
+prices, or a guarantee that two displayed outcome prices sum to one. The two outcome books remain
+independent; DATA-1I neither merges them nor synthesizes complement prices.
+
+Validated local normalizations add four research views:
+
+```text
+polymarket_crypto_market_metadata
+polymarket_crypto_l2_events
+polymarket_crypto_bbo
+polymarket_crypto_last_trade_prices
+```
+
+`last_trade_price` is a market execution update, not a complete trade tape. Zero such events does
+not mean zero trades and does not establish live trade coverage. Market metadata is queryable but
+explicitly records its sanitized injected origin. Tick-size changes are source-linked to their raw
+frame. Every other normalized market row joins back to the exact inbound frame and its callback
+clocks and SHA-256.
+
+No Polymarket endpoint is contacted in phase 1. The user confirmed that this is natural-person
+retail research, for internal personal use only, without entity use or redistribution; it is not the
+defined professional capital-markets-client use that requires a separate written data agreement.
+Current official documentation exposes credential-free public market data, but the Terms also
+restrict broad automated extraction. The number of bounded smoke attempts is an internal
+project-governance limit, not an official Polymarket rule. These authorized checks do not support
+continuous collection, redistribution, production use, or a general data-rights claim. Dutch trading
+restrictions remain separate: public research access is never permission to trade, and no account,
+wallet, execution, VPN, proxy, or geographic bypass is used.
+
+Phase 2 evidence remains append-only. The first bounded public WebSocket smoke remained `HOLD`:
+public transport and an array-form snapshot were observed, but no usable follow-up market update was
+observed in its bounded window. A later discovery-only preflight also remained `HOLD` at market
+selection after one public discovery request; it reached neither a REST book nor a WebSocket and
+therefore was not a live WebSocket smoke. Neither result is reclassified by later evidence.
+
+On 2026-09-01 UTC, one separately authorized credential-free Phase 2 smoke ran for approximately
+10.8 seconds; 120 seconds was only its configured hard upper bound. It used one public discovery
+request, one REST-book request for one selected outcome token, and one WebSocket connection with one
+initial subscription containing both explicitly mapped token IDs. The REST result proves only the
+checked token. Dual-token evidence came from the WebSocket: both fresh books arrived in one top-level
+snapshot array, one application PING/PONG exchange completed, and 33 later condition-level
+`price_change` frames each contained both mapped outcome tokens.
+
+The bounded run's storage and readback gates passed: exact raw-byte/SHA and contiguous-ordinal
+readback, one atomically published ZSTD-Parquet part with no partial, writer, or quality failure, and
+all four DuckDB views exposing both outcome labels and token IDs. The worktree and separate
+run-artifact scans reported no findings in the explicitly scanned corpus. This is a bounded Phase 2
+`PASS`, not an upgrade of either earlier `HOLD`.
+
+This approximately 10.8-second run proves only bounded public endpoint reachability, the observed
+dual-token snapshot, `price_change`, and heartbeat shapes, and the captured storage/query path. It does
+not prove long-duration reliability, reconnect behavior, gapless or complete event coverage,
+hard-crash durability, strategy edge, deployment readiness, production suitability, or trading
+availability. No account, wallet, credential, order, execution, VPN, proxy, or geographic bypass was
+used.
+
+Synthetic fixtures may prove strict offline parsing, callback-entry byte capture, decimal-string
+preservation, exact dual-token subscription, two-token snapshot/resnapshot and condition-level
+absolute-level update behavior,
+numeric price-level identity, source-BBO/local-book consistency, reconnect isolation,
+Parquet byte/SHA round-trip, and DuckDB queryability. They cannot prove endpoint reachability,
+gapless continuity, checksum integrity, live market or trade coverage, probability calibration,
+24-hour reliability, hard-crash durability, data rights, strategy edge, deployment readiness,
+production suitability, or any execution capability.
+
+Official sources checked for this slice:
+
+- https://docs.polymarket.com/market-data/overview
+- https://docs.polymarket.com/market-data/market-details
+- https://docs.polymarket.com/market-data/prices-order-books
+- https://docs.polymarket.com/market-data/realtime-data
+- https://docs.polymarket.com/asyncapi.json
+- https://docs.polymarket.com/api-reference/rate-limits
+- https://docs.polymarket.com/api-reference/geoblock
+- https://github.com/Polymarket/ts-sdk/blob/430076e749b04a9851cb8a3b9ba99fa0039e64f5/packages/client/src/websockets/clob/market.ts#L143-L150
+- https://github.com/Polymarket/rs-clob-client-v2/blob/222143d321eba97d5711a848265eb9aab3bc7ff4/src/clob/ws/types/response.rs#L487-L542
+- https://github.com/Polymarket/rs-clob-client-v2/blob/222143d321eba97d5711a848265eb9aab3bc7ff4/src/clob/ws/types/response.rs#L671-L749
+- https://help.polymarket.com/en/articles/13364254-does-polymarket-have-an-api
+- https://help.polymarket.com/en/articles/13364163-geographic-restrictions
+- https://polymarket.com/tos
+- https://institutional.polymarket.com/
+
 ## Self-collected dataset
 
 After the local slice and definitive runtime ADR, realtime collectors should run on the approved 24/7 runtime and persist data to ClickHouse. This creates a dataset with the same receipt path and timestamp discipline the future live bot will use.

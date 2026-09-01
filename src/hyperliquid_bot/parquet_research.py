@@ -42,6 +42,10 @@ RESEARCH_VIEW_NAMES: Final = (
     "deribit_btc_l2_events",
     "deribit_btc_derivative_context",
     "deribit_btc_option_sample",
+    "polymarket_crypto_market_metadata",
+    "polymarket_crypto_l2_events",
+    "polymarket_crypto_bbo",
+    "polymarket_crypto_last_trade_prices",
 )
 
 _CREATE_SEGMENT_TABLE: Final = """
@@ -415,6 +419,7 @@ def _create_payload_views(connection: duckdb.DuckDBPyConnection) -> None:
     _create_bitvavo_mdpro_payload_view(connection)
     _create_binance_payload_views(connection)
     _create_deribit_payload_views(connection)
+    _create_polymarket_payload_views(connection)
 
 
 def _create_kraken_payload_views(connection: duckdb.DuckDBPyConnection) -> None:
@@ -1439,6 +1444,288 @@ def _create_deribit_payload_views(connection: duckdb.DuckDBPyConnection) -> None
         WHERE raw.venue = 'deribit'
           AND raw.product = 'BTC-DERIVATIVES'
           AND raw.channel = 'normalized_option_ticker'
+          AND raw.direction = 'local'
+          AND raw.frame_type = 'marker'
+        """
+    )
+
+
+def _create_polymarket_payload_views(connection: duckdb.DuckDBPyConnection) -> None:
+    """Create bounded DATA-1I views without implying sequence or checksum coverage."""
+
+    connection.execute(
+        """
+        CREATE OR REPLACE VIEW polymarket_crypto_market_metadata AS
+        WITH metadata AS (
+            SELECT
+                raw.session_id,
+                raw.message_ordinal AS normalization_message_ordinal,
+                json_extract_string(decode(raw.payload_bytes), '$.record_type') AS record_type,
+                json_extract_string(decode(raw.payload_bytes), '$.source_channel')
+                    AS source_channel,
+                json_extract_string(decode(raw.payload_bytes), '$.source_frame_channel')
+                    AS source_frame_channel,
+                CAST(
+                    json_extract_string(decode(raw.payload_bytes), '$.frame_wire_order')
+                    AS BIGINT
+                ) AS frame_wire_order,
+                CAST(
+                    json_extract_string(decode(raw.payload_bytes), '$.raw_message_ordinal')
+                    AS BIGINT
+                ) AS raw_message_ordinal,
+                source.received_utc_ns,
+                source.received_monotonic_ns,
+                source.frame_type,
+                source.payload_sha256,
+                json_extract_string(decode(raw.payload_bytes), '$.event_id') AS event_id,
+                json_extract_string(decode(raw.payload_bytes), '$.market_id') AS market_id,
+                json_extract_string(decode(raw.payload_bytes), '$.market') AS market,
+                json_extract_string(decode(raw.payload_bytes), '$.slug') AS slug,
+                json_extract_string(decode(raw.payload_bytes), '$.question') AS question,
+                json_extract_string(decode(raw.payload_bytes), '$.end_time') AS end_time,
+                CAST(json_extract(decode(raw.payload_bytes), '$.active') AS BOOLEAN) AS active,
+                CAST(json_extract(decode(raw.payload_bytes), '$.closed') AS BOOLEAN) AS closed,
+                CAST(json_extract(decode(raw.payload_bytes), '$.enable_order_book') AS BOOLEAN)
+                    AS enable_order_book,
+                CAST(json_extract(decode(raw.payload_bytes), '$.accepting_orders') AS BOOLEAN)
+                    AS accepting_orders,
+                CAST(json_extract(decode(raw.payload_bytes), '$.neg_risk') AS BOOLEAN) AS neg_risk,
+                CAST(json_extract_string(decode(raw.payload_bytes), '$.outcome_index') AS BIGINT)
+                    AS outcome_index,
+                json_extract_string(decode(raw.payload_bytes), '$.outcome') AS outcome,
+                json_extract_string(decode(raw.payload_bytes), '$.asset_id') AS asset_id,
+                json_extract_string(decode(raw.payload_bytes), '$.tick_size') AS tick_size,
+                json_extract_string(decode(raw.payload_bytes), '$.min_order_size')
+                    AS min_order_size,
+                json_extract_string(decode(raw.payload_bytes), '$.old_tick_size')
+                    AS old_tick_size,
+                json_extract_string(decode(raw.payload_bytes), '$.new_tick_size')
+                    AS new_tick_size,
+                json_extract_string(decode(raw.payload_bytes), '$.timestamp_ms') AS timestamp_ms,
+                json_extract_string(decode(raw.payload_bytes), '$.metadata_origin')
+                    AS metadata_origin
+            FROM raw_records AS raw
+            LEFT JOIN raw_records AS source
+              ON source.session_id = raw.session_id
+             AND source.message_ordinal = CAST(
+                 json_extract_string(decode(raw.payload_bytes), '$.raw_message_ordinal') AS BIGINT
+             )
+             AND source.venue = 'polymarket'
+             AND source.product = 'BTC-CRYPTO-RESEARCH'
+             AND source.channel = json_extract_string(
+                 decode(raw.payload_bytes), '$.source_frame_channel'
+             )
+             AND source.direction = 'inbound'
+            WHERE raw.venue = 'polymarket'
+              AND raw.product = 'BTC-CRYPTO-RESEARCH'
+              AND raw.channel = 'normalized_market_metadata'
+              AND raw.direction = 'local'
+              AND raw.frame_type = 'marker'
+        )
+        SELECT *
+        FROM metadata
+        WHERE (
+            record_type = 'configured_market'
+            AND source_channel = 'local_config'
+            AND raw_message_ordinal IS NULL
+        ) OR (
+            record_type = 'tick_size_change'
+            AND source_channel = 'tick_size_change'
+            AND source_frame_channel IN ('tick_size_change', 'market_batch')
+            AND frame_wire_order IS NOT NULL
+            AND raw_message_ordinal IS NOT NULL
+            AND payload_sha256 IS NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE OR REPLACE VIEW polymarket_crypto_l2_events AS
+        WITH normalized AS MATERIALIZED (
+            SELECT
+                raw.session_id,
+                raw.message_ordinal AS normalization_message_ordinal,
+                json_transform(
+                    decode(raw.payload_bytes),
+                    '{
+                        "raw_message_ordinal":"BIGINT",
+                        "source_channel":"VARCHAR",
+                        "source_frame_channel":"VARCHAR",
+                        "frame_wire_order":"BIGINT",
+                        "market":"VARCHAR",
+                        "asset_id":"VARCHAR",
+                        "message_type":"VARCHAR",
+                        "timestamp_ms":"VARCHAR",
+                        "opaque_hash":"VARCHAR",
+                        "sequence_available":"BOOLEAN",
+                        "checksum_available":"BOOLEAN",
+                        "events":[{
+                            "wire_order":"BIGINT",
+                            "side":"VARCHAR",
+                            "side_index":"BIGINT",
+                            "action":"VARCHAR",
+                            "price":"VARCHAR",
+                            "size":"VARCHAR",
+                            "opaque_hash":"VARCHAR"
+                        }]
+                    }'
+                ) AS payload
+            FROM raw_records AS raw
+            WHERE raw.venue = 'polymarket'
+              AND raw.product = 'BTC-CRYPTO-RESEARCH'
+              AND raw.channel = 'normalized_l2'
+              AND raw.direction = 'local'
+              AND raw.frame_type = 'marker'
+              AND json_extract_string(
+                  decode(raw.payload_bytes), '$.source_channel'
+              ) IN ('book', 'price_change')
+        ),
+        expanded AS (
+            SELECT
+                normalized.session_id,
+                normalized.normalization_message_ordinal,
+                normalized.payload.raw_message_ordinal AS raw_message_ordinal,
+                normalized.payload.source_channel AS source_channel,
+                normalized.payload.source_frame_channel AS source_frame_channel,
+                normalized.payload.frame_wire_order AS frame_wire_order,
+                normalized.payload.market AS market,
+                normalized.payload.asset_id AS asset_id,
+                normalized.payload.message_type AS message_type,
+                normalized.payload.timestamp_ms AS timestamp_ms,
+                normalized.payload.opaque_hash AS opaque_hash,
+                normalized.payload.sequence_available AS sequence_available,
+                normalized.payload.checksum_available AS checksum_available,
+                unnest(normalized.payload.events) AS event
+            FROM normalized
+        )
+        SELECT
+            expanded.session_id,
+            expanded.normalization_message_ordinal,
+            expanded.raw_message_ordinal,
+            source.received_utc_ns,
+            source.received_monotonic_ns,
+            source.frame_type,
+            source.payload_sha256,
+            expanded.source_channel,
+            expanded.source_frame_channel,
+            expanded.frame_wire_order,
+            expanded.market,
+            expanded.asset_id,
+            expanded.message_type,
+            expanded.timestamp_ms,
+            expanded.opaque_hash,
+            expanded.sequence_available,
+            expanded.checksum_available,
+            expanded.event.wire_order,
+            expanded.event.side,
+            expanded.event.side_index,
+            expanded.event.action,
+            expanded.event.price,
+            expanded.event.size,
+            expanded.event.opaque_hash AS change_hash
+        FROM expanded
+        JOIN raw_records AS source
+          ON source.session_id = expanded.session_id
+         AND source.message_ordinal = expanded.raw_message_ordinal
+         AND source.venue = 'polymarket'
+         AND source.product = 'BTC-CRYPTO-RESEARCH'
+         AND source.channel = expanded.source_frame_channel
+         AND source.direction = 'inbound'
+        """
+    )
+    connection.execute(
+        """
+        CREATE OR REPLACE VIEW polymarket_crypto_bbo AS
+        SELECT
+            raw.session_id,
+            raw.message_ordinal AS normalization_message_ordinal,
+            CAST(
+                json_extract_string(decode(raw.payload_bytes), '$.raw_message_ordinal')
+                AS BIGINT
+            ) AS raw_message_ordinal,
+            source.received_utc_ns,
+            source.received_monotonic_ns,
+            source.frame_type,
+            source.payload_sha256,
+            json_extract_string(decode(raw.payload_bytes), '$.source_channel') AS source_channel,
+            json_extract_string(decode(raw.payload_bytes), '$.source_frame_channel')
+                AS source_frame_channel,
+            CAST(
+                json_extract_string(decode(raw.payload_bytes), '$.frame_wire_order') AS BIGINT
+            ) AS frame_wire_order,
+            json_extract_string(decode(raw.payload_bytes), '$.market') AS market,
+            json_extract_string(decode(raw.payload_bytes), '$.asset_id') AS asset_id,
+            json_extract_string(decode(raw.payload_bytes), '$.best_bid') AS best_bid,
+            json_extract_string(decode(raw.payload_bytes), '$.best_ask') AS best_ask,
+            json_extract_string(decode(raw.payload_bytes), '$.spread') AS spread,
+            json_extract_string(decode(raw.payload_bytes), '$.timestamp_ms') AS timestamp_ms
+        FROM raw_records AS raw
+        JOIN raw_records AS source
+          ON source.session_id = raw.session_id
+         AND source.message_ordinal = CAST(
+             json_extract_string(decode(raw.payload_bytes), '$.raw_message_ordinal') AS BIGINT
+         )
+         AND source.venue = 'polymarket'
+         AND source.product = 'BTC-CRYPTO-RESEARCH'
+         AND source.channel = json_extract_string(
+             decode(raw.payload_bytes), '$.source_frame_channel'
+         )
+         AND source.direction = 'inbound'
+        WHERE raw.venue = 'polymarket'
+          AND raw.product = 'BTC-CRYPTO-RESEARCH'
+          AND raw.channel = 'normalized_bbo'
+          AND raw.direction = 'local'
+          AND raw.frame_type = 'marker'
+          AND json_extract_string(
+              decode(raw.payload_bytes), '$.source_channel'
+          ) IN ('price_change', 'best_bid_ask')
+        """
+    )
+    connection.execute(
+        """
+        CREATE OR REPLACE VIEW polymarket_crypto_last_trade_prices AS
+        SELECT
+            raw.session_id,
+            raw.message_ordinal AS normalization_message_ordinal,
+            CAST(
+                json_extract_string(decode(raw.payload_bytes), '$.raw_message_ordinal')
+                AS BIGINT
+            ) AS raw_message_ordinal,
+            source.received_utc_ns,
+            source.received_monotonic_ns,
+            source.frame_type,
+            source.payload_sha256,
+            json_extract_string(decode(raw.payload_bytes), '$.source_frame_channel')
+                AS source_frame_channel,
+            CAST(
+                json_extract_string(decode(raw.payload_bytes), '$.frame_wire_order') AS BIGINT
+            ) AS frame_wire_order,
+            json_extract_string(decode(raw.payload_bytes), '$.market') AS market,
+            json_extract_string(decode(raw.payload_bytes), '$.asset_id') AS asset_id,
+            json_extract_string(decode(raw.payload_bytes), '$.price') AS price,
+            json_extract_string(decode(raw.payload_bytes), '$.size') AS size,
+            json_extract_string(decode(raw.payload_bytes), '$.fee_rate_bps') AS fee_rate_bps,
+            json_extract_string(decode(raw.payload_bytes), '$.side') AS side,
+            json_extract_string(decode(raw.payload_bytes), '$.timestamp_ms') AS timestamp_ms,
+            json_extract_string(decode(raw.payload_bytes), '$.transaction_hash')
+                AS transaction_hash,
+            CAST(json_extract(decode(raw.payload_bytes), '$.complete_trade_tape') AS BOOLEAN)
+                AS complete_trade_tape
+        FROM raw_records AS raw
+        JOIN raw_records AS source
+          ON source.session_id = raw.session_id
+         AND source.message_ordinal = CAST(
+             json_extract_string(decode(raw.payload_bytes), '$.raw_message_ordinal') AS BIGINT
+         )
+         AND source.venue = 'polymarket'
+         AND source.product = 'BTC-CRYPTO-RESEARCH'
+         AND source.channel = json_extract_string(
+             decode(raw.payload_bytes), '$.source_frame_channel'
+         )
+         AND source.direction = 'inbound'
+        WHERE raw.venue = 'polymarket'
+          AND raw.product = 'BTC-CRYPTO-RESEARCH'
+          AND raw.channel = 'normalized_last_trade_price'
           AND raw.direction = 'local'
           AND raw.frame_type = 'marker'
         """

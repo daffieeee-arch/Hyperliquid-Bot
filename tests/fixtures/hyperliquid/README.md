@@ -24,3 +24,6 @@ fixtures constructed from the official Hyperliquid
 - The four DATA-1A market-data fixtures use BTC and deliberately retain trailing decimal zeros so
   Parquet and DuckDB tests can detect accidental float conversion.
 - No account data, credential, private key or authenticated payload is present.
+- These frames are schema fixtures only. They cannot satisfy the multi-day
+  `hypothesis_research` candidate thresholds and must fail closed as
+  `not_enough_data`. They are not a retained market series.

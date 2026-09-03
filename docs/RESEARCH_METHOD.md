@@ -65,6 +65,23 @@ Default structure:
 
 The untouched OOS period must not be reused as a tuning dataset after a disappointing result.
 
+## Hyperliquid BTC-PERP retained-series gate
+
+Before any candidate baseline (momentum lookback or later basis) may run against Hyperliquid
+BTC-PERP, the PAPER entrypoint `python -m hyperliquid_bot.hypothesis_research` must pass the
+published DATA-1A sufficiency thresholds documented in [DATA.md](DATA.md) (72-hour receipt-clock
+span, trade/BBO/mid counts, and a 5% incomplete-hour cap).
+
+Fail closed with verdict `not_enough_data` when those gates fail. Do not fit lookbacks, do not
+score in-sample expectancy, and do not treat committed fixtures, D01 routing events or a 1–600s
+DATA-1A smoke as a hypothesis-usable series. Trading must retain a multi-day DATA-1A Parquet
+directory (schema version 1, UTC ns receipt clocks) outside git before Quant can move past this
+gate.
+
+A passing sanity report is not evidence of edge. The current momentum slot is a fixed-lookback
+scaffold that may only return `noise`. `edge` is reserved and is not assigned by this entrypoint.
+Binance DATA-1F remains optional and is required only if the reserved basis stub is selected.
+
 ## Reproducible execution
 
 Every experiment runs from:

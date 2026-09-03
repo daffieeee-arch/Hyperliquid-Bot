@@ -64,7 +64,8 @@ bounded Hyperliquid BTC-PERP replay + identified run configuration
   -> pre-trade risk decision and hard exposure cap
   -> PAPER execution with explicit fee/funding/spread/slippage assumptions
   -> orders, fills, position, PnL and reconstructable run artifacts
-  -> the same downstream strategy/risk/PAPER path on live public data
+  -> the same downstream strategy/risk/PAPER path on a bounded live-public
+     Hyperliquid BTC-PERP trade/BBO soak (not 24/7, not D22-B)
 ```
 
 This is an engineering route test, not evidence of alpha and not strategy promotion to `PAPER`.

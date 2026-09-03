@@ -143,6 +143,43 @@ jobs:
               raise SystemExit(f"D22-A was not an all-pass run: {nonpassing}")
           PY
 
+      - name: Run exactly 10 COURSE-1 live-public PAPER soak tests
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+          PYTHONPATH: src:.
+          TRADING_MODE: PAPER
+        run: |
+          set -euo pipefail
+          "${RUNNER_TEMP}/d01-venv/bin/python" - <<'PY'
+          import unittest
+
+          expected = 10
+          loader = unittest.TestLoader()
+          suite = loader.loadTestsFromName(
+              "vertical_slices.course1_live_public_paper.test_slice"
+          )
+          if loader.errors:
+              raise SystemExit("Soak collection errors:\n" + "\n".join(loader.errors))
+          collected = suite.countTestCases()
+          print(f"SOAK_COLLECTED={collected}")
+          if collected != expected:
+              raise SystemExit(f"expected {expected} soak tests, collected {collected}")
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          print(f"SOAK_EXECUTED={result.testsRun}")
+          nonpassing = {
+              "failures": len(result.failures),
+              "errors": len(result.errors),
+              "skipped": len(result.skipped),
+              "expected_failures": len(result.expectedFailures),
+              "unexpected_successes": len(result.unexpectedSuccesses),
+          }
+          print(f"SOAK_NONPASSING={nonpassing}")
+          if result.testsRun != expected:
+              raise SystemExit(f"expected {expected} executions, ran {result.testsRun}")
+          if not result.wasSuccessful() or any(nonpassing.values()):
+              raise SystemExit(f"Soak was not an all-pass run: {nonpassing}")
+          PY
+
       - name: Verify D01 publication and dependency closure
         env:
           PYTHONDONTWRITEBYTECODE: "1"

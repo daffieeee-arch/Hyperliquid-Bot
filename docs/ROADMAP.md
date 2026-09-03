@@ -12,7 +12,7 @@ Fases overlap by workstream. A strategy may be in PAPER while another remains in
 
 ## COURSE-1 — current active priority
 
-Status: **core fit, local D01 and bounded D22-A checkpoint complete; full D22 incomplete; provenance expansion deferred**
+Status: **core fit, local D01, bounded D22-A, and bounded live-public PAPER soak complete; full D22 incomplete; D22-B not implemented; provenance expansion deferred**
 
 The current implementation order is corrected before Phase 1A continues. Existing provenance and
 v3 work is preserved, but Phase 1A-3B1C-2, 3B1C-3, 3B1D and the provenance-complete form of 3B2
@@ -29,8 +29,10 @@ The active sequence is:
 3. **Complete:** prove a bounded project-owned local PAPER ledger/restart seam without claiming
    engine-state or venue-authoritative recovery; full D22 remains incomplete;
 4. if separately authorized, evaluate **D22-B — venue-authoritative crash-window
-   reconciliation**; it is not implemented by D22-A;
-5. run the same downstream strategy/risk/PAPER path on live public data without credentials;
+   reconciliation**; it is not implemented by D22-A or by the live-public PAPER soak;
+5. **Complete (bounded):** the same D01 strategy/risk/sandbox-PAPER path can be fed by a short
+   credentialless Hyperliquid public BTC-PERP trade/BBO stream. This is a duration-bounded soak,
+   not 24/7 collection, funding settlement, venue reconciliation, or promotion evidence;
 6. after the local route passes, record the definitive runtime ADR and only then perform the VPS
    migration.
 

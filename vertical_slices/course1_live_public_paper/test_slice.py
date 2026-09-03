@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import tempfile
@@ -126,6 +127,7 @@ class FakePublicSocket:
 
     async def recv(self) -> str:
         if not self.inbound:
+            await asyncio.sleep(3600)
             raise PublicStreamError("Fake public socket has no further frames.")
         return self.inbound.pop(0)
 
@@ -365,7 +367,7 @@ class SoakIntegratedTests(unittest.TestCase):
         failed_dir = Path(self.temporary.name) / "stale"
         with (
             patch.dict(os.environ, {"TRADING_MODE": "PAPER"}, clear=False),
-            self.assertRaisesRegex(ValueError, "stale"),
+            self.assertRaisesRegex(PublicStreamError, "no accepted public BTC trades"),
         ):
             run_soak(
                 run_id="stale-trade",

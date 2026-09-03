@@ -45,8 +45,13 @@ public wire-format frames through the same decoder and PAPER driver. A live
 - The only execution factory is `SandboxLiveExecClientFactory`. There is no
   Hyperliquid venue execution factory, signer, wallet, or authenticated client.
 - Trade ticks re-enter the existing D01/D41 stale, future, gap, and precision
-  adapter. BBO prices must sit on the `0.1` increment and must not cross.
-- Market data before both public subscription acknowledgements is rejected.
+  adapter. Per-event stale, future, or off-grid public ticks are skipped; a soak
+  with zero accepted trades fails closed. BBO prices must sit on the `0.1`
+  increment and must not cross.
+- A channel's data may arrive before the other channel is acknowledged; those
+  frames are buffered and only enter the D01 path after both public ACKs.
+  Data for a channel before its own ACK is rejected. The historical
+  Hyperliquid greeting is accepted if present and is not required.
 - Unexpected channels, HIP-3 coins, duplicate trade source IDs, and testnet
   sockets are out of scope and fail closed.
 - Every run directory is create-only.

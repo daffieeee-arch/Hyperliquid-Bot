@@ -42,6 +42,7 @@ from fit_gates.d41_nautilus.fit_gate import (
 from nautilus_trader.adapters.hyperliquid import HYPERLIQUID
 from nautilus_trader.adapters.sandbox.factory import SandboxLiveExecClientFactory
 from nautilus_trader.live.node import TradingNode
+from nautilus_trader.model.enums import OrderSide
 
 from hyperliquid_bot.hyperliquid_trades import (
     decode_hyperliquid_trades_frame,
@@ -53,7 +54,6 @@ from vertical_slices.d01_btc_perp.slice import (
     DEFAULT_COSTS,
     PAPER_SECONDS,
     D01SmokeStrategy,
-    RiskRejectedError,
     SliceConfig,
     _business,
     _derived_internal_paper_mode,
@@ -61,6 +61,7 @@ from vertical_slices.d01_btc_perp.slice import (
     _paper_node_config,
     _reports,
     assert_local_boundary,
+    evaluate_order_risk,
 )
 
 SOAK_SCHEMA: Final = "course1-live-public-paper-v1"
@@ -398,21 +399,16 @@ def _inbound_text(message: str | bytes) -> str:
 
 
 async def _collect_and_drive(
+    node: TradingNode,
+    strategy: D01SmokeStrategy,
     *,
     seconds: int,
-    identity: str,
     config: SliceConfig,
     connection_factory: ConnectionFactory,
     utc_now: Clock,
     monotonic_ns: MonotonicClock,
-) -> tuple[D01SmokeStrategy, dict[str, object], dict[str, object]]:
-    strategy = _make_strategy(identity=identity, config=config, subscribe_market_data=False)
+) -> tuple[dict[str, object], dict[str, object]]:
     loop = asyncio.get_running_loop()
-    node = TradingNode(config=_paper_node_config(config), loop=loop)
-    node.kernel.cache.add_instrument(build_nautilus_instrument())
-    node.trader.add_strategy(strategy)
-    node.add_exec_client_factory(HYPERLIQUID, SandboxLiveExecClientFactory)
-    node.build()
     trade_topic = f"data.trades.{HYPERLIQUID}.{INSTRUMENT_ID.symbol.value}"
     subscribed = False
     run_task = asyncio.create_task(node.run_async(), name="course1-live-public-paper-node")
@@ -421,6 +417,8 @@ async def _collect_and_drive(
     trade_records: list[dict[str, object]] = []
     bbo_records: list[dict[str, object]] = []
     rejected = 0
+    adapter_rejected = 0
+    preflight_done = False
     prior_ts_init: int | None = None
     deadline = loop.time() + seconds
     status = "BOUNDED_TIMEOUT"
@@ -438,16 +436,10 @@ async def _collect_and_drive(
         subscribed = True
 
         async with connection_factory() as connection:
-            greeting = _inbound_text(
-                await asyncio.wait_for(connection.recv(), timeout=RECEIVE_IDLE_SECONDS)
-            )
-            if greeting != GREETING:
-                raise PublicStreamError(
-                    "Public socket did not start with the Hyperliquid greeting."
-                )
             await connection.send(TRADES_SUBSCRIBE)
             await connection.send(BBO_SUBSCRIBE)
             next_heartbeat = loop.time() + HEARTBEAT_INTERVAL_SECONDS
+            buffered_frames: list[dict[object, object]] = []
             while loop.time() < deadline and not strategy.is_complete:
                 timeout = min(
                     RECEIVE_IDLE_SECONDS,
@@ -467,13 +459,11 @@ async def _collect_and_drive(
                         "Public stream was idle longer than the soak receive bound."
                     ) from None
                 if raw == GREETING:
-                    raise PublicStreamError("Public stream repeated the greeting mid-session.")
+                    continue
                 document = _decode_json_object(raw)
                 channel = document.get("channel")
                 if type(channel) is not str or channel not in ALLOWED_CHANNELS:
                     raise PublicStreamError("Public stream emitted a channel outside trades/BBO.")
-                received_time = utc_now()
-                received_monotonic = monotonic_ns()
                 if channel == "pong":
                     continue
                 if channel == "subscriptionResponse":
@@ -482,54 +472,112 @@ async def _collect_and_drive(
                         raise PublicStreamError("Public stream repeated a subscription ACK.")
                     accepted.append(acknowledged)
                     continue
-                if frozenset(accepted) != EXPECTED_SUBSCRIPTIONS:
+                if channel not in accepted:
                     raise PublicStreamError(
-                        "Public market data arrived before both trades and BBO were acknowledged."
+                        "Public market data arrived before its subscription was acknowledged."
                     )
-                if channel == "bbo":
-                    quote = decode_public_bbo_frame(
-                        document,
-                        received_time=received_time,
-                        received_monotonic_ns=received_monotonic,
-                    )
-                    bbo_records.append(quote.to_record())
+                if frozenset(accepted) != EXPECTED_SUBSCRIPTIONS:
+                    buffered_frames.append(document)
                     continue
-                trades = decode_hyperliquid_trades_frame(document)
+                frames = buffered_frames
+                buffered_frames = []
+                frames.append(document)
                 instrument = existing_btc_contract()
-                for trade in trades:
-                    envelope = normalize_hyperliquid_trade(
-                        trade,
-                        instrument_registry=(instrument,),
-                        received_time=received_time,
-                        received_monotonic_ns=received_monotonic,
-                        collector_version=COLLECTOR_VERSION,
-                        collector_commit="unspecified-soak-runtime",
-                        is_gap=False,
-                    )
-                    if envelope.source_event_id in source_event_ids:
-                        raise PublicStreamError("Public stream reused a trade source-event ID.")
-                    tick = envelope_to_trade_tick(envelope, prior_ts_init=prior_ts_init)
-                    prior_ts_init = tick.ts_init
-                    source_event_ids.add(envelope.source_event_id)
-                    trade_records.append(
-                        {
-                            "price": str(tick.price),
-                            "size": str(tick.size),
-                            "aggressor_side": tick.aggressor_side.name,
-                            "source_event_id": envelope.source_event_id,
-                            "ts_event": tick.ts_event,
-                            "ts_init": tick.ts_init,
-                        }
-                    )
-                    try:
+                for document in frames:
+                    channel = document.get("channel")
+                    received_time = utc_now()
+                    received_monotonic = monotonic_ns()
+                    if channel == "bbo":
+                        try:
+                            quote = decode_public_bbo_frame(
+                                document,
+                                received_time=received_time,
+                                received_monotonic_ns=received_monotonic,
+                            )
+                        except ValueError as exc:
+                            detail = str(exc)
+                            if any(
+                                token in detail for token in ("stale", "future-dated", "increment")
+                            ):
+                                adapter_rejected += 1
+                                continue
+                            raise
+                        bbo_records.append(quote.to_record())
+                        continue
+                    trades = decode_hyperliquid_trades_frame(document)
+                    for trade in trades:
+                        envelope = normalize_hyperliquid_trade(
+                            trade,
+                            instrument_registry=(instrument,),
+                            received_time=received_time,
+                            received_monotonic_ns=received_monotonic,
+                            collector_version=COLLECTOR_VERSION,
+                            collector_commit="unspecified-soak-runtime",
+                            is_gap=False,
+                        )
+                        if envelope.source_event_id in source_event_ids:
+                            raise PublicStreamError("Public stream reused a trade source-event ID.")
+                        try:
+                            tick = envelope_to_trade_tick(envelope, prior_ts_init=prior_ts_init)
+                        except ValueError as exc:
+                            detail = str(exc)
+                            if any(
+                                token in detail
+                                for token in ("stale", "future-dated", "increment", "gap")
+                            ):
+                                adapter_rejected += 1
+                                continue
+                            raise
+                        prior_ts_init = tick.ts_init
+                        source_event_ids.add(envelope.source_event_id)
+                        trade_records.append(
+                            {
+                                "price": str(tick.price),
+                                "size": str(tick.size),
+                                "aggressor_side": tick.aggressor_side.name,
+                                "source_event_id": envelope.source_event_id,
+                                "ts_event": tick.ts_event,
+                                "ts_init": tick.ts_init,
+                            }
+                        )
+                        if not preflight_done:
+                            preflight_done = True
+                            current_price = Decimal(str(tick.price))
+                            for side in (OrderSide.BUY, OrderSide.SELL):
+                                preview = evaluate_order_risk(
+                                    side=side,
+                                    quantity=config.order_quantity_btc,
+                                    price=current_price,
+                                    reduce_only=False,
+                                    current_position=Decimal(0),
+                                    config=config,
+                                )
+                                if preview["approved"] is not True:
+                                    risk_error = (
+                                        "D01 preflight risk rejected the fixed smoke size: "
+                                        f"{preview}"
+                                    )
+                                    status = "RISK_REJECTED"
+                                    rejected += 1
+                                    break
+                            if status == "RISK_REJECTED":
+                                break
+                        if status == "RISK_REJECTED":
+                            break
                         node.kernel.data_engine.process(tick)
-                    except RiskRejectedError as exc:
-                        risk_error = str(exc)
-                        status = "RISK_REJECTED"
-                        rejected += 1
+                        for _ in range(4):
+                            await asyncio.sleep(0)
+                        if (
+                            strategy.risk_decisions
+                            and strategy.risk_decisions[-1].get("approved") is not True
+                        ):
+                            decision = strategy.risk_decisions[-1]
+                            risk_error = f"D01 risk rejected {decision.get('reasons')}"
+                            status = "RISK_REJECTED"
+                            rejected += 1
+                            break
+                    if status == "RISK_REJECTED":
                         break
-                    for _ in range(4):
-                        await asyncio.sleep(0)
                 if status == "RISK_REJECTED":
                     break
             if strategy.is_complete:
@@ -554,6 +602,7 @@ async def _collect_and_drive(
             "trades": trade_records,
             "bbo": bbo_records,
             "risk_rejections": rejected,
+            "adapter_rejected_count": adapter_rejected,
             "risk_error": risk_error,
             "status": status,
         }
@@ -561,21 +610,13 @@ async def _collect_and_drive(
             raise PublicStreamError("Soak received no accepted public BTC trades.")
         if not bbo_records:
             raise PublicStreamError("Soak received no accepted public BTC BBO quotes.")
-        return strategy, reports, stream
+        return reports, stream
     finally:
         if subscribed:
             node.kernel.msgbus.unsubscribe(trade_topic, strategy.handle_trade_tick)
         if node.is_running():
             await node.stop_async()
-        if not run_task.done():
-            run_task.cancel()
-            try:
-                await run_task
-            except asyncio.CancelledError:
-                pass
-        else:
-            await run_task
-        node.dispose()
+        await run_task
 
 
 def _mark_price(
@@ -920,20 +961,33 @@ def run_soak(
     paper_path = artifact_dir / "paper.json"
     completion_path = artifact_dir / "completed-run.json"
     write_json(claim_path, claim)
-    with _derived_internal_paper_mode():
-        strategy, reports, stream = asyncio.run(
-            asyncio.wait_for(
-                _collect_and_drive(
-                    seconds=seconds,
-                    identity=identity,
-                    config=config,
-                    connection_factory=factory,
-                    utc_now=utc_now,
-                    monotonic_ns=monotonic_ns,
-                ),
-                timeout=seconds + PAPER_SECONDS,
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    strategy = _make_strategy(identity=identity, config=config, subscribe_market_data=False)
+    node = TradingNode(config=_paper_node_config(config), loop=loop)
+    node.kernel.cache.add_instrument(build_nautilus_instrument())
+    node.trader.add_strategy(strategy)
+    node.add_exec_client_factory(HYPERLIQUID, SandboxLiveExecClientFactory)
+    node.build()
+    try:
+        with _derived_internal_paper_mode():
+            reports, stream = loop.run_until_complete(
+                asyncio.wait_for(
+                    _collect_and_drive(
+                        node,
+                        strategy,
+                        seconds=seconds,
+                        config=config,
+                        connection_factory=factory,
+                        utc_now=utc_now,
+                        monotonic_ns=monotonic_ns,
+                    ),
+                    timeout=seconds + PAPER_SECONDS,
+                )
             )
-        )
+    finally:
+        node.dispose()
+        asyncio.set_event_loop(None)
     paper = _paper_payload(
         identity=identity,
         strategy=strategy,

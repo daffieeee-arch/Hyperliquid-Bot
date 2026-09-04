@@ -316,6 +316,60 @@ gap marker; a later snapshot restores current L2 state but cannot reconstruct mi
 queue history. A successful smoke or retained run is evidence only for this local public route, not
 24-hour feed reliability, 24/7 operations, or a trading edge.
 
+### DATA-1A retained-series hypothesis entrypoint
+
+`python -m hyperliquid_bot.hypothesis_research` is a PAPER-only Quant entrypoint over a
+**retained** DATA-1A Hyperliquid BTC-PERP series. It does not capture data, thaw v3 coverage,
+add venues, or claim a trading edge. Capture duration (1s through 7 days) stays on the DATA-1A
+writer.
+
+Input contract for Trading (retain outside git; do not commit Parquet or DuckDB):
+
+- Preferred reconstructable layout from `data1a_run_paths`:
+  `<artifact-root>/data-1a/hyperliquid/BTC-PERP/<run_id>/raw/part-*.parquet`,
+  `research.duckdb`, and `capture-claim.json` with `retained: true`.
+- Hidden `.*.partial` files are ignored.
+- Flat `raw_research` schema version 1: `venue='hyperliquid'`, `product='BTC-PERP'`, UTC
+  nanosecond receipt clocks (`received_utc_ns` / `received_monotonic_ns`).
+- Market channels `trades`, `bbo`, `l2Book`, `activeAssetCtx`, plus local `session`,
+  `subscription` / `subscriptionResponse` and `data_quality` markers (`gap_detected` on
+  disconnect).
+- Rebuild the existing DuckDB catalog with `create_research_catalog` and query the DATA-1A
+  views `raw_records`, `trades`, `bbo`, `l2`, `derivative_context`, `sessions`,
+  `subscription_events` and `data_quality_events`. Prices and mids stay text.
+
+```bash
+PYTHONPATH=src uv run --frozen python -m hyperliquid_bot.hypothesis_research \
+  --artifact-root /path/to/reconstructable \
+  --run-id 20260903t235000z \
+  --baseline momentum
+```
+
+Ad-hoc `--parquet-dir` / `--database` remains available for disposable tests. Do not mix it
+with `--artifact-root` / `--run-id`.
+
+`--baseline basis` is a reserved Hyperliquid-mark-versus-Binance stub. It fails closed unless a
+DATA-1F Parquet directory is passed as `--binance-parquet-dir`, and even then it does not fit a
+basis model.
+
+A candidate baseline slot runs only when every published threshold is met. Otherwise the
+written verdict is `not_enough_data` and no lookback or fit is attempted:
+
+| Gate | Candidate constant |
+| --- | --- |
+| Minimum receipt-clock span | 72 hours |
+| Minimum `trades` rows | 10_000 |
+| Minimum `bbo` rows | 5_000 |
+| Minimum non-empty `derivative_context.mid_price` rows | 500 |
+| Maximum incomplete UTC-hour fraction | 0.05 |
+
+An incomplete hour is a UTC hour in `[min(received_utc_ns), max(received_utc_ns)]` that lacks
+both at least one trade and at least one BBO. Schema versions other than 1 also fail closed.
+Committed fixtures under `tests/fixtures/hyperliquid/`, D01's 27-event PAPER routing proof
+(funding=0) and any 1–600s smoke are **not** hypothesis-usable. When thresholds pass, the
+momentum slot is a fixed 1-hour mid/trade-return scaffold that may only emit `noise`. This
+module never assigns `edge` and never prints profitability.
+
 The immediate next gate under D10 — multi-venue market data and feed coverage is DATA-1B — Kraken
 authenticated L3 capture, because true order-level history cannot be reconstructed later. Any
 future Kraken or Bitvavo credential must be a separate minimal read-only data key with no trading,

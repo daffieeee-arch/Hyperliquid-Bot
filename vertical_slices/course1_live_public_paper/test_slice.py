@@ -278,7 +278,12 @@ class SoakIntegratedTests(unittest.TestCase):
         self.assertEqual(
             sorted(path.name for path in self.run_dir.iterdir()),
             [
+                "capture-health.json",
                 "completed-run.json",
+                "fills.json",
+                "orders.json",
+                "paper-pnl.json",
+                "paper-position.json",
                 "paper.json",
                 "public-stream.json",
                 "run-claim.json",
@@ -305,6 +310,14 @@ class SoakIntegratedTests(unittest.TestCase):
         )
         overlay = paper["cost_overlay"]
         self.assertEqual(overlay["funding_payment_usdc"], "0")
+        pnl = json.loads((self.run_dir / "paper-pnl.json").read_text(encoding="utf-8"))
+        self.assertEqual(pnl["net_pnl_usdc_assumed"], overlay["net_pnl_usdc_assumed"])
+        self.assertTrue(pnl["assumed"])
+        self.assertFalse(pnl["venue_pnl"])
+        self.assertEqual(pnl["funding_payment_usdc"], "0")
+        health = json.loads((self.run_dir / "capture-health.json").read_text(encoding="utf-8"))
+        self.assertFalse(health["twenty_four_seven"])
+        self.assertTrue(health["credentialless"])
         blob = json.dumps(paper) + json.dumps(
             json.loads((self.run_dir / "public-stream.json").read_text(encoding="utf-8"))
         )

@@ -1,0 +1,9 @@
+{
+  "d22b_venue_authoritative_reconciliation": false,
+  "mode": "PAPER",
+  "resume_policy": "never resume or overwrite an existing soak run directory",
+  "run_id": "sample-run",
+  "schema": "course1-live-public-paper-v1",
+  "state": "STARTED_FAIL_CLOSED",
+  "twenty_four_seven": false
+}

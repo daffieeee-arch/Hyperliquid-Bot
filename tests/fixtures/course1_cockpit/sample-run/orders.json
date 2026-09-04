@@ -1,0 +1,13 @@
+{
+  "kind": "orders",
+  "limitations": [
+    "These are sandbox PAPER intents, not Hyperliquid venue orders.",
+    "Signing and LIVE submission are out of scope."
+  ],
+  "mode": "PAPER",
+  "order_count": 0,
+  "orders": [],
+  "path_contract": "course1-live-public-paper-cockpit-v1",
+  "schema": "course1-cockpit-paper-artifacts-v1",
+  "venue_orders_submitted": false
+}

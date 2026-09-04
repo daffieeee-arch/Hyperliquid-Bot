@@ -55,6 +55,10 @@ public wire-format frames through the same decoder and PAPER driver. A live
 - Unexpected channels, HIP-3 coins, duplicate trade source IDs, and testnet
   sockets are out of scope and fail closed.
 - Every run directory is create-only.
+- After `paper.json` is written, the soak also writes create-only Cockpit projections:
+  `paper-position.json`, `paper-pnl.json`, `orders.json`, `fills.json`, and
+  `capture-health.json`. Those files copy assumed overlay economics and observed stream
+  health. They do not invent PnL or claim 24/7 service.
 
 ## Outcomes
 
@@ -108,6 +112,29 @@ test ! -e "$SOAK_RUN_DIR"
 ```
 
 Do not commit live capture artifacts.
+
+## Cockpit path contract
+
+Cockpit should later read create-only files from:
+
+```text
+<artifact-root>/course1/live-public-paper/<run_id>/
+  run-claim.json
+  paper-position.json
+  paper-pnl.json
+  orders.json
+  fills.json
+  capture-health.json
+```
+
+`paper.json`, `public-stream.json` and `completed-run.json` remain the soak verification
+bundle. `paper-pnl.json` is assumed overlay economics (`funding_payment_usdc` is `0`),
+not venue PnL. A synthetic empty-state sample lives at
+`tests/fixtures/course1_cockpit/sample-run/`.
+
+The helper `course1_cockpit_paths(artifact_root, run_id)` is the executable contract.
+`--artifact-dir` may still point at any create-only directory; the helper is how Cockpit
+should construct the recommended path.
 
 ## Honest remaining COURSE-1 work
 

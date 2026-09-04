@@ -1,0 +1,24 @@
+{
+  "execution": {
+    "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+    "mode": "PAPER",
+    "venue_orders_submitted": false
+  },
+  "business": {
+    "fills": [],
+    "final_position_quantity": "0.00000",
+    "order_intents": []
+  },
+  "cost_overlay": {
+    "ending_cash_usdc_assumed": "100",
+    "ending_equity_usdc_assumed": "100",
+    "fee_cost_usdc": "0",
+    "final_position_btc": "0.00000",
+    "funding_payment_usdc": "0",
+    "half_spread_cost_usdc": "0",
+    "mark_price": "78047.0",
+    "net_pnl_usdc_assumed": "0",
+    "slippage_cost_usdc": "0",
+    "starting_cash_usdc_assumed": "100"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "business_final_position_quantity": "0.00000",
+  "final_position_btc": "0.00000",
+  "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+  "kind": "paper-position",
+  "limitations": [
+    "Sandbox PAPER position only; no venue account truth.",
+    "D22-B venue-authoritative reconciliation is not implemented.",
+    "This is not 24/7 service evidence."
+  ],
+  "mode": "PAPER",
+  "path_contract": "course1-live-public-paper-cockpit-v1",
+  "schema": "course1-cockpit-paper-artifacts-v1",
+  "twenty_four_seven": false,
+  "venue_authoritative": false
+}

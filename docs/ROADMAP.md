@@ -31,8 +31,11 @@ The active sequence is:
 4. if separately authorized, evaluate **D22-B — venue-authoritative crash-window
    reconciliation**; it is not implemented by D22-A or by the live-public PAPER soak;
 5. **Complete (bounded):** the same D01 strategy/risk/sandbox-PAPER path can be fed by a short
-   credentialless Hyperliquid public BTC-PERP trade/BBO stream. This is a duration-bounded soak,
-   not 24/7 collection, funding settlement, venue reconciliation, or promotion evidence;
+   credentialless Hyperliquid public BTC-PERP trade/BBO stream and now writes create-only
+   Cockpit projections (run claim, paper position, assumed PnL, orders, fills, capture-health).
+   This remains a duration-bounded soak, not 24/7 collection, funding settlement, venue
+   reconciliation, or promotion evidence. DATA-1A public BTC-PERP capture may now retain up to
+   7 days at a reconstructable Parquet/DuckDB path; that is still not a 24/7 service;
 6. after the local route passes, record the definitive runtime ADR and only then perform the VPS
    migration.
 

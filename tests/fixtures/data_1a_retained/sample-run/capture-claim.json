@@ -1,0 +1,18 @@
+{
+  "credentialless": true,
+  "duration_seconds": 86400.0,
+  "feed": "hyperliquid-public-btc-perp-trades-bbo-l2-ctx",
+  "max_duration_seconds": 604800.0,
+  "path_contract": "data-1a-hyperliquid-btc-perp-v1",
+  "product": "BTC-PERP",
+  "retained": true,
+  "resume_policy": "never resume or overwrite an existing DATA-1A run directory",
+  "run_id": "sample-run",
+  "schema": "data-1a-retained-capture-claim-v1",
+  "signing": false,
+  "smoke_duration_seconds": 600.0,
+  "state": "STARTED_FAIL_CLOSED",
+  "twenty_four_seven": false,
+  "venue": "hyperliquid",
+  "websocket_url": "wss://api.hyperliquid.xyz/ws"
+}

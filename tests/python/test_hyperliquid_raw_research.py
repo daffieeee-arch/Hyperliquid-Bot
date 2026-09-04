@@ -13,11 +13,23 @@ from typing import cast
 import pytest
 
 from hyperliquid_bot.hyperliquid_raw_research import (
+    MAX_CAPTURE_SECONDS,
+    SMOKE_CAPTURE_SECONDS,
     HyperliquidRawResearchCollector,
     HyperliquidRawResearchConfig,
     WebSocketConnection,
+    _argument_parser,
+    _require_bounded_duration,
+    _resolve_cli_mode,
+    data1a_capture_claim,
+    data1a_capture_health,
+    run_reconstructable_capture,
 )
 from hyperliquid_bot.raw_research import MessageDirection, RawResearchRecord
+from hyperliquid_bot.reconstructable_paths import (
+    DATA1A_PATH_CONTRACT_ID,
+    data1a_run_paths,
+)
 
 _FIXTURE_DIR = Path(__file__).parents[1] / "fixtures" / "hyperliquid"
 
@@ -293,12 +305,125 @@ async def test_sink_failure_stops_without_silent_reconnect() -> None:
     assert sink.append_attempts == 3
 
 
-@pytest.mark.parametrize("duration", [0.0, 600.1, -1.0])
+@pytest.mark.parametrize("duration", [0.0, -1.0, MAX_CAPTURE_SECONDS + 0.1])
 @pytest.mark.asyncio
 async def test_capture_duration_is_strictly_bounded(duration: float) -> None:
     collector = HyperliquidRawResearchCollector(
         MemorySink(),
         connection_factory=ScriptedConnectionFactory([]),
     )
-    with pytest.raises(ValueError, match="between 1 and 600"):
+    with pytest.raises(ValueError, match="between 1 and 604800"):
         await collector.capture_for(duration)
+
+
+def test_retained_duration_raises_the_historical_smoke_cap() -> None:
+    assert SMOKE_CAPTURE_SECONDS == 600.0
+    assert MAX_CAPTURE_SECONDS == 7 * 24 * 60 * 60
+    assert _require_bounded_duration(600.1) == 600.1
+    assert _require_bounded_duration(86_400) == 86_400.0
+    assert _require_bounded_duration(MAX_CAPTURE_SECONDS) == float(MAX_CAPTURE_SECONDS)
+    with pytest.raises(ValueError, match="between 1 and 604800"):
+        _require_bounded_duration(MAX_CAPTURE_SECONDS + 1)
+
+
+@pytest.mark.asyncio
+async def test_reconstructable_capture_writes_the_path_contract(tmp_path: Path) -> None:
+    stop_event = asyncio.Event()
+    inbound = [
+        "Websocket connection established.",
+        *[
+            _subscription_response(channel)
+            for channel in ("trades", "bbo", "l2Book", "activeAssetCtx")
+        ],
+        _fixture_text("trades_frame.json"),
+    ]
+    factory = ScriptedConnectionFactory([FakeConnection(inbound, stop_event=stop_event)])
+    report = await run_reconstructable_capture(
+        artifact_root=tmp_path,
+        run_id="sample-run",
+        duration_seconds=86_400,
+        stop_event=stop_event,
+        connection_factory=factory,
+    )
+    paths = data1a_run_paths(tmp_path, "sample-run")
+    assert report["path_contract"] == DATA1A_PATH_CONTRACT_ID
+    assert report["status"] == "COMPLETED"
+    assert report["twenty_four_seven"] is False
+    assert paths.capture_claim_path.is_file()
+    assert paths.capture_health_path.is_file()
+    assert paths.database_path.is_file()
+    assert list(paths.raw_dir.glob(paths.parquet_glob))
+    claim = json.loads(paths.capture_claim_path.read_text(encoding="utf-8"))
+    health = json.loads(paths.capture_health_path.read_text(encoding="utf-8"))
+    assert claim["retained"] is True
+    assert claim["duration_seconds"] == 86_400.0
+    assert claim["twenty_four_seven"] is False
+    assert health["status"] == "COMPLETED"
+    assert health["path_contract"] == DATA1A_PATH_CONTRACT_ID
+    with pytest.raises(FileExistsError, match="refuses to reuse"):
+        await run_reconstructable_capture(
+            artifact_root=tmp_path,
+            run_id="sample-run",
+            duration_seconds=60,
+            connection_factory=ScriptedConnectionFactory([]),
+        )
+
+
+def test_data1a_claim_and_health_match_committed_sample_contract() -> None:
+    fixture_dir = Path(__file__).parents[1] / "fixtures" / "data_1a_retained" / "sample-run"
+    paths = data1a_run_paths(Path("/var/reconstructable"), "sample-run")
+    claim = data1a_capture_claim(run_id="sample-run", duration_seconds=86_400, paths=paths)
+    health = data1a_capture_health(
+        run_id="sample-run",
+        duration_seconds=86_400,
+        status="COMPLETED",
+        report={
+            "events": 0,
+            "payload_bytes": 0,
+            "parquet_files": 0,
+            "parquet_bytes": 0,
+            "gaps": 0,
+            "reconnects": 0,
+        },
+    )
+    stored_claim = json.loads((fixture_dir / "capture-claim.json").read_text(encoding="utf-8"))
+    stored_health = json.loads((fixture_dir / "capture-health.json").read_text(encoding="utf-8"))
+    for key, value in stored_claim.items():
+        assert claim[key] == value
+    for key, value in stored_health.items():
+        assert health[key] == value
+
+
+def test_cli_modes_are_mutually_exclusive(tmp_path: Path) -> None:
+    parser = _argument_parser()
+    reconstructable = parser.parse_args(
+        ["--artifact-root", str(tmp_path), "--run-id", "sample-run", "--duration-seconds", "3600"]
+    )
+    assert _resolve_cli_mode(reconstructable) == "reconstructable"
+    ad_hoc = parser.parse_args(
+        [
+            "--output-dir",
+            str(tmp_path / "raw"),
+            "--database",
+            str(tmp_path / "research.duckdb"),
+            "--duration-seconds",
+            "60",
+        ]
+    )
+    assert _resolve_cli_mode(ad_hoc) == "ad_hoc"
+    mixed = parser.parse_args(
+        [
+            "--artifact-root",
+            str(tmp_path),
+            "--run-id",
+            "sample-run",
+            "--output-dir",
+            str(tmp_path / "raw"),
+            "--database",
+            str(tmp_path / "research.duckdb"),
+            "--duration-seconds",
+            "60",
+        ]
+    )
+    with pytest.raises(ValueError, match="not both"):
+        _resolve_cli_mode(mixed)

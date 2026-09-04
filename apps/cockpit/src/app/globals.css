@@ -283,6 +283,8 @@ main {
   display: flex;
   align-items: center;
   gap: 0.45rem;
+  overflow-wrap: anywhere;
+  line-height: 1.2;
 }
 
 .metric-meta,

@@ -19,9 +19,11 @@ unset or `PAPER`; `LIVE`, `TESTNET`, and `SHADOW` fail closed.
 4. COURSE-1 capture health from that same JSON. This is a bounded soak summary,
    not a 24/7 heartbeat.
 5. DATA-1A capture health from `capture-claim.json` plus optional
-   `capture-health.json` and a cheap `raw/part-*.parquet` listing. Missing health
-   during a live run is shown as empty, not as invented zeros. Parquet payloads
-   are not read.
+   `capture-health.json` and a cheap `raw/part-*.parquet` listing. While a live
+   run has a claim, growing `raw/part-*.parquet` files, and no health file, the
+   panel shows **RUNNING (health JSON pending until stop)** instead of inventing
+   zeros. Parquet payloads are not read. Missing artifact root or `run_id`
+   fails closed with an explicit empty state.
 6. PAPER intent/fill blotter copied from `orders.json` / `fills.json`. Empty
    runs stay empty; rows are not invented.
 
@@ -84,17 +86,36 @@ export COCKPIT_PAPER_RUN_DIR=tests/fixtures/course1_cockpit/sample-run
 ```
 
 To watch a DATA-1A reconstructable capture on the same machine (do not stop the
-collector):
+collector). Next.js loads `apps/cockpit/.env.local`; the repository-root
+`.env.example` is documentation only.
+
+TerraPC WSL2 (current live retain; Linux filesystem, not `/mnt/c`):
+
+```bash
+export TRADING_MODE=PAPER
+export ARTIFACT_ROOT=/home/dmesdary/hyperliquid-artifacts/reconstructable
+export DATA1A_RUN_ID=20260904t134940z-live-retained
+pnpm --filter @hyperliquid-bot/cockpit dev
+```
+
+Or copy `apps/cockpit/.env.example` to `apps/cockpit/.env.local` and uncomment
+those two DATA-1A lines. `COCKPIT_DATA1A_RUN_ID` is an equivalent alias.
+With `ARTIFACT_ROOT` already exported you can also open
+`http://127.0.0.1:3000/?data1a_run_id=20260904t134940z-live-retained`.
+
+Later VPS path-contract root (same file names):
 
 ```bash
 export TRADING_MODE=PAPER
 export ARTIFACT_ROOT=/var/lib/hyperliquid-bot/reconstructable
-export COCKPIT_DATA1A_RUN_ID=20260904t134940z-live-retained
+export DATA1A_RUN_ID=20260904t134940z-live-retained
 pnpm --filter @hyperliquid-bot/cockpit dev
 ```
 
-Or keep `ARTIFACT_ROOT` in the environment and open
-`http://127.0.0.1:3000/?data1a_run_id=20260904t134940z-live-retained`.
+A missing root or `run_id` fails closed. COURSE-1 PAPER JSON stays on the
+fixture unless `COCKPIT_ARTIFACT_ROOT` + `COCKPIT_RUN_ID` are also set. DESK /
+MARKETS / RISK screens are not built.
 
-See `docs/runbooks/cockpit-first-paper-screen.md` and
+See `docs/runbooks/cockpit-first-paper-screen.md`,
+`docs/runbooks/data1a-wsl-pc-retained-capture.md`, and
 `docs/runbooks/data1a-vps-retained-capture.md`.

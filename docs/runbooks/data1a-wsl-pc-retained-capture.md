@@ -199,6 +199,35 @@ RUN_ID=20260904t134940z-live-retained ./scripts/data1a_status.sh
 The status helper prints tmux liveness, claim/health presence, and published
 part count. It never prints payload bytes or secret values.
 
+## Watch from the PAPER Operator Cockpit (read-only)
+
+Do **not** stop, attach-and-interrupt, or SSH-signal `hl-capture` to "refresh"
+the cockpit. The first PAPER screen only reads files.
+
+From the same WSL checkout, with Next.js loading `apps/cockpit/.env.local` or
+the exported names below:
+
+```bash
+cd ~/code/Hyperliquid-Bot-main
+export TRADING_MODE=PAPER
+export ARTIFACT_ROOT=/home/dmesdary/hyperliquid-artifacts/reconstructable
+export DATA1A_RUN_ID=20260904t134940z-live-retained
+pnpm --filter @hyperliquid-bot/cockpit dev
+```
+
+Open `http://127.0.0.1:3000`. `COCKPIT_DATA1A_RUN_ID` is an equivalent alias.
+With `ARTIFACT_ROOT` already set you can also use
+`http://127.0.0.1:3000/?data1a_run_id=20260904t134940z-live-retained`.
+
+While `capture-health.json` is absent (normal until stop), claim present plus
+growing `raw/part-*.parquet` files and last mtime are the liveness signal. The
+panel labels that **RUNNING (health JSON pending until stop)**. Missing root or
+`run_id` fails closed; the cockpit does not invent PnL or part counts.
+
+Copy `apps/cockpit/.env.example` to `apps/cockpit/.env.local` (gitignored) for
+the same pair. The repository-root `.env.example` documents the names but is
+not loaded by `next dev`.
+
 ## How to stop
 
 Ask the collector to finish the current in-memory segment and write health:

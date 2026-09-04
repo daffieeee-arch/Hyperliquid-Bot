@@ -285,6 +285,14 @@ Preferred reconstructable layout (the path contract the Operator Cockpit reads):
   research.duckdb
 ```
 
+To point local `next dev` at a live TerraPC retain without stopping the
+collector, export `ARTIFACT_ROOT=/home/dmesdary/hyperliquid-artifacts/reconstructable`
+and `DATA1A_RUN_ID=20260904t134940z-live-retained` (or copy
+`apps/cockpit/.env.example` to `apps/cockpit/.env.local`).
+`COCKPIT_DATA1A_RUN_ID` and `/?data1a_run_id=` are equivalent. Missing root or
+`run_id` fails closed. See [cockpit-first-paper-screen.md](runbooks/cockpit-first-paper-screen.md)
+and [data1a-wsl-pc-retained-capture.md](runbooks/data1a-wsl-pc-retained-capture.md).
+
 ```bash
 PYTHONPATH=src uv run --frozen python -m hyperliquid_bot.hyperliquid_raw_research \
   --artifact-root var/reconstructable \

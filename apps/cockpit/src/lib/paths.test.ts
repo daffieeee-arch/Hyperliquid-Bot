@@ -147,6 +147,40 @@ describe("DATA-1A path contract", () => {
     );
   });
 
+  it("resolves the documented TerraPC WSL reconstructable layout from ARTIFACT_ROOT plus DATA1A_RUN_ID", () => {
+    const resolved = resolveData1ARunDir(
+      {
+        TRADING_MODE: "PAPER",
+        ARTIFACT_ROOT: "/home/dmesdary/hyperliquid-artifacts/reconstructable",
+        DATA1A_RUN_ID: "20260904t134940z-live-retained",
+      },
+      repoRoot,
+    );
+    expect(resolved.source).toBe("path-contract");
+    expect(resolved.runId).toBe("20260904t134940z-live-retained");
+    expect(resolved.runDir).toBe(
+      "/home/dmesdary/hyperliquid-artifacts/reconstructable/data-1a/hyperliquid/BTC-PERP/20260904t134940z-live-retained",
+    );
+  });
+
+  it("treats DATA1A_RUN_ID as equivalent to COCKPIT_DATA1A_RUN_ID and lets the query override both", () => {
+    const env = {
+      TRADING_MODE: "PAPER",
+      ARTIFACT_ROOT: "/home/dmesdary/hyperliquid-artifacts/reconstructable",
+      DATA1A_RUN_ID: "20260904t134940z-live-retained",
+      COCKPIT_DATA1A_RUN_ID: "cockpit-alias-run",
+    };
+    const fromCockpit = resolveData1ARunDir(env, repoRoot);
+    expect(fromCockpit.runId).toBe("cockpit-alias-run");
+    const fromQuery = resolveData1ARunDir(env, repoRoot, {
+      data1a_run_id: "20260904t134940z-live-retained",
+    });
+    expect(fromQuery.runId).toBe("20260904t134940z-live-retained");
+    expect(fromQuery.runDir).toBe(
+      "/home/dmesdary/hyperliquid-artifacts/reconstructable/data-1a/hyperliquid/BTC-PERP/20260904t134940z-live-retained",
+    );
+  });
+
   it("reads the first query value and ignores empty strings", () => {
     expect(firstQueryValue("20260904t134940z-live-retained")).toBe(
       "20260904t134940z-live-retained",

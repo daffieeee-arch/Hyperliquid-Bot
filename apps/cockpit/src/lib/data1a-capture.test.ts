@@ -116,6 +116,16 @@ describe("DATA-1A capture loader", () => {
         repoRoot,
       ),
     ).toThrow(/run directory is missing/);
+    expect(() =>
+      loadData1ACaptureSnapshot(
+        {
+          TRADING_MODE: "PAPER",
+          ARTIFACT_ROOT: join(tmpdir(), "missing-data1a-root"),
+          DATA1A_RUN_ID: "20260904t134940z-live-retained",
+        },
+        repoRoot,
+      ),
+    ).toThrow(/DATA1A_RUN_ID/);
   });
 
   it("refuses LIVE trading mode before reading capture files", () => {

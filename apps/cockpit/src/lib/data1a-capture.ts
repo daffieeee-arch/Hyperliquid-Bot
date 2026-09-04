@@ -246,7 +246,9 @@ export function loadData1ACaptureSnapshot(
 ): Data1ACaptureSnapshot {
   const resolved = resolveData1ARunDir(env, repoRoot, query);
   if (!existsSync(resolved.runDir)) {
-    throw new Error(`DATA-1A run directory is missing: ${resolved.runDir}`);
+    throw new Error(
+      `DATA-1A run directory is missing: ${resolved.runDir}. Set ARTIFACT_ROOT and DATA1A_RUN_ID (or COCKPIT_DATA1A_RUN_ID / ?data1a_run_id=) to an existing reconstructable capture. Counts are not invented.`,
+    );
   }
   const claim = loadClaim(resolved.runDir);
   if (resolved.source !== "data1a-run-dir" && claim.run_id !== resolved.runId) {

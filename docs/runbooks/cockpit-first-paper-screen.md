@@ -68,22 +68,40 @@ The helper shape is `course1_cockpit_paths(artifact_root, run_id)` from
 
 ## Point at a DATA-1A reconstructable capture
 
-Do not stop a running collector. The cockpit only reads files.
+Do not stop a running collector. The cockpit only reads files. Next.js loads
+`apps/cockpit/.env.local` during `next dev`; exporting the same names in the
+WSL shell also works. The repository-root `.env.example` is not loaded by
+Next.js.
+
+TerraPC WSL2 (current live retain). Paths are on the Linux filesystem, not
+`/mnt/c`:
+
+```bash
+export TRADING_MODE=PAPER
+export ARTIFACT_ROOT=/home/dmesdary/hyperliquid-artifacts/reconstructable
+export DATA1A_RUN_ID=20260904t134940z-live-retained
+pnpm --filter @hyperliquid-bot/cockpit dev
+```
+
+`COCKPIT_DATA1A_RUN_ID` is an equivalent alias for `DATA1A_RUN_ID`. Or keep
+`ARTIFACT_ROOT` and open
+`http://127.0.0.1:3000/?data1a_run_id=20260904t134940z-live-retained`.
+
+Later VPS path-contract root (same file names):
 
 ```bash
 export TRADING_MODE=PAPER
 export ARTIFACT_ROOT=/var/lib/hyperliquid-bot/reconstructable
-export COCKPIT_DATA1A_RUN_ID=20260904t134940z-live-retained
+export DATA1A_RUN_ID=20260904t134940z-live-retained
 pnpm --filter @hyperliquid-bot/cockpit dev
 ```
 
-Or keep `ARTIFACT_ROOT` and open
-`http://127.0.0.1:3000/?data1a_run_id=20260904t134940z-live-retained`.
-
 Path helper: `data1a_run_paths(artifact_root, run_id)`. Health JSON is written at
-process end; while the run is live the panel shows claim state, filesystem part
-count / last mtime, and `n/a` for gaps/reconnects until `capture-health.json`
-exists.
+process end. While the run is live (claim present, published `raw/part-*.parquet`
+files growing, no `capture-health.json`) the panel shows
+**RUNNING (health JSON pending until stop)** plus filesystem part count / last
+mtime, and `n/a` for gaps/reconnects. Missing root or `run_id` is an explicit
+empty state; zeros and PnL are not invented.
 
 Cockpit CI lives in `.github/workflows/cockpit.yml`. It is a separate
 workflow so the hashed D01 publication file `.github/workflows/ci.yml`
@@ -94,5 +112,7 @@ stays byte-identical.
 - `TRADING_MODE` unset or `PAPER` only
 - COURSE-1 JSON `mode` must be `PAPER`
 - missing JSON fails the matching panel; zeros are not invented
+- missing DATA-1A artifact root or `run_id` is an explicit empty capture panel
 - DATA-1A `twenty_four_seven: true` or `signing: true` is refused
 - `LIVE` / `TESTNET` / `SHADOW` refuse to start the paper reader and DATA-1A view
+- DESK / MARKETS / RISK screens are not built and must not be filled with fake data

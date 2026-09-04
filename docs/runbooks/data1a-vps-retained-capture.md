@@ -43,10 +43,13 @@ The Operator Cockpit first PAPER screen reads:
 ```
 
 Helpers: `data1a_run_paths(artifact_root, run_id)`. Set `ARTIFACT_ROOT` plus
-`COCKPIT_DATA1A_RUN_ID` or open `/?data1a_run_id=<run_id>`. Missing
-`capture-health.json` is an explicit empty state (the writer records health at
-stop/end). Part count and last part mtime come from a cheap `raw/part-*.parquet`
-listing; payloads are not read.
+`DATA1A_RUN_ID` (or `COCKPIT_DATA1A_RUN_ID`) or open `/?data1a_run_id=<run_id>`.
+Missing `capture-health.json` is expected while the writer is still running;
+the cockpit shows **RUNNING (health JSON pending until stop)** when the claim
+is present and published parts/mtime are growing. Missing root or `run_id`
+fails closed. Part count and last part mtime come from a cheap
+`raw/part-*.parquet` listing; payloads are not read. For TerraPC WSL paths see
+[data1a-wsl-pc-retained-capture.md](data1a-wsl-pc-retained-capture.md).
 
 `run_id` must be 1–64 lowercase ASCII letters, digits, dot, dash, or underscore.
 

@@ -51,6 +51,71 @@ export function healthTone(status: string): StatusTone {
   return "neutral";
 }
 
+export const DATA1A_RUNNING_PENDING_HEALTH = "RUNNING (health JSON pending until stop)";
+
+export type Data1AHealthView = {
+  health?: { status: string } | undefined;
+  health_missing: boolean;
+  health_error?: string | undefined;
+  parts: {
+    raw_dir_present: boolean;
+    count?: number | undefined;
+    last_part_mtime_utc?: string | undefined;
+  };
+};
+
+export type Data1AHealthPresentation = {
+  statusLabel: string;
+  tileLabel: string;
+  tone: StatusTone;
+  note: string;
+  live: boolean;
+};
+
+export function data1aCaptureHealthPresentation(
+  snapshot: Data1AHealthView,
+): Data1AHealthPresentation {
+  if (snapshot.health !== undefined) {
+    return {
+      statusLabel: snapshot.health.status,
+      tileLabel: snapshot.health.status,
+      tone: healthTone(snapshot.health.status),
+      note: "Copied from capture-health.json",
+      live: false,
+    };
+  }
+  if (!snapshot.health_missing) {
+    return {
+      statusLabel: "UNREADABLE",
+      tileLabel: "UNREADABLE",
+      tone: "warn",
+      note: snapshot.health_error ?? "capture-health.json is unreadable.",
+      live: false,
+    };
+  }
+  const partCount = snapshot.parts.count ?? 0;
+  const partsLookLive =
+    snapshot.parts.raw_dir_present &&
+    partCount > 0 &&
+    snapshot.parts.last_part_mtime_utc !== undefined;
+  if (partsLookLive) {
+    return {
+      statusLabel: DATA1A_RUNNING_PENDING_HEALTH,
+      tileLabel: "RUNNING",
+      tone: "ok",
+      note: "capture-health.json is written at stop; growing part count and last mtime are the live signal.",
+      live: true,
+    };
+  }
+  return {
+    statusLabel: "NOT WRITTEN",
+    tileLabel: "NOT WRITTEN",
+    tone: "warn",
+    note: snapshot.health_error ?? "capture-health.json is not written yet",
+    live: false,
+  };
+}
+
 export function presentCopiedNumber(value: number | undefined): string {
   return value === undefined ? "n/a" : String(value);
 }

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  DATA1A_RUNNING_PENDING_HEALTH,
+  data1aCaptureHealthPresentation,
   formatGroupedNumber,
   healthTone,
   presentCopiedNumber,
@@ -48,5 +50,51 @@ describe("cockpit display helpers", () => {
     expect(yesNo(true)).toBe("yes");
     expect(yesNo(false)).toBe("no");
     expect(uniqueStrings(["a", "a", "b"])).toEqual(["a", "b"]);
+  });
+
+  it("labels a live-looking DATA-1A run as RUNNING when claim parts exist and health is pending", () => {
+    const presentation = data1aCaptureHealthPresentation({
+      health: undefined,
+      health_missing: true,
+      health_error: "capture-health.json is not written yet",
+      parts: {
+        raw_dir_present: true,
+        count: 2,
+        last_part_mtime_utc: "2026-09-04T13:49:00.000Z",
+      },
+    });
+    expect(presentation.statusLabel).toBe(DATA1A_RUNNING_PENDING_HEALTH);
+    expect(presentation.tileLabel).toBe("RUNNING");
+    expect(presentation.tone).toBe("ok");
+    expect(presentation.live).toBe(true);
+    expect(presentation.note).toMatch(/written at stop/);
+  });
+
+  it("does not invent RUNNING when health is missing and no parquet parts exist", () => {
+    const presentation = data1aCaptureHealthPresentation({
+      health: undefined,
+      health_missing: true,
+      parts: { raw_dir_present: false, count: undefined, last_part_mtime_utc: undefined },
+    });
+    expect(presentation.statusLabel).toBe("NOT WRITTEN");
+    expect(presentation.tileLabel).toBe("NOT WRITTEN");
+    expect(presentation.live).toBe(false);
+    expect(presentation.tone).toBe("warn");
+  });
+
+  it("copies finished DATA-1A health status instead of the pending-until-stop label", () => {
+    const presentation = data1aCaptureHealthPresentation({
+      health: { status: "OPERATOR_STOP" },
+      health_missing: false,
+      parts: {
+        raw_dir_present: true,
+        count: 41,
+        last_part_mtime_utc: "2026-09-04T01:17:00.000Z",
+      },
+    });
+    expect(presentation.statusLabel).toBe("OPERATOR_STOP");
+    expect(presentation.tileLabel).toBe("OPERATOR_STOP");
+    expect(presentation.tone).toBe("warn");
+    expect(presentation.live).toBe(false);
   });
 });

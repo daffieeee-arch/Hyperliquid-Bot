@@ -5,8 +5,8 @@ import { useEffect, useState } from "react";
 import { KvTable } from "./kv-table";
 import { MetricTile } from "./metric-tile";
 import {
+  data1aCaptureHealthPresentation,
   formatGroupedNumber,
-  healthTone,
   presentCopiedNumber,
   presentCopiedText,
   yesNo,
@@ -35,19 +35,8 @@ function partsValue(snapshot: Data1ACaptureSnapshot): string {
   return String(snapshot.parts.count);
 }
 
-function healthValue(snapshot: Data1ACaptureSnapshot): string {
-  if (snapshot.health !== undefined) {
-    return snapshot.health.status;
-  }
-  if (snapshot.health_missing) {
-    return "NOT WRITTEN";
-  }
-  return "UNREADABLE";
-}
-
 function CaptureDesk({ snapshot }: { snapshot: Data1ACaptureSnapshot }) {
-  const status = healthValue(snapshot);
-  const statusTone = snapshot.health === undefined ? "warn" : healthTone(snapshot.health.status);
+  const healthView = data1aCaptureHealthPresentation(snapshot);
   const duration =
     snapshot.claim.duration_seconds === undefined
       ? "n/a"
@@ -58,14 +47,19 @@ function CaptureDesk({ snapshot }: { snapshot: Data1ACaptureSnapshot }) {
       <section className="metrics" aria-label="DATA-1A capture snapshot">
         <MetricTile
           label="DATA-1A health"
-          value={status}
-          meta={`${snapshot.runId} · ${snapshot.claim.retained ? "retained" : "smoke"}`}
+          value={healthView.tileLabel}
+          meta={
+            healthView.live
+              ? `health JSON pending until stop · ${snapshot.runId}`
+              : `${snapshot.runId} · ${snapshot.claim.retained ? "retained" : "smoke"}`
+          }
           note={
             snapshot.health === undefined
-              ? (snapshot.health_error ?? "capture-health.json is not written yet")
+              ? healthView.note
               : `24/7 claim ${yesNo(snapshot.health.twenty_four_seven)} · public BTC-PERP`
           }
-          tone={statusTone}
+          tone={healthView.tone}
+          live={healthView.live}
         />
         <MetricTile
           label="Claim state"
@@ -110,7 +104,8 @@ function CaptureDesk({ snapshot }: { snapshot: Data1ACaptureSnapshot }) {
         <div className="panel-head">
           <h2>DATA-1A capture / health</h2>
           <p className="panel-kicker">
-            Reconstructable public BTC-PERP run · not COURSE-1 soak PnL · health JSON is end-of-run
+            Reconstructable public BTC-PERP run · not COURSE-1 soak PnL · health JSON is written at
+            stop
           </p>
         </div>
         <KvTable
@@ -126,8 +121,8 @@ function CaptureDesk({ snapshot }: { snapshot: Data1ACaptureSnapshot }) {
             { label: "Feed", value: presentCopiedText(snapshot.claim.feed) },
             {
               label: "Health status",
-              value: status,
-              tone: statusTone,
+              value: healthView.statusLabel,
+              tone: healthView.tone,
             },
             {
               label: "Health events",
@@ -244,7 +239,8 @@ export function Data1ACapturePanel({
           <div className="panel-head">
             <h2>DATA-1A capture / health</h2>
             <p className="panel-kicker">
-              Missing reconstructable files fail closed; counts are not invented
+              Missing artifact root or run directory fails closed. Part counts and PnL are not
+              invented.
             </p>
           </div>
           <p className="error">{result.error}</p>

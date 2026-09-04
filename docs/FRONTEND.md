@@ -44,14 +44,21 @@ create-only reconstructable contracts rather than inventing a second store:
 `paper-pnl.json` is assumed PAPER overlay economics, not venue PnL. COURSE-1
 `capture-health.json` is a bounded-run summary, not a 24/7 heartbeat. DATA-1A
 `capture-claim.json` / `capture-health.json` are a reconstructable public capture
-claim and an end-of-run health file; missing health is shown as empty, not as
-invented zeros. DATA-1A capture duration is 1–604800 seconds; the COURSE-1 soak
-remains 1–600 seconds. Locally the first screen defaults to
+claim and an end-of-run health file. While a live retain has a claim, growing
+`raw/part-*.parquet` files, and no health file, the panel shows
+**RUNNING (health JSON pending until stop)** rather than invented zeros.
+Missing artifact root or `run_id` is an explicit empty state. DATA-1A capture
+duration is 1–604800 seconds; the COURSE-1 soak remains 1–600 seconds. Locally
+the first screen defaults to
 `tests/fixtures/course1_cockpit/live-public-soak/` (`run_id`
 `20260904t001800z-live-paper`) and `tests/fixtures/data_1a_retained/sample-run/`
 (`run_id` `sample-run`). Set `COCKPIT_ARTIFACT_ROOT` + `COCKPIT_RUN_ID` for PAPER
-JSON, and `ARTIFACT_ROOT` + `COCKPIT_DATA1A_RUN_ID` or `?data1a_run_id=` for a
-live DATA-1A directory. See `docs/DATA.md`,
+JSON, and `ARTIFACT_ROOT` + `DATA1A_RUN_ID` (or `COCKPIT_DATA1A_RUN_ID` /
+`?data1a_run_id=`) for a live DATA-1A directory. TerraPC WSL example:
+`ARTIFACT_ROOT=/home/dmesdary/hyperliquid-artifacts/reconstructable` and
+`DATA1A_RUN_ID=20260904t134940z-live-retained` (copy `apps/cockpit/.env.example`
+to `apps/cockpit/.env.local`, or export in the WSL shell before `next dev`).
+See `docs/DATA.md`,
 `docs/runbooks/data1a-vps-retained-capture.md`,
 `docs/runbooks/data1a-wsl-pc-retained-capture.md`,
 `docs/runbooks/cockpit-first-paper-screen.md`, `apps/cockpit/README.md`, and

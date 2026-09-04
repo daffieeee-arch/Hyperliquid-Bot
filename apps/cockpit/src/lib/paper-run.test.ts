@@ -1,6 +1,6 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { loadPaperRunSnapshot } from "./paper-run";
 import { CANONICAL_LIVE_PAPER_RUN_ID } from "./paths";
 
-const repoRoot = fileURLToPath(new URL("../../../../", import.meta.url));
+const repoRoot = resolve(fileURLToPath(new URL("../../../../", import.meta.url)));
 
 describe("PAPER run loader", () => {
   it("copies assumed overlay fields from the live-public-soak fixture", () => {

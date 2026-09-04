@@ -33,7 +33,7 @@ export type PaperRunResolution = {
 const RUN_ID_PATTERN = /^[a-z0-9._-]{1,64}$/;
 
 export function repoRootFromModuleUrl(moduleUrl: string = import.meta.url): string {
-  return fileURLToPath(new URL("../../../../", moduleUrl));
+  return resolve(fileURLToPath(new URL("../../../../", moduleUrl)));
 }
 
 export function findRepoRoot(startDirectory: string = process.cwd()): string {

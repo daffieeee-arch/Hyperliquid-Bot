@@ -1,6 +1,6 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
@@ -18,7 +18,7 @@ import {
   resolvePaperRunDir,
 } from "./paths";
 
-const repoRoot = fileURLToPath(new URL("../../../../", import.meta.url));
+const repoRoot = resolve(fileURLToPath(new URL("../../../../", import.meta.url)));
 
 describe("COURSE-1 path contract", () => {
   it("joins the reconstructable live-public-paper layout", () => {

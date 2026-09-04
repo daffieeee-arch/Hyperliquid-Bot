@@ -22,3 +22,5 @@ is an honest empty PAPER state, not a fabricated trading result. Funding remains
 
 A separate live-public soak fixture lives in `live-public-soak/`. That run wrote
 real create-only Cockpit files from public ticks and the assumed PAPER overlay.
+The first cockpit screen reads those files by default
+(`run_id` `20260904t001800z-live-paper`).

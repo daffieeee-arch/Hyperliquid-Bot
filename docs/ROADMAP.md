@@ -38,7 +38,10 @@ The active sequence is:
    7 days (1–604800s) at a reconstructable Parquet/DuckDB path; that is still not a 24/7
    service. Operator retain/stop rules are in `docs/runbooks/data1a-vps-retained-capture.md`
    and `docs/runbooks/data1a-wsl-pc-retained-capture.md`. Cloud Agents are unsuitable
-   for a multi-day retain.
+   for a multi-day retain. DATA-1F Binance retained-capture operator docs are in
+   `docs/runbooks/data1f-wsl-pc-retained-capture.md` and
+   `docs/runbooks/data1f-vps-retained-capture.md`; do not start that capture until
+   the TerraPC DATA-1A 72h series finishes and CoS assigns the window.
 6. after the local route passes, record the definitive runtime ADR and only then perform the VPS
    migration.
 

@@ -1,25 +1,34 @@
-"""Bounded public Binance BTCUSDT exact-raw research capture."""
+"""Public Binance BTCUSDT exact-raw research capture.
+
+Duration may be a short smoke or a retained multi-day run. The process still
+stops at an explicit duration or operator signal; this is not a 24/7 service.
+"""
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import logging
 import math
 import re
+import signal
 import time
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, suppress
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from typing import Final, Protocol, cast
 from urllib.request import ProxyHandler, Request, build_opener
 
+import duckdb
 from websockets.asyncio.client import connect
 from websockets.exceptions import PayloadTooBig, WebSocketException
 
 from .binance_spot_trades import BinanceTimestampUnit, decode_binance_spot_trade
+from .parquet_research import ParquetResearchWriter, ParquetRotation, create_research_catalog
 from .raw_research import (
     RAW_RESEARCH_SCHEMA_VERSION,
     CapturedApplicationPayload,
@@ -31,12 +40,22 @@ from .raw_research import (
     RawResearchSink,
     capture_application_payload,
 )
+from .reconstructable_paths import (
+    DATA1F_PATH_CONTRACT_ID,
+    DATA1F_PRODUCT,
+    Data1FRunPaths,
+    data1f_run_paths,
+)
 
 BINANCE_RESEARCH_VENUE: Final = "binance"
 BINANCE_SPOT_PRODUCT: Final = "BTCUSDT-SPOT"
 BINANCE_USDM_PRODUCT: Final = "BTCUSDT-USDS-M-PERPETUAL"
 BINANCE_NATIVE_SYMBOL: Final = "BTCUSDT"
-MAX_CAPTURE_SECONDS: Final = 180.0
+SMOKE_CAPTURE_SECONDS: Final = 180.0
+MAX_CAPTURE_SECONDS: Final = 7 * 24 * 60 * 60
+RETAINED_MAX_RECONNECTS: Final = 10_080
+DATA1F_CLAIM_SCHEMA: Final = "data-1f-retained-capture-claim-v1"
+DATA1F_HEALTH_SCHEMA: Final = "data-1f-retained-capture-health-v1"
 
 BINANCE_SPOT_WEBSOCKET_URL: Final = (
     "wss://data-stream.binance.vision:443/stream?streams="
@@ -388,13 +407,7 @@ class BinancePublicResearchCollector:
         *,
         stop_event: asyncio.Event | None = None,
     ) -> None:
-        if (
-            type(duration_seconds) not in (int, float)
-            or not math.isfinite(float(duration_seconds))
-            or duration_seconds < 1
-            or duration_seconds > MAX_CAPTURE_SECONDS
-        ):
-            raise ValueError("duration_seconds must be between 1 and 180.")
+        _require_bounded_duration(duration_seconds)
         external_stop = stop_event
         internal_stop = asyncio.Event()
         tasks = (
@@ -735,6 +748,10 @@ class BinancePublicResearchCollector:
                     },
                 )
 
+        # An idle reconnect session may see SIGINT/duration before any frame.
+        # Do not fail a retained run that already observed required streams.
+        if stop_event.is_set() and not observed:
+            return
         missing = profile.required_streams - observed
         if missing:
             await self._quality(
@@ -1575,3 +1592,324 @@ def _fetch_payload_sync(
         payload_encoding=PayloadEncoding.UTF8,
         payload_bytes=bytes(payload_bytes),
     )
+
+
+def _require_bounded_duration(duration_seconds: object) -> float:
+    if type(duration_seconds) not in (int, float):
+        raise TypeError("duration_seconds must be a built-in number.")
+    duration = float(cast(int | float, duration_seconds))
+    if not math.isfinite(duration) or not 1.0 <= duration <= MAX_CAPTURE_SECONDS:
+        raise ValueError(f"duration_seconds must be between 1 and {MAX_CAPTURE_SECONDS:g}.")
+    return duration
+
+
+def _config_for_duration(duration_seconds: float) -> BinancePublicResearchConfig:
+    """Smoke keeps the Phase-1 reconnect cap; retained runs retry until duration ends."""
+
+    duration = _require_bounded_duration(duration_seconds)
+    if duration <= SMOKE_CAPTURE_SECONDS:
+        return BinancePublicResearchConfig()
+    return BinancePublicResearchConfig(max_reconnects=RETAINED_MAX_RECONNECTS)
+
+
+def build_capture_report(database_path: Path, parquet_dir: Path) -> dict[str, object]:
+    """Return payload/file counts only; never emit captured payload contents."""
+
+    connection = duckdb.connect(str(database_path.resolve()), read_only=True)
+    try:
+        channel_rows = connection.execute(
+            """
+            SELECT channel, direction, count(*), sum(octet_length(payload_bytes))
+            FROM raw_records
+            GROUP BY channel, direction
+            ORDER BY channel, direction
+            """
+        ).fetchall()
+        totals = connection.execute(
+            "SELECT count(*), coalesce(sum(octet_length(payload_bytes)), 0) FROM raw_records"
+        ).fetchone()
+        gap_row = connection.execute(
+            "SELECT count(*) FROM data_quality_events WHERE event = 'gap'"
+        ).fetchone()
+        reconnect_row = connection.execute(
+            "SELECT count(*) FROM sessions WHERE event = 'reconnect'"
+        ).fetchone()
+        if totals is None or gap_row is None or reconnect_row is None:
+            raise RuntimeError("DuckDB did not return the requested capture aggregates.")
+        total_events, total_payload_bytes = totals
+        gaps = gap_row[0]
+        reconnects = reconnect_row[0]
+    finally:
+        connection.close()
+
+    parquet_files = tuple(sorted(parquet_dir.resolve().glob("*.parquet")))
+    parquet_bytes = sum(path.stat().st_size for path in parquet_files)
+    raw_bytes = int(total_payload_bytes)
+    return {
+        "channels": [
+            {
+                "channel": str(channel),
+                "direction": str(direction),
+                "events": int(events),
+                "payload_bytes": int(payload_bytes),
+            }
+            for channel, direction, events, payload_bytes in channel_rows
+        ],
+        "events": int(total_events),
+        "payload_bytes": raw_bytes,
+        "parquet_files": len(parquet_files),
+        "parquet_bytes": parquet_bytes,
+        "raw_payload_to_parquet_ratio": (raw_bytes / parquet_bytes if parquet_bytes else None),
+        "gaps": int(gaps),
+        "reconnects": int(reconnects),
+    }
+
+
+async def run_bounded_capture(
+    *,
+    output_dir: Path,
+    database_path: Path,
+    duration_seconds: float,
+    stop_event: asyncio.Event | None = None,
+    collector_factory: Callable[[RawResearchSink], BinancePublicResearchCollector] | None = None,
+) -> dict[str, object]:
+    """Run the no-credential capture, close Parquet, and build the DuckDB catalog."""
+
+    duration = _require_bounded_duration(duration_seconds)
+    writer = ParquetResearchWriter(output_dir, rotation=ParquetRotation())
+    active = (
+        collector_factory(writer)
+        if collector_factory is not None
+        else BinancePublicResearchCollector(
+            writer,
+            config=_config_for_duration(duration),
+        )
+    )
+    try:
+        await active.capture_for(duration, stop_event=stop_event)
+    finally:
+        await writer.aclose()
+    create_research_catalog(output_dir, database_path)
+    return build_capture_report(database_path, output_dir)
+
+
+def data1f_capture_claim(
+    *,
+    run_id: str,
+    duration_seconds: float,
+    paths: Data1FRunPaths,
+) -> dict[str, object]:
+    """Create-only start claim for a reconstructable DATA-1F run."""
+
+    duration = _require_bounded_duration(duration_seconds)
+    return {
+        "schema": DATA1F_CLAIM_SCHEMA,
+        "state": "STARTED_FAIL_CLOSED",
+        "path_contract": DATA1F_PATH_CONTRACT_ID,
+        "run_id": run_id,
+        "venue": BINANCE_RESEARCH_VENUE,
+        "product": DATA1F_PRODUCT,
+        "products": [BINANCE_SPOT_PRODUCT, BINANCE_USDM_PRODUCT],
+        "feed": "binance-public-btcusdt-spot-usdm",
+        "spot_websocket_url": BINANCE_SPOT_WEBSOCKET_URL,
+        "usdm_market_websocket_url": BINANCE_USDM_MARKET_WEBSOCKET_URL,
+        "usdm_public_websocket_url": BINANCE_USDM_PUBLIC_WEBSOCKET_URL,
+        "credentialless": True,
+        "signing": False,
+        "duration_seconds": duration,
+        "smoke_duration_seconds": SMOKE_CAPTURE_SECONDS,
+        "max_duration_seconds": MAX_CAPTURE_SECONDS,
+        "retained": duration > SMOKE_CAPTURE_SECONDS,
+        "twenty_four_seven": False,
+        "resume_policy": "never resume or overwrite an existing DATA-1F run directory",
+        "raw_dir": paths.raw_dir.as_posix(),
+        "database_path": paths.database_path.as_posix(),
+    }
+
+
+def data1f_capture_health(
+    *,
+    run_id: str,
+    duration_seconds: float,
+    status: str,
+    report: dict[str, object],
+) -> dict[str, object]:
+    """Create-only end health for a reconstructable DATA-1F run."""
+
+    if status not in {"COMPLETED", "OPERATOR_STOP", "FAILED"}:
+        raise ValueError("DATA-1F capture-health status is outside the documented bound.")
+    duration = _require_bounded_duration(duration_seconds)
+    return {
+        "schema": DATA1F_HEALTH_SCHEMA,
+        "kind": "capture-health",
+        "path_contract": DATA1F_PATH_CONTRACT_ID,
+        "run_id": run_id,
+        "status": status,
+        "duration_seconds": duration,
+        "retained": duration > SMOKE_CAPTURE_SECONDS,
+        "twenty_four_seven": False,
+        "credentialless": True,
+        "events": report.get("events"),
+        "payload_bytes": report.get("payload_bytes"),
+        "parquet_files": report.get("parquet_files"),
+        "parquet_bytes": report.get("parquet_bytes"),
+        "gaps": report.get("gaps"),
+        "reconnects": report.get("reconnects"),
+        "limitations": [
+            "Published Parquet parts are reconstructable; a crash can lose the in-memory segment.",
+            "This is not 24/7 service evidence or a trading edge.",
+            "Spot depth@100ms is heavier than DATA-1A; disk growth can reach tens of GB over 72h.",
+            "USD-M open interest is one REST observation at start, not a history.",
+            "Public stream only; no API keys, signing, or extra venues.",
+        ],
+    }
+
+
+def _write_create_only_json(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("x", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=True, sort_keys=True, indent=2) + "\n")
+
+
+async def run_reconstructable_capture(
+    *,
+    artifact_root: Path,
+    run_id: str,
+    duration_seconds: float,
+    stop_event: asyncio.Event | None = None,
+    operator_stop: Callable[[], bool] | None = None,
+    collector_factory: Callable[[RawResearchSink], BinancePublicResearchCollector] | None = None,
+) -> dict[str, object]:
+    """Write DATA-1F Parquet/DuckDB to the documented reconstructable path."""
+
+    paths = data1f_run_paths(artifact_root, run_id)
+    if paths.run_dir.exists():
+        raise FileExistsError(f"DATA-1F refuses to reuse existing run directory: {paths.run_dir}")
+    paths.run_dir.mkdir(parents=True, exist_ok=False)
+    paths.raw_dir.mkdir(exist_ok=False)
+    _write_create_only_json(
+        paths.capture_claim_path,
+        data1f_capture_claim(run_id=run_id, duration_seconds=duration_seconds, paths=paths),
+    )
+    report: dict[str, object] = {
+        "events": 0,
+        "payload_bytes": 0,
+        "parquet_files": 0,
+        "parquet_bytes": 0,
+        "gaps": 0,
+        "reconnects": 0,
+    }
+    status = "FAILED"
+    try:
+        report = await run_bounded_capture(
+            output_dir=paths.raw_dir,
+            database_path=paths.database_path,
+            duration_seconds=duration_seconds,
+            stop_event=stop_event,
+            collector_factory=collector_factory,
+        )
+        if operator_stop is not None and operator_stop():
+            status = "OPERATOR_STOP"
+        else:
+            status = "COMPLETED"
+    finally:
+        if not paths.capture_health_path.exists():
+            _write_create_only_json(
+                paths.capture_health_path,
+                data1f_capture_health(
+                    run_id=run_id,
+                    duration_seconds=duration_seconds,
+                    status=status,
+                    report=report,
+                ),
+            )
+    return {
+        **report,
+        "run_id": run_id,
+        "path_contract": DATA1F_PATH_CONTRACT_ID,
+        "run_dir": str(paths.run_dir),
+        "raw_dir": str(paths.raw_dir),
+        "database_path": str(paths.database_path),
+        "status": status,
+        "twenty_four_seven": False,
+    }
+
+
+def _argument_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Public Binance BTCUSDT exact-raw research capture. "
+            "Duration may exceed the historical 180s smoke cap up to 7 days. "
+            "This is not a 24/7 service. Do not start a multi-day retain while "
+            "the TerraPC DATA-1A hl-capture session is still running unless CoS assigns it."
+        )
+    )
+    parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--database", type=Path)
+    parser.add_argument("--artifact-root", type=Path)
+    parser.add_argument("--run-id")
+    parser.add_argument("--duration-seconds", required=True, type=float)
+    return parser
+
+
+def _resolve_cli_mode(args: argparse.Namespace) -> str:
+    reconstructable = args.artifact_root is not None or args.run_id is not None
+    ad_hoc = args.output_dir is not None or args.database is not None
+    if reconstructable and ad_hoc:
+        raise ValueError(
+            "Use either --artifact-root/--run-id or --output-dir/--database, not both."
+        )
+    if reconstructable:
+        if args.artifact_root is None or args.run_id is None:
+            raise ValueError("Reconstructable capture requires both --artifact-root and --run-id.")
+        return "reconstructable"
+    if args.output_dir is None or args.database is None:
+        raise ValueError(
+            "Ad-hoc capture requires --output-dir and --database; "
+            "preferred reconstructable mode uses --artifact-root and --run-id."
+        )
+    return "ad_hoc"
+
+
+async def _run_from_args(args: argparse.Namespace) -> dict[str, object]:
+    stop_event = asyncio.Event()
+    operator_stopped = False
+
+    def _request_operator_stop() -> None:
+        nonlocal operator_stopped
+        operator_stopped = True
+        stop_event.set()
+
+    try:
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, _request_operator_stop)
+    except (NotImplementedError, RuntimeError):
+        pass
+
+    mode = _resolve_cli_mode(args)
+    if mode == "reconstructable":
+        return await run_reconstructable_capture(
+            artifact_root=cast(Path, args.artifact_root),
+            run_id=cast(str, args.run_id),
+            duration_seconds=cast(float, args.duration_seconds),
+            stop_event=stop_event,
+            operator_stop=lambda: operator_stopped,
+        )
+    return await run_bounded_capture(
+        output_dir=cast(Path, args.output_dir),
+        database_path=cast(Path, args.database),
+        duration_seconds=cast(float, args.duration_seconds),
+        stop_event=stop_event,
+    )
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _argument_parser().parse_args(argv)
+    report = asyncio.run(_run_from_args(args))
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

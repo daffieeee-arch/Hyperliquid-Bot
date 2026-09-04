@@ -28,5 +28,11 @@ Path contract:
   capture-health.json
 ```
 
-See `docs/runbooks/course1-live-public-paper-soak.md`. This is not D22-B, not
+The first Cockpit screen reads these same file names. Locally it uses this
+fixture directory until a VPS artifact root exists. Point
+`COCKPIT_ARTIFACT_ROOT` + `COCKPIT_RUN_ID` at the path-contract layout to read
+later runtime artifacts without changing the schema.
+
+See `docs/runbooks/course1-live-public-paper-soak.md`, `apps/cockpit/README.md`,
+and `docs/runbooks/cockpit-first-paper-screen.md`. This is not D22-B, not
 LIVE trading, and not 24/7 PAPER.

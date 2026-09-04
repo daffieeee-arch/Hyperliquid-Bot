@@ -9,10 +9,13 @@
     "pnpm": "11.23.0"
   },
   "scripts": {
-    "format:check": "prettier --check .github/workflows/ci.yml eslint.config.mjs package.json pnpm-workspace.yaml prettier.config.mjs tsconfig.json vitest.config.ts tests/typescript/toolchain.test.ts",
+    "format:check": "prettier --check .github/workflows/ci.yml eslint.config.mjs package.json pnpm-workspace.yaml prettier.config.mjs tsconfig.json vitest.config.ts tests/typescript/toolchain.test.ts apps/cockpit/package.json apps/cockpit/tsconfig.json apps/cockpit/next.config.ts apps/cockpit/vitest.config.ts apps/cockpit/src",
     "lint": "eslint --max-warnings=0 vitest.config.ts tests/typescript/toolchain.test.ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "cockpit:dev": "pnpm --filter @hyperliquid-bot/cockpit dev",
+    "cockpit:test": "pnpm --filter @hyperliquid-bot/cockpit test",
+    "cockpit:build": "pnpm --filter @hyperliquid-bot/cockpit build"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

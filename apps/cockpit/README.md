@@ -1,0 +1,65 @@
+# First PAPER cockpit screen
+
+One local Next.js screen. It is not DESK, MARKETS, RISK, or a Bloomberg clone.
+
+The browser never signs orders and never holds keys. `TRADING_MODE` must be
+unset or `PAPER`; `LIVE`, `TESTNET`, and `SHADOW` fail closed.
+
+## What it shows
+
+1. Public Hyperliquid BTC-PERP mid from credentialless `POST /info` `allMids`.
+   This price is not used to invent Paper PnL.
+2. Paper position from reconstructable COURSE-1 JSON.
+3. Assumed overlay Paper PnL from that same JSON. If the field is assumed /
+   overlay, the screen says so. It never fabricates a second number.
+4. Capture health from that same JSON. This is a bounded soak summary, not a
+   24/7 heartbeat.
+
+## JSON it reads
+
+Default local fixture (canonical example `run_id`):
+
+```text
+tests/fixtures/course1_cockpit/live-public-soak/
+  run-claim.json
+  paper-position.json
+  paper-pnl.json
+  orders.json
+  fills.json
+  capture-health.json
+```
+
+Those file names match the COURSE-1 path contract. Later VPS artifacts use the
+same names under:
+
+```text
+<artifact-root>/course1/live-public-paper/<run_id>/
+```
+
+## Run locally
+
+From the repository root, with `TRADING_MODE=PAPER` or unset:
+
+```bash
+pnpm install --frozen-lockfile
+pnpm --filter @hyperliquid-bot/cockpit dev
+```
+
+Open `http://127.0.0.1:3000`.
+
+To read a path-contract directory instead of the fixture:
+
+```bash
+export TRADING_MODE=PAPER
+export COCKPIT_ARTIFACT_ROOT=/var/lib/hyperliquid-bot/reconstructable
+export COCKPIT_RUN_ID=20260904t001800z-live-paper
+pnpm --filter @hyperliquid-bot/cockpit dev
+```
+
+To point at any unpacked run folder that already contains those six JSON files:
+
+```bash
+export COCKPIT_PAPER_RUN_DIR=tests/fixtures/course1_cockpit/sample-run
+```
+
+See `docs/runbooks/cockpit-first-paper-screen.md`.

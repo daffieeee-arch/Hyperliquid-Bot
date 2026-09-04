@@ -16,8 +16,10 @@ Build a professional trading workstation, not a decorative dashboard. The operat
 
 The browser never receives trading secrets.
 
-Cockpit does not yet consume runtime files, but later DESK / EXECUTION / SYSTEM reads
-must use the create-only reconstructable contracts rather than inventing a second store:
+The first cockpit screen now reads COURSE-1 PAPER JSON. It shows only public
+BTC-PERP mid, paper position, assumed overlay PnL, and capture health. DESK /
+MARKETS / RISK are not built. Later screens must keep using the create-only
+reconstructable contracts rather than inventing a second store:
 
 ```text
 <artifact-root>/course1/live-public-paper/<run_id>/
@@ -37,8 +39,12 @@ must use the create-only reconstructable contracts rather than inventing a secon
 
 `paper-pnl.json` is assumed PAPER overlay economics, not venue PnL. `capture-health.json`
 is a bounded-run summary, not a 24/7 heartbeat. DATA-1A capture duration is 1–604800
-seconds; the COURSE-1 soak remains 1–600 seconds. See `docs/DATA.md`,
-`docs/runbooks/data1a-vps-retained-capture.md`, and
+seconds; the COURSE-1 soak remains 1–600 seconds. Locally the first screen defaults to
+`tests/fixtures/course1_cockpit/live-public-soak/` (`run_id`
+`20260904t001800z-live-paper`). Set `COCKPIT_ARTIFACT_ROOT` + `COCKPIT_RUN_ID` to
+read the same file names from a later VPS artifact root. See `docs/DATA.md`,
+`docs/runbooks/data1a-vps-retained-capture.md`,
+`docs/runbooks/cockpit-first-paper-screen.md`, `apps/cockpit/README.md`, and
 `vertical_slices/course1_live_public_paper/README.md`.
 
 ## Development model

@@ -5,3 +5,5 @@ node_modules/
 pnpm-lock.yaml
 uv.lock
 .venv/
+apps/cockpit/.next/
+apps/cockpit/out/

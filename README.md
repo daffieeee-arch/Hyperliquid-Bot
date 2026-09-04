@@ -4,7 +4,7 @@ Private multi-strategy crypto quantitative research and trading platform.
 
 The project is developed on a Windows 11 workstation through **WSL2 + Codex**, validated in GitHub Actions and packaged as immutable Linux/amd64 OCI images. The 24/7 architecture is host-neutral; a supported Ubuntu LTS VPS is the intended primary deployment profile, while the existing TrueNAS SCALE environment remains optional.
 
-> **Current stage:** COURSE-1 core-engine fit gate and BTC-PERP vertical-slice planning<br>
+> **Current stage:** COURSE-1 core-engine fit gate, BTC-PERP vertical-slice planning, and first PAPER cockpit screen<br>
 > **Default trading mode:** PAPER<br>
 > **Live capital:** Disabled by design until explicit promotion gates are met<br>
 > **Primary development host:** Windows 11 + WSL2<br>
@@ -178,7 +178,7 @@ No stage may be skipped merely because an in-sample backtest looks attractive or
 The aim is to get useful output early rather than disappear into a months-long build:
 
 - Initial days: WSL2/Codex workspace, repository bootstrap, CI and local disposable services.
-- Current: time-boxed core-engine fit gate, then one local BTC-PERP replay-to-PAPER slice; Grafana and the cockpit are not slice dependencies.
+- Current: time-boxed core-engine fit gate, then one local BTC-PERP replay-to-PAPER slice. A first PAPER cockpit screen now reads reconstructable COURSE-1 JSON plus public BTC-PERP mid; DESK/MARKETS/RISK are not built.
 - After the local vertical slice: record the runtime ADR, migrate to the approved Ubuntu LTS VPS profile and begin 24/7 public-data collection and paper trading; retain TrueNAS only where explicitly chosen.
 - Week 3-6: robust research, validation, execution simulation and paper-vs-backtest comparison.
 - Week 6-12: production-grade recovery, reconciliation, security and live-readiness work while paper evidence accumulates.

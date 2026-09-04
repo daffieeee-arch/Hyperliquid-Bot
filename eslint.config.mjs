@@ -3,7 +3,7 @@ import tseslint from "typescript-eslint";
 
 export default tseslint.config(
   {
-    ignores: [".venv/**", "node_modules/**"],
+    ignores: [".venv/**", "node_modules/**", "apps/**", ".next/**"],
   },
   eslint.configs.recommended,
   ...tseslint.configs.strictTypeChecked,

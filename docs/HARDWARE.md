@@ -37,6 +37,11 @@ Use for:
 
 Do not use it as the 24/7 paper/live host and do not store the Hyperliquid master wallet or normal production trading secrets there.
 
+A bounded DATA-1A public BTC-PERP retained capture may run under WSL2 while AC
+sleep is disabled. That is operator-supervised research capture, not a 24/7
+trading runtime and not LIVE. Cloud Agents are unsuitable for that multi-day
+window. See [DATA-1A operator PC/WSL runbook](runbooks/data1a-wsl-pc-retained-capture.md).
+
 ### WSL2 resource starting point
 
 A reasonable initial cap for the 32 GB workstation is:

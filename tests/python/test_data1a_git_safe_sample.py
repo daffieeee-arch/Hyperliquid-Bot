@@ -113,12 +113,16 @@ async def test_git_safe_sample_omits_payload_bytes(tmp_path: Path) -> None:
 def test_data1a_docs_state_the_604800_contract() -> None:
     data_doc = Path("docs/DATA.md").read_text(encoding="utf-8")
     runbook = Path("docs/runbooks/data1a-vps-retained-capture.md").read_text(encoding="utf-8")
+    wsl_runbook = Path("docs/runbooks/data1a-wsl-pc-retained-capture.md").read_text(
+        encoding="utf-8"
+    )
     soak_readme = Path("vertical_slices/course1_live_public_paper/README.md").read_text(
         encoding="utf-8"
     )
     assert "1 through 604800 seconds" in data_doc
     assert "from 1 through 600 seconds" not in data_doc
     assert "1 through 604800 seconds" in runbook
+    assert "1 through 604800 seconds" in wsl_runbook
     assert MAX_CAPTURE_SECONDS == 604800
     assert "DATA-1A retained-capture contract (1-604800s)" in soak_readme
     assert "Duration is an integer between 1 and 600 seconds" in soak_readme

@@ -77,7 +77,11 @@ score in-sample expectancy, and do not treat committed fixtures, D01 routing eve
 DATA-1A smoke as a hypothesis-usable series. Trading must retain a multi-day DATA-1A run at
 `<artifact-root>/data-1a/hyperliquid/BTC-PERP/<run_id>/` (schema version 1, UTC ns receipt
 clocks, `capture-claim.json` with `retained: true`) outside git before Quant can move past this
-gate. A writer duration above 600 seconds is still not 24/7 service and is not by itself an edge.
+gate. Trading may retain that series on the operator WSL PC
+([DATA-1A operator PC/WSL runbook](runbooks/data1a-wsl-pc-retained-capture.md)) or on a VPS
+([DATA-1A VPS runbook](runbooks/data1a-vps-retained-capture.md)). Cloud Agents are unsuitable
+for a multi-day retain. A writer duration above 600 seconds is still not 24/7 service and is
+not by itself an edge.
 
 A passing sanity report is not evidence of edge. The current momentum slot is a fixed-lookback
 scaffold that may only return `noise`. `edge` is reserved and is not assigned by this entrypoint.

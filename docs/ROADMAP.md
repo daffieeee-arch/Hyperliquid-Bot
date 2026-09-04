@@ -36,7 +36,9 @@ The active sequence is:
    This remains a duration-bounded soak, not 24/7 collection, funding settlement, venue
    reconciliation, or promotion evidence. DATA-1A public BTC-PERP capture may now retain up to
    7 days (1–604800s) at a reconstructable Parquet/DuckDB path; that is still not a 24/7
-   service. Operator retain/stop rules are in `docs/runbooks/data1a-vps-retained-capture.md`;
+   service. Operator retain/stop rules are in `docs/runbooks/data1a-vps-retained-capture.md`
+   and `docs/runbooks/data1a-wsl-pc-retained-capture.md`. Cloud Agents are unsuitable
+   for a multi-day retain.
 6. after the local route passes, record the definitive runtime ADR and only then perform the VPS
    migration.
 

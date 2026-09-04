@@ -47,6 +47,7 @@ seconds; the COURSE-1 soak remains 1–600 seconds. Locally the first screen def
 `20260904t001800z-live-paper`). Set `COCKPIT_ARTIFACT_ROOT` + `COCKPIT_RUN_ID` to
 read the same file names from a later VPS artifact root. See `docs/DATA.md`,
 `docs/runbooks/data1a-vps-retained-capture.md`,
+`docs/runbooks/data1a-wsl-pc-retained-capture.md`,
 `docs/runbooks/cockpit-first-paper-screen.md`, `apps/cockpit/README.md`, and
 `vertical_slices/course1_live_public_paper/README.md`.
 

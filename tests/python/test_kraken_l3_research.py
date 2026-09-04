@@ -23,6 +23,10 @@ from hyperliquid_bot.kraken_l3_research import (
     KRAKEN_RESEARCH_PRODUCT,
     KRAKEN_TOKEN_PATH,
     KRAKEN_TOKEN_URL,
+    KRAKEN_WS_API_KEY_ENV,
+    KRAKEN_WS_API_SECRET_ENV,
+    MAX_CAPTURE_SECONDS,
+    SMOKE_CAPTURE_SECONDS,
     KrakenApiCredentials,
     KrakenAuthenticationError,
     KrakenDataIntegrityError,
@@ -32,8 +36,16 @@ from hyperliquid_bot.kraken_l3_research import (
     KrakenTransportError,
     KrakenWebSocketToken,
     WebSocketConnection,
+    _argument_parser,
     _L2BookState,
     _L3BookState,
+    _require_bounded_duration,
+    _resolve_cli_mode,
+    data1b_capture_claim,
+    data1b_capture_health,
+    load_optional_l3_token_provider,
+    refuse_protected_trade_keys,
+    run_reconstructable_capture,
 )
 from hyperliquid_bot.parquet_research import (
     ParquetResearchWriter,
@@ -43,8 +55,10 @@ from hyperliquid_bot.parquet_research import (
 from hyperliquid_bot.raw_research import (
     MessageDirection,
     RawResearchRecord,
+    RawResearchSink,
     capture_application_payload,
 )
+from hyperliquid_bot.reconstructable_paths import DATA1B_PATH_CONTRACT_ID, data1b_run_paths
 
 _FIXTURE_DIR = Path(__file__).parents[1] / "fixtures" / "kraken"
 
@@ -1454,7 +1468,7 @@ async def test_terminal_failure_gracefully_stops_peer_without_cancelling_sink_bo
     assert not collector.peer_cancelled
 
 
-@pytest.mark.parametrize("duration", [0.0, 600.1, -1.0])
+@pytest.mark.parametrize("duration", [0.0, 604800.1, -1.0])
 @pytest.mark.asyncio
 async def test_capture_duration_is_strictly_bounded(duration: float) -> None:
     collector = KrakenL3ResearchCollector(
@@ -1463,5 +1477,166 @@ async def test_capture_duration_is_strictly_bounded(duration: float) -> None:
         public_connection_factory=ScriptedConnectionFactory([]),
         l3_connection_factory=ScriptedConnectionFactory([]),
     )
-    with pytest.raises(ValueError, match="between 1 and 600"):
+    with pytest.raises(ValueError, match="between 1 and 604800"):
         await collector.capture_for(duration)
+
+
+def test_retained_duration_raises_the_historical_smoke_cap() -> None:
+    assert SMOKE_CAPTURE_SECONDS == 600.0
+    assert MAX_CAPTURE_SECONDS == 7 * 24 * 60 * 60
+    assert _require_bounded_duration(600.1) == 600.1
+    assert _require_bounded_duration(86_400) == 86_400.0
+    assert _require_bounded_duration(MAX_CAPTURE_SECONDS) == float(MAX_CAPTURE_SECONDS)
+    with pytest.raises(ValueError, match="between 1 and 604800"):
+        _require_bounded_duration(MAX_CAPTURE_SECONDS + 1)
+
+
+def test_optional_l3_env_loader_refuses_wrong_key_types_without_printing_values() -> None:
+    secret = "super-secret-value-must-never-be-printed"
+    with pytest.raises(KrakenAuthenticationError, match="KRAKEN_API_SECRET") as error:
+        refuse_protected_trade_keys({"KRAKEN_API_SECRET": secret})
+    assert secret not in str(error.value)
+    assert load_optional_l3_token_provider({}) is None
+    with pytest.raises(KrakenAuthenticationError, match="KRAKEN_WS_API_SECRET"):
+        load_optional_l3_token_provider({KRAKEN_WS_API_KEY_ENV: "ws-only-key"})
+    provider = load_optional_l3_token_provider(
+        {
+            KRAKEN_WS_API_KEY_ENV: "ws-only-key-value",
+            KRAKEN_WS_API_SECRET_ENV: base64.b64encode(b"ws-only-secret-bytes").decode("ascii"),
+        }
+    )
+    assert provider is not None
+    assert "ws-only-key-value" not in repr(provider)
+
+
+@pytest.mark.asyncio
+async def test_public_only_capture_succeeds_without_l3(tmp_path: Path) -> None:
+    stop_event = asyncio.Event()
+    public = FakeConnection(
+        [_ack("trade"), _ack("book"), _fixture_text("book_snapshot.json")],
+        on_last=stop_event.set,
+    )
+    sink = MemorySink()
+    collector = KrakenL3ResearchCollector(
+        sink,
+        token_provider=None,
+        public_connection_factory=ScriptedConnectionFactory([public]),
+        l3_connection_factory=ScriptedConnectionFactory([]),
+        session_id_factory=SessionIds(),
+    )
+    await collector.capture_for(5.0, stop_event=stop_event)
+    channels = {record.channel for record in _market_frames(sink.records)}
+    assert "book" in channels
+    assert "level3" not in channels
+
+
+@pytest.mark.asyncio
+async def test_reconstructable_public_capture_writes_the_path_contract(tmp_path: Path) -> None:
+    stop_event = asyncio.Event()
+
+    def collector_factory(sink: RawResearchSink) -> KrakenL3ResearchCollector:
+        return KrakenL3ResearchCollector(
+            sink,
+            token_provider=None,
+            public_connection_factory=ScriptedConnectionFactory(
+                [
+                    FakeConnection(
+                        [_ack("trade"), _ack("book"), _fixture_text("book_snapshot.json")],
+                        on_last=stop_event.set,
+                    )
+                ]
+            ),
+            session_id_factory=SessionIds(),
+        )
+
+    report = await run_reconstructable_capture(
+        artifact_root=tmp_path,
+        run_id="sample-run",
+        duration_seconds=86_400,
+        token_provider=None,
+        stop_event=stop_event,
+        collector_factory=collector_factory,
+    )
+    paths = data1b_run_paths(tmp_path, "sample-run")
+    assert report["path_contract"] == DATA1B_PATH_CONTRACT_ID
+    assert report["status"] == "COMPLETED"
+    assert report["authenticated_l3"] is False
+    assert report["twenty_four_seven"] is False
+    claim = json.loads(paths.capture_claim_path.read_text(encoding="utf-8"))
+    health = json.loads(paths.capture_health_path.read_text(encoding="utf-8"))
+    assert claim["retained"] is True
+    assert claim["authenticated_l3"] is False
+    assert claim["credentialless"] is True
+    assert health["status"] == "COMPLETED"
+    with pytest.raises(FileExistsError, match="refuses to reuse"):
+        await run_reconstructable_capture(
+            artifact_root=tmp_path,
+            run_id="sample-run",
+            duration_seconds=60,
+            collector_factory=collector_factory,
+        )
+
+
+def test_data1b_claim_and_health_are_create_only_and_not_twenty_four_seven() -> None:
+    paths = data1b_run_paths(Path("/var/reconstructable"), "sample-run")
+    claim = data1b_capture_claim(
+        run_id="sample-run",
+        duration_seconds=86_400,
+        paths=paths,
+        include_l3=False,
+    )
+    health = data1b_capture_health(
+        run_id="sample-run",
+        duration_seconds=86_400,
+        status="COMPLETED",
+        report={
+            "events": 0,
+            "payload_bytes": 0,
+            "parquet_files": 0,
+            "parquet_bytes": 0,
+            "gaps": 0,
+            "reconnects": 0,
+        },
+        include_l3=False,
+    )
+    assert claim["schema"] == "data-1b-retained-capture-claim-v1"
+    assert claim["path_contract"] == DATA1B_PATH_CONTRACT_ID
+    assert claim["resume_policy"] == "never resume or overwrite an existing DATA-1B run directory"
+    assert claim["retained"] is True
+    assert health["twenty_four_seven"] is False
+    assert health["authenticated_l3"] is False
+
+
+def test_cli_modes_are_mutually_exclusive(tmp_path: Path) -> None:
+    parser = _argument_parser()
+    reconstructable = parser.parse_args(
+        ["--artifact-root", str(tmp_path), "--run-id", "sample-run", "--duration-seconds", "3600"]
+    )
+    assert _resolve_cli_mode(reconstructable) == "reconstructable"
+    ad_hoc = parser.parse_args(
+        [
+            "--output-dir",
+            str(tmp_path / "raw"),
+            "--database",
+            str(tmp_path / "research.duckdb"),
+            "--duration-seconds",
+            "60",
+        ]
+    )
+    assert _resolve_cli_mode(ad_hoc) == "ad_hoc"
+    mixed = parser.parse_args(
+        [
+            "--artifact-root",
+            str(tmp_path),
+            "--run-id",
+            "sample-run",
+            "--output-dir",
+            str(tmp_path / "raw"),
+            "--database",
+            str(tmp_path / "research.duckdb"),
+            "--duration-seconds",
+            "60",
+        ]
+    )
+    with pytest.raises(ValueError, match="not both"):
+        _resolve_cli_mode(mixed)

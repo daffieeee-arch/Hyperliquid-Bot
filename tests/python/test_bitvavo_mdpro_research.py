@@ -20,10 +20,15 @@ import pytest
 from websockets.exceptions import PayloadTooBig, WebSocketException
 
 from hyperliquid_bot.bitvavo_mdpro_research import (
+    BITVAVO_MDPRO_API_KEY_ENV,
+    BITVAVO_MDPRO_API_SECRET_ENV,
     BITVAVO_MDPRO_FEED_PRODUCT,
     BITVAVO_MDPRO_PRODUCT,
     BITVAVO_MDPRO_SIGNATURE_PATH,
     BITVAVO_MDPRO_WEBSOCKET_URL,
+    MAX_CAPTURE_SECONDS,
+    RETAINED_MAX_RECONNECTS,
+    SMOKE_CAPTURE_SECONDS,
     BitvavoMdProAuthenticationError,
     BitvavoMdProCredentials,
     BitvavoMdProDataIntegrityError,
@@ -32,12 +37,21 @@ from hyperliquid_bot.bitvavo_mdpro_research import (
     BitvavoMdProSinkError,
     BitvavoMdProTransportError,
     WebSocketConnection,
+    _argument_parser,
     _authentication_acknowledged,
     _book_subscription_acknowledged,
     _BookState,
+    _config_for_duration,
     _decode_json_object,
     _normalize_book_snapshot,
     _normalize_book_update,
+    _require_bounded_duration,
+    _resolve_cli_mode,
+    data1e_capture_claim,
+    data1e_capture_health,
+    load_mdpro_credentials_from_env,
+    refuse_protected_trade_keys,
+    run_reconstructable_capture,
 )
 from hyperliquid_bot.parquet_research import (
     RESEARCH_VIEW_NAMES,
@@ -45,7 +59,8 @@ from hyperliquid_bot.parquet_research import (
     ParquetRotation,
     create_research_catalog,
 )
-from hyperliquid_bot.raw_research import MessageDirection, RawResearchRecord
+from hyperliquid_bot.raw_research import MessageDirection, RawResearchRecord, RawResearchSink
+from hyperliquid_bot.reconstructable_paths import DATA1E_PATH_CONTRACT_ID, data1e_run_paths
 
 _FIXTURE_DIR = Path(__file__).parents[1] / "fixtures" / "bitvavo_mdpro"
 
@@ -1163,7 +1178,7 @@ async def test_published_parts_remain_readable_after_injected_sink_crash(tmp_pat
         connection.close()
 
 
-@pytest.mark.parametrize("duration", [0, 0.5, 601, True, "60"])
+@pytest.mark.parametrize("duration", [0, 0.5, 604800.1, True, "60"])
 @pytest.mark.asyncio
 async def test_capture_duration_is_strictly_bounded(duration: object) -> None:
     collector = BitvavoMdProResearchCollector(
@@ -1195,3 +1210,140 @@ def test_fixture_directory_contains_no_authentication_material() -> None:
     assert b"api_key" not in lowered
     assert b"api secret" not in lowered
     assert b"token" not in lowered
+
+
+def test_retained_duration_raises_the_historical_smoke_cap() -> None:
+    assert SMOKE_CAPTURE_SECONDS == 600.0
+    assert MAX_CAPTURE_SECONDS == 7 * 24 * 60 * 60
+    assert RETAINED_MAX_RECONNECTS == 10_080
+    assert _require_bounded_duration(600.1) == 600.1
+    assert _require_bounded_duration(86_400) == 86_400.0
+    assert _require_bounded_duration(MAX_CAPTURE_SECONDS) == float(MAX_CAPTURE_SECONDS)
+    with pytest.raises(ValueError, match="between 1 and 604800"):
+        _require_bounded_duration(MAX_CAPTURE_SECONDS + 1)
+    assert _config_for_duration(600.0).max_reconnects == 1
+    assert _config_for_duration(600.1).max_reconnects == RETAINED_MAX_RECONNECTS
+
+
+def test_mdpro_env_loader_refuses_trade_keys_without_printing_values() -> None:
+    secret = "super-secret-value-must-never-be-printed"
+    with pytest.raises(BitvavoMdProAuthenticationError, match="BITVAVO_API_SECRET") as error:
+        refuse_protected_trade_keys({"BITVAVO_API_SECRET": secret})
+    assert secret not in str(error.value)
+    with pytest.raises(BitvavoMdProAuthenticationError, match="BITVAVO_MDPRO_API_KEY"):
+        load_mdpro_credentials_from_env({})
+    credentials = load_mdpro_credentials_from_env(
+        {
+            BITVAVO_MDPRO_API_KEY_ENV: "viewonly-key-value",
+            BITVAVO_MDPRO_API_SECRET_ENV: "viewonly-secret-value",
+        }
+    )
+    assert "viewonly-key-value" not in repr(credentials)
+    assert "viewonly-secret-value" not in str(credentials)
+
+
+@pytest.mark.asyncio
+async def test_reconstructable_capture_writes_the_path_contract(tmp_path: Path) -> None:
+    stop_event = asyncio.Event()
+
+    def collector_factory(sink: RawResearchSink) -> BitvavoMdProResearchCollector:
+        return BitvavoMdProResearchCollector(
+            sink,
+            _credentials(),
+            connection_factory=ScriptedConnectionFactory(
+                [FakeConnection(_successful_messages(), on_last=stop_event.set)]
+            ),
+            timestamp_ms=lambda: 1_788_112_345_678,
+            session_id_factory=SessionIds(),
+        )
+
+    report = await run_reconstructable_capture(
+        artifact_root=tmp_path,
+        run_id="sample-run",
+        duration_seconds=86_400,
+        credentials=_credentials(),
+        stop_event=stop_event,
+        collector_factory=collector_factory,
+    )
+    paths = data1e_run_paths(tmp_path, "sample-run")
+    assert report["path_contract"] == DATA1E_PATH_CONTRACT_ID
+    assert report["status"] == "COMPLETED"
+    assert report["twenty_four_seven"] is False
+    assert paths.capture_claim_path.is_file()
+    assert paths.capture_health_path.is_file()
+    assert paths.database_path.is_file()
+    assert list(paths.raw_dir.glob(paths.parquet_glob))
+    claim = json.loads(paths.capture_claim_path.read_text(encoding="utf-8"))
+    health = json.loads(paths.capture_health_path.read_text(encoding="utf-8"))
+    assert claim["retained"] is True
+    assert claim["signing"] is False
+    assert claim["authenticated_read_only"] is True
+    assert health["status"] == "COMPLETED"
+    assert health["path_contract"] == DATA1E_PATH_CONTRACT_ID
+    with pytest.raises(FileExistsError, match="refuses to reuse"):
+        await run_reconstructable_capture(
+            artifact_root=tmp_path,
+            run_id="sample-run",
+            duration_seconds=60,
+            credentials=_credentials(),
+            collector_factory=collector_factory,
+        )
+
+
+def test_data1e_claim_and_health_are_create_only_and_not_twenty_four_seven() -> None:
+    paths = data1e_run_paths(Path("/var/reconstructable"), "sample-run")
+    claim = data1e_capture_claim(run_id="sample-run", duration_seconds=86_400, paths=paths)
+    health = data1e_capture_health(
+        run_id="sample-run",
+        duration_seconds=86_400,
+        status="COMPLETED",
+        report={
+            "events": 0,
+            "payload_bytes": 0,
+            "parquet_files": 0,
+            "parquet_bytes": 0,
+            "gaps": 0,
+            "reconnects": 0,
+        },
+    )
+    assert claim["schema"] == "data-1e-retained-capture-claim-v1"
+    assert claim["path_contract"] == DATA1E_PATH_CONTRACT_ID
+    assert claim["resume_policy"] == "never resume or overwrite an existing DATA-1E run directory"
+    assert claim["retained"] is True
+    assert health["twenty_four_seven"] is False
+    assert health["signing"] is False
+
+
+def test_cli_modes_are_mutually_exclusive(tmp_path: Path) -> None:
+    parser = _argument_parser()
+    reconstructable = parser.parse_args(
+        ["--artifact-root", str(tmp_path), "--run-id", "sample-run", "--duration-seconds", "3600"]
+    )
+    assert _resolve_cli_mode(reconstructable) == "reconstructable"
+    ad_hoc = parser.parse_args(
+        [
+            "--output-dir",
+            str(tmp_path / "raw"),
+            "--database",
+            str(tmp_path / "research.duckdb"),
+            "--duration-seconds",
+            "60",
+        ]
+    )
+    assert _resolve_cli_mode(ad_hoc) == "ad_hoc"
+    mixed = parser.parse_args(
+        [
+            "--artifact-root",
+            str(tmp_path),
+            "--run-id",
+            "sample-run",
+            "--output-dir",
+            str(tmp_path / "raw"),
+            "--database",
+            str(tmp_path / "research.duckdb"),
+            "--duration-seconds",
+            "60",
+        ]
+    )
+    with pytest.raises(ValueError, match="not both"):
+        _resolve_cli_mode(mixed)

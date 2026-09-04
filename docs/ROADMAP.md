@@ -42,6 +42,13 @@ The active sequence is:
    `docs/runbooks/data1f-wsl-pc-retained-capture.md` and
    `docs/runbooks/data1f-vps-retained-capture.md`; do not start that capture until
    the TerraPC DATA-1A 72h series finishes and CoS assigns the window.
+   DATA-1E Bitvavo MD Pro and DATA-1B Kraken retained-capture operator docs are in
+   `docs/runbooks/data1e-wsl-pc-retained-capture.md` /
+   `docs/runbooks/data1e-vps-retained-capture.md` and
+   `docs/runbooks/data1b-wsl-pc-retained-capture.md` /
+   `docs/runbooks/data1b-vps-retained-capture.md`; those captures are prepare-only
+   and must not start until CoS assigns the window. Cloud Agents are unsuitable
+   for a multi-day retain.
 6. after the local route passes, record the definitive runtime ADR and only then perform the VPS
    migration.
 

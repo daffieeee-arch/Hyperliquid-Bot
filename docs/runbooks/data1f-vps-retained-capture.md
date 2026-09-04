@@ -117,4 +117,5 @@ DuckDB catalog into a new run.
 - funding settlement, signing, TESTNET, SHADOW, LIVE
 - profitability or strategy promotion
 - TrueNAS / ClickHouse reuse
-- Bitvavo / Kraken multi-day retain
+- Bitvavo DATA-1E / Kraken DATA-1B multi-day retain (operator docs exist;
+  do not start until CoS assigns)

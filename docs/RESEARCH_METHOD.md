@@ -92,6 +92,13 @@ Operator docs for a later retained Binance capture are in
 until the TerraPC DATA-1A 72h series finishes and CoS assigns the window. Cloud Agents are
 unsuitable for a multi-day retain.
 
+Bitvavo DATA-1E (authenticated View-only MD Pro BTC-EUR) and Kraken DATA-1B (public L2 +
+trades by default; optional L3) now have retained-path operator docs and create-only
+helpers. Do not start those captures until CoS assigns the window. See
+[DATA-1E operator PC/WSL runbook](runbooks/data1e-wsl-pc-retained-capture.md) and
+[DATA-1B operator PC/WSL runbook](runbooks/data1b-wsl-pc-retained-capture.md). Cloud
+Agents are unsuitable for a multi-day retain.
+
 ## Reproducible execution
 
 Every experiment runs from:

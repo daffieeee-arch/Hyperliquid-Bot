@@ -1,25 +1,37 @@
-"""Bounded authenticated Bitvavo Market Data Pro BTC-EUR L2 capture."""
+"""Authenticated Bitvavo Market Data Pro BTC-EUR L2 capture.
+
+Duration may be a short smoke or a retained multi-day run. The process still
+stops at an explicit duration or operator signal; this is not a 24/7 service.
+Read-only MD Pro keys enter only through documented environment names.
+"""
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import hashlib
 import hmac
 import json
 import logging
+import math
+import os
 import re
+import signal
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from enum import Enum
+from pathlib import Path
 from typing import Final, Protocol, cast
 
+import duckdb
 from websockets.asyncio.client import connect
 from websockets.exceptions import PayloadTooBig, WebSocketException
 
+from .parquet_research import ParquetResearchWriter, ParquetRotation, create_research_catalog
 from .raw_research import (
     RAW_RESEARCH_SCHEMA_VERSION,
     CapturedApplicationPayload,
@@ -31,13 +43,48 @@ from .raw_research import (
     RawResearchSink,
     capture_application_payload,
 )
+from .reconstructable_paths import (
+    DATA1E_PATH_CONTRACT_ID,
+    DATA1E_PRODUCT,
+    Data1ERunPaths,
+    data1e_run_paths,
+)
 
 BITVAVO_MDPRO_WEBSOCKET_URL: Final = "wss://ws-mdpro.bitvavo.com/v2/"
 BITVAVO_MDPRO_VENUE: Final = "bitvavo"
 BITVAVO_MDPRO_PRODUCT: Final = "BTC-EUR"
 BITVAVO_MDPRO_FEED_PRODUCT: Final = "market_data_pro"
 BITVAVO_MDPRO_SIGNATURE_PATH: Final = "/v2/websocket"
-MAX_CAPTURE_SECONDS: Final = 600.0
+SMOKE_CAPTURE_SECONDS: Final = 600.0
+MAX_CAPTURE_SECONDS: Final = 7 * 24 * 60 * 60
+RETAINED_MAX_RECONNECTS: Final = 10_080
+DATA1E_CLAIM_SCHEMA: Final = "data-1e-retained-capture-claim-v1"
+DATA1E_HEALTH_SCHEMA: Final = "data-1e-retained-capture-health-v1"
+BITVAVO_MDPRO_API_KEY_ENV: Final = "BITVAVO_MDPRO_API_KEY"
+BITVAVO_MDPRO_API_SECRET_ENV: Final = "BITVAVO_MDPRO_API_SECRET"
+BITVAVO_MDPRO_REQUIRED_ENV: Final = (BITVAVO_MDPRO_API_KEY_ENV, BITVAVO_MDPRO_API_SECRET_ENV)
+PROTECTED_TRADE_KEY_ENV: Final = (
+    "HYPERLIQUID_PK",
+    "HYPERLIQUID_TESTNET_PK",
+    "HYPERLIQUID_VAULT",
+    "HYPERLIQUID_TESTNET_VAULT",
+    "HYPERLIQUID_ACCOUNT_ADDRESS",
+    "BINANCE_API_KEY",
+    "BINANCE_API_SECRET",
+    "BINANCE_SECRET",
+    "BINANCE_API_KEY_TESTNET",
+    "BINANCE_TESTNET_API_SECRET",
+    "BITVAVO_API_KEY",
+    "BITVAVO_API_SECRET",
+    "BITVAVO_ACCESS_KEY",
+    "BITVAVO_SECRET",
+    "BITVAVO_SIGNING_KEY",
+    "KRAKEN_API_KEY",
+    "KRAKEN_API_SECRET",
+    "OKX_API_KEY",
+    "OKX_SECRET_KEY",
+    "OKX_PASSPHRASE",
+)
 
 _BOOK_SUBSCRIPTION_TEXT: Final = (
     '{"action":"subscribe","channels":[{"markets":["BTC-EUR"],"name":"book"}]}'
@@ -1364,9 +1411,356 @@ def _connection_factory(config: BitvavoMdProResearchConfig) -> ConnectionFactory
     return lambda: _websocket_connection(config)
 
 
-def _require_bounded_duration(duration_seconds: object) -> None:
+def _require_bounded_duration(duration_seconds: object) -> float:
     if type(duration_seconds) not in (int, float):
         raise TypeError("duration_seconds must be a built-in number.")
     duration = float(cast(int | float, duration_seconds))
-    if not 1.0 <= duration <= MAX_CAPTURE_SECONDS:
+    if not math.isfinite(duration) or not 1.0 <= duration <= MAX_CAPTURE_SECONDS:
         raise ValueError(f"duration_seconds must be between 1 and {MAX_CAPTURE_SECONDS:g}.")
+    return duration
+
+
+def _config_for_duration(duration_seconds: float) -> BitvavoMdProResearchConfig:
+    """Smoke keeps the Phase-1 reconnect cap; retained runs retry until duration ends."""
+
+    duration = _require_bounded_duration(duration_seconds)
+    if duration <= SMOKE_CAPTURE_SECONDS:
+        return BitvavoMdProResearchConfig()
+    return BitvavoMdProResearchConfig(max_reconnects=RETAINED_MAX_RECONNECTS)
+
+
+def refuse_protected_trade_keys(environ: Mapping[str, str] | None = None) -> None:
+    """Fail closed when trade/signing key names are set. Values are never included."""
+
+    source = os.environ if environ is None else environ
+    for name in PROTECTED_TRADE_KEY_ENV:
+        if source.get(name):
+            raise BitvavoMdProAuthenticationError(
+                f"Refuse: protected environment name {name} is set. Value not printed."
+            )
+
+
+def load_mdpro_credentials_from_env(
+    environ: Mapping[str, str] | None = None,
+) -> BitvavoMdProCredentials:
+    """Load View-only MD Pro keys from documented env names. Never echo values."""
+
+    source = os.environ if environ is None else environ
+    refuse_protected_trade_keys(source)
+    api_key = source.get(BITVAVO_MDPRO_API_KEY_ENV)
+    api_secret = source.get(BITVAVO_MDPRO_API_SECRET_ENV)
+    if api_key is None or api_secret is None:
+        raise BitvavoMdProAuthenticationError(
+            "Bitvavo Market Data Pro requires BITVAVO_MDPRO_API_KEY and "
+            "BITVAVO_MDPRO_API_SECRET (View-only). Values are not printed."
+        )
+    return BitvavoMdProCredentials(api_key=api_key, api_secret=api_secret)
+
+
+def build_capture_report(database_path: Path, parquet_dir: Path) -> dict[str, object]:
+    """Return payload/file counts only; never emit captured payload contents."""
+
+    connection = duckdb.connect(str(database_path.resolve()), read_only=True)
+    try:
+        channel_rows = connection.execute(
+            """
+            SELECT channel, direction, count(*), sum(octet_length(payload_bytes))
+            FROM raw_records
+            GROUP BY channel, direction
+            ORDER BY channel, direction
+            """
+        ).fetchall()
+        totals = connection.execute(
+            "SELECT count(*), coalesce(sum(octet_length(payload_bytes)), 0) FROM raw_records"
+        ).fetchone()
+        gap_row = connection.execute(
+            "SELECT count(*) FROM data_quality_events WHERE event = 'gap_detected'"
+        ).fetchone()
+        reconnect_row = connection.execute(
+            "SELECT count(*) FROM sessions WHERE event = 'reconnected'"
+        ).fetchone()
+        if totals is None or gap_row is None or reconnect_row is None:
+            raise RuntimeError("DuckDB did not return the requested capture aggregates.")
+        total_events, total_payload_bytes = totals
+    finally:
+        connection.close()
+
+    parquet_files = tuple(sorted(parquet_dir.resolve().glob("*.parquet")))
+    parquet_bytes = sum(path.stat().st_size for path in parquet_files)
+    raw_bytes = int(total_payload_bytes)
+    return {
+        "channels": [
+            {
+                "channel": str(channel),
+                "direction": str(direction),
+                "events": int(events),
+                "payload_bytes": int(payload_bytes),
+            }
+            for channel, direction, events, payload_bytes in channel_rows
+        ],
+        "events": int(total_events),
+        "payload_bytes": raw_bytes,
+        "parquet_files": len(parquet_files),
+        "parquet_bytes": parquet_bytes,
+        "raw_payload_to_parquet_ratio": (raw_bytes / parquet_bytes if parquet_bytes else None),
+        "gaps": int(gap_row[0]),
+        "reconnects": int(reconnect_row[0]),
+    }
+
+
+async def run_bounded_capture(
+    *,
+    output_dir: Path,
+    database_path: Path,
+    duration_seconds: float,
+    credentials: BitvavoMdProCredentials,
+    stop_event: asyncio.Event | None = None,
+    collector_factory: Callable[[RawResearchSink], BitvavoMdProResearchCollector] | None = None,
+) -> dict[str, object]:
+    """Run the authenticated capture, close Parquet, and build the DuckDB catalog."""
+
+    duration = _require_bounded_duration(duration_seconds)
+    writer = ParquetResearchWriter(output_dir, rotation=ParquetRotation())
+    active = (
+        collector_factory(writer)
+        if collector_factory is not None
+        else BitvavoMdProResearchCollector(
+            writer,
+            credentials,
+            config=_config_for_duration(duration),
+        )
+    )
+    try:
+        await active.capture_for(duration, stop_event=stop_event)
+    finally:
+        await writer.aclose()
+    create_research_catalog(output_dir, database_path)
+    return build_capture_report(database_path, output_dir)
+
+
+def data1e_capture_claim(
+    *,
+    run_id: str,
+    duration_seconds: float,
+    paths: Data1ERunPaths,
+) -> dict[str, object]:
+    """Create-only start claim for a reconstructable DATA-1E run."""
+
+    duration = _require_bounded_duration(duration_seconds)
+    return {
+        "schema": DATA1E_CLAIM_SCHEMA,
+        "state": "STARTED_FAIL_CLOSED",
+        "path_contract": DATA1E_PATH_CONTRACT_ID,
+        "run_id": run_id,
+        "venue": BITVAVO_MDPRO_VENUE,
+        "product": DATA1E_PRODUCT,
+        "feed": "bitvavo-mdpro-btc-eur-book",
+        "websocket_url": BITVAVO_MDPRO_WEBSOCKET_URL,
+        "credentialless": False,
+        "signing": False,
+        "authenticated_read_only": True,
+        "duration_seconds": duration,
+        "smoke_duration_seconds": SMOKE_CAPTURE_SECONDS,
+        "max_duration_seconds": MAX_CAPTURE_SECONDS,
+        "retained": duration > SMOKE_CAPTURE_SECONDS,
+        "twenty_four_seven": False,
+        "resume_policy": "never resume or overwrite an existing DATA-1E run directory",
+        "raw_dir": paths.raw_dir.as_posix(),
+        "database_path": paths.database_path.as_posix(),
+    }
+
+
+def data1e_capture_health(
+    *,
+    run_id: str,
+    duration_seconds: float,
+    status: str,
+    report: dict[str, object],
+) -> dict[str, object]:
+    """Create-only end health for a reconstructable DATA-1E run."""
+
+    if status not in {"COMPLETED", "OPERATOR_STOP", "FAILED"}:
+        raise ValueError("DATA-1E capture-health status is outside the documented bound.")
+    duration = _require_bounded_duration(duration_seconds)
+    return {
+        "schema": DATA1E_HEALTH_SCHEMA,
+        "kind": "capture-health",
+        "path_contract": DATA1E_PATH_CONTRACT_ID,
+        "run_id": run_id,
+        "status": status,
+        "duration_seconds": duration,
+        "retained": duration > SMOKE_CAPTURE_SECONDS,
+        "twenty_four_seven": False,
+        "credentialless": False,
+        "authenticated_read_only": True,
+        "signing": False,
+        "events": report.get("events"),
+        "payload_bytes": report.get("payload_bytes"),
+        "parquet_files": report.get("parquet_files"),
+        "parquet_bytes": report.get("parquet_bytes"),
+        "gaps": report.get("gaps"),
+        "reconnects": report.get("reconnects"),
+        "limitations": [
+            "Published Parquet parts are reconstructable; a crash can lose the in-memory segment.",
+            "This is not 24/7 service evidence or a trading edge.",
+            "Market Data Pro is authenticated View-only L2, never L3/MBO.",
+            "Keys enter only through BITVAVO_MDPRO_API_KEY and BITVAVO_MDPRO_API_SECRET.",
+            "Trade, withdrawal, transfer, or signing key names fail closed.",
+        ],
+    }
+
+
+def _write_create_only_json(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("x", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=True, sort_keys=True, indent=2) + "\n")
+
+
+async def run_reconstructable_capture(
+    *,
+    artifact_root: Path,
+    run_id: str,
+    duration_seconds: float,
+    credentials: BitvavoMdProCredentials,
+    stop_event: asyncio.Event | None = None,
+    operator_stop: Callable[[], bool] | None = None,
+    collector_factory: Callable[[RawResearchSink], BitvavoMdProResearchCollector] | None = None,
+) -> dict[str, object]:
+    """Write DATA-1E Parquet/DuckDB to the documented reconstructable path."""
+
+    refuse_protected_trade_keys()
+    paths = data1e_run_paths(artifact_root, run_id)
+    if paths.run_dir.exists():
+        raise FileExistsError(f"DATA-1E refuses to reuse existing run directory: {paths.run_dir}")
+    paths.run_dir.mkdir(parents=True, exist_ok=False)
+    paths.raw_dir.mkdir(exist_ok=False)
+    _write_create_only_json(
+        paths.capture_claim_path,
+        data1e_capture_claim(run_id=run_id, duration_seconds=duration_seconds, paths=paths),
+    )
+    report: dict[str, object] = {
+        "events": 0,
+        "payload_bytes": 0,
+        "parquet_files": 0,
+        "parquet_bytes": 0,
+        "gaps": 0,
+        "reconnects": 0,
+    }
+    status = "FAILED"
+    try:
+        report = await run_bounded_capture(
+            output_dir=paths.raw_dir,
+            database_path=paths.database_path,
+            duration_seconds=duration_seconds,
+            credentials=credentials,
+            stop_event=stop_event,
+            collector_factory=collector_factory,
+        )
+        if operator_stop is not None and operator_stop():
+            status = "OPERATOR_STOP"
+        else:
+            status = "COMPLETED"
+    finally:
+        if not paths.capture_health_path.exists():
+            _write_create_only_json(
+                paths.capture_health_path,
+                data1e_capture_health(
+                    run_id=run_id,
+                    duration_seconds=duration_seconds,
+                    status=status,
+                    report=report,
+                ),
+            )
+    return {
+        **report,
+        "run_id": run_id,
+        "path_contract": DATA1E_PATH_CONTRACT_ID,
+        "run_dir": str(paths.run_dir),
+        "raw_dir": str(paths.raw_dir),
+        "database_path": str(paths.database_path),
+        "status": status,
+        "twenty_four_seven": False,
+    }
+
+
+def _argument_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Authenticated Bitvavo Market Data Pro BTC-EUR exact-raw research capture. "
+            "Duration may exceed the historical 600s smoke cap up to 7 days. "
+            "Read-only MD Pro keys via BITVAVO_MDPRO_API_KEY and BITVAVO_MDPRO_API_SECRET. "
+            "This is not a 24/7 service. Do not start a multi-day retain from a Cloud Agent."
+        )
+    )
+    parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--database", type=Path)
+    parser.add_argument("--artifact-root", type=Path)
+    parser.add_argument("--run-id")
+    parser.add_argument("--duration-seconds", required=True, type=float)
+    return parser
+
+
+def _resolve_cli_mode(args: argparse.Namespace) -> str:
+    reconstructable = args.artifact_root is not None or args.run_id is not None
+    ad_hoc = args.output_dir is not None or args.database is not None
+    if reconstructable and ad_hoc:
+        raise ValueError(
+            "Use either --artifact-root/--run-id or --output-dir/--database, not both."
+        )
+    if reconstructable:
+        if args.artifact_root is None or args.run_id is None:
+            raise ValueError("Reconstructable capture requires both --artifact-root and --run-id.")
+        return "reconstructable"
+    if args.output_dir is None or args.database is None:
+        raise ValueError(
+            "Ad-hoc capture requires --output-dir and --database; "
+            "preferred reconstructable mode uses --artifact-root and --run-id."
+        )
+    return "ad_hoc"
+
+
+async def _run_from_args(args: argparse.Namespace) -> dict[str, object]:
+    stop_event = asyncio.Event()
+    operator_stopped = False
+
+    def _request_operator_stop() -> None:
+        nonlocal operator_stopped
+        operator_stopped = True
+        stop_event.set()
+
+    try:
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, _request_operator_stop)
+    except (NotImplementedError, RuntimeError):
+        pass
+
+    credentials = load_mdpro_credentials_from_env()
+    mode = _resolve_cli_mode(args)
+    if mode == "reconstructable":
+        return await run_reconstructable_capture(
+            artifact_root=cast(Path, args.artifact_root),
+            run_id=cast(str, args.run_id),
+            duration_seconds=cast(float, args.duration_seconds),
+            credentials=credentials,
+            stop_event=stop_event,
+            operator_stop=lambda: operator_stopped,
+        )
+    return await run_bounded_capture(
+        output_dir=cast(Path, args.output_dir),
+        database_path=cast(Path, args.database),
+        duration_seconds=cast(float, args.duration_seconds),
+        credentials=credentials,
+        stop_event=stop_event,
+    )
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _argument_parser().parse_args(argv)
+    report = asyncio.run(_run_from_args(args))
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

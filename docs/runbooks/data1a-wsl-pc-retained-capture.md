@@ -341,6 +341,7 @@ from a Cloud Agent.
 - funding settlement, signing, TESTNET, SHADOW, LIVE
 - profitability or strategy promotion
 - TrueNAS / ClickHouse reuse
-- Bitvavo / Kraken multi-day retain
+- Bitvavo DATA-1E / Kraken DATA-1B multi-day retain (operator docs exist;
+  `bv-capture` / `kr-capture`; do not start until CoS assigns)
 - Binance DATA-1F multi-day retain (operator docs exist; do not start while
   this DATA-1A `hl-capture` window is the assigned TerraPC capture)

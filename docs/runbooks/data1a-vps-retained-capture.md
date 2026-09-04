@@ -112,7 +112,7 @@ PYTHONPATH=src uv run --frozen python -m hyperliquid_bot.data1a_git_safe_sample 
 The sample copies claim/health plus metadata-only rows (`payload_sha256` and
 byte length). It never copies `payload_bytes`.
 
-## Cloud-agent evidence used by this PR
+## Cloud-agent evidence
 
 | Field | Value |
 | --- | --- |
@@ -120,8 +120,19 @@ byte length). It never copies `payload_bytes`.
 | `run_id` | `20260904t001700z-live-retained` |
 | requested duration | `14400` seconds (4 hours) |
 | start UTC | `2026-09-04T00:17:03Z` |
+| end UTC | `2026-09-04T04:17:58Z` |
+| health | `OPERATOR_STOP` |
+| published parts | `41` (`1822908` bytes) |
+| events | `19404` (trades 2975, bbo 13936, l2Book 375, activeAssetCtx 1967) |
+| gaps / reconnects | `1` / `1` |
 | websocket | `wss://api.hyperliquid.xyz/ws` |
 | product | Hyperliquid public BTC-PERP (`trades`, `bbo`, `l2Book`, `activeAssetCtx`) |
+
+The cloud-agent VM froze after ~49 minutes of process time. Last substantial
+Parquet part was `01:06Z`; marker-only parts continued through `01:20Z`. On
+wake the collector was stopped with SIGTERM instead of waiting out a stale
+socket. That is an operator stop, not a 24/7 crash-recovery claim. Continue
+later only with a **new** `run_id`.
 
 Raw parts stay under `var/reconstructable/` (gitignored). Committed evidence
 lives in `tests/fixtures/data_1a_live_evidence/`.

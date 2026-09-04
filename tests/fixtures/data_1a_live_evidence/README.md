@@ -9,6 +9,19 @@ run. Raw `part-*.parquet` and `research.duckdb` stay outside git.
 | `run_id` | `20260904t001700z-live-retained` |
 | requested duration | `14400` seconds (4 hours) |
 | start UTC | `2026-09-04T00:17:03Z` |
+| end UTC | `2026-09-04T04:17:58Z` |
+| health status | `OPERATOR_STOP` |
+| published parts | `41` |
+| parquet bytes | `1822908` |
+| events | `19404` |
+| gaps / reconnects | `1` / `1` |
+
+The requested window was 14400s. The cloud-agent VM froze after about 49
+minutes of process time (last substantial part `01:06Z`, marker-only parts
+through `01:20Z`). On wake the collector was SIGTERM'd rather than left on a
+stale socket for the remaining monotonic duration. Published parts remain
+readable. This is still a retained run (`duration_seconds` 14400, live capture
+well above 600s), not a 24/7 service.
 
 Path contract:
 
@@ -21,8 +34,6 @@ Path contract:
 ```
 
 `sample-rows.json` keeps channel, clocks, SHA-256, and payload length only.
-`run-summary.json` is a snapshot of **published** parts (the writer may still be
-running). `capture-health.json` is added only after COMPLETED / OPERATOR_STOP /
-FAILED. See `docs/runbooks/data1a-vps-retained-capture.md`.
+See `docs/runbooks/data1a-vps-retained-capture.md`.
 
 This is not 24/7 service evidence, not a trading edge, and not LIVE trading.

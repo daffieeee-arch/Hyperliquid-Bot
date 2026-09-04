@@ -128,6 +128,7 @@ def test_live_evidence_fixture_is_retained_and_payload_free() -> None:
     fixture = Path("tests/fixtures/data_1a_live_evidence/20260904t001700z-live-retained")
     claim = json.loads((fixture / "capture-claim.json").read_text(encoding="utf-8"))
     summary = json.loads((fixture / "run-summary.json").read_text(encoding="utf-8"))
+    health = json.loads((fixture / "capture-health.json").read_text(encoding="utf-8"))
     sample_rows = json.loads((fixture / "sample-rows.json").read_text(encoding="utf-8"))
     assert claim["run_id"] == "20260904t001700z-live-retained"
     assert claim["retained"] is True
@@ -137,10 +138,16 @@ def test_live_evidence_fixture_is_retained_and_payload_free() -> None:
     assert claim["twenty_four_seven"] is False
     assert claim["websocket_url"] == "wss://api.hyperliquid.xyz/ws"
     assert 1.0 <= float(claim["duration_seconds"]) <= float(MAX_CAPTURE_SECONDS)
+    assert health["status"] == "OPERATOR_STOP"
+    assert health["retained"] is True
+    assert health["twenty_four_seven"] is False
+    assert health["events"] == 19_404
+    assert health["parquet_files"] == 41
     assert summary["payloads_included"] is False
     assert summary["retained"] is True
+    assert summary["health_present"] is True
     assert summary["sample_row_count"] == len(sample_rows)
-    assert summary["parquet_files"] >= 1
+    assert summary["parquet_files"] == 41
     for row in sample_rows:
         assert "payload_bytes" not in row
         assert row["venue"] == "hyperliquid"

@@ -34,6 +34,8 @@ Path contract:
 ```
 
 `sample-rows.json` keeps channel, clocks, SHA-256, and payload length only.
-See `docs/runbooks/data1a-vps-retained-capture.md`.
+See `docs/runbooks/data1a-vps-retained-capture.md` and
+`docs/runbooks/data1a-wsl-pc-retained-capture.md`. Cloud Agents are unsuitable
+for a multi-day retain.
 
 This is not 24/7 service evidence, not a trading edge, and not LIVE trading.

@@ -271,7 +271,9 @@ The COURSE-1 live-public PAPER soak remains a separate 1–600 second bound. Do 
 treat that soak cap as the DATA-1A capture contract.
 
 Operator commands, retain/stop/continue rules, and the git-safe sample exporter are
-in [DATA-1A VPS retained-capture runbook](runbooks/data1a-vps-retained-capture.md).
+in [DATA-1A VPS retained-capture runbook](runbooks/data1a-vps-retained-capture.md)
+and the [DATA-1A operator PC/WSL retained-capture runbook](runbooks/data1a-wsl-pc-retained-capture.md).
+Cloud Agents are unsuitable for a multi-day retain.
 
 Preferred reconstructable layout (the path contract Cockpit should later read):
 
@@ -295,8 +297,10 @@ The reconstructable command is create-only: an existing run directory is refused
 Parquet or DuckDB files; git holds the path contract, a tiny synthetic sample under
 `tests/fixtures/data_1a_retained/`, and a payload-free live-evidence sample under
 `tests/fixtures/data_1a_live_evidence/`. Raw `part-*.parquet` stays on the selected
-runtime store. See the [VPS runbook](runbooks/data1a-vps-retained-capture.md) to
-retain, stop, or start a new `run_id` after an operator stop.
+runtime store. See the [VPS runbook](runbooks/data1a-vps-retained-capture.md) or
+the [operator PC/WSL runbook](runbooks/data1a-wsl-pc-retained-capture.md) to
+retain, stop, or start a new `run_id` after an operator stop. Never resume the
+same `run_id`. Cloud Agents must not SSH to or stop a live TerraPC capture.
 
 The command prints counts and byte totals only; it never prints payload contents. The catalog has
 `raw_records`, `trades`, `bbo`, `l2`, `derivative_context`, `sessions`, `subscription_events` and

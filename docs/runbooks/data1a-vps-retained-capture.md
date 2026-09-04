@@ -6,6 +6,12 @@ This is **not** a 24/7 service, not D22-B, and not LIVE trading.
 Public Hyperliquid MAINNET market data only. No keys, no signing, no Binance,
 and no extra venues.
 
+For the Windows 11 + WSL2 Ubuntu operator PC (TerraPC), including tmux
+`hl-capture` start/status/stop and Quant handoff, see
+[data1a-wsl-pc-retained-capture.md](data1a-wsl-pc-retained-capture.md). Cloud
+Agents are unsuitable for a multi-day retain and must not SSH to or stop a
+capture that is already running.
+
 ## Duration contract
 
 `hyperliquid_bot.hyperliquid_raw_research` accepts an explicit duration of

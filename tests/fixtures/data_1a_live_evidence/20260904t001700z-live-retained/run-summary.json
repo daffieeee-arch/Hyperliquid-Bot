@@ -1,0 +1,83 @@
+{
+  "artifact_root": "/workspace/var/reconstructable",
+  "channel_counts": [
+    {
+      "channel": "activeAssetCtx",
+      "direction": "inbound",
+      "row_count": 119
+    },
+    {
+      "channel": "bbo",
+      "direction": "inbound",
+      "row_count": 854
+    },
+    {
+      "channel": "heartbeat",
+      "direction": "outbound",
+      "row_count": 2
+    },
+    {
+      "channel": "l2Book",
+      "direction": "inbound",
+      "row_count": 23
+    },
+    {
+      "channel": "pong",
+      "direction": "inbound",
+      "row_count": 2
+    },
+    {
+      "channel": "session",
+      "direction": "local",
+      "row_count": 2
+    },
+    {
+      "channel": "subscription",
+      "direction": "local",
+      "row_count": 9
+    },
+    {
+      "channel": "subscription",
+      "direction": "outbound",
+      "row_count": 4
+    },
+    {
+      "channel": "subscriptionResponse",
+      "direction": "inbound",
+      "row_count": 4
+    },
+    {
+      "channel": "trades",
+      "direction": "inbound",
+      "row_count": 187
+    }
+  ],
+  "credentialless": true,
+  "duration_seconds": 14400.0,
+  "health_present": false,
+  "limitations": [
+    "Sample rows omit payload_bytes; only SHA-256 and length are kept.",
+    "Published parts remain outside git on the selected runtime store.",
+    "This is not 24/7 service evidence or a trading edge."
+  ],
+  "parquet_bytes": 111410,
+  "parquet_files": 2,
+  "part_bytes": [
+    55445,
+    55965
+  ],
+  "part_names": [
+    "part-000001-000000000001-000000000600-cdeb8b9e3544.parquet",
+    "part-000002-000000000601-000000001206-cdeb8b9e3544.parquet"
+  ],
+  "path_contract": "data-1a-hyperliquid-btc-perp-v1",
+  "payloads_included": false,
+  "resume_policy": "never resume or overwrite an existing DATA-1A run directory",
+  "retained": true,
+  "run_dir": "/workspace/var/reconstructable/data-1a/hyperliquid/BTC-PERP/20260904t001700z-live-retained",
+  "run_id": "20260904t001700z-live-retained",
+  "sample_row_count": 8,
+  "schema": "data-1a-git-safe-sample-v1",
+  "signing": false,
+  "twenty_four_seven": false
+}

@@ -1,0 +1,191 @@
+{
+  "adapter_rejected_count": 10,
+  "bbo": [
+    {
+      "ask_price": "81157.0",
+      "ask_size": "0.05607",
+      "bid_price": "81156.0",
+      "bid_size": "8.38636",
+      "event_time": "2026-09-04T00:20:13.823000+00:00",
+      "mid_price": "81156.5",
+      "received_monotonic_ns": 394599694170,
+      "received_time": "2026-09-04T00:20:14.108557+00:00",
+      "spread": "1.0"
+    }
+  ],
+  "bbo_count": 1,
+  "credentialless": true,
+  "feed": "hyperliquid-public-btc-perp-trades-bbo",
+  "risk_error": null,
+  "risk_rejections": 0,
+  "schema": "course1-live-public-paper-v1",
+  "status": "COMPLETED_FLAT",
+  "subscriptions_acknowledged": [
+    "trades",
+    "bbo"
+  ],
+  "trade_count": 20,
+  "trades": [
+    {
+      "aggressor_side": "BUYER",
+      "price": "81137.0",
+      "size": "0.00216",
+      "source_event_id": "[\"hyperliquid-trade-v1\",1788481209914,\"BTC\",602402430653603]",
+      "ts_event": 1788481209914000000,
+      "ts_init": 1788481214103536000
+    },
+    {
+      "aggressor_side": "BUYER",
+      "price": "81139.0",
+      "size": "0.00013",
+      "source_event_id": "[\"hyperliquid-trade-v1\",1788481209914,\"BTC\",18204197684881]",
+      "ts_event": 1788481209914000000,
+      "ts_init": 1788481214103536001
+    },
+    {
+      "aggressor_side": "BUYER",
+      "price": "81141.0",
+      "size": "0.00013",
+      "source_event_id": "[\"hyperliquid-trade-v1\",1788481209914,\"BTC\",454111052881893]",
+      "ts_event": 1788481209914000000,
+      "ts_init": 1788481214103536002
+    },
+    {
+      "aggressor_side": "BUYER",
+      "price": "81143.0",
+      "size": "0.00017",
+      "source_event_id": "[\"hyperliquid-trade-v1\",1788481209914,\"BTC\",517780286090767]",
+      "ts_event": 1788481209914000000,
+      "ts_init": 1788481214103536003
+    },
+    {
+      "aggressor_side": "BUYER",
+      "price": "81143.0",
+      "size": "0.00030",
+      "source_event_id": "[\"hyperliquid-trade-v1\",1788481209979,\"BTC\",635050528146045]",
+      "ts_event": 1788481209979000000,
+      "ts_init": 1788481214103536004
+    },
+    {
+      "aggressor_side": "BUYER",
+      "price": "81143.0",
+      "size": "0.00030",
+      "source_event_id": "[\"hyperliquid-trade-v1\",1788481209979,\"BTC\",663073728839815]",
+      "ts_event": 1788481209979000000,
+      "ts_init": 1788481214103536005
+    },
+    {
+      "aggressor_side": "BUYER",
+      "price": "81143.0",
+      "size": "0.00015",
+      "source_event_id": "[\"hyperliquid-trade-v1\",1788481210046,\"BTC\",623518774835842]",
+      "ts_event": 1788481210046000000,
+      "ts_init": 1788481214103536006
+    },
+    {
+      "aggressor_side": "BUYER",
+      "price": "81143.0",
+      "size": "0.00030",
+      "source_event_id": "[\"hyperliquid-trade-v1\",1788481210182,\"BTC\",234501114693439]",
+      "ts_event": 1788481210182000000,
+      "ts_init": 1788481214103536007
+    },
+    {
+      "aggressor_side": "BUYER",
+      "price": "81143.0",
+      "size": "0.00038",
+      "source_event_id": "[\"hyperliquid-trade-v1\",1788481210381,\"BTC\",473222530776258]",
+      "ts_event": 1788481210381000000,
+      "ts_init": 1788481214103536008
+    },
+    {
+      "aggressor_side": "BUYER",
+      "price": "81143.0",
+      "size": "0.00025",
+      "source_event_id": "[\"hyperliquid-trade-v1\",1788481210381,\"BTC\",319736591539900]",
+      "ts_event": 1788481210381000000,
+      "ts_init": 1788481214103536009
+    },
+    {
+      "aggressor_side": "BUYER",
+      "price": "81143.0",
+      "size": "0.00250",
+      "source_event_id": "[\"hyperliquid-trade-v1\",1788481210381,\"BTC\",914046317174499]",
+      "ts_event": 1788481210381000000,
+      "ts_init": 1788481214103536010
+    },
+    {
+      "aggressor_side": "BUYER",
+      "price": "81144.0",
+      "size": "0.00220",
+      "source_event_id": "[\"hyperliquid-trade-v1\",1788481210381,\"BTC\",585682155255854]",
+      "ts_event": 1788481210381000000,
+      "ts_init": 1788481214103536011
+    },
+    {
+      "aggressor_side": "BUYER",
+      "price": "81149.0",
+      "size": "0.00013",
+      "source_event_id": "[\"hyperliquid-trade-v1\",1788481210381,\"BTC\",830036385533688]",
+      "ts_event": 1788481210381000000,
+      "ts_init": 1788481214103536012
+    },
+    {
+      "aggressor_side": "BUYER",
+      "price": "81150.0",
+      "size": "0.00017",
+      "source_event_id": "[\"hyperliquid-trade-v1\",1788481210381,\"BTC\",1025232652251351]",
+      "ts_event": 1788481210381000000,
+      "ts_init": 1788481214103536013
+    },
+    {
+      "aggressor_side": "BUYER",
+      "price": "81150.0",
+      "size": "0.00106",
+      "source_event_id": "[\"hyperliquid-trade-v1\",1788481210381,\"BTC\",123686914527245]",
+      "ts_event": 1788481210381000000,
+      "ts_init": 1788481214103536014
+    },
+    {
+      "aggressor_side": "SELLER",
+      "price": "81154.0",
+      "size": "0.00017",
+      "source_event_id": "[\"hyperliquid-trade-v1\",1788481210717,\"BTC\",26167223947560]",
+      "ts_event": 1788481210717000000,
+      "ts_init": 1788481214103536015
+    },
+    {
+      "aggressor_side": "BUYER",
+      "price": "81157.0",
+      "size": "0.00019",
+      "source_event_id": "[\"hyperliquid-trade-v1\",1788481211119,\"BTC\",888058015429546]",
+      "ts_event": 1788481211119000000,
+      "ts_init": 1788481214103536016
+    },
+    {
+      "aggressor_side": "SELLER",
+      "price": "81156.0",
+      "size": "0.00035",
+      "source_event_id": "[\"hyperliquid-trade-v1\",1788481212026,\"BTC\",835915948646783]",
+      "ts_event": 1788481212026000000,
+      "ts_init": 1788481214103536017
+    },
+    {
+      "aggressor_side": "BUYER",
+      "price": "81157.0",
+      "size": "0.00784",
+      "source_event_id": "[\"hyperliquid-trade-v1\",1788481213035,\"BTC\",359173167398692]",
+      "ts_event": 1788481213035000000,
+      "ts_init": 1788481214103536018
+    },
+    {
+      "aggressor_side": "SELLER",
+      "price": "81156.0",
+      "size": "0.00607",
+      "source_event_id": "[\"hyperliquid-trade-v1\",1788481213565,\"BTC\",534947258231460]",
+      "ts_event": 1788481213565000000,
+      "ts_init": 1788481214103536019
+    }
+  ],
+  "websocket_url": "wss://api.hyperliquid.xyz/ws"
+}

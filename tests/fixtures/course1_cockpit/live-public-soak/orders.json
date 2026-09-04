@@ -1,0 +1,40 @@
+{
+  "kind": "orders",
+  "limitations": [
+    "These are sandbox PAPER intents, not Hyperliquid venue orders.",
+    "Signing and LIVE submission are out of scope."
+  ],
+  "mode": "PAPER",
+  "order_count": 2,
+  "orders": [
+    {
+      "client_order_id": "O-20260904-002014-001-D01-1",
+      "decision_ordinal": 3,
+      "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+      "intent_ordinal": 1,
+      "intent_sha256": "e47f46dc4d0311a71a7443bcb38f09187c6f9e4db680c25eadc459dfc33ef4f7",
+      "order_type": "MARKET",
+      "quantity": "0.00013",
+      "reason": "entry",
+      "reduce_only": false,
+      "side": "BUY",
+      "submission_ordinal": 4
+    },
+    {
+      "client_order_id": "O-20260904-002014-001-D01-2",
+      "decision_ordinal": 10,
+      "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+      "intent_ordinal": 2,
+      "intent_sha256": "97b1479d673211b4c3a1c95228c4aef9d27d17a24133a1184973274fef9f072b",
+      "order_type": "MARKET",
+      "quantity": "0.00013",
+      "reason": "exit",
+      "reduce_only": true,
+      "side": "SELL",
+      "submission_ordinal": 11
+    }
+  ],
+  "path_contract": "course1-live-public-paper-cockpit-v1",
+  "schema": "course1-cockpit-paper-artifacts-v1",
+  "venue_orders_submitted": false
+}

@@ -36,7 +36,9 @@ must use the create-only reconstructable contracts rather than inventing a secon
 ```
 
 `paper-pnl.json` is assumed PAPER overlay economics, not venue PnL. `capture-health.json`
-is a bounded-run summary, not a 24/7 heartbeat. See `docs/DATA.md` and
+is a bounded-run summary, not a 24/7 heartbeat. DATA-1A capture duration is 1–604800
+seconds; the COURSE-1 soak remains 1–600 seconds. See `docs/DATA.md`,
+`docs/runbooks/data1a-vps-retained-capture.md`, and
 `vertical_slices/course1_live_public_paper/README.md`.
 
 ## Development model

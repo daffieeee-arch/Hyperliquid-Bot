@@ -257,10 +257,21 @@ per message. A hard process or host crash can lose the active in-memory segment 
 `.partial` file; previously published parts remain queryable and readers ignore partials. A
 lossless WAL and 24/7 durability belong to a later runtime-storage decision, not this local slice.
 
-The command requires an explicit duration from 1 through 604800 seconds (7 days). The historical
-600-second smoke cap is no longer a hard stop. A duration above 600 seconds is a retained
-research capture, not a 24/7 service: the process still ends at the requested duration or on
-SIGINT/SIGTERM, and a hard crash can lose the in-memory Parquet segment.
+### Duration contract
+
+The command requires an explicit duration from **1 through 604800 seconds** (7 days).
+There is no hard 600-second smoke cap. The historical 600-second smoke window is only
+a classification: durations of 1–600 seconds remain valid smokes; durations of
+600.1–604800 seconds are retained research captures (`retained: true`). A duration
+above 604800 seconds fails closed. This is not a 24/7 service: the process still
+ends at the requested duration or on SIGINT/SIGTERM, and a hard crash can lose the
+in-memory Parquet segment.
+
+The COURSE-1 live-public PAPER soak remains a separate 1–600 second bound. Do not
+treat that soak cap as the DATA-1A capture contract.
+
+Operator commands, retain/stop/continue rules, and the git-safe sample exporter are
+in [DATA-1A VPS retained-capture runbook](runbooks/data1a-vps-retained-capture.md).
 
 Preferred reconstructable layout (the path contract Cockpit should later read):
 
@@ -281,8 +292,11 @@ PYTHONPATH=src uv run --frozen python -m hyperliquid_bot.hyperliquid_raw_researc
 
 The reconstructable command is create-only: an existing run directory is refused. Ad-hoc
 `--output-dir` / `--database` remains available for disposable smokes. Do not commit raw
-Parquet or DuckDB files; git holds only the path contract and a tiny synthetic sample under
-`tests/fixtures/data_1a_retained/`.
+Parquet or DuckDB files; git holds the path contract, a tiny synthetic sample under
+`tests/fixtures/data_1a_retained/`, and a payload-free live-evidence sample under
+`tests/fixtures/data_1a_live_evidence/`. Raw `part-*.parquet` stays on the selected
+runtime store. See the [VPS runbook](runbooks/data1a-vps-retained-capture.md) to
+retain, stop, or start a new `run_id` after an operator stop.
 
 The command prints counts and byte totals only; it never prints payload contents. The catalog has
 `raw_records`, `trades`, `bbo`, `l2`, `derivative_context`, `sessions`, `subscription_events` and

@@ -1,0 +1,26 @@
+{
+  "assumed": true,
+  "ending_cash_usdc_assumed": "99999.9873416920",
+  "ending_equity_usdc_assumed": "99999.9873416920",
+  "fee_cost_usdc": "0.0094937310",
+  "final_position_btc": "0.00000",
+  "funding_payment_usdc": "0",
+  "half_spread_cost_usdc": "0.0010548590",
+  "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+  "kind": "paper-pnl",
+  "limitations": [
+    "PnL is the D01 assumed overlay, not venue or broker PnL.",
+    "Funding remains 0 because no settlement boundary is modeled.",
+    "USD is an explicit 1:1 USDC accounting proxy.",
+    "This is not profitability, TESTNET, SHADOW, or LIVE evidence.",
+    "This is not 24/7 service evidence."
+  ],
+  "mark_price": "81156.0",
+  "mode": "PAPER",
+  "net_pnl_usdc_assumed": "-0.0126583080",
+  "path_contract": "course1-live-public-paper-cockpit-v1",
+  "schema": "course1-cockpit-paper-artifacts-v1",
+  "slippage_cost_usdc": "0.002109718",
+  "starting_cash_usdc_assumed": "100000",
+  "venue_pnl": false
+}

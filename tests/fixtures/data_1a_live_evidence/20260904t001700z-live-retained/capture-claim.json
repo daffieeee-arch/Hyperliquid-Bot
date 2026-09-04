@@ -1,0 +1,20 @@
+{
+  "credentialless": true,
+  "database_path": "/workspace/var/reconstructable/data-1a/hyperliquid/BTC-PERP/20260904t001700z-live-retained/research.duckdb",
+  "duration_seconds": 14400.0,
+  "feed": "hyperliquid-public-btc-perp-trades-bbo-l2-ctx",
+  "max_duration_seconds": 604800,
+  "path_contract": "data-1a-hyperliquid-btc-perp-v1",
+  "product": "BTC-PERP",
+  "raw_dir": "/workspace/var/reconstructable/data-1a/hyperliquid/BTC-PERP/20260904t001700z-live-retained/raw",
+  "resume_policy": "never resume or overwrite an existing DATA-1A run directory",
+  "retained": true,
+  "run_id": "20260904t001700z-live-retained",
+  "schema": "data-1a-retained-capture-claim-v1",
+  "signing": false,
+  "smoke_duration_seconds": 600.0,
+  "state": "STARTED_FAIL_CLOSED",
+  "twenty_four_seven": false,
+  "venue": "hyperliquid",
+  "websocket_url": "wss://api.hyperliquid.xyz/ws"
+}

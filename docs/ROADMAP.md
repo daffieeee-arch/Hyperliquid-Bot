@@ -35,7 +35,8 @@ The active sequence is:
    Cockpit projections (run claim, paper position, assumed PnL, orders, fills, capture-health).
    This remains a duration-bounded soak, not 24/7 collection, funding settlement, venue
    reconciliation, or promotion evidence. DATA-1A public BTC-PERP capture may now retain up to
-   7 days at a reconstructable Parquet/DuckDB path; that is still not a 24/7 service;
+   7 days (1–604800s) at a reconstructable Parquet/DuckDB path; that is still not a 24/7
+   service. Operator retain/stop rules are in `docs/runbooks/data1a-vps-retained-capture.md`;
 6. after the local route passes, record the definitive runtime ADR and only then perform the VPS
    migration.
 

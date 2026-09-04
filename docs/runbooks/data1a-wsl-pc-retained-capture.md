@@ -224,8 +224,11 @@ With `ARTIFACT_ROOT` already set you can also use
 
 While `capture-health.json` is absent (normal until stop), claim present plus
 growing `raw/part-*.parquet` files and last mtime are the liveness signal. The
-panel labels that **RUNNING (health JSON pending until stop)**. Missing root or
-`run_id` fails closed; the cockpit does not invent PnL or part counts.
+panel labels that **RUNNING (health JSON pending until stop)** and polls
+`/api/data1a-capture` every **5 seconds** (`Cache-Control: no-store`) so
+duration, part count, bytes on disk, and last mtime move without a full page
+reload. Missing root or `run_id` fails closed; the cockpit does not invent PnL
+or part counts. Do not stop `hl-capture` to refresh the cockpit.
 
 Copy `apps/cockpit/.env.example` to `apps/cockpit/.env.local` (gitignored) for
 the same pair. The repository-root `.env.example` documents the names but is

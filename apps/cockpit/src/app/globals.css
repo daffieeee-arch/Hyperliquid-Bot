@@ -313,6 +313,19 @@ main {
   background: var(--ok);
   box-shadow: 0 0 0.45rem var(--ok);
   flex: 0 0 auto;
+  animation: live-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes live-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0.45rem var(--ok);
+  }
+  50% {
+    opacity: 0.4;
+    box-shadow: 0 0 0.12rem var(--ok);
+  }
 }
 
 .panel,

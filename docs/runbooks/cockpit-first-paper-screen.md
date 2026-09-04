@@ -100,8 +100,11 @@ Path helper: `data1a_run_paths(artifact_root, run_id)`. Health JSON is written a
 process end. While the run is live (claim present, published `raw/part-*.parquet`
 files growing, no `capture-health.json`) the panel shows
 **RUNNING (health JSON pending until stop)** plus filesystem part count / last
-mtime, and `n/a` for gaps/reconnects. Missing root or `run_id` is an explicit
-empty state; zeros and PnL are not invented.
+mtime, and `n/a` for gaps/reconnects. The browser polls `/api/data1a-capture`
+every **5 seconds** with `cache: no-store` so duration, published parts, bytes
+on disk, last part mtime, and `observed_at` update without a full page reload.
+Missing root or `run_id` is an explicit empty state; zeros and PnL are not
+invented.
 
 Cockpit CI lives in `.github/workflows/cockpit.yml`. It is a separate
 workflow so the hashed D01 publication file `.github/workflows/ci.yml`

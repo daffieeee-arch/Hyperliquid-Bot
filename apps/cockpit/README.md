@@ -22,8 +22,11 @@ unset or `PAPER`; `LIVE`, `TESTNET`, and `SHADOW` fail closed.
    `capture-health.json` and a cheap `raw/part-*.parquet` listing. While a live
    run has a claim, growing `raw/part-*.parquet` files, and no health file, the
    panel shows **RUNNING (health JSON pending until stop)** instead of inventing
-   zeros. Parquet payloads are not read. Missing artifact root or `run_id`
-   fails closed with an explicit empty state.
+   zeros. The browser polls `/api/data1a-capture` every **5 seconds**
+   (`cache: no-store`) so duration, published parts, bytes on disk, last part
+   mtime, and `observed_at` update without a full page reload. Parquet payloads
+   are not read. Missing artifact root or `run_id` fails closed with an
+   explicit empty state.
 6. PAPER intent/fill blotter copied from `orders.json` / `fills.json`. Empty
    runs stay empty; rows are not invented.
 
@@ -102,6 +105,10 @@ Or copy `apps/cockpit/.env.example` to `apps/cockpit/.env.local` and uncomment
 those two DATA-1A lines. `COCKPIT_DATA1A_RUN_ID` is an equivalent alias.
 With `ARTIFACT_ROOT` already exported you can also open
 `http://127.0.0.1:3000/?data1a_run_id=20260904t134940z-live-retained`.
+
+The DATA-1A panel polls `/api/data1a-capture` every 5 seconds. Leave the tab
+open; do not stop the collector to "refresh" numbers. `/api/data1a-capture`
+sends `Cache-Control: no-store`.
 
 Later VPS path-contract root (same file names):
 

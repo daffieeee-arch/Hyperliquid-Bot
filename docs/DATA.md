@@ -275,7 +275,7 @@ in [DATA-1A VPS retained-capture runbook](runbooks/data1a-vps-retained-capture.m
 and the [DATA-1A operator PC/WSL retained-capture runbook](runbooks/data1a-wsl-pc-retained-capture.md).
 Cloud Agents are unsuitable for a multi-day retain.
 
-Preferred reconstructable layout (the path contract Cockpit should later read):
+Preferred reconstructable layout (the path contract the Operator Cockpit reads):
 
 ```text
 <artifact-root>/data-1a/hyperliquid/BTC-PERP/<run_id>/

@@ -62,6 +62,10 @@ pnpm --filter @hyperliquid-bot/cockpit dev
 The helper shape is `course1_cockpit_paths(artifact_root, run_id)` from
 `src/hyperliquid_bot/reconstructable_paths.py`.
 
+Cockpit CI lives in `.github/workflows/cockpit.yml`. It is a separate
+workflow so the hashed D01 publication file `.github/workflows/ci.yml`
+stays byte-identical.
+
 ## Fail closed
 
 - `TRADING_MODE` unset or `PAPER` only

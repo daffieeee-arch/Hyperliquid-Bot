@@ -214,6 +214,16 @@ main {
   gap: 0.55rem;
 }
 
+.capture-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.capture-panel {
+  grid-column: 1 / -1;
+}
+
 .board {
   display: grid;
   grid-template-columns: 1fr;

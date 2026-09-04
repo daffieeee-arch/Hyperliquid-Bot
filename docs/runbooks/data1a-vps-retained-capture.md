@@ -26,7 +26,7 @@ bounded to **1–600 seconds**.
 
 ## Path contract
 
-Cockpit should later read:
+The Operator Cockpit first PAPER screen reads:
 
 ```text
 <artifact-root>/data-1a/hyperliquid/BTC-PERP/<run_id>/
@@ -36,7 +36,11 @@ Cockpit should later read:
   research.duckdb
 ```
 
-Helpers: `data1a_run_paths(artifact_root, run_id)`.
+Helpers: `data1a_run_paths(artifact_root, run_id)`. Set `ARTIFACT_ROOT` plus
+`COCKPIT_DATA1A_RUN_ID` or open `/?data1a_run_id=<run_id>`. Missing
+`capture-health.json` is an explicit empty state (the writer records health at
+stop/end). Part count and last part mtime come from a cheap `raw/part-*.parquet`
+listing; payloads are not read.
 
 `run_id` must be 1–64 lowercase ASCII letters, digits, dot, dash, or underscore.
 

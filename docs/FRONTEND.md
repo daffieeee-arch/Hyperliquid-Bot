@@ -16,10 +16,11 @@ Build a professional trading workstation, not a decorative dashboard. The operat
 
 The browser never receives trading secrets.
 
-The first cockpit screen now reads COURSE-1 PAPER JSON. It shows only public
-BTC-PERP mid, paper position, assumed overlay PnL, capture health, and the
-copied PAPER intent/fill blotter. The layout is a dense dark terminal so those
-values are readable at a glance; PAPER is badged and watermarked. It is
+The first cockpit screen now reads COURSE-1 PAPER JSON and a thin DATA-1A
+capture-health panel. It shows public BTC-PERP mid, paper position, assumed
+overlay PnL, COURSE-1 soak health, DATA-1A reconstructable capture health, and
+the copied PAPER intent/fill blotter. The layout is a dense dark terminal so
+those values are readable at a glance; PAPER is badged and watermarked. It is
 inspired by professional market workstations, not a clone of a commercial UI.
 DESK / MARKETS / RISK are not built. Later screens must keep using the
 create-only reconstructable contracts rather than inventing a second store:
@@ -40,12 +41,17 @@ create-only reconstructable contracts rather than inventing a second store:
   research.duckdb
 ```
 
-`paper-pnl.json` is assumed PAPER overlay economics, not venue PnL. `capture-health.json`
-is a bounded-run summary, not a 24/7 heartbeat. DATA-1A capture duration is 1–604800
-seconds; the COURSE-1 soak remains 1–600 seconds. Locally the first screen defaults to
+`paper-pnl.json` is assumed PAPER overlay economics, not venue PnL. COURSE-1
+`capture-health.json` is a bounded-run summary, not a 24/7 heartbeat. DATA-1A
+`capture-claim.json` / `capture-health.json` are a reconstructable public capture
+claim and an end-of-run health file; missing health is shown as empty, not as
+invented zeros. DATA-1A capture duration is 1–604800 seconds; the COURSE-1 soak
+remains 1–600 seconds. Locally the first screen defaults to
 `tests/fixtures/course1_cockpit/live-public-soak/` (`run_id`
-`20260904t001800z-live-paper`). Set `COCKPIT_ARTIFACT_ROOT` + `COCKPIT_RUN_ID` to
-read the same file names from a later VPS artifact root. See `docs/DATA.md`,
+`20260904t001800z-live-paper`) and `tests/fixtures/data_1a_retained/sample-run/`
+(`run_id` `sample-run`). Set `COCKPIT_ARTIFACT_ROOT` + `COCKPIT_RUN_ID` for PAPER
+JSON, and `ARTIFACT_ROOT` + `COCKPIT_DATA1A_RUN_ID` or `?data1a_run_id=` for a
+live DATA-1A directory. See `docs/DATA.md`,
 `docs/runbooks/data1a-vps-retained-capture.md`,
 `docs/runbooks/cockpit-first-paper-screen.md`, `apps/cockpit/README.md`, and
 `vertical_slices/course1_live_public_paper/README.md`.

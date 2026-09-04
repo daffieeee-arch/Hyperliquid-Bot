@@ -1,10 +1,13 @@
+import { Data1ACapturePanel } from "../components/data1a-capture";
 import { KvTable } from "../components/kv-table";
 import { LiveBtcPrice } from "../components/live-btc-price";
 import { MetricTile } from "../components/metric-tile";
 import { PaperBlotter } from "../components/paper-blotter";
+import { loadData1ACaptureSnapshot } from "../lib/data1a-capture";
 import { formatGroupedNumber, healthTone, signedTone, uniqueStrings, yesNo } from "../lib/display";
 import { loadPaperRunSnapshot } from "../lib/paper-run";
-import type { PaperRunSnapshot } from "../lib/types";
+import { firstQueryValue, findRepoRoot } from "../lib/paths";
+import type { Data1ACaptureResponse, PaperRunSnapshot } from "../lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -253,7 +256,31 @@ function SnapshotDesk({ snapshot }: { snapshot: PaperRunSnapshot }) {
   );
 }
 
-export default function FirstPaperScreen() {
+function loadData1AResponse(queryRunId: string | undefined): Data1ACaptureResponse {
+  try {
+    return {
+      ok: true,
+      snapshot: loadData1ACaptureSnapshot(process.env, findRepoRoot(), {
+        data1a_run_id: queryRunId,
+      }),
+    };
+  } catch (error: unknown) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "DATA-1A capture health is unavailable.",
+    };
+  }
+}
+
+export default async function FirstPaperScreen({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const params = await searchParams;
+  const data1aRunId = firstQueryValue(params.data1a_run_id);
+  const data1a = loadData1AResponse(data1aRunId);
+
   let snapshotError: string | undefined;
   let snapshot: PaperRunSnapshot | undefined;
   try {
@@ -269,6 +296,7 @@ export default function FirstPaperScreen() {
       </div>
       <Masthead snapshot={snapshot} snapshotError={snapshotError} />
       <main>
+        <Data1ACapturePanel queryRunId={data1aRunId} initial={data1a} />
         {snapshotError !== undefined || snapshot === undefined ? (
           <>
             <section className="metrics" aria-label="Public market data">
@@ -310,6 +338,7 @@ export default function FirstPaperScreen() {
         <span>NO WALLET SIGNING</span>
         <span>NO LIVE CAPITAL</span>
         <span>PUBLIC MID != PAPER PNL</span>
+        <span>DATA-1A HEALTH != PNL</span>
       </footer>
     </div>
   );

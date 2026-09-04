@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { formatGroupedNumber, healthTone, signedTone, uniqueStrings, yesNo } from "./display";
+import {
+  formatGroupedNumber,
+  healthTone,
+  presentCopiedNumber,
+  presentCopiedText,
+  signedTone,
+  uniqueStrings,
+  yesNo,
+} from "./display";
 
 describe("cockpit display helpers", () => {
   it("groups integer digits without changing the copied decimal string", () => {
@@ -19,11 +27,21 @@ describe("cockpit display helpers", () => {
     expect(signedTone("assumed")).toBe("unknown");
   });
 
-  it("maps COURSE-1 soak health statuses without treating them as 24/7 heartbeats", () => {
+  it("maps COURSE-1 soak and DATA-1A capture statuses without treating them as 24/7 heartbeats", () => {
     expect(healthTone("COMPLETED_FLAT")).toBe("ok");
+    expect(healthTone("COMPLETED")).toBe("ok");
     expect(healthTone("BOUNDED_TIMEOUT")).toBe("warn");
+    expect(healthTone("OPERATOR_STOP")).toBe("warn");
     expect(healthTone("RISK_REJECTED")).toBe("down");
+    expect(healthTone("FAILED")).toBe("down");
     expect(healthTone("UNKNOWN")).toBe("neutral");
+  });
+
+  it("keeps missing copied numbers as n/a instead of inventing zero", () => {
+    expect(presentCopiedNumber(undefined)).toBe("n/a");
+    expect(presentCopiedNumber(0)).toBe("0");
+    expect(presentCopiedText(undefined)).toBe("n/a");
+    expect(presentCopiedText("STARTED_FAIL_CLOSED")).toBe("STARTED_FAIL_CLOSED");
   });
 
   it("keeps boolean flags as yes/no labels", () => {

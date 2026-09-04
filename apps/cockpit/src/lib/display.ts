@@ -39,16 +39,24 @@ export function yesNo(value: boolean): "yes" | "no" {
 }
 
 export function healthTone(status: string): StatusTone {
-  if (status === "COMPLETED_FLAT") {
+  if (status === "COMPLETED_FLAT" || status === "COMPLETED") {
     return "ok";
   }
-  if (status === "BOUNDED_TIMEOUT") {
+  if (status === "BOUNDED_TIMEOUT" || status === "OPERATOR_STOP") {
     return "warn";
   }
-  if (status === "RISK_REJECTED") {
+  if (status === "RISK_REJECTED" || status === "FAILED") {
     return "down";
   }
   return "neutral";
+}
+
+export function presentCopiedNumber(value: number | undefined): string {
+  return value === undefined ? "n/a" : String(value);
+}
+
+export function presentCopiedText(value: string | undefined): string {
+  return value === undefined || value === "" ? "n/a" : value;
 }
 
 export function uniqueStrings(items: string[]): string[] {

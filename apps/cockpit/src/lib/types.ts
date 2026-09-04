@@ -110,3 +110,61 @@ export type PaperRunSnapshot = {
   orders: PaperOrders;
   fills: PaperFills;
 };
+
+export type Data1ACaptureClaim = {
+  schema: string;
+  path_contract: string;
+  run_id: string;
+  state: string;
+  retained: boolean;
+  twenty_four_seven: false;
+  credentialless?: boolean;
+  signing?: boolean;
+  venue?: string;
+  product?: string;
+  feed?: string;
+  duration_seconds?: number;
+  resume_policy?: string;
+};
+
+export type Data1ACaptureHealth = {
+  schema: string;
+  kind: "capture-health";
+  path_contract: string;
+  run_id: string;
+  status: string;
+  retained: boolean;
+  twenty_four_seven: false;
+  credentialless?: boolean;
+  gaps?: number;
+  reconnects?: number;
+  events?: number;
+  parquet_files?: number;
+  parquet_bytes?: number;
+  limitations: string[];
+};
+
+export type Data1APartListing = {
+  raw_dir_present: boolean;
+  count: number | undefined;
+  last_part_name: string | undefined;
+  last_part_mtime_utc: string | undefined;
+  bytes: number | undefined;
+};
+
+export type Data1ACaptureSnapshot = {
+  runDir: string;
+  runId: string;
+  source: "data1a-run-dir" | "path-contract" | "default-fixture";
+  observed_at: string;
+  path_contract: string;
+  claim: Data1ACaptureClaim;
+  health: Data1ACaptureHealth | undefined;
+  health_missing: boolean;
+  health_error: string | undefined;
+  parts: Data1APartListing;
+  duckdb_present: boolean;
+};
+
+export type Data1ACaptureResponse =
+  { ok: true; snapshot: Data1ACaptureSnapshot } | { ok: false; error: string };

@@ -6,15 +6,21 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import {
+  CANONICAL_DATA1A_FIXTURE_RUN_ID,
   CANONICAL_LIVE_PAPER_RUN_ID,
   COURSE1_COCKPIT_FILE_NAMES,
   COURSE1_PATH_CONTRACT_ID,
+  DATA1A_PATH_CONTRACT_ID,
   course1CockpitRunDir,
+  data1aCockpitRunDir,
+  defaultData1AFixtureRunDir,
   defaultFixtureRunDir,
   findRepoRoot,
+  firstQueryValue,
   repoRootFromModuleUrl,
   requirePaperTradingMode,
   requireRunId,
+  resolveData1ARunDir,
   resolvePaperRunDir,
 } from "./paths";
 
@@ -88,5 +94,65 @@ describe("COURSE-1 path contract", () => {
   it("resolves the repository root from this module URL and the working directory", () => {
     expect(repoRootFromModuleUrl(import.meta.url)).toBe(repoRoot);
     expect(findRepoRoot(join(repoRoot, "apps", "cockpit"))).toBe(repoRoot);
+  });
+});
+
+describe("DATA-1A path contract", () => {
+  it("joins the reconstructable Hyperliquid BTC-PERP layout", () => {
+    const runDir = data1aCockpitRunDir(
+      "/var/lib/hyperliquid-bot/reconstructable",
+      "20260904t134940z-live-retained",
+    );
+    expect(runDir).toBe(
+      "/var/lib/hyperliquid-bot/reconstructable/data-1a/hyperliquid/BTC-PERP/20260904t134940z-live-retained",
+    );
+    expect(DATA1A_PATH_CONTRACT_ID).toBe("data-1a-hyperliquid-btc-perp-v1");
+  });
+
+  it("defaults to the committed retained sample fixture", () => {
+    const resolved = resolveData1ARunDir({ TRADING_MODE: "PAPER" }, repoRoot);
+    expect(resolved.source).toBe("default-fixture");
+    expect(resolved.runId).toBe(CANONICAL_DATA1A_FIXTURE_RUN_ID);
+    expect(resolved.runDir).toBe(defaultData1AFixtureRunDir(repoRoot));
+  });
+
+  it("keeps PAPER COCKPIT_ARTIFACT_ROOT from forcing a DATA-1A path without a DATA-1A run_id", () => {
+    const resolved = resolveData1ARunDir(
+      {
+        TRADING_MODE: "PAPER",
+        COCKPIT_ARTIFACT_ROOT: "/var/lib/hyperliquid-bot/reconstructable",
+        COCKPIT_RUN_ID: CANONICAL_LIVE_PAPER_RUN_ID,
+      },
+      repoRoot,
+    );
+    expect(resolved.source).toBe("default-fixture");
+    expect(resolved.runId).toBe(CANONICAL_DATA1A_FIXTURE_RUN_ID);
+  });
+
+  it("uses ARTIFACT_ROOT plus query run_id for a live reconstructable run", () => {
+    const resolved = resolveData1ARunDir(
+      { TRADING_MODE: "PAPER", ARTIFACT_ROOT: "/data/reconstructable" },
+      repoRoot,
+      { data1a_run_id: "20260904t134940z-live-retained" },
+    );
+    expect(resolved.source).toBe("path-contract");
+    expect(resolved.runDir).toBe(
+      "/data/reconstructable/data-1a/hyperliquid/BTC-PERP/20260904t134940z-live-retained",
+    );
+  });
+
+  it("fails closed when ARTIFACT_ROOT is set without a DATA-1A run_id", () => {
+    expect(() => resolveData1ARunDir({ ARTIFACT_ROOT: "/data/reconstructable" }, repoRoot)).toThrow(
+      /run_id/,
+    );
+  });
+
+  it("reads the first query value and ignores empty strings", () => {
+    expect(firstQueryValue("20260904t134940z-live-retained")).toBe(
+      "20260904t134940z-live-retained",
+    );
+    expect(firstQueryValue(["sample-run", "ignored"])).toBe("sample-run");
+    expect(firstQueryValue("")).toBeUndefined();
+    expect(firstQueryValue(undefined)).toBeUndefined();
   });
 });

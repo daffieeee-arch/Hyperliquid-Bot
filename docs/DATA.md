@@ -273,7 +273,7 @@ treat that soak cap as the DATA-1A capture contract.
 Operator commands, retain/stop/continue rules, and the git-safe sample exporter are
 in [DATA-1A VPS retained-capture runbook](runbooks/data1a-vps-retained-capture.md).
 
-Preferred reconstructable layout (the path contract Cockpit should later read):
+Preferred reconstructable layout (the path contract the Operator Cockpit reads):
 
 ```text
 <artifact-root>/data-1a/hyperliquid/BTC-PERP/<run_id>/

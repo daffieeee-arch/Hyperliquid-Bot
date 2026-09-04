@@ -5,8 +5,8 @@ Status: operator runbook for the reconstructable CLI
 workstation (TerraPC). This is **not** a 24/7 service, not D22-B, and not LIVE
 trading.
 
-Public Binance MAINNET market data only (Spot BTCUSDT + USDⓈ-M BTCUSDT). No
-keys, no signing, no Bitvavo, no Kraken, and no extra venues. The VPS
+Public Binance MAINNET market data only (Spot BTCUSDT + USDⓈ-M BTCUSDT). No keys,
+no signing, no Bitvavo, no Kraken, and no extra venues. The VPS
 counterpart is [data1f-vps-retained-capture.md](data1f-vps-retained-capture.md).
 
 **Do not start a multi-day DATA-1F retain now.** Wait until the live DATA-1A

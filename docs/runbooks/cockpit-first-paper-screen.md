@@ -1,7 +1,9 @@
 # Runbook — first PAPER cockpit screen
 
-Status: local fixture-backed first screen. PAPER only. Not D22-B, not LIVE,
-and not a 24/7 cockpit service.
+Status: local fixture-backed first screen with a dense dark PAPER terminal
+layout. PAPER only. Not D22-B, not LIVE, and not a 24/7 cockpit service. The
+browser never signs orders. The visual chrome is not a clone of a commercial
+terminal.
 
 ## What the screen reads
 

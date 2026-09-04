@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 
+import { formatGroupedNumber } from "../lib/display";
 import type { PublicBtcPerpPrice } from "../lib/public-price";
 
 type LoadState =
@@ -61,25 +62,33 @@ export function LiveBtcPrice() {
   }, []);
 
   return (
-    <section className="panel">
+    <article className="metric">
       <h2>Public BTC-PERP mid</h2>
       {state.status === "loading" ? (
-        <p className="meta">Fetching public Hyperliquid /info…</p>
-      ) : null}
-      {state.status === "error" ? <p className="error">{state.message}</p> : null}
-      {state.status === "ready" ? (
         <>
-          <p className="value">{state.price.mid}</p>
-          <p className="meta">
-            {state.price.instrument} · {state.price.source}
-          </p>
-          <p className="note">
-            Public market data only. Browser never signs orders and does not hold keys. This mid is
-            not used to invent Paper PnL.
-          </p>
-          <p className="note">Fetched {state.price.fetched_at}</p>
+          <p className="metric-value tone-neutral">—</p>
+          <p className="metric-meta">Fetching public /info…</p>
         </>
       ) : null}
-    </section>
+      {state.status === "error" ? (
+        <>
+          <p className="metric-value tone-warn">UNAVAILABLE</p>
+          <p className="metric-note error">{state.message}</p>
+        </>
+      ) : null}
+      {state.status === "ready" ? (
+        <>
+          <p className="metric-value">
+            <span className="live-dot" aria-hidden="true" />
+            {formatGroupedNumber(state.price.mid)}
+          </p>
+          <p className="metric-meta">{state.price.instrument} · unsigned public mid</p>
+          <p className="metric-note">
+            Credentialless Hyperliquid /info. Not used to invent Paper PnL. Fetched{" "}
+            {state.price.fetched_at}
+          </p>
+        </>
+      ) : null}
+    </article>
   );
 }

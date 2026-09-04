@@ -56,6 +56,9 @@ describe("DATA-1A capture poll helpers", () => {
       ok: false,
       error: "network down",
     });
-    expect(data1aCapturePollError("nope").error).toBe("DATA-1A capture health is unavailable.");
+    expect(data1aCapturePollError("nope")).toEqual({
+      ok: false,
+      error: "DATA-1A capture health is unavailable.",
+    });
   });
 });

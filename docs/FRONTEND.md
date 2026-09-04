@@ -17,9 +17,12 @@ Build a professional trading workstation, not a decorative dashboard. The operat
 The browser never receives trading secrets.
 
 The first cockpit screen now reads COURSE-1 PAPER JSON. It shows only public
-BTC-PERP mid, paper position, assumed overlay PnL, and capture health. DESK /
-MARKETS / RISK are not built. Later screens must keep using the create-only
-reconstructable contracts rather than inventing a second store:
+BTC-PERP mid, paper position, assumed overlay PnL, capture health, and the
+copied PAPER intent/fill blotter. The layout is a dense dark terminal so those
+values are readable at a glance; PAPER is badged and watermarked. It is
+inspired by professional market workstations, not a clone of a commercial UI.
+DESK / MARKETS / RISK are not built. Later screens must keep using the
+create-only reconstructable contracts rather than inventing a second store:
 
 ```text
 <artifact-root>/course1/live-public-paper/<run_id>/

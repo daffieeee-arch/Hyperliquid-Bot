@@ -28,6 +28,11 @@ describe("PAPER run loader", () => {
     expect(snapshot.orders.order_count).toBe(2);
     expect(snapshot.fills.fill_count).toBe(2);
     expect(snapshot.orders.venue_orders_submitted).toBe(false);
+    expect(snapshot.orders.intents.map((intent) => intent.client_order_id)).toEqual([
+      "O-20260904-002014-001-D01-1",
+      "O-20260904-002014-001-D01-2",
+    ]);
+    expect(snapshot.fills.fills.map((fill) => fill.price)).toEqual(["81143.0", "81143.0"]);
   });
 
   it("does not invent PnL when a required file is missing", () => {
@@ -39,5 +44,20 @@ describe("PAPER run loader", () => {
 
   it("refuses LIVE trading mode before reading numbers", () => {
     expect(() => loadPaperRunSnapshot({ TRADING_MODE: "LIVE" }, repoRoot)).toThrow(/PAPER-only/);
+  });
+
+  it("copies an empty PAPER blotter without inventing intents", () => {
+    const snapshot = loadPaperRunSnapshot(
+      {
+        TRADING_MODE: "PAPER",
+        COCKPIT_PAPER_RUN_DIR: join(repoRoot, "tests/fixtures/course1_cockpit/sample-run"),
+      },
+      repoRoot,
+    );
+    expect(snapshot.orders.order_count).toBe(0);
+    expect(snapshot.orders.intents).toEqual([]);
+    expect(snapshot.fills.fill_count).toBe(0);
+    expect(snapshot.fills.fills).toEqual([]);
+    expect(snapshot.pnl.net_pnl_usdc_assumed).toBe("0");
   });
 });

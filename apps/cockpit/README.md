@@ -1,6 +1,9 @@
 # First PAPER cockpit screen
 
-One local Next.js screen. It is not DESK, MARKETS, RISK, or a Bloomberg clone.
+One local Next.js screen. It is not DESK, MARKETS, RISK, or a clone of any
+commercial terminal. The first screen uses a dense dark workstation layout so
+price, position, assumed overlay PnL, and capture health are readable at a
+glance. PAPER is badged in the masthead and watermarked on the page.
 
 The browser never signs orders and never holds keys. `TRADING_MODE` must be
 unset or `PAPER`; `LIVE`, `TESTNET`, and `SHADOW` fail closed.
@@ -14,6 +17,8 @@ unset or `PAPER`; `LIVE`, `TESTNET`, and `SHADOW` fail closed.
    overlay, the screen says so. It never fabricates a second number.
 4. Capture health from that same JSON. This is a bounded soak summary, not a
    24/7 heartbeat.
+5. PAPER intent/fill blotter copied from `orders.json` / `fills.json`. Empty
+   runs stay empty; rows are not invented.
 
 ## JSON it reads
 

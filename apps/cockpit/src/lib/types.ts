@@ -60,6 +60,24 @@ export type CaptureHealth = {
   limitations: string[];
 };
 
+export type PaperOrderIntent = {
+  client_order_id: string;
+  side: string;
+  quantity: string;
+  order_type: string;
+  reason: string;
+  reduce_only: boolean;
+};
+
+export type PaperFillRow = {
+  fill_ordinal: number;
+  side: string;
+  price: string;
+  quantity: string;
+  liquidity_side: string;
+  position_after: string;
+};
+
 export type PaperOrders = {
   kind: "orders";
   schema: string;
@@ -67,6 +85,8 @@ export type PaperOrders = {
   mode: "PAPER";
   venue_orders_submitted: boolean;
   order_count: number;
+  intents: PaperOrderIntent[];
+  limitations: string[];
 };
 
 export type PaperFills = {
@@ -75,6 +95,8 @@ export type PaperFills = {
   path_contract: string;
   mode: "PAPER";
   fill_count: number;
+  fills: PaperFillRow[];
+  limitations: string[];
 };
 
 export type PaperRunSnapshot = {

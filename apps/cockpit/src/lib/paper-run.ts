@@ -11,7 +11,9 @@ import {
 import type {
   CaptureHealth,
   JsonObject,
+  PaperFillRow,
   PaperFills,
+  PaperOrderIntent,
   PaperOrders,
   PaperPosition,
   PaperPnl,
@@ -64,6 +66,14 @@ function requireStringList(source: JsonObject, field: string, path: string): str
   const value = source[field];
   if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
     throw new Error(`${path}.${field} must be a list of strings.`);
+  }
+  return value;
+}
+
+function requireObjectList(source: JsonObject, field: string, path: string): JsonObject[] {
+  const value = source[field];
+  if (!Array.isArray(value) || value.some((item) => !isRecord(item))) {
+    throw new Error(`${path}.${field} must be a list of objects.`);
   }
   return value;
 }
@@ -191,6 +201,34 @@ function loadHealth(runDir: string): CaptureHealth {
   };
 }
 
+function loadOrderIntents(raw: JsonObject, path: string): PaperOrderIntent[] {
+  return requireObjectList(raw, "orders", path).map((item, index) => {
+    const rowPath = `${path}.orders[${String(index)}]`;
+    return {
+      client_order_id: requireText(item, "client_order_id", rowPath),
+      side: requireText(item, "side", rowPath),
+      quantity: requireText(item, "quantity", rowPath),
+      order_type: requireText(item, "order_type", rowPath),
+      reason: requireText(item, "reason", rowPath),
+      reduce_only: requireBoolean(item, "reduce_only", rowPath),
+    };
+  });
+}
+
+function loadFillRows(raw: JsonObject, path: string): PaperFillRow[] {
+  return requireObjectList(raw, "fills", path).map((item, index) => {
+    const rowPath = `${path}.fills[${String(index)}]`;
+    return {
+      fill_ordinal: requireInt(item, "fill_ordinal", rowPath),
+      side: requireText(item, "side", rowPath),
+      price: requireText(item, "price", rowPath),
+      quantity: requireText(item, "quantity", rowPath),
+      liquidity_side: requireText(item, "liquidity_side", rowPath),
+      position_after: requireText(item, "position_after", rowPath),
+    };
+  });
+}
+
 function loadOrders(runDir: string): PaperOrders {
   const path = cockpitFilePath(runDir, "orders.json");
   const raw = readJsonObject(path);
@@ -198,13 +236,20 @@ function loadOrders(runDir: string): PaperOrders {
   if (raw.kind !== "orders") {
     throw new Error(`${path} kind is not orders.`);
   }
+  const intents = loadOrderIntents(raw, path);
+  const orderCount = requireInt(raw, "order_count", path);
+  if (orderCount !== intents.length) {
+    throw new Error(`${path} order_count does not match the copied intents list.`);
+  }
   return {
     kind: "orders",
     schema: COCKPIT_ARTIFACT_SCHEMA,
     path_contract: COURSE1_PATH_CONTRACT_ID,
     mode: requirePaperMode(raw, path),
     venue_orders_submitted: requireBoolean(raw, "venue_orders_submitted", path),
-    order_count: requireInt(raw, "order_count", path),
+    order_count: orderCount,
+    intents,
+    limitations: requireStringList(raw, "limitations", path),
   };
 }
 
@@ -215,12 +260,19 @@ function loadFills(runDir: string): PaperFills {
   if (raw.kind !== "fills") {
     throw new Error(`${path} kind is not fills.`);
   }
+  const fills = loadFillRows(raw, path);
+  const fillCount = requireInt(raw, "fill_count", path);
+  if (fillCount !== fills.length) {
+    throw new Error(`${path} fill_count does not match the copied fills list.`);
+  }
   return {
     kind: "fills",
     schema: COCKPIT_ARTIFACT_SCHEMA,
     path_contract: COURSE1_PATH_CONTRACT_ID,
     mode: requirePaperMode(raw, path),
-    fill_count: requireInt(raw, "fill_count", path),
+    fill_count: fillCount,
+    fills,
+    limitations: requireStringList(raw, "limitations", path),
   };
 }
 

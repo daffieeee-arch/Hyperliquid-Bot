@@ -397,9 +397,11 @@ data-only increment after DATA-1B.
 
 ### DATA-1B — Kraken BTC/EUR authenticated L3 research slice
 
-Phase 1 of DATA-1B under D10 — multi-venue market data and feed coverage is deliberately offline.
-It adds no credential loader or command and performs no authenticated smoke. The Kraken adapter is
-fixed to Spot `BTC/EUR` and runs two required connections as one fail-closed capture:
+Phase 1 of DATA-1B under D10 — multi-venue market data and feed coverage is deliberately offline
+for authenticated L3. The retained-operator CLI now exists for a public default path and an
+optional L3 path; it does not start capture by itself. The Kraken adapter is
+fixed to Spot `BTC/EUR` and can run public `trade` + depth-10 `book` alone, or both
+connections as one fail-closed capture when L3 is explicitly requested:
 
 - public `trade` and depth-10 `book` at `wss://ws.kraken.com/v2`;
 - token-gated depth-10 `level3` at `wss://ws-l3.kraken.com/v2`.
@@ -407,6 +409,8 @@ fixed to Spot `BTC/EUR` and runs two required connections as one fail-closed cap
 The channel-specific L3 reference and Kraken's 2 December 2025 changelog are authoritative for the
 second endpoint; the generic Spot WebSocket overview still lists `ws-auth` as the private endpoint.
 No silent endpoint substitution or downgrade from L3 to public L2 is allowed.
+Public-only retain is an explicit operator choice (the default retained path), not a
+fallback after an L3 failure.
 
 The only permission needed to request the temporary token is `WebSocket interface - On`, named
 `Access WebSockets API` in the current permission guide. Query Funds, order/trade queries, ledger,
@@ -471,6 +475,44 @@ session, `add` may mean a previously out-of-scope level became visible, out-of-d
 no wire `delete`, and `delete` does not distinguish cancel from full fill. Local
 `scope_truncate` events are labelled `event_source=local_scope`; no strategy edge or complete order
 history is claimed.
+
+### DATA-1B duration and reconstructable retain
+
+The command `python -m hyperliquid_bot.kraken_l3_research` requires an explicit duration
+from **1 through 604800 seconds** (7 days). Durations of 1–600 seconds remain the historical
+DATA-1B smoke window; durations of 600.1–604800 seconds are retained research captures
+(`retained: true`). A duration above 604800 seconds fails closed. This is not a 24/7 service.
+
+The default retained path is public `trade` + depth-10 `book` only. Authenticated L3 is
+optional and is enabled only when both `KRAKEN_WS_API_KEY` and `KRAKEN_WS_API_SECRET` are
+set in the operator environment. Generic `KRAKEN_API_KEY` / `KRAKEN_API_SECRET` names fail
+closed as the wrong key type. Values are never printed, logged, or committed. There is no
+silent L3-to-public downgrade: if L3 is requested and authentication fails, the combined
+capture fails closed.
+
+Preferred reconstructable layout (create-only; path segment `BTC-EUR`, wire symbol `BTC/EUR`):
+
+```text
+<artifact-root>/data-1b/kraken/BTC-EUR/<run_id>/
+  capture-claim.json
+  capture-health.json
+  raw/part-*.parquet
+  research.duckdb
+```
+
+```bash
+PYTHONPATH=src uv run --frozen python -m hyperliquid_bot.kraken_l3_research \
+  --artifact-root var/reconstructable \
+  --run-id 20260904t000000z \
+  --duration-seconds 86400
+```
+
+Operator retain/stop/continue rules are in
+[DATA-1B VPS retained-capture runbook](runbooks/data1b-vps-retained-capture.md) and the
+[DATA-1B operator PC/WSL retained-capture runbook](runbooks/data1b-wsl-pc-retained-capture.md).
+Cloud Agents are unsuitable for a multi-day retain and must not SSH to or stop TerraPC
+`hl-capture`, `bn-capture`, or `bv-capture`. **Do not start a multi-day DATA-1B retain
+until CoS assigns this window.** Never resume the same `run_id`.
 
 On 2026-08-31, a bounded phase 2 smoke completed two short authenticated BTC/EUR L3 sessions
 using two token requests and one controlled session restart. Each session received a positive
@@ -732,13 +774,47 @@ query behavior. It uses no real credential and makes no live access, entitlement
 latency, 24-hour reliability, hard-crash durability, strategy-edge, deployment, production, or
 execution claim.
 
-Any bounded phase-2 smoke requires a dedicated Bitvavo key with only the UI `View access`
-permission (called `Read-only` in the Pro introduction), all trade, withdrawal, transfer,
-administrative, and subaccount permissions disabled, and IP allowlisting where practical. That
-permission can expose account information even though this adapter calls only authenticate,
-subscribe, and `getBook`; the key is therefore still sensitive. It may enter only through hidden
-local `/dev/tty` prompts, never chat, environment variables, arguments, files, fixtures, logs, or
-artifacts. Authentication or access rejection defers DATA-1E; it never justifies broader rights.
+Any bounded phase-2 smoke or retained operator path requires a dedicated Bitvavo key with only
+the UI `View access` permission (called `Read-only` in the Pro introduction), all trade,
+withdrawal, transfer, administrative, and subaccount permissions disabled, and IP allowlisting
+where practical. That permission can expose account information even though this adapter calls
+only authenticate, subscribe, and `getBook`; the key is therefore still sensitive.
+
+The retained-operator path loads View-only keys only from `BITVAVO_MDPRO_API_KEY` and
+`BITVAVO_MDPRO_API_SECRET`. Values are never printed, logged, committed, or written to
+artifacts. Generic `BITVAVO_API_KEY` / `BITVAVO_API_SECRET` and other trade/signing names fail
+closed. Authentication or access rejection defers DATA-1E; it never justifies broader rights.
+
+### DATA-1E duration and reconstructable retain
+
+The command `python -m hyperliquid_bot.bitvavo_mdpro_research` requires an explicit duration
+from **1 through 604800 seconds** (7 days). Durations of 1–600 seconds remain the historical
+DATA-1E smoke window; durations of 600.1–604800 seconds are retained research captures
+(`retained: true`). A duration above 604800 seconds fails closed. This is not a 24/7 service.
+
+Preferred reconstructable layout (create-only):
+
+```text
+<artifact-root>/data-1e/bitvavo/BTC-EUR/<run_id>/
+  capture-claim.json
+  capture-health.json
+  raw/part-*.parquet
+  research.duckdb
+```
+
+```bash
+PYTHONPATH=src uv run --frozen python -m hyperliquid_bot.bitvavo_mdpro_research \
+  --artifact-root var/reconstructable \
+  --run-id 20260904t000000z \
+  --duration-seconds 86400
+```
+
+Operator retain/stop/continue rules are in
+[DATA-1E VPS retained-capture runbook](runbooks/data1e-vps-retained-capture.md) and the
+[DATA-1E operator PC/WSL retained-capture runbook](runbooks/data1e-wsl-pc-retained-capture.md).
+Cloud Agents are unsuitable for a multi-day retain and must not SSH to or stop TerraPC
+`hl-capture` or `bn-capture`. **Do not start a multi-day DATA-1E retain until CoS assigns
+this window.** Never resume the same `run_id`.
 
 On 2026-08-31, the final bounded phase-2 smoke completed two short authenticated BTC-EUR Pro book
 sessions with one controlled session restart and no automatic reconnect. Each session received

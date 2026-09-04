@@ -1,7 +1,13 @@
-"""Bounded Kraken BTC/EUR public L2/trades and authenticated L3 capture."""
+"""Kraken BTC/EUR public L2/trades capture with optional authenticated L3.
+
+The default retained path is public book + trades only. Authenticated L3 is
+optional and never a silent fallback. Duration may be a short smoke or a
+retained multi-day run. This is not a 24/7 service.
+"""
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import base64
 import binascii
@@ -9,22 +15,28 @@ import hashlib
 import hmac
 import json
 import logging
+import math
+import os
 import re
+import signal
 import threading
 import time
 import urllib.parse
 import urllib.request
 import uuid
 import zlib
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from typing import Final, Protocol, cast
 
+import duckdb
 from websockets.asyncio.client import connect
 from websockets.exceptions import PayloadTooBig, WebSocketException
 
+from .parquet_research import ParquetResearchWriter, ParquetRotation, create_research_catalog
 from .raw_research import (
     RAW_RESEARCH_SCHEMA_VERSION,
     CapturedApplicationPayload,
@@ -36,6 +48,12 @@ from .raw_research import (
     RawResearchSink,
     capture_application_payload,
 )
+from .reconstructable_paths import (
+    DATA1B_PATH_CONTRACT_ID,
+    DATA1B_PRODUCT,
+    Data1BRunPaths,
+    data1b_run_paths,
+)
 
 KRAKEN_PUBLIC_WEBSOCKET_URL: Final = "wss://ws.kraken.com/v2"
 KRAKEN_L3_WEBSOCKET_URL: Final = "wss://ws-l3.kraken.com/v2"
@@ -43,7 +61,36 @@ KRAKEN_TOKEN_URL: Final = "https://api.kraken.com/0/private/GetWebSocketsToken"
 KRAKEN_TOKEN_PATH: Final = "/0/private/GetWebSocketsToken"
 KRAKEN_RESEARCH_VENUE: Final = "kraken"
 KRAKEN_RESEARCH_PRODUCT: Final = "BTC/EUR"
-MAX_CAPTURE_SECONDS: Final = 600.0
+SMOKE_CAPTURE_SECONDS: Final = 600.0
+MAX_CAPTURE_SECONDS: Final = 7 * 24 * 60 * 60
+DATA1B_CLAIM_SCHEMA: Final = "data-1b-retained-capture-claim-v1"
+DATA1B_HEALTH_SCHEMA: Final = "data-1b-retained-capture-health-v1"
+KRAKEN_WS_API_KEY_ENV: Final = "KRAKEN_WS_API_KEY"
+KRAKEN_WS_API_SECRET_ENV: Final = "KRAKEN_WS_API_SECRET"
+KRAKEN_L3_OPTIONAL_ENV: Final = (KRAKEN_WS_API_KEY_ENV, KRAKEN_WS_API_SECRET_ENV)
+PROTECTED_TRADE_KEY_ENV: Final = (
+    "HYPERLIQUID_PK",
+    "HYPERLIQUID_TESTNET_PK",
+    "HYPERLIQUID_VAULT",
+    "HYPERLIQUID_TESTNET_VAULT",
+    "HYPERLIQUID_ACCOUNT_ADDRESS",
+    "BINANCE_API_KEY",
+    "BINANCE_API_SECRET",
+    "BINANCE_SECRET",
+    "BINANCE_API_KEY_TESTNET",
+    "BINANCE_TESTNET_API_SECRET",
+    "BITVAVO_API_KEY",
+    "BITVAVO_API_SECRET",
+    "BITVAVO_ACCESS_KEY",
+    "BITVAVO_SECRET",
+    "BITVAVO_SIGNING_KEY",
+    "KRAKEN_API_KEY",
+    "KRAKEN_API_SECRET",
+    "KRAKEN_PRIVATE_KEY",
+    "OKX_API_KEY",
+    "OKX_SECRET_KEY",
+    "OKX_PASSPHRASE",
+)
 
 _PUBLIC_SUBSCRIPTIONS: Final = (
     (
@@ -570,7 +617,7 @@ class KrakenL3ResearchCollector:
     def __init__(
         self,
         sink: RawResearchSink,
-        token_provider: KrakenTokenProvider,
+        token_provider: KrakenTokenProvider | None = None,
         *,
         config: KrakenL3ResearchConfig | None = None,
         public_connection_factory: ConnectionFactory | None = None,
@@ -608,7 +655,7 @@ class KrakenL3ResearchCollector:
         *,
         stop_event: asyncio.Event | None = None,
     ) -> None:
-        """Run both required connections; a terminal failure stops the other feed."""
+        """Run public L2+trades; authenticated L3 is optional and never a silent fallback."""
 
         _require_bounded_duration(duration_seconds)
         capture_stop = stop_event if stop_event is not None else asyncio.Event()
@@ -620,6 +667,16 @@ class KrakenL3ResearchCollector:
             self._run_public_stream(capture_stop),
             name="kraken-public-research-stream",
         )
+        if self._token_provider is None:
+            try:
+                await public_task
+            finally:
+                capture_stop.set()
+                timer.cancel()
+                if not public_task.done():
+                    public_task.cancel()
+                await asyncio.gather(timer, public_task, return_exceptions=True)
+            return
         l3_task = asyncio.create_task(
             self._run_l3_stream(capture_stop),
             name="kraken-l3-research-stream",
@@ -714,6 +771,10 @@ class KrakenL3ResearchCollector:
             await self._wait_to_reconnect(stop_event)
 
     async def _run_l3_stream(self, stop_event: asyncio.Event) -> None:
+        if self._token_provider is None:
+            raise KrakenAuthenticationError(
+                "Kraken L3 was requested without a token provider; public-only is explicit."
+            )
         previous_session_id: str | None = None
         while not stop_event.is_set():
             session_id = self._session_id_factory("l3")
@@ -1549,9 +1610,363 @@ def _reject_json_constant(value: str) -> object:
     raise ValueError("non-standard JSON constant")
 
 
-def _require_bounded_duration(duration_seconds: object) -> None:
+def _require_bounded_duration(duration_seconds: object) -> float:
     if type(duration_seconds) not in (int, float):
         raise TypeError("duration_seconds must be a built-in number.")
     duration = float(cast(int | float, duration_seconds))
-    if not 1.0 <= duration <= MAX_CAPTURE_SECONDS:
+    if not math.isfinite(duration) or not 1.0 <= duration <= MAX_CAPTURE_SECONDS:
         raise ValueError(f"duration_seconds must be between 1 and {MAX_CAPTURE_SECONDS:g}.")
+    return duration
+
+
+def refuse_protected_trade_keys(environ: Mapping[str, str] | None = None) -> None:
+    """Fail closed when trade/signing or generic Kraken key names are set."""
+
+    source = os.environ if environ is None else environ
+    for name in PROTECTED_TRADE_KEY_ENV:
+        if source.get(name):
+            raise KrakenAuthenticationError(
+                f"Refuse: protected environment name {name} is set. Value not printed."
+            )
+
+
+def load_optional_l3_token_provider(
+    environ: Mapping[str, str] | None = None,
+) -> KrakenRestTokenProvider | None:
+    """Enable L3 only when both WS env names are present. Never echo values."""
+
+    source = os.environ if environ is None else environ
+    refuse_protected_trade_keys(source)
+    api_key = source.get(KRAKEN_WS_API_KEY_ENV)
+    api_secret = source.get(KRAKEN_WS_API_SECRET_ENV)
+    if api_key is None and api_secret is None:
+        return None
+    if api_key is None or api_secret is None:
+        raise KrakenAuthenticationError(
+            "Kraken L3 requires both KRAKEN_WS_API_KEY and KRAKEN_WS_API_SECRET. "
+            "Values are not printed. Public L2+trades is the default retained path."
+        )
+    return KrakenRestTokenProvider(
+        KrakenApiCredentials(api_key=api_key, api_secret_base64=api_secret)
+    )
+
+
+def build_capture_report(database_path: Path, parquet_dir: Path) -> dict[str, object]:
+    """Return payload/file counts only; never emit captured payload contents."""
+
+    connection = duckdb.connect(str(database_path.resolve()), read_only=True)
+    try:
+        channel_rows = connection.execute(
+            """
+            SELECT channel, direction, count(*), sum(octet_length(payload_bytes))
+            FROM raw_records
+            GROUP BY channel, direction
+            ORDER BY channel, direction
+            """
+        ).fetchall()
+        totals = connection.execute(
+            "SELECT count(*), coalesce(sum(octet_length(payload_bytes)), 0) FROM raw_records"
+        ).fetchone()
+        gap_row = connection.execute(
+            "SELECT count(*) FROM data_quality_events WHERE event = 'gap_detected'"
+        ).fetchone()
+        reconnect_row = connection.execute(
+            "SELECT count(*) FROM sessions WHERE event = 'reconnected'"
+        ).fetchone()
+        if totals is None or gap_row is None or reconnect_row is None:
+            raise RuntimeError("DuckDB did not return the requested capture aggregates.")
+        total_events, total_payload_bytes = totals
+    finally:
+        connection.close()
+
+    parquet_files = tuple(sorted(parquet_dir.resolve().glob("*.parquet")))
+    parquet_bytes = sum(path.stat().st_size for path in parquet_files)
+    raw_bytes = int(total_payload_bytes)
+    return {
+        "channels": [
+            {
+                "channel": str(channel),
+                "direction": str(direction),
+                "events": int(events),
+                "payload_bytes": int(payload_bytes),
+            }
+            for channel, direction, events, payload_bytes in channel_rows
+        ],
+        "events": int(total_events),
+        "payload_bytes": raw_bytes,
+        "parquet_files": len(parquet_files),
+        "parquet_bytes": parquet_bytes,
+        "raw_payload_to_parquet_ratio": (raw_bytes / parquet_bytes if parquet_bytes else None),
+        "gaps": int(gap_row[0]),
+        "reconnects": int(reconnect_row[0]),
+    }
+
+
+async def run_bounded_capture(
+    *,
+    output_dir: Path,
+    database_path: Path,
+    duration_seconds: float,
+    token_provider: KrakenTokenProvider | None = None,
+    stop_event: asyncio.Event | None = None,
+    collector_factory: Callable[[RawResearchSink], KrakenL3ResearchCollector] | None = None,
+) -> dict[str, object]:
+    """Run public (and optional L3) capture, close Parquet, and build the catalog."""
+
+    duration = _require_bounded_duration(duration_seconds)
+    writer = ParquetResearchWriter(output_dir, rotation=ParquetRotation())
+    active = (
+        collector_factory(writer)
+        if collector_factory is not None
+        else KrakenL3ResearchCollector(writer, token_provider)
+    )
+    try:
+        await active.capture_for(duration, stop_event=stop_event)
+    finally:
+        await writer.aclose()
+    create_research_catalog(output_dir, database_path)
+    return build_capture_report(database_path, output_dir)
+
+
+def data1b_capture_claim(
+    *,
+    run_id: str,
+    duration_seconds: float,
+    paths: Data1BRunPaths,
+    include_l3: bool,
+) -> dict[str, object]:
+    """Create-only start claim for a reconstructable DATA-1B run."""
+
+    duration = _require_bounded_duration(duration_seconds)
+    return {
+        "schema": DATA1B_CLAIM_SCHEMA,
+        "state": "STARTED_FAIL_CLOSED",
+        "path_contract": DATA1B_PATH_CONTRACT_ID,
+        "run_id": run_id,
+        "venue": KRAKEN_RESEARCH_VENUE,
+        "product": DATA1B_PRODUCT,
+        "wire_product": KRAKEN_RESEARCH_PRODUCT,
+        "feed": (
+            "kraken-public-btc-eur-book-trades-l3"
+            if include_l3
+            else "kraken-public-btc-eur-book-trades"
+        ),
+        "public_websocket_url": KRAKEN_PUBLIC_WEBSOCKET_URL,
+        "l3_websocket_url": KRAKEN_L3_WEBSOCKET_URL if include_l3 else None,
+        "credentialless": not include_l3,
+        "signing": False,
+        "authenticated_l3": include_l3,
+        "duration_seconds": duration,
+        "smoke_duration_seconds": SMOKE_CAPTURE_SECONDS,
+        "max_duration_seconds": MAX_CAPTURE_SECONDS,
+        "retained": duration > SMOKE_CAPTURE_SECONDS,
+        "twenty_four_seven": False,
+        "resume_policy": "never resume or overwrite an existing DATA-1B run directory",
+        "raw_dir": paths.raw_dir.as_posix(),
+        "database_path": paths.database_path.as_posix(),
+    }
+
+
+def data1b_capture_health(
+    *,
+    run_id: str,
+    duration_seconds: float,
+    status: str,
+    report: dict[str, object],
+    include_l3: bool,
+) -> dict[str, object]:
+    """Create-only end health for a reconstructable DATA-1B run."""
+
+    if status not in {"COMPLETED", "OPERATOR_STOP", "FAILED"}:
+        raise ValueError("DATA-1B capture-health status is outside the documented bound.")
+    duration = _require_bounded_duration(duration_seconds)
+    return {
+        "schema": DATA1B_HEALTH_SCHEMA,
+        "kind": "capture-health",
+        "path_contract": DATA1B_PATH_CONTRACT_ID,
+        "run_id": run_id,
+        "status": status,
+        "duration_seconds": duration,
+        "retained": duration > SMOKE_CAPTURE_SECONDS,
+        "twenty_four_seven": False,
+        "credentialless": not include_l3,
+        "authenticated_l3": include_l3,
+        "signing": False,
+        "events": report.get("events"),
+        "payload_bytes": report.get("payload_bytes"),
+        "parquet_files": report.get("parquet_files"),
+        "parquet_bytes": report.get("parquet_bytes"),
+        "gaps": report.get("gaps"),
+        "reconnects": report.get("reconnects"),
+        "limitations": [
+            "Published Parquet parts are reconstructable; a crash can lose the in-memory segment.",
+            "This is not 24/7 service evidence or a trading edge.",
+            "Default retained path is public L2 + trades. L3 is optional and never a silent fallback.",
+            "Optional L3 keys enter only through KRAKEN_WS_API_KEY and KRAKEN_WS_API_SECRET.",
+            "Generic KRAKEN_API_KEY / KRAKEN_API_SECRET names fail closed as the wrong key type.",
+        ],
+    }
+
+
+def _write_create_only_json(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("x", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=True, sort_keys=True, indent=2) + "\n")
+
+
+async def run_reconstructable_capture(
+    *,
+    artifact_root: Path,
+    run_id: str,
+    duration_seconds: float,
+    token_provider: KrakenTokenProvider | None = None,
+    stop_event: asyncio.Event | None = None,
+    operator_stop: Callable[[], bool] | None = None,
+    collector_factory: Callable[[RawResearchSink], KrakenL3ResearchCollector] | None = None,
+) -> dict[str, object]:
+    """Write DATA-1B Parquet/DuckDB to the documented reconstructable path."""
+
+    refuse_protected_trade_keys()
+    include_l3 = token_provider is not None
+    paths = data1b_run_paths(artifact_root, run_id)
+    if paths.run_dir.exists():
+        raise FileExistsError(f"DATA-1B refuses to reuse existing run directory: {paths.run_dir}")
+    paths.run_dir.mkdir(parents=True, exist_ok=False)
+    paths.raw_dir.mkdir(exist_ok=False)
+    _write_create_only_json(
+        paths.capture_claim_path,
+        data1b_capture_claim(
+            run_id=run_id,
+            duration_seconds=duration_seconds,
+            paths=paths,
+            include_l3=include_l3,
+        ),
+    )
+    report: dict[str, object] = {
+        "events": 0,
+        "payload_bytes": 0,
+        "parquet_files": 0,
+        "parquet_bytes": 0,
+        "gaps": 0,
+        "reconnects": 0,
+    }
+    status = "FAILED"
+    try:
+        report = await run_bounded_capture(
+            output_dir=paths.raw_dir,
+            database_path=paths.database_path,
+            duration_seconds=duration_seconds,
+            token_provider=token_provider,
+            stop_event=stop_event,
+            collector_factory=collector_factory,
+        )
+        if operator_stop is not None and operator_stop():
+            status = "OPERATOR_STOP"
+        else:
+            status = "COMPLETED"
+    finally:
+        if not paths.capture_health_path.exists():
+            _write_create_only_json(
+                paths.capture_health_path,
+                data1b_capture_health(
+                    run_id=run_id,
+                    duration_seconds=duration_seconds,
+                    status=status,
+                    report=report,
+                    include_l3=include_l3,
+                ),
+            )
+    return {
+        **report,
+        "run_id": run_id,
+        "path_contract": DATA1B_PATH_CONTRACT_ID,
+        "run_dir": str(paths.run_dir),
+        "raw_dir": str(paths.raw_dir),
+        "database_path": str(paths.database_path),
+        "status": status,
+        "authenticated_l3": include_l3,
+        "twenty_four_seven": False,
+    }
+
+
+def _argument_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Kraken BTC/EUR exact-raw research capture. Default is public L2 + trades. "
+            "Optional authenticated L3 uses KRAKEN_WS_API_KEY and KRAKEN_WS_API_SECRET. "
+            "Duration may exceed the historical 600s smoke cap up to 7 days. "
+            "This is not a 24/7 service. Do not start a multi-day retain from a Cloud Agent."
+        )
+    )
+    parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--database", type=Path)
+    parser.add_argument("--artifact-root", type=Path)
+    parser.add_argument("--run-id")
+    parser.add_argument("--duration-seconds", required=True, type=float)
+    return parser
+
+
+def _resolve_cli_mode(args: argparse.Namespace) -> str:
+    reconstructable = args.artifact_root is not None or args.run_id is not None
+    ad_hoc = args.output_dir is not None or args.database is not None
+    if reconstructable and ad_hoc:
+        raise ValueError(
+            "Use either --artifact-root/--run-id or --output-dir/--database, not both."
+        )
+    if reconstructable:
+        if args.artifact_root is None or args.run_id is None:
+            raise ValueError("Reconstructable capture requires both --artifact-root and --run-id.")
+        return "reconstructable"
+    if args.output_dir is None or args.database is None:
+        raise ValueError(
+            "Ad-hoc capture requires --output-dir and --database; "
+            "preferred reconstructable mode uses --artifact-root and --run-id."
+        )
+    return "ad_hoc"
+
+
+async def _run_from_args(args: argparse.Namespace) -> dict[str, object]:
+    stop_event = asyncio.Event()
+    operator_stopped = False
+
+    def _request_operator_stop() -> None:
+        nonlocal operator_stopped
+        operator_stopped = True
+        stop_event.set()
+
+    try:
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, _request_operator_stop)
+    except (NotImplementedError, RuntimeError):
+        pass
+
+    token_provider = load_optional_l3_token_provider()
+    mode = _resolve_cli_mode(args)
+    if mode == "reconstructable":
+        return await run_reconstructable_capture(
+            artifact_root=cast(Path, args.artifact_root),
+            run_id=cast(str, args.run_id),
+            duration_seconds=cast(float, args.duration_seconds),
+            token_provider=token_provider,
+            stop_event=stop_event,
+            operator_stop=lambda: operator_stopped,
+        )
+    return await run_bounded_capture(
+        output_dir=cast(Path, args.output_dir),
+        database_path=cast(Path, args.database),
+        duration_seconds=cast(float, args.duration_seconds),
+        token_provider=token_provider,
+        stop_event=stop_event,
+    )
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _argument_parser().parse_args(argv)
+    report = asyncio.run(_run_from_args(args))
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

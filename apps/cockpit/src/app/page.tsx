@@ -10,6 +10,7 @@ import { firstQueryValue, findRepoRoot } from "../lib/paths";
 import type { Data1ACaptureResponse, PaperRunSnapshot } from "../lib/types";
 
 export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 function sourceLabel(source: PaperRunSnapshot["source"]): string {
   if (source === "default-fixture") {

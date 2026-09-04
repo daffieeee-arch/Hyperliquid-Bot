@@ -113,6 +113,8 @@ def test_wsl_runbook_documents_known_good_operator_paths() -> None:
     assert "DATA1A_RUN_ID" in text
     assert "pnpm --filter @hyperliquid-bot/cockpit dev" in text
     assert "RUNNING (health JSON pending until stop)" in text
+    assert "every **5 seconds**" in text
+    assert "/api/data1a-capture" in text
     assert "Do **not** stop" in text or "do not stop" in text.lower()
 
 

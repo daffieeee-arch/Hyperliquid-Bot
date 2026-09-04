@@ -289,8 +289,10 @@ To point local `next dev` at a live TerraPC retain without stopping the
 collector, export `ARTIFACT_ROOT=/home/dmesdary/hyperliquid-artifacts/reconstructable`
 and `DATA1A_RUN_ID=20260904t134940z-live-retained` (or copy
 `apps/cockpit/.env.example` to `apps/cockpit/.env.local`).
-`COCKPIT_DATA1A_RUN_ID` and `/?data1a_run_id=` are equivalent. Missing root or
-`run_id` fails closed. See [cockpit-first-paper-screen.md](runbooks/cockpit-first-paper-screen.md)
+`COCKPIT_DATA1A_RUN_ID` and `/?data1a_run_id=` are equivalent. The Operator
+Cockpit polls `/api/data1a-capture` every 5 seconds while the tab is open.
+Missing root or `run_id` fails closed. See
+[cockpit-first-paper-screen.md](runbooks/cockpit-first-paper-screen.md)
 and [data1a-wsl-pc-retained-capture.md](runbooks/data1a-wsl-pc-retained-capture.md).
 
 ```bash

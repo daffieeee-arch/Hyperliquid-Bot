@@ -47,8 +47,10 @@ create-only reconstructable contracts rather than inventing a second store:
 claim and an end-of-run health file. While a live retain has a claim, growing
 `raw/part-*.parquet` files, and no health file, the panel shows
 **RUNNING (health JSON pending until stop)** rather than invented zeros.
-Missing artifact root or `run_id` is an explicit empty state. DATA-1A capture
-duration is 1–604800 seconds; the COURSE-1 soak remains 1–600 seconds. Locally
+The DATA-1A panel polls `/api/data1a-capture` every 5 seconds with
+`Cache-Control: no-store`. Missing artifact root or `run_id` is an explicit
+empty state. DATA-1A capture duration is 1–604800 seconds; the COURSE-1 soak
+remains 1–600 seconds. Locally
 the first screen defaults to
 `tests/fixtures/course1_cockpit/live-public-soak/` (`run_id`
 `20260904t001800z-live-paper`) and `tests/fixtures/data_1a_retained/sample-run/`

@@ -1,7 +1,5 @@
 "use client";
 
-import { useEffect, useState } from "react";
-
 import { KvTable } from "./kv-table";
 import { MetricTile } from "./metric-tile";
 import {
@@ -9,11 +7,12 @@ import {
   formatGroupedNumber,
   presentCopiedNumber,
   presentCopiedText,
+  presentData1ADuration,
   yesNo,
 } from "../lib/display";
+import { DATA1A_CAPTURE_POLL_MS } from "../lib/data1a-capture-poll";
+import { useData1ACapturePoll } from "../lib/use-data1a-capture";
 import type { Data1ACaptureResponse, Data1ACaptureSnapshot } from "../lib/types";
-
-const REFRESH_MS = 10_000;
 
 function sourceLabel(source: Data1ACaptureSnapshot["source"]): string {
   if (source === "default-fixture") {
@@ -37,10 +36,8 @@ function partsValue(snapshot: Data1ACaptureSnapshot): string {
 
 function CaptureDesk({ snapshot }: { snapshot: Data1ACaptureSnapshot }) {
   const healthView = data1aCaptureHealthPresentation(snapshot);
-  const duration =
-    snapshot.claim.duration_seconds === undefined
-      ? "n/a"
-      : `${String(snapshot.claim.duration_seconds)}s`;
+  const pollSeconds = String(DATA1A_CAPTURE_POLL_MS / 1000);
+  const duration = presentData1ADuration(snapshot);
 
   return (
     <>
@@ -50,7 +47,7 @@ function CaptureDesk({ snapshot }: { snapshot: Data1ACaptureSnapshot }) {
           value={healthView.tileLabel}
           meta={
             healthView.live
-              ? `health JSON pending until stop · ${snapshot.runId}`
+              ? `health JSON pending until stop · poll ${pollSeconds}s · ${snapshot.runId}`
               : `${snapshot.runId} · ${snapshot.claim.retained ? "retained" : "smoke"}`
           }
           note={
@@ -82,6 +79,7 @@ function CaptureDesk({ snapshot }: { snapshot: Data1ACaptureSnapshot }) {
               : `Last mtime ${snapshot.parts.last_part_mtime_utc}`
           }
           tone={snapshot.parts.raw_dir_present ? "neutral" : "warn"}
+          live={healthView.live && snapshot.parts.raw_dir_present}
         />
         <MetricTile
           label="Gaps / reconnects"
@@ -105,7 +103,7 @@ function CaptureDesk({ snapshot }: { snapshot: Data1ACaptureSnapshot }) {
           <h2>DATA-1A capture / health</h2>
           <p className="panel-kicker">
             Reconstructable public BTC-PERP run · not COURSE-1 soak PnL · health JSON is written at
-            stop
+            stop · filesystem poll {pollSeconds}s
           </p>
         </div>
         <KvTable
@@ -148,6 +146,13 @@ function CaptureDesk({ snapshot }: { snapshot: Data1ACaptureSnapshot }) {
               tone: snapshot.parts.raw_dir_present ? "neutral" : "warn",
             },
             {
+              label: "Bytes on disk",
+              value:
+                snapshot.parts.bytes === undefined
+                  ? "n/a"
+                  : formatGroupedNumber(String(snapshot.parts.bytes)),
+            },
+            {
               label: "Last part",
               value: presentCopiedText(snapshot.parts.last_part_name),
             },
@@ -182,53 +187,7 @@ export function Data1ACapturePanel({
   queryRunId?: string;
   initial: Data1ACaptureResponse;
 }) {
-  const [result, setResult] = useState<Data1ACaptureResponse>(initial);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function refresh(): Promise<void> {
-      try {
-        const params = new URLSearchParams();
-        if (queryRunId) {
-          params.set("data1a_run_id", queryRunId);
-        }
-        const query = params.toString();
-        const response = await fetch(
-          query === "" ? "/api/data1a-capture" : `/api/data1a-capture?${query}`,
-          { cache: "no-store" },
-        );
-        const payload: unknown = await response.json();
-        if (
-          typeof payload !== "object" ||
-          payload === null ||
-          !("ok" in payload) ||
-          typeof payload.ok !== "boolean"
-        ) {
-          throw new Error("DATA-1A capture response was not a fail-closed object.");
-        }
-        if (!cancelled) {
-          setResult(payload as Data1ACaptureResponse);
-        }
-      } catch (error: unknown) {
-        if (!cancelled) {
-          setResult({
-            ok: false,
-            error:
-              error instanceof Error ? error.message : "DATA-1A capture health is unavailable.",
-          });
-        }
-      }
-    }
-
-    const timer = window.setInterval(() => {
-      void refresh();
-    }, REFRESH_MS);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [queryRunId]);
+  const result = useData1ACapturePoll(queryRunId, initial);
 
   return (
     <section className="capture-section" aria-label="DATA-1A capture health">
@@ -240,7 +199,8 @@ export function Data1ACapturePanel({
             <h2>DATA-1A capture / health</h2>
             <p className="panel-kicker">
               Missing artifact root or run directory fails closed. Part counts and PnL are not
-              invented.
+              invented. Filesystem poll {String(DATA1A_CAPTURE_POLL_MS / 1000)}s when a run is
+              readable.
             </p>
           </div>
           <p className="error">{result.error}</p>

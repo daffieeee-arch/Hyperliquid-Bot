@@ -124,6 +124,42 @@ export function presentCopiedText(value: string | undefined): string {
   return value === undefined || value === "" ? "n/a" : value;
 }
 
+const RUN_ID_UTC_PREFIX = /^(\d{4})(\d{2})(\d{2})t(\d{2})(\d{2})(\d{2})z/;
+
+/** Elapsed seconds from a `YYYYMMDDtHHMMSSz…` run_id to `observed_at`. Fail closed if unparseable. */
+export function elapsedSecondsSinceRunId(runId: string, observedAt: string): number | undefined {
+  const match = RUN_ID_UTC_PREFIX.exec(runId);
+  if (match === null) {
+    return undefined;
+  }
+  const startedMs = Date.parse(
+    `${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:${match[6]}Z`,
+  );
+  const observedMs = Date.parse(observedAt);
+  if (!Number.isFinite(startedMs) || !Number.isFinite(observedMs) || observedMs < startedMs) {
+    return undefined;
+  }
+  return Math.floor((observedMs - startedMs) / 1000);
+}
+
+export function presentData1ADuration(snapshot: {
+  runId: string;
+  observed_at: string;
+  claim: { duration_seconds?: number | undefined };
+}): string {
+  const claimed =
+    snapshot.claim.duration_seconds === undefined
+      ? undefined
+      : `${String(snapshot.claim.duration_seconds)}s claimed`;
+  const elapsed = elapsedSecondsSinceRunId(snapshot.runId, snapshot.observed_at);
+  if (elapsed === undefined) {
+    return claimed ?? "n/a";
+  }
+  return claimed === undefined
+    ? `${String(elapsed)}s elapsed`
+    : `${String(elapsed)}s elapsed / ${claimed}`;
+}
+
 export function uniqueStrings(items: string[]): string[] {
   return [...new Set(items)];
 }

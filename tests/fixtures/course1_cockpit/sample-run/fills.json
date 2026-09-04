@@ -1,0 +1,12 @@
+{
+  "fill_count": 0,
+  "fills": [],
+  "kind": "fills",
+  "limitations": [
+    "These are sandbox PAPER fills, not venue-authoritative fills.",
+    "D22-B reconciliation is not implemented."
+  ],
+  "mode": "PAPER",
+  "path_contract": "course1-live-public-paper-cockpit-v1",
+  "schema": "course1-cockpit-paper-artifacts-v1"
+}

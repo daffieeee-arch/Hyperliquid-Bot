@@ -1,0 +1,10 @@
+{
+  "adapter_rejected_count": 0,
+  "bbo_count": 1,
+  "credentialless": true,
+  "feed": "hyperliquid-public-btc-perp-trades-bbo",
+  "risk_rejections": 0,
+  "status": "BOUNDED_TIMEOUT",
+  "subscriptions_acknowledged": ["bbo", "trades"],
+  "trade_count": 1
+}

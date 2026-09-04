@@ -15,3 +15,6 @@ __pycache__/
 coverage/
 dist/
 .vitest/
+
+# Local reconstructable research/PAPER artifacts. Never commit raw captures.
+var/reconstructable/

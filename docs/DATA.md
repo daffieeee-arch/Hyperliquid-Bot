@@ -257,15 +257,32 @@ per message. A hard process or host crash can lose the active in-memory segment 
 `.partial` file; previously published parts remain queryable and readers ignore partials. A
 lossless WAL and 24/7 durability belong to a later runtime-storage decision, not this local slice.
 
-The bounded command requires an explicit output directory, DuckDB path and duration from 1 through
-600 seconds:
+The command requires an explicit duration from 1 through 604800 seconds (7 days). The historical
+600-second smoke cap is no longer a hard stop. A duration above 600 seconds is a retained
+research capture, not a 24/7 service: the process still ends at the requested duration or on
+SIGINT/SIGTERM, and a hard crash can lose the in-memory Parquet segment.
+
+Preferred reconstructable layout (the path contract Cockpit should later read):
+
+```text
+<artifact-root>/data-1a/hyperliquid/BTC-PERP/<run_id>/
+  capture-claim.json
+  capture-health.json
+  raw/part-*.parquet
+  research.duckdb
+```
 
 ```bash
 PYTHONPATH=src uv run --frozen python -m hyperliquid_bot.hyperliquid_raw_research \
-  --output-dir /tmp/data-1a/raw \
-  --database /tmp/data-1a/research.duckdb \
-  --duration-seconds 60
+  --artifact-root var/reconstructable \
+  --run-id 20260903t235000z \
+  --duration-seconds 86400
 ```
+
+The reconstructable command is create-only: an existing run directory is refused. Ad-hoc
+`--output-dir` / `--database` remains available for disposable smokes. Do not commit raw
+Parquet or DuckDB files; git holds only the path contract and a tiny synthetic sample under
+`tests/fixtures/data_1a_retained/`.
 
 The command prints counts and byte totals only; it never prints payload contents. The catalog has
 `raw_records`, `trades`, `bbo`, `l2`, `derivative_context`, `sessions`, `subscription_events` and
@@ -282,8 +299,8 @@ SELECT event, reason FROM data_quality_events ORDER BY message_ordinal;
 Hyperliquid supplies no sequence ID on these feeds. The standard `l2Book` stream is a sequence of
 book snapshots, not L3/MBO and not a trade backfill. A disconnect therefore creates a conservative
 gap marker; a later snapshot restores current L2 state but cannot reconstruct missed trades or
-queue history. A short successful smoke is evidence only for this local route, not 24-hour feed
-reliability or a trading edge.
+queue history. A successful smoke or retained run is evidence only for this local public route, not
+24-hour feed reliability, 24/7 operations, or a trading edge.
 
 ### DATA-1A retained-series hypothesis entrypoint
 

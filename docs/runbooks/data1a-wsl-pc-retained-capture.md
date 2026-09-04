@@ -9,7 +9,10 @@ and no extra venues. The VPS counterpart is
 [data1a-vps-retained-capture.md](data1a-vps-retained-capture.md).
 
 This document is a parallel operator guide. It does **not** attach to, resume,
-or stop a capture that is already running.
+or stop a capture that is already running. For a later overlapping Binance
+DATA-1F retain, see
+[data1f-wsl-pc-retained-capture.md](data1f-wsl-pc-retained-capture.md). Do not
+start that capture until this DATA-1A window finishes and CoS assigns it.
 
 ## Why not a Cloud Agent
 
@@ -306,4 +309,6 @@ from a Cloud Agent.
 - funding settlement, signing, TESTNET, SHADOW, LIVE
 - profitability or strategy promotion
 - TrueNAS / ClickHouse reuse
-- Bitvavo / Kraken / Binance multi-day retain
+- Bitvavo / Kraken multi-day retain
+- Binance DATA-1F multi-day retain (operator docs exist; do not start while
+  this DATA-1A `hl-capture` window is the assigned TerraPC capture)

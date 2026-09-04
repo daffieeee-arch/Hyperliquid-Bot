@@ -25,19 +25,29 @@ from hyperliquid_bot.binance_public_research import (
     BINANCE_USDM_OPEN_INTEREST_URL,
     BINANCE_USDM_PRODUCT,
     BINANCE_USDM_PUBLIC_WEBSOCKET_URL,
+    MAX_CAPTURE_SECONDS,
+    RETAINED_MAX_RECONNECTS,
+    SMOKE_CAPTURE_SECONDS,
     BinanceDataIntegrityError,
     BinancePublicResearchCollector,
     BinancePublicResearchConfig,
     BinanceSinkError,
     WebSocketConnection,
+    _argument_parser,
     _combined_stream,
+    _config_for_duration,
     _decode_json_object,
     _normalize_open_interest,
     _normalize_spot_bbo,
     _normalize_spot_trade,
     _normalize_usdm,
     _receive_or_stop,
+    _require_bounded_duration,
+    _resolve_cli_mode,
     _SpotBookState,
+    data1f_capture_claim,
+    data1f_capture_health,
+    run_reconstructable_capture,
 )
 from hyperliquid_bot.parquet_research import (
     RESEARCH_VIEW_NAMES,
@@ -51,7 +61,9 @@ from hyperliquid_bot.raw_research import (
     MessageDirection,
     PayloadEncoding,
     RawResearchRecord,
+    RawResearchSink,
 )
+from hyperliquid_bot.reconstructable_paths import DATA1F_PATH_CONTRACT_ID, data1f_run_paths
 
 _FIXTURE_DIR = Path(__file__).parents[1] / "fixtures" / "binance"
 
@@ -390,7 +402,7 @@ def test_fixture_corpus_is_synthetic_and_secret_free() -> None:
 
 
 def _collector(
-    sink: MemorySink,
+    sink: RawResearchSink,
     stop_event: asyncio.Event,
     *,
     spot_connections: Sequence[WebSocketConnection] | None = None,
@@ -881,6 +893,121 @@ def test_config_rejects_unbounded_or_invalid_controls(field: str, value: object)
 async def test_capture_duration_is_bounded() -> None:
     sink = MemorySink()
     collector, _ = _collector(sink, asyncio.Event())
-    for duration in (0, 181, True, float("nan"), float("inf")):
-        with pytest.raises(ValueError, match="between 1 and 180"):
+    for duration in (0, MAX_CAPTURE_SECONDS + 0.1, float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="between 1 and 604800"):
             await collector.capture_for(cast(float, duration))
+    with pytest.raises(TypeError, match="built-in number"):
+        await collector.capture_for(cast(float, True))
+
+
+def test_retained_duration_raises_the_historical_smoke_cap() -> None:
+    assert SMOKE_CAPTURE_SECONDS == 180.0
+    assert MAX_CAPTURE_SECONDS == 7 * 24 * 60 * 60
+    assert RETAINED_MAX_RECONNECTS == 10_080
+    assert _require_bounded_duration(180.1) == 180.1
+    assert _require_bounded_duration(86_400) == 86_400.0
+    assert _require_bounded_duration(MAX_CAPTURE_SECONDS) == float(MAX_CAPTURE_SECONDS)
+    with pytest.raises(ValueError, match="between 1 and 604800"):
+        _require_bounded_duration(MAX_CAPTURE_SECONDS + 1)
+    assert _config_for_duration(180.0).max_reconnects == 1
+    assert _config_for_duration(180.1).max_reconnects == RETAINED_MAX_RECONNECTS
+
+
+@pytest.mark.asyncio
+async def test_reconstructable_capture_writes_the_path_contract(tmp_path: Path) -> None:
+    stop_event = asyncio.Event()
+
+    def collector_factory(sink: RawResearchSink) -> BinancePublicResearchCollector:
+        collector, _ = _collector(sink, stop_event)
+        return collector
+
+    report = await run_reconstructable_capture(
+        artifact_root=tmp_path,
+        run_id="sample-run",
+        duration_seconds=86_400,
+        stop_event=stop_event,
+        collector_factory=collector_factory,
+    )
+    paths = data1f_run_paths(tmp_path, "sample-run")
+    assert report["path_contract"] == DATA1F_PATH_CONTRACT_ID
+    assert report["status"] == "COMPLETED"
+    assert report["twenty_four_seven"] is False
+    assert paths.capture_claim_path.is_file()
+    assert paths.capture_health_path.is_file()
+    assert paths.database_path.is_file()
+    assert list(paths.raw_dir.glob(paths.parquet_glob))
+    claim = json.loads(paths.capture_claim_path.read_text(encoding="utf-8"))
+    health = json.loads(paths.capture_health_path.read_text(encoding="utf-8"))
+    assert claim["retained"] is True
+    assert claim["duration_seconds"] == 86_400.0
+    assert claim["twenty_four_seven"] is False
+    assert claim["signing"] is False
+    assert claim["credentialless"] is True
+    assert health["status"] == "COMPLETED"
+    assert health["path_contract"] == DATA1F_PATH_CONTRACT_ID
+    with pytest.raises(FileExistsError, match="refuses to reuse"):
+        await run_reconstructable_capture(
+            artifact_root=tmp_path,
+            run_id="sample-run",
+            duration_seconds=60,
+            collector_factory=collector_factory,
+        )
+
+
+def test_data1f_claim_and_health_are_create_only_and_not_twenty_four_seven() -> None:
+    paths = data1f_run_paths(Path("/var/reconstructable"), "sample-run")
+    claim = data1f_capture_claim(run_id="sample-run", duration_seconds=86_400, paths=paths)
+    health = data1f_capture_health(
+        run_id="sample-run",
+        duration_seconds=86_400,
+        status="COMPLETED",
+        report={
+            "events": 0,
+            "payload_bytes": 0,
+            "parquet_files": 0,
+            "parquet_bytes": 0,
+            "gaps": 0,
+            "reconnects": 0,
+        },
+    )
+    assert claim["schema"] == "data-1f-retained-capture-claim-v1"
+    assert claim["path_contract"] == DATA1F_PATH_CONTRACT_ID
+    assert claim["resume_policy"] == "never resume or overwrite an existing DATA-1F run directory"
+    assert claim["retained"] is True
+    assert health["twenty_four_seven"] is False
+    assert health["credentialless"] is True
+
+
+def test_cli_modes_are_mutually_exclusive(tmp_path: Path) -> None:
+    parser = _argument_parser()
+    reconstructable = parser.parse_args(
+        ["--artifact-root", str(tmp_path), "--run-id", "sample-run", "--duration-seconds", "3600"]
+    )
+    assert _resolve_cli_mode(reconstructable) == "reconstructable"
+    ad_hoc = parser.parse_args(
+        [
+            "--output-dir",
+            str(tmp_path / "raw"),
+            "--database",
+            str(tmp_path / "research.duckdb"),
+            "--duration-seconds",
+            "60",
+        ]
+    )
+    assert _resolve_cli_mode(ad_hoc) == "ad_hoc"
+    mixed = parser.parse_args(
+        [
+            "--artifact-root",
+            str(tmp_path),
+            "--run-id",
+            "sample-run",
+            "--output-dir",
+            str(tmp_path / "raw"),
+            "--database",
+            str(tmp_path / "research.duckdb"),
+            "--duration-seconds",
+            "60",
+        ]
+    )
+    with pytest.raises(ValueError, match="not both"):
+        _resolve_cli_mode(mixed)

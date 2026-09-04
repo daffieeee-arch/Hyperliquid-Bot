@@ -1,4 +1,4 @@
-"""Create-only reconstructable path contract for DATA-1A and COURSE-1 Cockpit.
+"""Create-only reconstructable path contracts for DATA-1A, DATA-1F, and COURSE-1.
 
 These paths are the only layout Cockpit should later read. The functions never
 create directories, write files, or claim 24/7 service.
@@ -11,11 +11,15 @@ from pathlib import Path
 from typing import Final
 
 DATA1A_PATH_CONTRACT_ID: Final = "data-1a-hyperliquid-btc-perp-v1"
+DATA1F_PATH_CONTRACT_ID: Final = "data-1f-binance-btcusdt-v1"
 COURSE1_PATH_CONTRACT_ID: Final = "course1-live-public-paper-cockpit-v1"
 
 DATA1A_VENUE: Final = "hyperliquid"
 DATA1A_PRODUCT: Final = "BTC-PERP"
 DATA1A_RELATIVE_PREFIX: Final = ("data-1a", DATA1A_VENUE, DATA1A_PRODUCT)
+DATA1F_VENUE: Final = "binance"
+DATA1F_PRODUCT: Final = "BTCUSDT"
+DATA1F_RELATIVE_PREFIX: Final = ("data-1f", DATA1F_VENUE, DATA1F_PRODUCT)
 COURSE1_RELATIVE_PREFIX: Final = ("course1", "live-public-paper")
 
 DATA1A_CLAIM_NAME: Final = "capture-claim.json"
@@ -45,6 +49,14 @@ COURSE1_COCKPIT_FILE_NAMES: Final = (
 
 DATA1A_PATH_CONTRACT: Final = """\
 <artifact-root>/data-1a/hyperliquid/BTC-PERP/<run_id>/
+  capture-claim.json
+  capture-health.json
+  raw/part-*.parquet
+  research.duckdb
+"""
+
+DATA1F_PATH_CONTRACT: Final = """\
+<artifact-root>/data-1f/binance/BTCUSDT/<run_id>/
   capture-claim.json
   capture-health.json
   raw/part-*.parquet
@@ -91,6 +103,21 @@ def require_artifact_root(artifact_root: object) -> Path:
 
 
 @dataclass(frozen=True, slots=True)
+class Data1FRunPaths:
+    """Resolved DATA-1F reconstructable layout for one public BTCUSDT run."""
+
+    contract_id: str
+    run_id: str
+    artifact_root: Path
+    run_dir: Path
+    raw_dir: Path
+    database_path: Path
+    capture_claim_path: Path
+    capture_health_path: Path
+    parquet_glob: str
+
+
+@dataclass(frozen=True, slots=True)
 class Data1ARunPaths:
     """Resolved DATA-1A reconstructable layout for one public BTC-PERP run."""
 
@@ -122,6 +149,26 @@ class Course1CockpitPaths:
     paper_path: Path
     public_stream_path: Path
     completed_run_path: Path
+
+
+def data1f_run_paths(artifact_root: Path, run_id: str) -> Data1FRunPaths:
+    """Return the reconstructable DATA-1F directory contract. Create-only later."""
+
+    root = require_artifact_root(artifact_root)
+    identity = require_run_id(run_id)
+    run_dir = root.joinpath(*DATA1F_RELATIVE_PREFIX, identity)
+    raw_dir = run_dir / DATA1A_RAW_DIR_NAME
+    return Data1FRunPaths(
+        contract_id=DATA1F_PATH_CONTRACT_ID,
+        run_id=identity,
+        artifact_root=root,
+        run_dir=run_dir,
+        raw_dir=raw_dir,
+        database_path=run_dir / DATA1A_DATABASE_NAME,
+        capture_claim_path=run_dir / DATA1A_CLAIM_NAME,
+        capture_health_path=run_dir / DATA1A_HEALTH_NAME,
+        parquet_glob=DATA1A_PARQUET_GLOB,
+    )
 
 
 def data1a_run_paths(artifact_root: Path, run_id: str) -> Data1ARunPaths:

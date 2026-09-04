@@ -354,7 +354,11 @@ with `--artifact-root` / `--run-id`.
 
 `--baseline basis` is a reserved Hyperliquid-mark-versus-Binance stub. It fails closed unless a
 DATA-1F Parquet directory is passed as `--binance-parquet-dir`, and even then it does not fit a
-basis model.
+basis model. Operator retain/stop rules for that directory are in
+[DATA-1F operator PC/WSL retained-capture runbook](runbooks/data1f-wsl-pc-retained-capture.md)
+and [DATA-1F VPS retained-capture runbook](runbooks/data1f-vps-retained-capture.md). Do not start
+a multi-day DATA-1F capture while the TerraPC DATA-1A `hl-capture` 72h series is the assigned
+window; wait for that run to finish and for CoS to assign Binance.
 
 A candidate baseline slot runs only when every published threshold is met. Otherwise the
 written verdict is `not_enough_data` and no lookback or fit is attempted:
@@ -801,6 +805,41 @@ binance_spot_bbo
 binance_spot_l2_events
 binance_usdm_context
 ```
+
+### DATA-1F duration and reconstructable retain
+
+The command `python -m hyperliquid_bot.binance_public_research` requires an explicit duration
+from **1 through 604800 seconds** (7 days). Durations of 1–180 seconds remain the historical
+DATA-1F smoke window; durations of 180.1–604800 seconds are retained research captures
+(`retained: true`). A duration above 604800 seconds fails closed. This is not a 24/7 service.
+
+Preferred reconstructable layout (create-only; Hypothesis `--binance-parquet-dir` is `raw/`):
+
+```text
+<artifact-root>/data-1f/binance/BTCUSDT/<run_id>/
+  capture-claim.json
+  capture-health.json
+  raw/part-*.parquet
+  research.duckdb
+```
+
+```bash
+PYTHONPATH=src uv run --frozen python -m hyperliquid_bot.binance_public_research \
+  --artifact-root var/reconstructable \
+  --run-id 20260904t000000z \
+  --duration-seconds 86400
+```
+
+Operator retain/stop/continue rules are in
+[DATA-1F VPS retained-capture runbook](runbooks/data1f-vps-retained-capture.md) and the
+[DATA-1F operator PC/WSL retained-capture runbook](runbooks/data1f-wsl-pc-retained-capture.md).
+Cloud Agents are unsuitable for a multi-day retain and must not SSH to or stop TerraPC
+`hl-capture`. **Do not start a multi-day DATA-1F retain until the live DATA-1A 72h series
+finishes and CoS assigns this window.**
+
+Spot `depth@100ms` is heavier than DATA-1A. A 60-second smoke wrote about 8 MB payload /
+1.6 MB Parquet; budget tens of GB for 72 hours. USDⓈ-M open interest remains one REST
+observation at start, not a history. Never resume the same `run_id`.
 
 The synthetic fixtures prove only deterministic offline parsing, byte/SHA round-trip, sequence
 handling, reconnect isolation, bounded failure, and query behavior. The selected endpoints are

@@ -86,6 +86,11 @@ not by itself an edge.
 A passing sanity report is not evidence of edge. The current momentum slot is a fixed-lookback
 scaffold that may only return `noise`. `edge` is reserved and is not assigned by this entrypoint.
 Binance DATA-1F remains optional and is required only if the reserved basis stub is selected.
+Operator docs for a later retained Binance capture are in
+[DATA-1F operator PC/WSL runbook](runbooks/data1f-wsl-pc-retained-capture.md) and
+[DATA-1F VPS runbook](runbooks/data1f-vps-retained-capture.md). Do not start that capture
+until the TerraPC DATA-1A 72h series finishes and CoS assigns the window. Cloud Agents are
+unsuitable for a multi-day retain.
 
 ## Reproducible execution
 

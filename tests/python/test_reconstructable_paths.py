@@ -12,8 +12,11 @@ from hyperliquid_bot.reconstructable_paths import (
     COURSE1_PATH_CONTRACT_ID,
     DATA1A_PATH_CONTRACT,
     DATA1A_PATH_CONTRACT_ID,
+    DATA1F_PATH_CONTRACT,
+    DATA1F_PATH_CONTRACT_ID,
     course1_cockpit_paths,
     data1a_run_paths,
+    data1f_run_paths,
     require_run_id,
 )
 
@@ -31,6 +34,21 @@ def test_data1a_path_contract_is_stable() -> None:
     assert "<artifact-root>/data-1a/hyperliquid/BTC-PERP/<run_id>/" in DATA1A_PATH_CONTRACT
     assert "raw/part-*.parquet" in DATA1A_PATH_CONTRACT
     assert "research.duckdb" in DATA1A_PATH_CONTRACT
+
+
+def test_data1f_path_contract_is_stable() -> None:
+    root = Path("/var/reconstructable")
+    paths = data1f_run_paths(root, "sample-run")
+    assert paths.contract_id == DATA1F_PATH_CONTRACT_ID
+    assert paths.run_dir == root / "data-1f" / "binance" / "BTCUSDT" / "sample-run"
+    assert paths.raw_dir == paths.run_dir / "raw"
+    assert paths.database_path == paths.run_dir / "research.duckdb"
+    assert paths.capture_claim_path == paths.run_dir / "capture-claim.json"
+    assert paths.capture_health_path == paths.run_dir / "capture-health.json"
+    assert paths.parquet_glob == "part-*.parquet"
+    assert "<artifact-root>/data-1f/binance/BTCUSDT/<run_id>/" in DATA1F_PATH_CONTRACT
+    assert "raw/part-*.parquet" in DATA1F_PATH_CONTRACT
+    assert "research.duckdb" in DATA1F_PATH_CONTRACT
 
 
 def test_course1_cockpit_path_contract_is_stable() -> None:
@@ -61,9 +79,14 @@ def test_run_id_is_fail_closed(run_id: str) -> None:
         require_run_id(run_id)
     with pytest.raises((TypeError, ValueError)):
         data1a_run_paths(Path("/tmp"), run_id)
+    with pytest.raises((TypeError, ValueError)):
+        data1f_run_paths(Path("/tmp"), run_id)
 
 
 def test_path_helpers_do_not_create_directories(tmp_path: Path) -> None:
     paths = data1a_run_paths(tmp_path / "missing-root", "sample-run")
     assert not paths.run_dir.exists()
     assert not paths.raw_dir.exists()
+    binance_paths = data1f_run_paths(tmp_path / "missing-root", "sample-run")
+    assert not binance_paths.run_dir.exists()
+    assert not binance_paths.raw_dir.exists()

@@ -42,6 +42,11 @@ sleep is disabled. That is operator-supervised research capture, not a 24/7
 trading runtime and not LIVE. Cloud Agents are unsuitable for that multi-day
 window. See [DATA-1A operator PC/WSL runbook](runbooks/data1a-wsl-pc-retained-capture.md).
 
+A later overlapping DATA-1F public Binance BTCUSDT retain uses a **separate**
+tmux session (`bn-capture`) and must not start until the assigned DATA-1A
+`hl-capture` window finishes and CoS assigns Binance. See
+[DATA-1F operator PC/WSL runbook](runbooks/data1f-wsl-pc-retained-capture.md).
+
 ### WSL2 resource starting point
 
 A reasonable initial cap for the 32 GB workstation is:

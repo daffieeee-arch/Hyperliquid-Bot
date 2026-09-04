@@ -27,16 +27,23 @@ function Masthead({
 }) {
   return (
     <header className="masthead">
-      <div className="brand">
-        <span className="brand-mark">HLQ</span>
-        <div className="brand-copy">
-          <strong>Cockpit</strong>
-          <span>BTC-PERP · COURSE-1</span>
+      <div className="masthead-row">
+        <div className="brand">
+          <span className="brand-mark">HLQ</span>
+          <div className="brand-copy">
+            <strong>Cockpit</strong>
+            <span>BTC-PERP · COURSE-1</span>
+          </div>
         </div>
-      </div>
-      <div className="paper-badge" role="status">
-        <span className="paper-badge-mode">PAPER TRADING</span>
-        <span className="paper-badge-warn">NO REAL CAPITAL</span>
+        <div className="paper-badge" role="status">
+          <span className="paper-badge-mode">PAPER TRADING</span>
+          <span className="paper-badge-warn">NO REAL CAPITAL</span>
+        </div>
+        <p className="masthead-flags">
+          <span>SIGNING OFF</span>
+          <span>NO KEYS</span>
+          <span>NO LIVE</span>
+        </p>
       </div>
       <dl className="identity">
         <div>
@@ -302,7 +309,7 @@ export default function FirstPaperScreen() {
         <span>PAPER ONLY</span>
         <span>NO WALLET SIGNING</span>
         <span>NO LIVE CAPITAL</span>
-        <span>PUBLIC MID ≠ PAPER PNL</span>
+        <span>PUBLIC MID != PAPER PNL</span>
       </footer>
     </div>
   );

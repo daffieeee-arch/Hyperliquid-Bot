@@ -84,8 +84,7 @@ export function LiveBtcPrice() {
           </p>
           <p className="metric-meta">{state.price.instrument} · unsigned public mid</p>
           <p className="metric-note">
-            Credentialless Hyperliquid /info. Not used to invent Paper PnL. Fetched{" "}
-            {state.price.fetched_at}
+            Public /info only · not Paper PnL · {state.price.fetched_at}
           </p>
         </>
       ) : null}

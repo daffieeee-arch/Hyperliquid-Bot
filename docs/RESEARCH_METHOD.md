@@ -73,10 +73,11 @@ published DATA-1A sufficiency thresholds documented in [DATA.md](DATA.md) (72-ho
 span, trade/BBO/mid counts, and a 5% incomplete-hour cap).
 
 Fail closed with verdict `not_enough_data` when those gates fail. Do not fit lookbacks, do not
-score in-sample expectancy, and do not treat committed fixtures, D01 routing events or a 1–600s
-DATA-1A smoke as a hypothesis-usable series. Trading must retain a multi-day DATA-1A Parquet
-directory (schema version 1, UTC ns receipt clocks) outside git before Quant can move past this
-gate.
+score in-sample expectancy, and do not treat committed fixtures, D01 routing events or a 1-600s
+DATA-1A smoke as a hypothesis-usable series. Trading must retain a multi-day DATA-1A run at
+`<artifact-root>/data-1a/hyperliquid/BTC-PERP/<run_id>/` (schema version 1, UTC ns receipt
+clocks, `capture-claim.json` with `retained: true`) outside git before Quant can move past this
+gate. A writer duration above 600 seconds is still not 24/7 service and is not by itself an edge.
 
 A passing sanity report is not evidence of edge. The current momentum slot is a fixed-lookback
 scaffold that may only return `noise`. `edge` is reserved and is not assigned by this entrypoint.

@@ -22,6 +22,7 @@ from hyperliquid_bot.hypothesis_research import (
     SufficiencyThresholds,
     evaluate_retained_series,
     main,
+    resolve_series_input,
 )
 from hyperliquid_bot.parquet_research import ParquetResearchWriter, ParquetRotation
 from hyperliquid_bot.raw_research import (
@@ -31,6 +32,7 @@ from hyperliquid_bot.raw_research import (
     PayloadEncoding,
     RawResearchRecord,
 )
+from hyperliquid_bot.reconstructable_paths import DATA1A_PATH_CONTRACT_ID, data1a_run_paths
 
 _FIXTURE_DIR = Path(__file__).parents[1] / "fixtures" / "hyperliquid"
 
@@ -433,6 +435,7 @@ async def test_cli_prints_fail_closed_json_for_fixture_dir(
     )
     payload = json.loads(capsys.readouterr().out)
     assert payload["trading_mode"] == "PAPER"
+    assert payload["input_mode"] == "ad_hoc"
     assert payload["verdict"] == "not_enough_data"
     assert payload["baseline"]["ran"] is False
     assert payload["sanity"]["trade_count"] == 2
@@ -445,3 +448,88 @@ def test_evaluate_retained_series_rejects_non_paths(tmp_path: Path) -> None:
             parquet_dir="raw",  # type: ignore[arg-type]
             database_path=tmp_path / "research.duckdb",
         )
+
+
+def _write_capture_claim(path: Path, *, retained: bool, run_id: str) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "path_contract": DATA1A_PATH_CONTRACT_ID,
+                "product": "BTC-PERP",
+                "retained": retained,
+                "run_id": run_id,
+                "schema": "data-1a-retained-capture-claim-v1",
+                "venue": "hyperliquid",
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.asyncio
+async def test_reconstructable_layout_runs_momentum_scaffold(tmp_path: Path) -> None:
+    paths = data1a_run_paths(tmp_path, "synthetic-run")
+    paths.raw_dir.mkdir(parents=True)
+    await _publish(paths.raw_dir, _synthetic_multi_hour_records())
+    _write_capture_claim(paths.capture_claim_path, retained=True, run_id=paths.run_id)
+
+    result = evaluate_retained_series(
+        artifact_root=tmp_path,
+        run_id="synthetic-run",
+        thresholds=_SYNTHETIC_TEST_THRESHOLDS,
+    )
+
+    assert result.input_mode == "reconstructable"
+    assert result.path_contract == DATA1A_PATH_CONTRACT_ID
+    assert result.run_id == "synthetic-run"
+    assert result.verdict is HypothesisVerdictName.NOISE
+    assert result.baseline.ran is True
+    _assert_no_edge_claim(result.to_json_dict())
+
+
+@pytest.mark.asyncio
+async def test_reconstructable_smoke_claim_fails_closed(tmp_path: Path) -> None:
+    paths = data1a_run_paths(tmp_path, "smoke-run")
+    paths.raw_dir.mkdir(parents=True)
+    await _publish(paths.raw_dir, _synthetic_multi_hour_records())
+    _write_capture_claim(paths.capture_claim_path, retained=False, run_id=paths.run_id)
+
+    result = evaluate_retained_series(
+        artifact_root=tmp_path,
+        run_id="smoke-run",
+        thresholds=_SYNTHETIC_TEST_THRESHOLDS,
+    )
+
+    assert result.verdict is HypothesisVerdictName.NOT_ENOUGH_DATA
+    assert result.baseline.ran is False
+    assert any("retained" in reason for reason in result.sufficiency.reasons)
+
+
+def test_resolve_series_input_rejects_mixed_modes(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="not both"):
+        resolve_series_input(
+            parquet_dir=tmp_path / "raw",
+            database_path=tmp_path / "research.duckdb",
+            artifact_root=tmp_path,
+            run_id="mixed",
+        )
+
+
+@pytest.mark.asyncio
+async def test_cli_reconstructable_prints_fail_closed_json(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    paths = data1a_run_paths(tmp_path, "cli-run")
+    paths.raw_dir.mkdir(parents=True)
+    await _publish(paths.raw_dir, _fixture_smoke_records())
+    _write_capture_claim(paths.capture_claim_path, retained=True, run_id=paths.run_id)
+
+    assert main(["--artifact-root", str(tmp_path), "--run-id", "cli-run"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["input_mode"] == "reconstructable"
+    assert payload["path_contract"] == DATA1A_PATH_CONTRACT_ID
+    assert payload["verdict"] == "not_enough_data"
+    _assert_no_edge_claim(payload)

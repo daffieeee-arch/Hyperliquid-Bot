@@ -5,19 +5,25 @@ It never signs orders, never selects LIVE/TESTNET, and never claims a trading ed
 
 Input contract
 --------------
-Point the runner at a **retained DATA-1A capture directory** written by
-``ParquetResearchWriter`` / ``python -m hyperliquid_bot.hyperliquid_raw_research``
-when Trading keeps a multi-day Hyperliquid BTC-PERP run **outside git**.
+Preferred reconstructable layout from ``reconstructable_paths.data1a_run_paths``
+(Trading retains this **outside git**):
 
-Expected layout (UTC nanosecond receipt clocks on every row):
+``<artifact-root>/data-1a/hyperliquid/BTC-PERP/<run_id>/``
 
-- ``<parquet-dir>/part-*.parquet`` — completed ZSTD parts; hidden ``.*.partial``
-  files are ignored, matching DATA-1A readers.
+- ``raw/part-*.parquet`` — completed ZSTD parts; hidden ``.*.partial`` files
+  are ignored, matching DATA-1A readers.
+- ``research.duckdb`` — catalog rebuilt from ``raw/`` on each run.
+- ``capture-claim.json`` — must exist and set ``retained: true``.
 - Schema version ``RAW_RESEARCH_SCHEMA_VERSION`` (currently ``1``) on every row.
 - ``venue='hyperliquid'``, ``product='BTC-PERP'``.
 - Market channels: ``trades``, ``bbo``, ``l2Book``, ``activeAssetCtx``.
 - Local markers: ``session``, ``subscription`` / ``subscriptionResponse``,
   ``data_quality`` (including ``gap_detected``).
+- UTC nanosecond receipt clocks on every row.
+
+Ad-hoc ``--parquet-dir`` / ``--database`` remains available for disposable
+tests. A duration above the historical 600s smoke cap is a retained capture,
+not 24/7 service. The 7-day capture bound lives on the DATA-1A writer.
 
 The entrypoint rebuilds the existing DATA-1A DuckDB catalog via
 ``create_research_catalog`` and reads the Hyperliquid views already defined in
@@ -72,6 +78,11 @@ import duckdb
 
 from .parquet_research import RESEARCH_VIEW_NAMES, create_research_catalog
 from .raw_research import RAW_RESEARCH_SCHEMA_VERSION
+from .reconstructable_paths import (
+    DATA1A_PATH_CONTRACT_ID,
+    Data1ARunPaths,
+    data1a_run_paths,
+)
 
 RESEARCH_VENUE: Final = "hyperliquid"
 RESEARCH_PRODUCT: Final = "BTC-PERP"
@@ -106,7 +117,8 @@ _FIXTURE_NOTE: Final = (
 )
 _BLOCKED_NOTE: Final = (
     "Blocked on a retained multi-day Hyperliquid BTC-PERP DATA-1A series "
-    "from Trading (ZSTD Parquet parts, schema version "
+    "from Trading at <artifact-root>/data-1a/hyperliquid/BTC-PERP/<run_id>/ "
+    "(ZSTD Parquet under raw/, schema version "
     f"{RAW_RESEARCH_SCHEMA_VERSION}, UTC ns receipt clocks)."
 )
 
@@ -259,6 +271,9 @@ class HypothesisRunResult:
     thresholds: SufficiencyThresholds
     baseline: BaselineSlotResult
     notes: tuple[str, ...]
+    input_mode: Literal["reconstructable", "ad_hoc"]
+    path_contract: str | None
+    run_id: str | None
 
     def __post_init__(self) -> None:
         if self.trading_mode != TRADING_MODE:
@@ -275,21 +290,60 @@ class HypothesisRunResult:
             "thresholds": self.thresholds.to_json_dict(),
             "baseline": self.baseline.to_json_dict(),
             "notes": list(self.notes),
+            "input_mode": self.input_mode,
+            "path_contract": self.path_contract,
+            "run_id": self.run_id,
         }
+
+
+def resolve_series_input(
+    *,
+    parquet_dir: Path | None = None,
+    database_path: Path | None = None,
+    artifact_root: Path | None = None,
+    run_id: str | None = None,
+) -> tuple[Path, Path, Data1ARunPaths | None]:
+    """Resolve reconstructable or ad-hoc DATA-1A paths. Do not create directories."""
+
+    reconstructable = artifact_root is not None or run_id is not None
+    ad_hoc = parquet_dir is not None or database_path is not None
+    if reconstructable and ad_hoc:
+        raise ValueError(
+            "Use either --artifact-root/--run-id or --parquet-dir/--database, not both."
+        )
+    if reconstructable:
+        if artifact_root is None or run_id is None:
+            raise ValueError("Reconstructable series requires both artifact_root and run_id.")
+        paths = data1a_run_paths(artifact_root, run_id)
+        return paths.raw_dir, paths.database_path, paths
+    if parquet_dir is None or database_path is None:
+        raise ValueError(
+            "Ad-hoc series requires parquet_dir and database_path; "
+            "preferred reconstructable mode uses artifact_root and run_id."
+        )
+    if not isinstance(parquet_dir, Path) or not isinstance(database_path, Path):
+        raise TypeError("parquet_dir and database_path must be pathlib.Path values.")
+    return parquet_dir, database_path, None
 
 
 def evaluate_retained_series(
     *,
-    parquet_dir: Path,
-    database_path: Path,
+    parquet_dir: Path | None = None,
+    database_path: Path | None = None,
+    artifact_root: Path | None = None,
+    run_id: str | None = None,
     baseline: BaselineSlot = BaselineSlot.MOMENTUM,
     thresholds: SufficiencyThresholds | None = None,
     binance_parquet_dir: Path | None = None,
 ) -> HypothesisRunResult:
     """Load a retained DATA-1A directory and return a fail-closed verdict."""
 
-    if not isinstance(parquet_dir, Path) or not isinstance(database_path, Path):
-        raise TypeError("parquet_dir and database_path must be pathlib.Path values.")
+    raw_dir, catalog_path, data1a_paths = resolve_series_input(
+        parquet_dir=parquet_dir,
+        database_path=database_path,
+        artifact_root=artifact_root,
+        run_id=run_id,
+    )
     if type(baseline) is not BaselineSlot:
         raise TypeError("baseline must be a BaselineSlot.")
     if binance_parquet_dir is not None and not isinstance(binance_parquet_dir, Path):
@@ -298,15 +352,21 @@ def evaluate_retained_series(
     if type(resolved_thresholds) is not SufficiencyThresholds:
         raise TypeError("thresholds must be a SufficiencyThresholds instance.")
 
-    create_research_catalog(parquet_dir, database_path)
-    parquet_file_count = len(tuple(parquet_dir.resolve().glob("*.parquet")))
-    sanity = compute_sanity_report(database_path, parquet_file_count=parquet_file_count)
+    create_research_catalog(raw_dir, catalog_path)
+    parquet_file_count = len(tuple(raw_dir.resolve().glob("*.parquet")))
+    sanity = compute_sanity_report(catalog_path, parquet_file_count=parquet_file_count)
     sufficiency = decide_sufficiency(
         sanity,
         resolved_thresholds,
         baseline=baseline,
         binance_parquet_dir=binance_parquet_dir,
+        extra_reasons=_reconstructable_claim_reasons(data1a_paths),
     )
+    input_mode: Literal["reconstructable", "ad_hoc"] = (
+        "reconstructable" if data1a_paths is not None else "ad_hoc"
+    )
+    path_contract = data1a_paths.contract_id if data1a_paths is not None else None
+    resolved_run_id = data1a_paths.run_id if data1a_paths is not None else None
     if not sufficiency.enough_data:
         baseline_result = BaselineSlotResult(
             slot=baseline,
@@ -323,10 +383,13 @@ def evaluate_retained_series(
             thresholds=resolved_thresholds,
             baseline=baseline_result,
             notes=(_NO_EDGE_NOTE, _FIXTURE_NOTE, _BLOCKED_NOTE),
+            input_mode=input_mode,
+            path_contract=path_contract,
+            run_id=resolved_run_id,
         )
 
     if baseline is BaselineSlot.MOMENTUM:
-        baseline_result = _evaluate_momentum_slot(database_path)
+        baseline_result = _evaluate_momentum_slot(catalog_path)
     else:
         baseline_result = _evaluate_basis_slot(binance_parquet_dir)
 
@@ -338,6 +401,9 @@ def evaluate_retained_series(
         thresholds=resolved_thresholds,
         baseline=baseline_result,
         notes=(_NO_EDGE_NOTE, _FIXTURE_NOTE, _BLOCKED_NOTE),
+        input_mode=input_mode,
+        path_contract=path_contract,
+        run_id=resolved_run_id,
     )
 
 
@@ -471,6 +537,7 @@ def decide_sufficiency(
     *,
     baseline: BaselineSlot,
     binance_parquet_dir: Path | None,
+    extra_reasons: Sequence[str] = (),
 ) -> SufficiencyDecision:
     """Return fail-closed reasons. An empty reason tuple is the only pass."""
 
@@ -480,8 +547,10 @@ def decide_sufficiency(
         raise TypeError("thresholds must be a SufficiencyThresholds instance.")
     if type(baseline) is not BaselineSlot:
         raise TypeError("baseline must be a BaselineSlot.")
+    if type(extra_reasons) is not tuple:
+        extra_reasons = tuple(extra_reasons)
 
-    reasons: list[str] = []
+    reasons: list[str] = list(extra_reasons)
     if sanity.schema_versions != (RAW_RESEARCH_SCHEMA_VERSION,):
         reasons.append(
             "schema_versions "
@@ -647,6 +716,28 @@ def _hour_coverage(
     return span_hour_count, incomplete_hour_count, gap_fraction
 
 
+def _reconstructable_claim_reasons(paths: Data1ARunPaths | None) -> tuple[str, ...]:
+    if paths is None:
+        return ()
+    claim_path = paths.capture_claim_path
+    if not claim_path.is_file():
+        return ("reconstructable run is missing capture-claim.json",)
+    try:
+        loaded = json.loads(claim_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return ("capture-claim.json is not valid UTF-8 JSON",)
+    if type(loaded) is not dict:
+        return ("capture-claim.json root is not an object",)
+    reasons: list[str] = []
+    if loaded.get("path_contract") != DATA1A_PATH_CONTRACT_ID:
+        reasons.append(f"capture-claim.json path_contract is not {DATA1A_PATH_CONTRACT_ID}")
+    if loaded.get("retained") is not True:
+        reasons.append("capture-claim.json does not mark the run as retained")
+    if loaded.get("venue") != RESEARCH_VENUE or loaded.get("product") != RESEARCH_PRODUCT:
+        reasons.append("capture-claim.json is not hyperliquid BTC-PERP")
+    return tuple(reasons)
+
+
 def _binance_series_present(binance_parquet_dir: Path | None) -> bool:
     if binance_parquet_dir is None:
         return False
@@ -684,16 +775,23 @@ def _argument_parser() -> argparse.ArgumentParser:
         )
     )
     parser.add_argument(
-        "--parquet-dir",
-        required=True,
+        "--artifact-root",
         type=Path,
-        help="Directory of completed DATA-1A ZSTD Parquet parts (part-*.parquet).",
+        help="Preferred reconstructable artifact root used with --run-id.",
+    )
+    parser.add_argument(
+        "--run-id",
+        help="DATA-1A run id under <artifact-root>/data-1a/hyperliquid/BTC-PERP/.",
+    )
+    parser.add_argument(
+        "--parquet-dir",
+        type=Path,
+        help="Ad-hoc directory of completed DATA-1A ZSTD Parquet parts.",
     )
     parser.add_argument(
         "--database",
-        required=True,
         type=Path,
-        help="DuckDB catalog path. Views are rebuilt from --parquet-dir.",
+        help="Ad-hoc DuckDB catalog path. Views are rebuilt from --parquet-dir.",
     )
     parser.add_argument(
         "--baseline",
@@ -713,8 +811,10 @@ def _argument_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _argument_parser().parse_args(argv)
     result = evaluate_retained_series(
-        parquet_dir=cast(Path, args.parquet_dir),
-        database_path=cast(Path, args.database),
+        parquet_dir=cast(Path | None, args.parquet_dir),
+        database_path=cast(Path | None, args.database),
+        artifact_root=cast(Path | None, args.artifact_root),
+        run_id=cast(str | None, args.run_id),
         baseline=BaselineSlot(cast(str, args.baseline)),
         binance_parquet_dir=cast(Path | None, args.binance_parquet_dir),
     )

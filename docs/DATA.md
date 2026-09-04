@@ -305,13 +305,16 @@ queue history. A successful smoke or retained run is evidence only for this loca
 ### DATA-1A retained-series hypothesis entrypoint
 
 `python -m hyperliquid_bot.hypothesis_research` is a PAPER-only Quant entrypoint over a
-**retained** DATA-1A Hyperliquid BTC-PERP Parquet directory. It does not capture data, extend
-the 1–600s CLI cap, thaw v3 coverage, add venues, or claim a trading edge.
+**retained** DATA-1A Hyperliquid BTC-PERP series. It does not capture data, thaw v3 coverage,
+add venues, or claim a trading edge. Capture duration (1s through 7 days) stays on the DATA-1A
+writer.
 
-Input contract for Trading (retain outside git; do not commit multi-day captures):
+Input contract for Trading (retain outside git; do not commit Parquet or DuckDB):
 
-- Directory of completed DATA-1A ZSTD parts (`part-*.parquet`). Hidden `.*.partial` files are
-  ignored.
+- Preferred reconstructable layout from `data1a_run_paths`:
+  `<artifact-root>/data-1a/hyperliquid/BTC-PERP/<run_id>/raw/part-*.parquet`,
+  `research.duckdb`, and `capture-claim.json` with `retained: true`.
+- Hidden `.*.partial` files are ignored.
 - Flat `raw_research` schema version 1: `venue='hyperliquid'`, `product='BTC-PERP'`, UTC
   nanosecond receipt clocks (`received_utc_ns` / `received_monotonic_ns`).
 - Market channels `trades`, `bbo`, `l2Book`, `activeAssetCtx`, plus local `session`,
@@ -323,10 +326,13 @@ Input contract for Trading (retain outside git; do not commit multi-day captures
 
 ```bash
 PYTHONPATH=src uv run --frozen python -m hyperliquid_bot.hypothesis_research \
-  --parquet-dir /path/to/retained/data-1a/raw \
-  --database /path/to/retained/data-1a/research.duckdb \
+  --artifact-root /path/to/reconstructable \
+  --run-id 20260903t235000z \
   --baseline momentum
 ```
+
+Ad-hoc `--parquet-dir` / `--database` remains available for disposable tests. Do not mix it
+with `--artifact-root` / `--run-id`.
 
 `--baseline basis` is a reserved Hyperliquid-mark-versus-Binance stub. It fails closed unless a
 DATA-1F Parquet directory is passed as `--binance-parquet-dir`, and even then it does not fit a

@@ -141,16 +141,14 @@ def _synthetic_multi_hour_records() -> tuple[RawResearchRecord, ...]:
             _record(ordinal, "trades", _fixture("trades_frame.json"), received_utc_ns=stamp)
         )
         ordinal += 1
-        records.append(
-            _record(ordinal, "bbo", _fixture("bbo_frame.json"), received_utc_ns=stamp + 1)
-        )
+        records.append(_record(ordinal, "bbo", _fixture("bbo_frame.json"), received_utc_ns=stamp))
         ordinal += 1
         records.append(
             _record(
                 ordinal,
                 "activeAssetCtx",
                 _fixture("active_asset_ctx_frame.json"),
-                received_utc_ns=stamp + 2,
+                received_utc_ns=stamp,
             )
         )
         ordinal += 1

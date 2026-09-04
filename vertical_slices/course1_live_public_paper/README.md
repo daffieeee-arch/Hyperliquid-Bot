@@ -41,7 +41,7 @@ public wire-format frames through the same decoder and PAPER driver. A live
   vault, or account-address environment name prevents startup. Values are never
   read into artifacts or printed.
 - Duration is an integer between 1 and 600 seconds. This is a soak bound, not a
-  service lifetime.
+  service lifetime. It is not the DATA-1A retained-capture contract (1-604800s).
 - The only execution factory is `SandboxLiveExecClientFactory`. There is no
   Hyperliquid venue execution factory, signer, wallet, or authenticated client.
 - Trade ticks re-enter the existing D01/D41 stale, future, gap, and precision
@@ -134,7 +134,8 @@ not venue PnL. A synthetic empty-state sample lives at
 
 The helper `course1_cockpit_paths(artifact_root, run_id)` is the executable contract.
 `--artifact-dir` may still point at any create-only directory; the helper is how Cockpit
-should construct the recommended path.
+should construct the recommended path. Operator steps are in
+`docs/runbooks/course1-live-public-paper-soak.md`.
 
 ## Honest remaining COURSE-1 work
 

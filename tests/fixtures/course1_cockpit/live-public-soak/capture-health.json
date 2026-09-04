@@ -1,0 +1,22 @@
+{
+  "adapter_rejected_count": 10,
+  "bbo_count": 1,
+  "credentialless": true,
+  "feed": "hyperliquid-public-btc-perp-trades-bbo",
+  "kind": "capture-health",
+  "limitations": [
+    "Bounded soak health only; not 24/7 feed reliability.",
+    "Public Hyperliquid trades/BBO only; no credentials or signing.",
+    "Adapter-rejected ticks are stale/future/precision skips, not silent fills."
+  ],
+  "path_contract": "course1-live-public-paper-cockpit-v1",
+  "risk_rejections": 0,
+  "schema": "course1-cockpit-paper-artifacts-v1",
+  "status": "COMPLETED_FLAT",
+  "subscriptions_acknowledged": [
+    "trades",
+    "bbo"
+  ],
+  "trade_count": 20,
+  "twenty_four_seven": false
+}

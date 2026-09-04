@@ -19,3 +19,6 @@ Path contract:
 `sample-run` uses empty sandbox orders/fills and assumed overlay PnL `0`. That
 is an honest empty PAPER state, not a fabricated trading result. Funding remains
 `0`. D22-B is not implemented. This is not a 24/7 service claim.
+
+A separate live-public soak fixture lives in `live-public-soak/`. That run wrote
+real create-only Cockpit files from public ticks and the assumed PAPER overlay.

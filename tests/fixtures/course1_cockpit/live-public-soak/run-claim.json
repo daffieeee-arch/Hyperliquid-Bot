@@ -1,0 +1,21 @@
+{
+  "config_sha256": "4cf8f12887996488639ef188ecd400d66fdff62d10e24d81a6600a6d6d67ba9a",
+  "d22b_venue_authoritative_reconciliation": false,
+  "feed": "hyperliquid-public-btc-perp-trades-bbo",
+  "mode": "PAPER",
+  "preflight": {
+    "max_assumed_loss_usdc": "0.25",
+    "max_entry_notional_usdc": "15",
+    "order_quantity_btc": "0.00013",
+    "same_d01_smoke_risk": true,
+    "strategy_class": "vertical_slices.d01_btc_perp.slice.D01SmokeStrategy"
+  },
+  "resume_policy": "never resume or overwrite an existing soak run directory",
+  "run_id": "20260904t001800z-live-paper",
+  "run_identity": "f779d9e7273309fc56e6368fda5edeb782f2696b0c55a00d059c7ee89fb84151",
+  "schema": "course1-live-public-paper-v1",
+  "seconds": 180,
+  "source_sha256": "835c55df712d65077b9cb117d8c95f0572c57e643ce23b0181622d3a59076b59",
+  "state": "STARTED_FAIL_CLOSED",
+  "websocket_url": "wss://api.hyperliquid.xyz/ws"
+}

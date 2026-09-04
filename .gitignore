@@ -16,5 +16,6 @@ coverage/
 dist/
 .vitest/
 
-# Local reconstructable research/PAPER artifacts. Never commit raw captures.
-var/reconstructable/
+# Local reconstructable research/PAPER artifacts and operator logs.
+# Never commit raw captures, DuckDB catalogs, or live process logs.
+var/

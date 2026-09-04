@@ -1,0 +1,35 @@
+{
+  "fill_count": 2,
+  "fills": [
+    {
+      "fill_ordinal": 1,
+      "liquidity_side": "TAKER",
+      "native_commission": "0.00 USD",
+      "observed_tick_ordinal": 5,
+      "position_after": "0.00013",
+      "price": "81143.0",
+      "quantity": "0.00013",
+      "side": "BUY",
+      "ts_event": 1788481214103536003
+    },
+    {
+      "fill_ordinal": 2,
+      "liquidity_side": "TAKER",
+      "native_commission": "0.00 USD",
+      "observed_tick_ordinal": 12,
+      "position_after": "0.00000",
+      "price": "81143.0",
+      "quantity": "0.00013",
+      "side": "SELL",
+      "ts_event": 1788481214103536010
+    }
+  ],
+  "kind": "fills",
+  "limitations": [
+    "These are sandbox PAPER fills, not venue-authoritative fills.",
+    "D22-B reconciliation is not implemented."
+  ],
+  "mode": "PAPER",
+  "path_contract": "course1-live-public-paper-cockpit-v1",
+  "schema": "course1-cockpit-paper-artifacts-v1"
+}

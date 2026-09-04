@@ -16,6 +16,29 @@ Build a professional trading workstation, not a decorative dashboard. The operat
 
 The browser never receives trading secrets.
 
+Cockpit does not yet consume runtime files, but later DESK / EXECUTION / SYSTEM reads
+must use the create-only reconstructable contracts rather than inventing a second store:
+
+```text
+<artifact-root>/course1/live-public-paper/<run_id>/
+  run-claim.json
+  paper-position.json
+  paper-pnl.json
+  orders.json
+  fills.json
+  capture-health.json
+
+<artifact-root>/data-1a/hyperliquid/BTC-PERP/<run_id>/
+  capture-claim.json
+  capture-health.json
+  raw/part-*.parquet
+  research.duckdb
+```
+
+`paper-pnl.json` is assumed PAPER overlay economics, not venue PnL. `capture-health.json`
+is a bounded-run summary, not a 24/7 heartbeat. See `docs/DATA.md` and
+`vertical_slices/course1_live_public_paper/README.md`.
+
 ## Development model
 
 Frontend development happens in WSL2 on the Windows workstation. Next.js hot reload may be viewed from the Windows browser through localhost while the source and toolchain remain in the WSL Linux filesystem.

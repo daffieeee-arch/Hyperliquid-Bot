@@ -44,11 +44,13 @@ from nautilus_trader.adapters.sandbox.factory import SandboxLiveExecClientFactor
 from nautilus_trader.live.node import TradingNode
 from nautilus_trader.model.enums import OrderSide
 
+from hyperliquid_bot.course1_cockpit_artifacts import project_cockpit_artifacts
 from hyperliquid_bot.hyperliquid_trades import (
     decode_hyperliquid_trades_frame,
     normalize_hyperliquid_trade,
 )
 from hyperliquid_bot.local_mode import require_local_paper_mode
+from hyperliquid_bot.reconstructable_paths import COURSE1_COCKPIT_FILE_NAMES
 from vertical_slices.d01_btc_perp.slice import (
     DEFAULT_CONFIG,
     DEFAULT_COSTS,
@@ -718,6 +720,25 @@ def _run_claim_payload(
     }
 
 
+def _require_cockpit_artifacts(
+    artifact_dir: Path,
+    *,
+    paper: dict[str, object],
+    stream: dict[str, object],
+) -> dict[str, str]:
+    """Recompute create-only Cockpit projections and return their digests."""
+
+    expected = project_cockpit_artifacts(paper=paper, stream=stream)
+    hashes: dict[str, str] = {}
+    for name, payload in expected.items():
+        path = artifact_dir / name
+        stored = _read_object(path)
+        if stored != payload:
+            raise ValueError(f"Cockpit artifact {name} does not recompute exactly.")
+        hashes[name] = _sha256_file(path)
+    return hashes
+
+
 def _completion_payload(
     *,
     run_id: str,
@@ -725,6 +746,7 @@ def _completion_payload(
     seconds: int,
     config: SliceConfig,
     source: dict[str, object],
+    artifact_dir: Path,
     claim_path: Path,
     stream_path: Path,
     paper_path: Path,
@@ -782,6 +804,7 @@ def _completion_payload(
             "run-claim.json": _sha256_file(claim_path),
             "public-stream.json": _sha256_file(stream_path),
             "paper.json": _sha256_file(paper_path),
+            **_require_cockpit_artifacts(artifact_dir, paper=paper, stream=stream),
         },
         "recomputed": {
             "same_d01_strategy_risk_code": True,
@@ -802,6 +825,7 @@ def _completion_payload(
             "Sandbox order, cash, and position state has no venue truth.",
             "USD is an explicit 1:1 USDC accounting proxy for the D01 overlay.",
             "This is not alpha, profitability, TESTNET, SHADOW, or LIVE evidence.",
+            "Cockpit paper-position/paper-pnl/orders/fills are create-only projections.",
             (
                 "Nautilus 1.231.0 remains isolated behind D01 and D41 project code; "
                 "it is not a root dependency."
@@ -878,6 +902,11 @@ def verify_soak_run(
         "stream": artifact_dir / "public-stream.json",
         "paper": artifact_dir / "paper.json",
         "completion": artifact_dir / "completed-run.json",
+        **{
+            name: artifact_dir / name
+            for name in COURSE1_COCKPIT_FILE_NAMES
+            if name != "run-claim.json"
+        },
     }
     missing = [str(path) for path in paths.values() if not path.is_file()]
     if missing:
@@ -909,6 +938,7 @@ def verify_soak_run(
         seconds=stored_seconds,
         config=config,
         source=source,
+        artifact_dir=artifact_dir,
         claim_path=paths["claim"],
         stream_path=paths["stream"],
         paper_path=paths["paper"],
@@ -996,12 +1026,15 @@ def run_soak(
     )
     write_json(stream_path, stream)
     write_json(paper_path, paper)
+    for name, payload in project_cockpit_artifacts(paper=paper, stream=stream).items():
+        write_json(artifact_dir / name, payload)
     completion = _completion_payload(
         run_id=run_id,
         identity=identity,
         seconds=seconds,
         config=config,
         source=source,
+        artifact_dir=artifact_dir,
         claim_path=claim_path,
         stream_path=stream_path,
         paper_path=paper_path,

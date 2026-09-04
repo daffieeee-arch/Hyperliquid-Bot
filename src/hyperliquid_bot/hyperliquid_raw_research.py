@@ -1,4 +1,8 @@
-"""Bounded public Hyperliquid BTC perpetual exact-raw research capture."""
+"""Public Hyperliquid BTC perpetual exact-raw research capture.
+
+Duration may be a short smoke or a retained multi-day run. The process still
+stops at an explicit duration or operator signal; this is not a 24/7 service.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +10,7 @@ import argparse
 import asyncio
 import json
 import logging
+import signal
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Sequence
@@ -34,11 +39,19 @@ from .raw_research import (
     RawResearchSink,
     capture_application_payload,
 )
+from .reconstructable_paths import (
+    DATA1A_PATH_CONTRACT_ID,
+    Data1ARunPaths,
+    data1a_run_paths,
+)
 
 HYPERLIQUID_MAINNET_WEBSOCKET_URL: Final = "wss://api.hyperliquid.xyz/ws"
 HYPERLIQUID_RESEARCH_VENUE: Final = "hyperliquid"
 HYPERLIQUID_RESEARCH_PRODUCT: Final = "BTC-PERP"
-MAX_CAPTURE_SECONDS: Final = 600.0
+SMOKE_CAPTURE_SECONDS: Final = 600.0
+MAX_CAPTURE_SECONDS: Final = 7 * 24 * 60 * 60
+DATA1A_CLAIM_SCHEMA: Final = "data-1a-retained-capture-claim-v1"
+DATA1A_HEALTH_SCHEMA: Final = "data-1a-retained-capture-health-v1"
 
 _GREETING: Final = b"Websocket connection established."
 _PING_TEXT: Final = '{"method":"ping"}'
@@ -567,47 +580,240 @@ async def run_bounded_capture(
     output_dir: Path,
     database_path: Path,
     duration_seconds: float,
+    stop_event: asyncio.Event | None = None,
+    connection_factory: ConnectionFactory | None = None,
 ) -> dict[str, object]:
     """Run the no-credential capture, close Parquet, and build the DuckDB catalog."""
 
     _require_bounded_duration(duration_seconds)
     writer = ParquetResearchWriter(output_dir, rotation=ParquetRotation())
-    collector = HyperliquidRawResearchCollector(writer)
+    collector = HyperliquidRawResearchCollector(writer, connection_factory=connection_factory)
     try:
-        await collector.capture_for(duration_seconds)
+        await collector.capture_for(duration_seconds, stop_event=stop_event)
     finally:
         await writer.aclose()
     create_research_catalog(output_dir, database_path)
     return build_capture_report(database_path, output_dir)
 
 
-def _require_bounded_duration(duration_seconds: object) -> None:
+def data1a_capture_claim(
+    *,
+    run_id: str,
+    duration_seconds: float,
+    paths: Data1ARunPaths,
+) -> dict[str, object]:
+    """Create-only start claim for a reconstructable DATA-1A run."""
+
+    duration = _require_bounded_duration(duration_seconds)
+    return {
+        "schema": DATA1A_CLAIM_SCHEMA,
+        "state": "STARTED_FAIL_CLOSED",
+        "path_contract": DATA1A_PATH_CONTRACT_ID,
+        "run_id": run_id,
+        "venue": HYPERLIQUID_RESEARCH_VENUE,
+        "product": HYPERLIQUID_RESEARCH_PRODUCT,
+        "feed": "hyperliquid-public-btc-perp-trades-bbo-l2-ctx",
+        "websocket_url": HYPERLIQUID_MAINNET_WEBSOCKET_URL,
+        "credentialless": True,
+        "signing": False,
+        "duration_seconds": duration,
+        "smoke_duration_seconds": SMOKE_CAPTURE_SECONDS,
+        "max_duration_seconds": MAX_CAPTURE_SECONDS,
+        "retained": duration > SMOKE_CAPTURE_SECONDS,
+        "twenty_four_seven": False,
+        "resume_policy": "never resume or overwrite an existing DATA-1A run directory",
+        "raw_dir": paths.raw_dir.as_posix(),
+        "database_path": paths.database_path.as_posix(),
+    }
+
+
+def data1a_capture_health(
+    *,
+    run_id: str,
+    duration_seconds: float,
+    status: str,
+    report: dict[str, object],
+) -> dict[str, object]:
+    """Create-only end health for a reconstructable DATA-1A run."""
+
+    if status not in {"COMPLETED", "OPERATOR_STOP", "FAILED"}:
+        raise ValueError("DATA-1A capture-health status is outside the documented bound.")
+    duration = _require_bounded_duration(duration_seconds)
+    return {
+        "schema": DATA1A_HEALTH_SCHEMA,
+        "kind": "capture-health",
+        "path_contract": DATA1A_PATH_CONTRACT_ID,
+        "run_id": run_id,
+        "status": status,
+        "duration_seconds": duration,
+        "retained": duration > SMOKE_CAPTURE_SECONDS,
+        "twenty_four_seven": False,
+        "credentialless": True,
+        "events": report.get("events"),
+        "payload_bytes": report.get("payload_bytes"),
+        "parquet_files": report.get("parquet_files"),
+        "parquet_bytes": report.get("parquet_bytes"),
+        "gaps": report.get("gaps"),
+        "reconnects": report.get("reconnects"),
+        "limitations": [
+            "Published Parquet parts are reconstructable; a crash can lose the in-memory segment.",
+            "This is not 24/7 service evidence or a trading edge.",
+            "Hyperliquid supplies no sequence IDs on these feeds; gaps are conservative markers.",
+            "Public stream only; no API keys, signing, or extra venues.",
+        ],
+    }
+
+
+def _write_create_only_json(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("x", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=True, sort_keys=True, indent=2) + "\n")
+
+
+async def run_reconstructable_capture(
+    *,
+    artifact_root: Path,
+    run_id: str,
+    duration_seconds: float,
+    stop_event: asyncio.Event | None = None,
+    operator_stop: Callable[[], bool] | None = None,
+    connection_factory: ConnectionFactory | None = None,
+) -> dict[str, object]:
+    """Write DATA-1A Parquet/DuckDB to the documented reconstructable path."""
+
+    paths = data1a_run_paths(artifact_root, run_id)
+    if paths.run_dir.exists():
+        raise FileExistsError(f"DATA-1A refuses to reuse existing run directory: {paths.run_dir}")
+    paths.run_dir.mkdir(parents=True, exist_ok=False)
+    paths.raw_dir.mkdir(exist_ok=False)
+    _write_create_only_json(
+        paths.capture_claim_path,
+        data1a_capture_claim(run_id=run_id, duration_seconds=duration_seconds, paths=paths),
+    )
+    report: dict[str, object] = {
+        "events": 0,
+        "payload_bytes": 0,
+        "parquet_files": 0,
+        "parquet_bytes": 0,
+        "gaps": 0,
+        "reconnects": 0,
+    }
+    status = "FAILED"
+    try:
+        report = await run_bounded_capture(
+            output_dir=paths.raw_dir,
+            database_path=paths.database_path,
+            duration_seconds=duration_seconds,
+            stop_event=stop_event,
+            connection_factory=connection_factory,
+        )
+        if operator_stop is not None and operator_stop():
+            status = "OPERATOR_STOP"
+        else:
+            status = "COMPLETED"
+    finally:
+        if not paths.capture_health_path.exists():
+            _write_create_only_json(
+                paths.capture_health_path,
+                data1a_capture_health(
+                    run_id=run_id,
+                    duration_seconds=duration_seconds,
+                    status=status,
+                    report=report,
+                ),
+            )
+    return {
+        **report,
+        "run_id": run_id,
+        "path_contract": DATA1A_PATH_CONTRACT_ID,
+        "run_dir": str(paths.run_dir),
+        "raw_dir": str(paths.raw_dir),
+        "database_path": str(paths.database_path),
+        "status": status,
+        "twenty_four_seven": False,
+    }
+
+
+def _require_bounded_duration(duration_seconds: object) -> float:
     if type(duration_seconds) not in (int, float):
         raise TypeError("duration_seconds must be a built-in number.")
     duration = float(cast(int | float, duration_seconds))
     if not 1.0 <= duration <= MAX_CAPTURE_SECONDS:
         raise ValueError(f"duration_seconds must be between 1 and {MAX_CAPTURE_SECONDS:g}.")
+    return duration
 
 
 def _argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Bounded public Hyperliquid BTC-PERP exact-raw research capture."
+        description=(
+            "Public Hyperliquid BTC-PERP exact-raw research capture. "
+            "Duration may exceed the historical 600s smoke cap up to 7 days. "
+            "This is not a 24/7 service."
+        )
     )
-    parser.add_argument("--output-dir", required=True, type=Path)
-    parser.add_argument("--database", required=True, type=Path)
+    parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--database", type=Path)
+    parser.add_argument("--artifact-root", type=Path)
+    parser.add_argument("--run-id")
     parser.add_argument("--duration-seconds", required=True, type=float)
     return parser
 
 
+def _resolve_cli_mode(args: argparse.Namespace) -> str:
+    reconstructable = args.artifact_root is not None or args.run_id is not None
+    ad_hoc = args.output_dir is not None or args.database is not None
+    if reconstructable and ad_hoc:
+        raise ValueError(
+            "Use either --artifact-root/--run-id or --output-dir/--database, not both."
+        )
+    if reconstructable:
+        if args.artifact_root is None or args.run_id is None:
+            raise ValueError("Reconstructable capture requires both --artifact-root and --run-id.")
+        return "reconstructable"
+    if args.output_dir is None or args.database is None:
+        raise ValueError(
+            "Ad-hoc capture requires --output-dir and --database; "
+            "preferred reconstructable mode uses --artifact-root and --run-id."
+        )
+    return "ad_hoc"
+
+
+async def _run_from_args(args: argparse.Namespace) -> dict[str, object]:
+    stop_event = asyncio.Event()
+    operator_stopped = False
+
+    def _request_operator_stop() -> None:
+        nonlocal operator_stopped
+        operator_stopped = True
+        stop_event.set()
+
+    try:
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, _request_operator_stop)
+    except (NotImplementedError, RuntimeError):
+        pass
+
+    mode = _resolve_cli_mode(args)
+    if mode == "reconstructable":
+        return await run_reconstructable_capture(
+            artifact_root=cast(Path, args.artifact_root),
+            run_id=cast(str, args.run_id),
+            duration_seconds=cast(float, args.duration_seconds),
+            stop_event=stop_event,
+            operator_stop=lambda: operator_stopped,
+        )
+    return await run_bounded_capture(
+        output_dir=cast(Path, args.output_dir),
+        database_path=cast(Path, args.database),
+        duration_seconds=cast(float, args.duration_seconds),
+        stop_event=stop_event,
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _argument_parser().parse_args(argv)
-    report = asyncio.run(
-        run_bounded_capture(
-            output_dir=cast(Path, args.output_dir),
-            database_path=cast(Path, args.database),
-            duration_seconds=cast(float, args.duration_seconds),
-        )
-    )
+    report = asyncio.run(_run_from_args(args))
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0
 

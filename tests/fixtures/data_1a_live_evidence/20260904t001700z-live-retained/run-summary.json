@@ -4,71 +4,154 @@
     {
       "channel": "activeAssetCtx",
       "direction": "inbound",
-      "row_count": 119
+      "row_count": 1967
     },
     {
       "channel": "bbo",
       "direction": "inbound",
-      "row_count": 854
+      "row_count": 13936
+    },
+    {
+      "channel": "data_quality",
+      "direction": "local",
+      "row_count": 1
     },
     {
       "channel": "heartbeat",
       "direction": "outbound",
-      "row_count": 2
+      "row_count": 65
     },
     {
       "channel": "l2Book",
       "direction": "inbound",
-      "row_count": 23
+      "row_count": 375
     },
     {
       "channel": "pong",
       "direction": "inbound",
-      "row_count": 2
+      "row_count": 44
     },
     {
       "channel": "session",
       "direction": "local",
-      "row_count": 2
+      "row_count": 7
     },
     {
       "channel": "subscription",
       "direction": "local",
-      "row_count": 9
+      "row_count": 18
     },
     {
       "channel": "subscription",
       "direction": "outbound",
-      "row_count": 4
+      "row_count": 8
     },
     {
       "channel": "subscriptionResponse",
       "direction": "inbound",
-      "row_count": 4
+      "row_count": 8
     },
     {
       "channel": "trades",
       "direction": "inbound",
-      "row_count": 187
+      "row_count": 2975
     }
   ],
   "credentialless": true,
   "duration_seconds": 14400.0,
-  "health_present": false,
+  "health_present": true,
   "limitations": [
     "Sample rows omit payload_bytes; only SHA-256 and length are kept.",
     "Published parts remain outside git on the selected runtime store.",
     "This is not 24/7 service evidence or a trading edge."
   ],
-  "parquet_bytes": 111410,
-  "parquet_files": 2,
+  "parquet_bytes": 1822908,
+  "parquet_files": 41,
   "part_bytes": [
     55445,
-    55965
+    55965,
+    66887,
+    53652,
+    48566,
+    46793,
+    49973,
+    69679,
+    47093,
+    46821,
+    46633,
+    44766,
+    47154,
+    49175,
+    53810,
+    55903,
+    51636,
+    41688,
+    39950,
+    51423,
+    52725,
+    58992,
+    57606,
+    61306,
+    50940,
+    68051,
+    76871,
+    58790,
+    58191,
+    56410,
+    59210,
+    64789,
+    45014,
+    2545,
+    2545,
+    2545,
+    2545,
+    2545,
+    2545,
+    2733,
+    12998
   ],
   "part_names": [
     "part-000001-000000000001-000000000600-cdeb8b9e3544.parquet",
-    "part-000002-000000000601-000000001206-cdeb8b9e3544.parquet"
+    "part-000002-000000000601-000000001206-cdeb8b9e3544.parquet",
+    "part-000003-000000001207-000000001877-cdeb8b9e3544.parquet",
+    "part-000004-000000001878-000000002482-cdeb8b9e3544.parquet",
+    "part-000005-000000002483-000000003031-cdeb8b9e3544.parquet",
+    "part-000006-000000003032-000000003550-cdeb8b9e3544.parquet",
+    "part-000007-000000003551-000000004132-cdeb8b9e3544.parquet",
+    "part-000008-000000004133-000000004814-cdeb8b9e3544.parquet",
+    "part-000009-000000004815-000000005333-cdeb8b9e3544.parquet",
+    "part-000010-000000005334-000000005828-cdeb8b9e3544.parquet",
+    "part-000011-000000005829-000000006337-cdeb8b9e3544.parquet",
+    "part-000012-000000006338-000000006875-cdeb8b9e3544.parquet",
+    "part-000013-000000006876-000000007404-cdeb8b9e3544.parquet",
+    "part-000014-000000007405-000000007947-cdeb8b9e3544.parquet",
+    "part-000015-000000007948-000000008540-cdeb8b9e3544.parquet",
+    "part-000016-000000008541-000000009119-cdeb8b9e3544.parquet",
+    "part-000017-000000009120-000000009664-cdeb8b9e3544.parquet",
+    "part-000018-000000009665-000000010163-cdeb8b9e3544.parquet",
+    "part-000019-000000010164-000000010649-cdeb8b9e3544.parquet",
+    "part-000020-000000010650-000000011181-cdeb8b9e3544.parquet",
+    "part-000021-000000011182-000000011762-cdeb8b9e3544.parquet",
+    "part-000022-000000011763-000000012375-cdeb8b9e3544.parquet",
+    "part-000023-000000012376-000000012988-cdeb8b9e3544.parquet",
+    "part-000024-000000012989-000000013615-cdeb8b9e3544.parquet",
+    "part-000025-000000013616-000000014133-cdeb8b9e3544.parquet",
+    "part-000026-000000014134-000000014782-cdeb8b9e3544.parquet",
+    "part-000027-000000014783-000000015528-cdeb8b9e3544.parquet",
+    "part-000028-000000015529-000000016170-cdeb8b9e3544.parquet",
+    "part-000029-000000016171-000000016861-cdeb8b9e3544.parquet",
+    "part-000030-000000016862-000000017498-cdeb8b9e3544.parquet",
+    "part-000031-000000017499-000000018145-cdeb8b9e3544.parquet",
+    "part-000032-000000018146-000000018818-cdeb8b9e3544.parquet",
+    "part-000033-000000018819-000000019295-cdeb8b9e3544.parquet",
+    "part-000034-000000019296-000000019298-cdeb8b9e3544.parquet",
+    "part-000035-000000019299-000000019301-cdeb8b9e3544.parquet",
+    "part-000036-000000019302-000000019304-cdeb8b9e3544.parquet",
+    "part-000037-000000019305-000000019307-cdeb8b9e3544.parquet",
+    "part-000038-000000019308-000000019310-cdeb8b9e3544.parquet",
+    "part-000039-000000019311-000000019313-cdeb8b9e3544.parquet",
+    "part-000040-000000019314-000000019316-cdeb8b9e3544.parquet",
+    "part-000041-000000019317-000000019404-cdeb8b9e3544.parquet"
   ],
   "path_contract": "data-1a-hyperliquid-btc-perp-v1",
   "payloads_included": false,

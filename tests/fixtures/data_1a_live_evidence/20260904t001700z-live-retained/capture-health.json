@@ -1,0 +1,23 @@
+{
+  "credentialless": true,
+  "duration_seconds": 14400.0,
+  "events": 19404,
+  "gaps": 1,
+  "kind": "capture-health",
+  "limitations": [
+    "Published Parquet parts are reconstructable; a crash can lose the in-memory segment.",
+    "This is not 24/7 service evidence or a trading edge.",
+    "Hyperliquid supplies no sequence IDs on these feeds; gaps are conservative markers.",
+    "Public stream only; no API keys, signing, or extra venues."
+  ],
+  "parquet_bytes": 1822908,
+  "parquet_files": 41,
+  "path_contract": "data-1a-hyperliquid-btc-perp-v1",
+  "payload_bytes": 5392172,
+  "reconnects": 1,
+  "retained": true,
+  "run_id": "20260904t001700z-live-retained",
+  "schema": "data-1a-retained-capture-health-v1",
+  "status": "OPERATOR_STOP",
+  "twenty_four_seven": false
+}

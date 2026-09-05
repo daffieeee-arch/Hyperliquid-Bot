@@ -72,7 +72,10 @@ BINANCE_SPOT_WEBSOCKET_URL: Final = (
 )
 BINANCE_USDM_MARKET_WEBSOCKET_URL: Final = (
     "wss://fstream.binance.com/market/stream?streams="
-    "btcusdt@aggTrade/btcusdt@markPrice@1s/btcusdt@forceOrder/btcusdt@bookTicker"
+    "btcusdt@aggTrade/btcusdt@markPrice@1s/btcusdt@forceOrder"
+)
+BINANCE_USDM_PUBLIC_WEBSOCKET_URL: Final = (
+    "wss://fstream.binance.com/public/stream?streams=btcusdt@bookTicker"
 )
 BINANCE_SPOT_DEPTH_URL: Final = (
     "https://data-api.binance.vision/api/v3/depth?symbol=BTCUSDT&limit=1000"
@@ -90,6 +93,8 @@ _USDM_MARKET_STREAM_CHANNELS: Final = {
     "btcusdt@aggTrade": "usdm_agg_trade",
     "btcusdt@markPrice@1s": "usdm_mark_price",
     "btcusdt@forceOrder": "usdm_force_order",
+}
+_USDM_PUBLIC_STREAM_CHANNELS: Final = {
     "btcusdt@bookTicker": "usdm_book_ticker",
 }
 _DECIMAL_TEXT: Final = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?\Z")
@@ -345,7 +350,13 @@ _USDM_MARKET_PROFILE: Final = _StreamProfile(
     "usdm_market",
     BINANCE_USDM_PRODUCT,
     _USDM_MARKET_STREAM_CHANNELS,
-    frozenset({"btcusdt@aggTrade", "btcusdt@markPrice@1s", "btcusdt@bookTicker"}),
+    frozenset({"btcusdt@aggTrade", "btcusdt@markPrice@1s"}),
+)
+_USDM_PUBLIC_PROFILE: Final = _StreamProfile(
+    "usdm_public",
+    BINANCE_USDM_PRODUCT,
+    _USDM_PUBLIC_STREAM_CHANNELS,
+    frozenset(_USDM_PUBLIC_STREAM_CHANNELS),
 )
 
 
@@ -359,6 +370,7 @@ class BinancePublicResearchCollector:
         config: BinancePublicResearchConfig | None = None,
         spot_connection_factory: ConnectionFactory | None = None,
         usdm_market_connection_factory: ConnectionFactory | None = None,
+        usdm_public_connection_factory: ConnectionFactory | None = None,
         spot_depth_fetcher: PayloadFetcher | None = None,
         usdm_open_interest_fetcher: PayloadFetcher | None = None,
         utc_ns: NanosecondClock = time.time_ns,
@@ -374,6 +386,10 @@ class BinancePublicResearchCollector:
         self._usdm_market_connection_factory = (
             usdm_market_connection_factory
             or _connection_factory(BINANCE_USDM_MARKET_WEBSOCKET_URL, self._config)
+        )
+        self._usdm_public_connection_factory = (
+            usdm_public_connection_factory
+            or _connection_factory(BINANCE_USDM_PUBLIC_WEBSOCKET_URL, self._config)
         )
         self._spot_depth_fetcher = spot_depth_fetcher or _payload_fetcher(
             BINANCE_SPOT_DEPTH_URL,
@@ -418,6 +434,13 @@ class BinancePublicResearchCollector:
                     internal_stop,
                 )
             ),
+            asyncio.create_task(
+                self._run_stream(
+                    _USDM_PUBLIC_PROFILE,
+                    self._usdm_public_connection_factory,
+                    internal_stop,
+                )
+            ),
             asyncio.create_task(self._capture_open_interest(internal_stop)),
         )
         timer = asyncio.create_task(asyncio.sleep(float(duration_seconds)))
@@ -442,7 +465,7 @@ class BinancePublicResearchCollector:
                     task_error = task.exception()
                     if task_error is not None:
                         failure = task_error
-                    elif task is not tasks[2]:
+                    elif task is not tasks[3]:
                         failure = BinanceTransportError(
                             "Binance required public stream ended unexpectedly."
                         )
@@ -1746,7 +1769,8 @@ def data1f_capture_claim(
         "feed": "binance-public-btcusdt-spot-usdm",
         "spot_websocket_url": BINANCE_SPOT_WEBSOCKET_URL,
         "usdm_market_websocket_url": BINANCE_USDM_MARKET_WEBSOCKET_URL,
-        "independent_websocket_profiles": ["spot", "usdm_market"],
+        "usdm_public_websocket_url": BINANCE_USDM_PUBLIC_WEBSOCKET_URL,
+        "independent_websocket_profiles": ["spot", "usdm_market", "usdm_public"],
         "credentialless": True,
         "signing": False,
         "duration_seconds": duration,
@@ -1799,8 +1823,8 @@ def data1f_capture_health(
                 "USD-M open interest is one REST observation at start, not a history.",
                 "Public stream only; no API keys, signing, or extra venues.",
                 "Transport gaps exclude fail-closed integrity events such as sequence_gap.",
-                "USD-M bookTicker shares the market/combined socket with "
-                "aggTrade/markPrice/forceOrder.",
+                "USD-M bookTicker uses a dedicated /public combined socket; "
+                "aggTrade/markPrice/forceOrder stay on /market and are not mixed.",
             ],
         },
         report,

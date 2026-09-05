@@ -243,10 +243,11 @@ When the assigned goal is a 72-hour reconstructable tape (`DURATION_SECONDS=2592
 - Do **not** send `C-c`, SIGINT, SIGTERM, `tmux kill-session`, or `wsl --shutdown`.
 - Cloud Agents must not SSH, attach, or stop tmux `hl-capture` / `bn-capture` /
   `bv-capture` / `kr-capture`.
-- USD-M `bookTicker` now shares the `/market` combined socket with
-  `aggTrade`/`markPrice`/`forceOrder`. Reconnect accounting has two independent
-  WebSocket profiles (`spot`, `usdm_market`), not a third `/public` bookTicker
-  socket.
+- USD-M `bookTicker` uses a dedicated `/public` combined socket. Regular
+  `aggTrade`/`markPrice`/`forceOrder` stay on `/market`. Reconnect accounting
+  has three independent WebSocket profiles (`spot`, `usdm_market`,
+  `usdm_public`). Combined streams must not mix `/public` and `/market`
+  categories.
 - After stop, `duration_seconds` is the requested window and `elapsed_seconds`
   is wall-clock time until stop. `OPERATOR_STOP` with
   `elapsed_seconds` < `duration_seconds` is an operator interrupt, not a

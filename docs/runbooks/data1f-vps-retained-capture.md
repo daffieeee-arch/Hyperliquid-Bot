@@ -85,8 +85,10 @@ The reconstructable command is create-only. An existing run directory is refused
 - Keep `${ARTIFACT_ROOT}` on the durable VPS volume, not inside git.
 - Do not commit `raw/part-*.parquet` or `research.duckdb`.
 - The process still exits at the requested duration or on SIGINT/SIGTERM.
-- USD-M `bookTicker` shares the `/market` combined socket. Reconnect
-  accounting has two independent WebSocket profiles (`spot`, `usdm_market`).
+- USD-M `bookTicker` uses a dedicated `/public` combined socket.
+  `aggTrade`/`markPrice`/`forceOrder` stay on `/market`. Reconnect
+  accounting has three independent WebSocket profiles (`spot`,
+  `usdm_market`, `usdm_public`). Combined streams must not mix categories.
 
 ## Protect a 72h evidence window
 

@@ -85,6 +85,9 @@ else
   echo "authenticated_l3=false"
 fi
 echo "twenty_four_seven=false"
+echo "l2_depth=$(data1b_default_l2_depth)"
+echo "l3_depth=$(data1b_default_l3_depth)"
+echo "checksum_price_levels=$(data1b_checksum_price_levels)"
 echo "wait_for_cos=true"
 
 if [[ "${CHECK_ONLY}" -eq 1 ]]; then

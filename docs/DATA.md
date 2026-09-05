@@ -447,11 +447,15 @@ data-only increment after DATA-1B.
 Phase 1 of DATA-1B under D10 — multi-venue market data and feed coverage is deliberately offline
 for authenticated L3. The retained-operator CLI now exists for a public default path and an
 optional L3 path; it does not start capture by itself. The Kraken adapter is
-fixed to Spot `BTC/EUR` and can run public `trade` + depth-10 `book` alone, or both
+fixed to Spot `BTC/EUR` and can run public `trade` + depth-100 `book` alone, or both
 connections as one fail-closed capture when L3 is explicitly requested:
 
-- public `trade` and depth-10 `book` at `wss://ws.kraken.com/v2`;
-- token-gated depth-10 `level3` at `wss://ws-l3.kraken.com/v2`.
+- public `trade` and depth-100 `book` at `wss://ws.kraken.com/v2`;
+- token-gated depth-100 `level3` at `wss://ws-l3.kraken.com/v2`.
+
+`--l2-depth` and `--l3-depth` still accept Kraken's existing supported sets
+(`10/25/100/500/1000` for L2, `10/100/1000` for L3). The retained/public default
+is **100** for both. Changing the subscribed depth does not change CRC coverage.
 
 The channel-specific L3 reference and Kraken's 2 December 2025 changelog are authoritative for the
 second endpoint; the generic Spot WebSocket overview still lists `ws-auth` as the private endpoint.
@@ -494,14 +498,17 @@ timestamp remains mandatory; the message-level L3 timestamp is nullable because 
 official client records that field as absent in captured payloads.
 
 Kraken's L2 and L3 checksums are validated after applying every update in wire-array order and
-truncating to subscribed depth. CRC32 always covers the best ten price levels, asks before bids.
-For L3 it covers every visible order in timestamp priority within a level, so it also checks queue
-state. This follows Kraken's official Go client, which updates an order timestamp on `modify` and
-then re-sorts that level. Equal timestamps retain local arrival order as a deterministic tie-break;
-a checksum mismatch still stops capture. Kraken provides no numeric L2 or L3 sequence ID, so
-DATA-1B invents none. The sequential `trade_id` is preserved only with its documented trade-feed
-meaning. Local `message_ordinal`, `data_index`, `side_index` and `wire_order` are labelled as local
-structure, not venue sequence.
+truncating to subscribed depth. CRC32 always covers the best ten price levels, asks before bids,
+even at subscribed depth 100 (or 500/1000). Levels 11 and deeper are retained and locally
+`scope_truncate`d when they leave the subscribed window, but they are not part of the venue CRC.
+A matching checksum is therefore not proof that levels 11–100 are complete or uncorrupted.
+For L3 the CRC covers every visible order in timestamp priority within those best ten levels, so
+it also checks queue state there. This follows Kraken's official Go client, which updates an
+order timestamp on `modify` and then re-sorts that level. Equal timestamps retain local arrival
+order as a deterministic tie-break; a checksum mismatch still stops capture. Kraken provides no
+numeric L2 or L3 sequence ID, so DATA-1B invents none. The sequential `trade_id` is preserved
+only with its documented trade-feed meaning. Local `message_ordinal`, `data_index`,
+`side_index` and `wire_order` are labelled as local structure, not venue sequence.
 
 Kraken can encode decimal fields as JSON numbers. Direct DuckDB JSON extraction would therefore
 round or canonicalize some values. After validating each exact raw frame, the adapter writes one
@@ -530,12 +537,21 @@ from **1 through 604800 seconds** (7 days). Durations of 1–600 seconds remain 
 DATA-1B smoke window; durations of 600.1–604800 seconds are retained research captures
 (`retained: true`). A duration above 604800 seconds fails closed. This is not a 24/7 service.
 
-The default retained path is public `trade` + depth-10 `book` only. Authenticated L3 is
+The default retained path is public `trade` + depth-100 `book` only. Authenticated L3 is
 optional and is enabled only when both `KRAKEN_WS_API_KEY` and `KRAKEN_WS_API_SECRET` are
-set in the operator environment. Generic `KRAKEN_API_KEY` / `KRAKEN_API_SECRET` names fail
-closed as the wrong key type. Values are never printed, logged, or committed. There is no
-silent L3-to-public downgrade: if L3 is requested and authentication fails, the combined
-capture fails closed.
+set in the operator environment. When L3 is enabled its default depth is also 100.
+Generic `KRAKEN_API_KEY` / `KRAKEN_API_SECRET` names fail closed as the wrong key type.
+Values are never printed, logged, or committed. There is no silent L3-to-public downgrade:
+if L3 is requested and authentication fails, the combined capture fails closed.
+
+Depth-100 snapshots are about 10× a historical depth-10 snapshot on each connect or
+reconnect. Incremental book updates are not automatically 10×; they grow with activity
+outside the old top-10. Optional L3 at depth 100 is heavier still because each visible
+level carries individual orders. No 72-hour depth-100 retain has been measured yet.
+Budget more disk and bandwidth than the 2026-08-31 depth-10 smoke: watch WSL free space
+and VPS volume growth, and expect low-single-digit to low-tens of GB plus sustained
+KB/s–tens-of-KB/s for a public 72h L2+trades retain, more if L3 is enabled. This is an
+operator budget, not a measured rate.
 
 Preferred reconstructable layout (create-only; path segment `BTC-EUR`, wire symbol `BTC/EUR`):
 
@@ -553,6 +569,10 @@ PYTHONPATH=src uv run --frozen python -m hyperliquid_bot.kraken_l3_research \
   --run-id 20260904t000000z \
   --duration-seconds 86400
 ```
+
+`--l2-depth` and `--l3-depth` default to **100**. Existing Kraken depths remain valid.
+CRC32 still covers only the best ten price levels. Do not start a multi-day DATA-1B
+retain from this document.
 
 Operator retain/stop/continue rules are in
 [DATA-1B VPS retained-capture runbook](runbooks/data1b-vps-retained-capture.md) and the

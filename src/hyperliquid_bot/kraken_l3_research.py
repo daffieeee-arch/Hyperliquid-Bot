@@ -1,8 +1,9 @@
 """Kraken BTC/EUR public L2/trades capture with optional authenticated L3.
 
-The default retained path is public book + trades only. Authenticated L3 is
-optional and never a silent fallback. Duration may be a short smoke or a
-retained multi-day run. This is not a 24/7 service.
+The default retained path is public book + trades only at depth 100.
+Authenticated L3 is optional (also depth 100 when enabled) and never a silent
+fallback. CRC32 still covers only the best 10 price levels. Duration may be a
+short smoke or a retained multi-day run. This is not a 24/7 service.
 """
 
 from __future__ import annotations
@@ -63,6 +64,11 @@ KRAKEN_RESEARCH_VENUE: Final = "kraken"
 KRAKEN_RESEARCH_PRODUCT: Final = "BTC/EUR"
 SMOKE_CAPTURE_SECONDS: Final = 600.0
 MAX_CAPTURE_SECONDS: Final = 7 * 24 * 60 * 60
+DEFAULT_L2_DEPTH: Final = 100
+DEFAULT_L3_DEPTH: Final = 100
+SUPPORTED_L2_DEPTHS: Final = frozenset({10, 25, 100, 500, 1000})
+SUPPORTED_L3_DEPTHS: Final = frozenset({10, 100, 1000})
+CHECKSUM_PRICE_LEVELS: Final = 10
 DATA1B_CLAIM_SCHEMA: Final = "data-1b-retained-capture-claim-v1"
 DATA1B_HEALTH_SCHEMA: Final = "data-1b-retained-capture-health-v1"
 KRAKEN_WS_API_KEY_ENV: Final = "KRAKEN_WS_API_KEY"
@@ -99,7 +105,7 @@ _PUBLIC_SUBSCRIPTIONS: Final = (
     ),
     (
         "book",
-        '{"method":"subscribe","params":{"channel":"book","depth":10,'
+        '{"method":"subscribe","params":{"channel":"book","depth":100,'
         '"snapshot":true,"symbol":["BTC/EUR"]}}',
     ),
 )
@@ -286,15 +292,15 @@ class KrakenRestTokenProvider:
 class KrakenL3ResearchConfig:
     """Fixed BTC/EUR scope plus bounded transport and visible book depths."""
 
-    l2_depth: int = 10
-    l3_depth: int = 10
+    l2_depth: int = DEFAULT_L2_DEPTH
+    l3_depth: int = DEFAULT_L3_DEPTH
     reconnect_delay_seconds: float = 3.0
     max_application_payload_bytes: int = 8 * 1024 * 1024
 
     def __post_init__(self) -> None:
-        if type(self.l2_depth) is not int or self.l2_depth not in {10, 25, 100, 500, 1000}:
+        if type(self.l2_depth) is not int or self.l2_depth not in SUPPORTED_L2_DEPTHS:
             raise ValueError("l2_depth is not supported by Kraken Spot WebSocket v2.")
-        if type(self.l3_depth) is not int or self.l3_depth not in {10, 100, 1000}:
+        if type(self.l3_depth) is not int or self.l3_depth not in SUPPORTED_L3_DEPTHS:
             raise ValueError("l3_depth is not supported by Kraken level3.")
         if (
             type(self.reconnect_delay_seconds) not in (int, float)
@@ -433,7 +439,7 @@ class _L2BookState:
     def _checksum(self) -> int:
         parts: list[str] = []
         for side, reverse in (("ask", False), ("bid", True)):
-            prices = sorted(self._levels[side], reverse=reverse)[:10]
+            prices = sorted(self._levels[side], reverse=reverse)[:CHECKSUM_PRICE_LEVELS]
             for price in prices:
                 price_text, quantity_text = self._levels[side][price]
                 parts.append(_checksum_component(price_text))
@@ -595,7 +601,7 @@ class _L3BookState:
             prices = sorted(
                 {order.price for order in self._orders.values() if order.side == side},
                 reverse=reverse,
-            )[:10]
+            )[:CHECKSUM_PRICE_LEVELS]
             for price in prices:
                 orders = sorted(
                     (
@@ -1452,7 +1458,7 @@ def _connection_factory(url: str, config: KrakenL3ResearchConfig) -> ConnectionF
 
 
 def _public_subscriptions(l2_depth: int) -> tuple[tuple[str, str], ...]:
-    if l2_depth == 10:
+    if l2_depth == DEFAULT_L2_DEPTH:
         return _PUBLIC_SUBSCRIPTIONS
     return (
         _PUBLIC_SUBSCRIPTIONS[0],
@@ -1709,6 +1715,7 @@ async def run_bounded_capture(
     duration_seconds: float,
     token_provider: KrakenTokenProvider | None = None,
     stop_event: asyncio.Event | None = None,
+    config: KrakenL3ResearchConfig | None = None,
     collector_factory: Callable[[RawResearchSink], KrakenL3ResearchCollector] | None = None,
 ) -> dict[str, object]:
     """Run public (and optional L3) capture, close Parquet, and build the catalog."""
@@ -1718,7 +1725,7 @@ async def run_bounded_capture(
     active = (
         collector_factory(writer)
         if collector_factory is not None
-        else KrakenL3ResearchCollector(writer, token_provider)
+        else KrakenL3ResearchCollector(writer, token_provider, config=config)
     )
     try:
         await active.capture_for(duration, stop_event=stop_event)
@@ -1734,10 +1741,12 @@ def data1b_capture_claim(
     duration_seconds: float,
     paths: Data1BRunPaths,
     include_l3: bool,
+    config: KrakenL3ResearchConfig | None = None,
 ) -> dict[str, object]:
     """Create-only start claim for a reconstructable DATA-1B run."""
 
     duration = _require_bounded_duration(duration_seconds)
+    depths = config if config is not None else KrakenL3ResearchConfig()
     return {
         "schema": DATA1B_CLAIM_SCHEMA,
         "state": "STARTED_FAIL_CLOSED",
@@ -1756,6 +1765,9 @@ def data1b_capture_claim(
         "credentialless": not include_l3,
         "signing": False,
         "authenticated_l3": include_l3,
+        "l2_depth": depths.l2_depth,
+        "l3_depth": depths.l3_depth if include_l3 else None,
+        "checksum_price_levels": CHECKSUM_PRICE_LEVELS,
         "duration_seconds": duration,
         "smoke_duration_seconds": SMOKE_CAPTURE_SECONDS,
         "max_duration_seconds": MAX_CAPTURE_SECONDS,
@@ -1801,9 +1813,11 @@ def data1b_capture_health(
         "limitations": [
             "Published Parquet parts are reconstructable; a crash can lose the in-memory segment.",
             "This is not 24/7 service evidence or a trading edge.",
-            "Default retained path is public L2 + trades; optional L3 is never a silent fallback.",
+            "Default retained path is public L2 + trades at depth 100; "
+            "optional L3 is never a silent fallback.",
             "Optional L3 keys enter only through KRAKEN_WS_API_KEY and KRAKEN_WS_API_SECRET.",
             "Generic KRAKEN_API_KEY / KRAKEN_API_SECRET names fail closed as the wrong key type.",
+            "Kraken CRC32 still covers only the best 10 price levels even at subscribed depth 100.",
         ],
     }
 
@@ -1822,6 +1836,7 @@ async def run_reconstructable_capture(
     token_provider: KrakenTokenProvider | None = None,
     stop_event: asyncio.Event | None = None,
     operator_stop: Callable[[], bool] | None = None,
+    config: KrakenL3ResearchConfig | None = None,
     collector_factory: Callable[[RawResearchSink], KrakenL3ResearchCollector] | None = None,
 ) -> dict[str, object]:
     """Write DATA-1B Parquet/DuckDB to the documented reconstructable path."""
@@ -1840,6 +1855,7 @@ async def run_reconstructable_capture(
             duration_seconds=duration_seconds,
             paths=paths,
             include_l3=include_l3,
+            config=config,
         ),
     )
     report: dict[str, object] = {
@@ -1858,6 +1874,7 @@ async def run_reconstructable_capture(
             duration_seconds=duration_seconds,
             token_provider=token_provider,
             stop_event=stop_event,
+            config=config,
             collector_factory=collector_factory,
         )
         if operator_stop is not None and operator_stop():
@@ -1892,10 +1909,12 @@ async def run_reconstructable_capture(
 def _argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Kraken BTC/EUR exact-raw research capture. Default is public L2 + trades. "
-            "Optional authenticated L3 uses KRAKEN_WS_API_KEY and KRAKEN_WS_API_SECRET. "
-            "Duration may exceed the historical 600s smoke cap up to 7 days. "
-            "This is not a 24/7 service. Do not start a multi-day retain from a Cloud Agent."
+            "Kraken BTC/EUR exact-raw research capture. Default is public L2 + trades "
+            "at depth 100. Optional authenticated L3 uses KRAKEN_WS_API_KEY and "
+            "KRAKEN_WS_API_SECRET and also defaults to depth 100. CRC32 still covers "
+            "only the best 10 price levels. Duration may exceed the historical 600s "
+            "smoke cap up to 7 days. This is not a 24/7 service. Do not start a "
+            "multi-day retain from a Cloud Agent."
         )
     )
     parser.add_argument("--output-dir", type=Path)
@@ -1903,6 +1922,27 @@ def _argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--artifact-root", type=Path)
     parser.add_argument("--run-id")
     parser.add_argument("--duration-seconds", required=True, type=float)
+    parser.add_argument(
+        "--l2-depth",
+        type=int,
+        default=DEFAULT_L2_DEPTH,
+        choices=sorted(SUPPORTED_L2_DEPTHS),
+        help=(
+            "Public book depth. Default 100. Existing Kraken depths 10/25/100/500/1000 "
+            "remain valid. CRC32 still covers only the best 10 price levels."
+        ),
+    )
+    parser.add_argument(
+        "--l3-depth",
+        type=int,
+        default=DEFAULT_L3_DEPTH,
+        choices=sorted(SUPPORTED_L3_DEPTHS),
+        help=(
+            "Optional authenticated level3 depth when L3 keys are set. Default 100. "
+            "Existing Kraken depths 10/100/1000 remain valid. CRC32 still covers only "
+            "the best 10 price levels."
+        ),
+    )
     return parser
 
 
@@ -1942,6 +1982,7 @@ async def _run_from_args(args: argparse.Namespace) -> dict[str, object]:
         pass
 
     token_provider = load_optional_l3_token_provider()
+    config = KrakenL3ResearchConfig(l2_depth=args.l2_depth, l3_depth=args.l3_depth)
     mode = _resolve_cli_mode(args)
     if mode == "reconstructable":
         return await run_reconstructable_capture(
@@ -1951,6 +1992,7 @@ async def _run_from_args(args: argparse.Namespace) -> dict[str, object]:
             token_provider=token_provider,
             stop_event=stop_event,
             operator_stop=lambda: operator_stopped,
+            config=config,
         )
     return await run_bounded_capture(
         output_dir=cast(Path, args.output_dir),
@@ -1958,6 +2000,7 @@ async def _run_from_args(args: argparse.Namespace) -> dict[str, object]:
         duration_seconds=cast(float, args.duration_seconds),
         token_provider=token_provider,
         stop_event=stop_event,
+        config=config,
     )
 
 

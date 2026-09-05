@@ -15,6 +15,18 @@ data1b_default_tmux_session() {
   printf '%s\n' "kr-capture"
 }
 
+data1b_default_l2_depth() {
+  printf '%s\n' "100"
+}
+
+data1b_default_l3_depth() {
+  printf '%s\n' "100"
+}
+
+data1b_checksum_price_levels() {
+  printf '%s\n' "10"
+}
+
 data1b_protected_hl_session() {
   printf '%s\n' "hl-capture"
 }

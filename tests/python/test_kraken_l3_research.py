@@ -20,6 +20,9 @@ import duckdb
 import pytest
 
 from hyperliquid_bot.kraken_l3_research import (
+    CHECKSUM_PRICE_LEVELS,
+    DEFAULT_L2_DEPTH,
+    DEFAULT_L3_DEPTH,
     KRAKEN_RESEARCH_PRODUCT,
     KRAKEN_TOKEN_PATH,
     KRAKEN_TOKEN_URL,
@@ -27,6 +30,8 @@ from hyperliquid_bot.kraken_l3_research import (
     KRAKEN_WS_API_SECRET_ENV,
     MAX_CAPTURE_SECONDS,
     SMOKE_CAPTURE_SECONDS,
+    SUPPORTED_L2_DEPTHS,
+    SUPPORTED_L3_DEPTHS,
     KrakenApiCredentials,
     KrakenAuthenticationError,
     KrakenDataIntegrityError,
@@ -78,7 +83,13 @@ def _fixture_document(name: str) -> dict[str, object]:
     return cast(dict[str, object], loaded)
 
 
-def _ack(channel: str, *, success: bool = True, include_depth: bool = True) -> str:
+def _ack(
+    channel: str,
+    *,
+    success: bool = True,
+    include_depth: bool = True,
+    depth: int = DEFAULT_L2_DEPTH,
+) -> str:
     document: dict[str, object] = {
         "method": "subscribe",
         "success": success,
@@ -92,7 +103,7 @@ def _ack(channel: str, *, success: bool = True, include_depth: bool = True) -> s
             "snapshot": channel != "trade",
         }
         if channel != "trade" and include_depth:
-            result["depth"] = 10
+            result["depth"] = depth
         document["result"] = result
     else:
         document["error"] = "request rejected"
@@ -692,7 +703,7 @@ async def test_exact_raw_parquet_roundtrip_and_string_preserving_kraken_views(
             "method": "subscribe",
             "params": {
                 "channel": "book",
-                "depth": 10,
+                "depth": 100,
                 "snapshot": True,
                 "symbol": ["BTC/EUR"],
             },
@@ -1215,7 +1226,7 @@ async def test_authenticated_ack_allows_omitted_depth_but_rejects_wrong_depth() 
 
     wrong_depth = cast(dict[str, object], json.loads(_ack("level3"), parse_int=str))
     wrong_result = cast(dict[str, object], wrong_depth["result"])
-    wrong_result["depth"] = "100"
+    wrong_result["depth"] = "10"
     with pytest.raises(KrakenDataIntegrityError, match="schema"):
         await collector._record_subscription_response(
             wrong_depth,
@@ -1426,6 +1437,56 @@ def test_official_kraken_l2_and_l3_checksum_vectors() -> None:
     assert l3_normalized["message_timestamp"] is None
 
 
+def test_default_retained_depths_are_100_and_existing_sets_remain_valid() -> None:
+    defaults = KrakenL3ResearchConfig()
+    assert defaults.l2_depth == DEFAULT_L2_DEPTH == 100
+    assert defaults.l3_depth == DEFAULT_L3_DEPTH == 100
+    assert CHECKSUM_PRICE_LEVELS == 10
+    assert SUPPORTED_L2_DEPTHS == {10, 25, 100, 500, 1000}
+    assert SUPPORTED_L3_DEPTHS == {10, 100, 1000}
+    for depth in SUPPORTED_L2_DEPTHS:
+        assert KrakenL3ResearchConfig(l2_depth=depth).l2_depth == depth
+    for depth in SUPPORTED_L3_DEPTHS:
+        assert KrakenL3ResearchConfig(l3_depth=depth).l3_depth == depth
+    with pytest.raises(ValueError, match="l2_depth"):
+        KrakenL3ResearchConfig(l2_depth=50)
+    with pytest.raises(ValueError, match="l3_depth"):
+        KrakenL3ResearchConfig(l3_depth=25)
+
+
+def test_checksum_remains_top_ten_when_subscribed_depth_is_100() -> None:
+    l2_document = _fixture_document("official_book_checksum_vector.json")
+    l2_item = cast(dict[str, object], cast(list[object], l2_document["data"])[0])
+    asks = cast(list[dict[str, object]], l2_item["asks"])
+    asks.append({"price": "45301.0", "qty": "9.00000000"})
+    l2_normalized = _L2BookState(DEFAULT_L2_DEPTH).normalize(l2_document, 1)
+    assert l2_normalized["checksum"] == "3310070434"
+    l2_events = cast(list[dict[str, object]], l2_normalized["events"])
+    assert any(event["price"] == "45301.0" for event in l2_events)
+
+    l3_document = _fixture_document("official_level3_checksum_vector.json")
+    l3_item = cast(dict[str, object], cast(list[object], l3_document["data"])[0])
+    bids = cast(list[dict[str, object]], l3_item["bids"])
+    bids.append(
+        {
+            "order_id": "OUT-OF-CRC-BID",
+            "limit_price": "44890.0",
+            "order_qty": "1.00000000",
+            "timestamp": "2024-01-08T12:26:45.100000000Z",
+        }
+    )
+    l3_normalized = _L3BookState(DEFAULT_L3_DEPTH).normalize(l3_document, 2)
+    assert l3_normalized["checksum"] == "1063832831"
+    assert any(
+        event["order_id"] == "OUT-OF-CRC-BID" and event["event"] == "snapshot"
+        for event in cast(list[dict[str, object]], l3_normalized["events"])
+    )
+    assert all(
+        event["event"] != "scope_truncate"
+        for event in cast(list[dict[str, object]], l3_normalized["events"])
+    )
+
+
 @pytest.mark.asyncio
 async def test_terminal_failure_gracefully_stops_peer_without_cancelling_sink_boundary() -> None:
     class CoordinatedCollector(KrakenL3ResearchCollector):
@@ -1567,6 +1628,9 @@ async def test_reconstructable_public_capture_writes_the_path_contract(tmp_path:
     assert claim["retained"] is True
     assert claim["authenticated_l3"] is False
     assert claim["credentialless"] is True
+    assert claim["l2_depth"] == DEFAULT_L2_DEPTH
+    assert claim["l3_depth"] is None
+    assert claim["checksum_price_levels"] == CHECKSUM_PRICE_LEVELS
     assert health["status"] == "COMPLETED"
     with pytest.raises(FileExistsError, match="refuses to reuse"):
         await run_reconstructable_capture(
@@ -1603,8 +1667,12 @@ def test_data1b_claim_and_health_are_create_only_and_not_twenty_four_seven() -> 
     assert claim["path_contract"] == DATA1B_PATH_CONTRACT_ID
     assert claim["resume_policy"] == "never resume or overwrite an existing DATA-1B run directory"
     assert claim["retained"] is True
+    assert claim["l2_depth"] == DEFAULT_L2_DEPTH
+    assert claim["l3_depth"] is None
+    assert claim["checksum_price_levels"] == CHECKSUM_PRICE_LEVELS
     assert health["twenty_four_seven"] is False
     assert health["authenticated_l3"] is False
+    assert any("best 10 price levels" in item for item in cast(list[str], health["limitations"]))
 
 
 def test_cli_modes_are_mutually_exclusive(tmp_path: Path) -> None:
@@ -1640,3 +1708,21 @@ def test_cli_modes_are_mutually_exclusive(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="not both"):
         _resolve_cli_mode(mixed)
+    assert reconstructable.l2_depth == DEFAULT_L2_DEPTH
+    assert reconstructable.l3_depth == DEFAULT_L3_DEPTH
+    overridden = parser.parse_args(
+        [
+            "--artifact-root",
+            str(tmp_path),
+            "--run-id",
+            "sample-run",
+            "--duration-seconds",
+            "3600",
+            "--l2-depth",
+            "10",
+            "--l3-depth",
+            "10",
+        ]
+    )
+    assert overridden.l2_depth == 10
+    assert overridden.l3_depth == 10

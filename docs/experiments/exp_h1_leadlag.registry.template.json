@@ -1,0 +1,40 @@
+{
+  "experiment_id": "exp_h1_leadlag",
+  "commit_sha": "REPLACE_WITH_GIT_SHA",
+  "container_image_digest": null,
+  "dataset": {
+    "panel_parquet": null,
+    "panel_summary": null,
+    "panel_version": "panel_hl_binance/wp-q1",
+    "bucket_ms": 1000,
+    "dataset_range": null
+  },
+  "source_environment": "DEV",
+  "feature_set": "bn_prior_bucket_return_sign_to_hl_forward_return",
+  "strategy_model_version": "h1-leadlag-scaffold-v1",
+  "parameters": {
+    "delta_buckets": [1, 5, 30],
+    "signal_lookback_buckets": 1,
+    "cost_multipliers": ["1.0", "1.5", "2.0"]
+  },
+  "random_seed": null,
+  "cost_assumptions": {
+    "hl_taker_fee": "0.00045",
+    "fallback_half_spread": "0.00005",
+    "round_trip": true,
+    "stress_multipliers": ["1.0", "1.5", "2.0"]
+  },
+  "oos": {
+    "start_utc_ns": null,
+    "end_utc_ns": null
+  },
+  "metrics": null,
+  "artifacts": null,
+  "verdict": null,
+  "promotion_decision": "forbidden",
+  "notes": [
+    "Template only. Copy this file for a citable rerun. Do not invent metrics.",
+    "PAPER research scaffold. Allowed verdicts are noise or not_enough_data.",
+    "Promotion is forbidden. This file must not be filled with a winning claim."
+  ]
+}

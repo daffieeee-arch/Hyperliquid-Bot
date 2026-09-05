@@ -3,11 +3,17 @@ import { KvTable } from "../components/kv-table";
 import { LiveBtcPrice } from "../components/live-btc-price";
 import { MetricTile } from "../components/metric-tile";
 import { PaperBlotter } from "../components/paper-blotter";
+import { VenueCaptureStrip } from "../components/venue-capture-strip";
 import { loadData1ACaptureSnapshot } from "../lib/data1a-capture";
 import { formatGroupedNumber, healthTone, signedTone, uniqueStrings, yesNo } from "../lib/display";
 import { loadPaperRunSnapshot } from "../lib/paper-run";
-import { firstQueryValue, findRepoRoot } from "../lib/paths";
-import type { Data1ACaptureResponse, PaperRunSnapshot } from "../lib/types";
+import { firstQueryValue, findRepoRoot, type VenueCaptureQuery } from "../lib/paths";
+import type {
+  Data1ACaptureResponse,
+  PaperRunSnapshot,
+  VenueCaptureStripResponse,
+} from "../lib/types";
+import { loadVenueCaptureStrip } from "../lib/venue-capture";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -257,6 +263,20 @@ function SnapshotDesk({ snapshot }: { snapshot: PaperRunSnapshot }) {
   );
 }
 
+function loadVenueStripResponse(query: VenueCaptureQuery): VenueCaptureStripResponse {
+  try {
+    return {
+      ok: true,
+      strip: loadVenueCaptureStrip(process.env, findRepoRoot(), query),
+    };
+  } catch (error: unknown) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "Multi-venue capture health is unavailable.",
+    };
+  }
+}
+
 function loadData1AResponse(queryRunId: string | undefined): Data1ACaptureResponse {
   try {
     return {
@@ -279,7 +299,14 @@ export default async function FirstPaperScreen({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const params = await searchParams;
-  const data1aRunId = firstQueryValue(params.data1a_run_id);
+  const venueQuery: VenueCaptureQuery = {
+    data1a_run_id: firstQueryValue(params.data1a_run_id),
+    data1b_run_id: firstQueryValue(params.data1b_run_id),
+    data1e_run_id: firstQueryValue(params.data1e_run_id),
+    data1f_run_id: firstQueryValue(params.data1f_run_id),
+  };
+  const data1aRunId = venueQuery.data1a_run_id;
+  const venueStrip = loadVenueStripResponse(venueQuery);
   const data1a = loadData1AResponse(data1aRunId);
 
   let snapshotError: string | undefined;
@@ -297,6 +324,7 @@ export default async function FirstPaperScreen({
       </div>
       <Masthead snapshot={snapshot} snapshotError={snapshotError} />
       <main>
+        <VenueCaptureStrip query={venueQuery} initial={venueStrip} />
         <Data1ACapturePanel queryRunId={data1aRunId} initial={data1a} />
         {snapshotError !== undefined || snapshot === undefined ? (
           <>
@@ -340,6 +368,7 @@ export default async function FirstPaperScreen({
         <span>NO LIVE CAPITAL</span>
         <span>PUBLIC MID != PAPER PNL</span>
         <span>DATA-1A HEALTH != PNL</span>
+        <span>VENUE STRIP != PNL</span>
       </footer>
     </div>
   );

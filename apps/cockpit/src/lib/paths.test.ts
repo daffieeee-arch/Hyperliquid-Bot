@@ -11,6 +11,11 @@ import {
   COURSE1_COCKPIT_FILE_NAMES,
   COURSE1_PATH_CONTRACT_ID,
   DATA1A_PATH_CONTRACT_ID,
+  DATA1B_PATH_CONTRACT_ID,
+  DATA1E_PATH_CONTRACT_ID,
+  DATA1F_PATH_CONTRACT_ID,
+  VENUE_CAPTURE_CONTRACTS,
+  VENUE_CAPTURE_STRIP_ORDER,
   course1CockpitRunDir,
   data1aCockpitRunDir,
   defaultData1AFixtureRunDir,
@@ -22,6 +27,8 @@ import {
   requireRunId,
   resolveData1ARunDir,
   resolvePaperRunDir,
+  resolveVenueCaptureRunDir,
+  venueCockpitRunDir,
 } from "./paths";
 
 const repoRoot = resolve(fileURLToPath(new URL("../../../../", import.meta.url)));
@@ -178,6 +185,88 @@ describe("DATA-1A path contract", () => {
     expect(fromQuery.runId).toBe("20260904t134940z-live-retained");
     expect(fromQuery.runDir).toBe(
       "/home/dmesdary/hyperliquid-artifacts/reconstructable/data-1a/hyperliquid/BTC-PERP/20260904t134940z-live-retained",
+    );
+  });
+
+  it("joins the documented Binance / Bitvavo / Kraken reconstructable layouts", () => {
+    expect(
+      venueCockpitRunDir(
+        VENUE_CAPTURE_CONTRACTS.binance,
+        "/var/lib/hyperliquid-bot/reconstructable",
+        "20260904t000000z-live-retained",
+      ),
+    ).toBe(
+      "/var/lib/hyperliquid-bot/reconstructable/data-1f/binance/BTCUSDT/20260904t000000z-live-retained",
+    );
+    expect(
+      venueCockpitRunDir(
+        VENUE_CAPTURE_CONTRACTS.bitvavo,
+        "/var/lib/hyperliquid-bot/reconstructable",
+        "20260904t000000z-live-retained",
+      ),
+    ).toBe(
+      "/var/lib/hyperliquid-bot/reconstructable/data-1e/bitvavo/BTC-EUR/20260904t000000z-live-retained",
+    );
+    expect(
+      venueCockpitRunDir(
+        VENUE_CAPTURE_CONTRACTS.kraken,
+        "/var/lib/hyperliquid-bot/reconstructable",
+        "20260904t000000z-live-retained",
+      ),
+    ).toBe(
+      "/var/lib/hyperliquid-bot/reconstructable/data-1b/kraken/BTC-EUR/20260904t000000z-live-retained",
+    );
+    expect(DATA1F_PATH_CONTRACT_ID).toBe("data-1f-binance-btcusdt-v1");
+    expect(DATA1E_PATH_CONTRACT_ID).toBe("data-1e-bitvavo-btc-eur-v1");
+    expect(DATA1B_PATH_CONTRACT_ID).toBe("data-1b-kraken-btc-eur-v1");
+    expect(VENUE_CAPTURE_STRIP_ORDER).toEqual(["hl", "binance", "bitvavo", "kraken"]);
+  });
+
+  it("resolves a Binance path-contract run and fails closed without a run_id", () => {
+    const resolved = resolveVenueCaptureRunDir(
+      VENUE_CAPTURE_CONTRACTS.binance,
+      {
+        TRADING_MODE: "PAPER",
+        ARTIFACT_ROOT: "/data/reconstructable",
+        DATA1F_RUN_ID: "20260904t000000z-live-retained",
+      },
+      repoRoot,
+    );
+    expect(resolved.source).toBe("path-contract");
+    expect(resolved.runDir).toBe(
+      "/data/reconstructable/data-1f/binance/BTCUSDT/20260904t000000z-live-retained",
+    );
+    expect(() =>
+      resolveVenueCaptureRunDir(
+        VENUE_CAPTURE_CONTRACTS.kraken,
+        { TRADING_MODE: "PAPER", ARTIFACT_ROOT: "/data/reconstructable" },
+        repoRoot,
+      ),
+    ).toThrow(/run_id/);
+    expect(() =>
+      resolveVenueCaptureRunDir(
+        VENUE_CAPTURE_CONTRACTS.bitvavo,
+        { TRADING_MODE: "PAPER" },
+        repoRoot,
+      ),
+    ).toThrow(/not pointed/);
+  });
+
+  it("lets query run_ids override env aliases for non-HL venues", () => {
+    const resolved = resolveVenueCaptureRunDir(
+      VENUE_CAPTURE_CONTRACTS.kraken,
+      {
+        TRADING_MODE: "PAPER",
+        ARTIFACT_ROOT: "/home/dmesdary/hyperliquid-artifacts/reconstructable",
+        DATA1B_RUN_ID: "env-run",
+        COCKPIT_DATA1B_RUN_ID: "cockpit-alias-run",
+      },
+      repoRoot,
+      { data1b_run_id: "query-run" },
+    );
+    expect(resolved.runId).toBe("query-run");
+    expect(resolved.runDir).toBe(
+      "/home/dmesdary/hyperliquid-artifacts/reconstructable/data-1b/kraken/BTC-EUR/query-run",
     );
   });
 

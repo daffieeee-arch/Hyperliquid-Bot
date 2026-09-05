@@ -16,14 +16,16 @@ Build a professional trading workstation, not a decorative dashboard. The operat
 
 The browser never receives trading secrets.
 
-The first cockpit screen now reads COURSE-1 PAPER JSON and a thin DATA-1A
-capture-health panel. It shows public BTC-PERP mid, paper position, assumed
-overlay PnL, COURSE-1 soak health, DATA-1A reconstructable capture health, and
-the copied PAPER intent/fill blotter. The layout is a dense dark terminal so
-those values are readable at a glance; PAPER is badged and watermarked. It is
-inspired by professional market workstations, not a clone of a commercial UI.
-DESK / MARKETS / RISK are not built. Later screens must keep using the
-create-only reconstructable contracts rather than inventing a second store:
+The first cockpit screen now reads COURSE-1 PAPER JSON, a four-venue
+capture-health strip, and a thin DATA-1A capture-health panel. It shows public
+BTC-PERP mid, paper position, assumed overlay PnL, COURSE-1 soak health, HL /
+Binance / Bitvavo / Kraken reconstructable capture chips, DATA-1A capture
+health, and the copied PAPER intent/fill blotter. The layout is a dense dark
+terminal so those values are readable at a glance; PAPER is badged and
+watermarked. It is inspired by professional market workstations, not a clone of
+a commercial UI. DESK / MARKETS / RISK are not built. Later screens must keep
+using the create-only reconstructable contracts rather than inventing a second
+store:
 
 ```text
 <artifact-root>/course1/live-public-paper/<run_id>/
@@ -35,6 +37,9 @@ create-only reconstructable contracts rather than inventing a second store:
   capture-health.json
 
 <artifact-root>/data-1a/hyperliquid/BTC-PERP/<run_id>/
+<artifact-root>/data-1f/binance/BTCUSDT/<run_id>/
+<artifact-root>/data-1e/bitvavo/BTC-EUR/<run_id>/
+<artifact-root>/data-1b/kraken/BTC-EUR/<run_id>/
   capture-claim.json
   capture-health.json
   raw/part-*.parquet
@@ -48,15 +53,19 @@ claim and an end-of-run health file. While a live retain has a claim, growing
 `raw/part-*.parquet` files, and no health file, the panel shows
 **RUNNING (health JSON pending until stop)** rather than invented zeros.
 The DATA-1A panel polls `/api/data1a-capture` every 5 seconds with
-`Cache-Control: no-store`. Missing artifact root or `run_id` is an explicit
-empty state. DATA-1A capture duration is 1–604800 seconds; the COURSE-1 soak
-remains 1–600 seconds. Locally
+`Cache-Control: no-store`. The four-venue strip polls
+`/api/venue-capture-health` on the same interval and fail-closes each missing
+venue as **MISSING** (no invented zeros or PnL). Missing artifact root or
+`run_id` is an explicit empty state. DATA-1A capture duration is 1–604800
+seconds; the COURSE-1 soak remains 1–600 seconds. Locally
 the first screen defaults to
 `tests/fixtures/course1_cockpit/live-public-soak/` (`run_id`
 `20260904t001800z-live-paper`) and `tests/fixtures/data_1a_retained/sample-run/`
 (`run_id` `sample-run`). Set `COCKPIT_ARTIFACT_ROOT` + `COCKPIT_RUN_ID` for PAPER
 JSON, and `ARTIFACT_ROOT` + `DATA1A_RUN_ID` (or `COCKPIT_DATA1A_RUN_ID` /
-`?data1a_run_id=`) for a live DATA-1A directory. TerraPC WSL example:
+`?data1a_run_id=`) for a live DATA-1A directory. Optional sibling run ids on the
+same root: `DATA1F_RUN_ID` (Binance), `DATA1E_RUN_ID` (Bitvavo),
+`DATA1B_RUN_ID` (Kraken). TerraPC WSL example:
 `ARTIFACT_ROOT=/home/dmesdary/hyperliquid-artifacts/reconstructable` and
 `DATA1A_RUN_ID=20260904t134940z-live-retained` (copy `apps/cockpit/.env.example`
 to `apps/cockpit/.env.local`, or export in the WSL shell before `next dev`).

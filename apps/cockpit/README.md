@@ -2,9 +2,9 @@
 
 One local Next.js screen. It is not DESK, MARKETS, RISK, or a clone of any
 commercial terminal. The first screen uses a dense dark workstation layout so
-price, position, assumed overlay PnL, COURSE-1 soak health, and DATA-1A capture
-health are readable at a glance. PAPER is badged in the masthead and watermarked
-on the page.
+price, position, assumed overlay PnL, COURSE-1 soak health, a four-venue
+capture-health strip, and DATA-1A capture health are readable at a glance. PAPER
+is badged in the masthead and watermarked on the page.
 
 The browser never signs orders and never holds keys. `TRADING_MODE` must be
 unset or `PAPER`; `LIVE`, `TESTNET`, and `SHADOW` fail closed.
@@ -18,7 +18,13 @@ unset or `PAPER`; `LIVE`, `TESTNET`, and `SHADOW` fail closed.
    overlay, the screen says so. It never fabricates a second number.
 4. COURSE-1 capture health from that same JSON. This is a bounded soak summary,
    not a 24/7 heartbeat.
-5. DATA-1A capture health from `capture-claim.json` plus optional
+5. Multi-venue capture-health strip for **HL / Binance / Bitvavo / Kraken**.
+   Each chip copies status, last part age (from last `raw/part-*.parquet`
+   mtime), and part count from that venue's reconstructable layout. Missing
+   artifact root, run id, venue directory, or `capture-claim.json` is
+   **MISSING** — zeros and PnL are not invented. The browser polls
+   `/api/venue-capture-health` every **5 seconds**.
+6. DATA-1A capture health from `capture-claim.json` plus optional
    `capture-health.json` and a cheap `raw/part-*.parquet` listing. While a live
    run has a claim, growing `raw/part-*.parquet` files, and no health file, the
    panel shows **RUNNING (health JSON pending until stop)** instead of inventing
@@ -27,7 +33,7 @@ unset or `PAPER`; `LIVE`, `TESTNET`, and `SHADOW` fail closed.
    mtime, and `observed_at` update without a full page reload. Parquet payloads
    are not read. Missing artifact root or `run_id` fails closed with an
    explicit empty state.
-6. PAPER intent/fill blotter copied from `orders.json` / `fills.json`. Empty
+7. PAPER intent/fill blotter copied from `orders.json` / `fills.json`. Empty
    runs stay empty; rows are not invented.
 
 ## JSON it reads
@@ -52,15 +58,23 @@ same names under:
 ```
 
 DATA-1A defaults to `tests/fixtures/data_1a_retained/sample-run/`. A live
-reconstructable run uses:
+reconstructable run uses the same claim / health / `raw/part-*.parquet` layout
+as the other public venues:
 
 ```text
 <artifact-root>/data-1a/hyperliquid/BTC-PERP/<run_id>/
+<artifact-root>/data-1f/binance/BTCUSDT/<run_id>/
+<artifact-root>/data-1e/bitvavo/BTC-EUR/<run_id>/
+<artifact-root>/data-1b/kraken/BTC-EUR/<run_id>/
   capture-claim.json
   capture-health.json
   raw/part-*.parquet
   research.duckdb
 ```
+
+The strip always renders four chips. Venues without a pointed root/run/claim
+show **MISSING**. There is no committed Binance / Bitvavo / Kraken cockpit
+fixture; do not invent sample counts.
 
 ## Run locally
 
@@ -106,9 +120,22 @@ those two DATA-1A lines. `COCKPIT_DATA1A_RUN_ID` is an equivalent alias.
 With `ARTIFACT_ROOT` already exported you can also open
 `http://127.0.0.1:3000/?data1a_run_id=20260904t134940z-live-retained`.
 
-The DATA-1A panel polls `/api/data1a-capture` every 5 seconds. Leave the tab
-open; do not stop the collector to "refresh" numbers. `/api/data1a-capture`
-sends `Cache-Control: no-store`.
+Optional sibling run ids (same shared `ARTIFACT_ROOT`, no secrets):
+
+```bash
+export DATA1F_RUN_ID=20260904t000000z-live-retained   # Binance DATA-1F
+export DATA1E_RUN_ID=20260904t000000z-live-retained   # Bitvavo DATA-1E
+export DATA1B_RUN_ID=20260904t000000z-live-retained   # Kraken DATA-1B
+```
+
+Query aliases: `?data1f_run_id=`, `?data1e_run_id=`, `?data1b_run_id=`.
+`COCKPIT_DATA1F_RUN_ID` / `COCKPIT_DATA1E_RUN_ID` / `COCKPIT_DATA1B_RUN_ID`
+are equivalent. Unset run ids stay **MISSING**.
+
+The DATA-1A panel polls `/api/data1a-capture` every 5 seconds. The venue strip
+polls `/api/venue-capture-health` on the same interval. Leave the tab open; do
+not stop any collector to "refresh" numbers. Both routes send
+`Cache-Control: no-store`.
 
 Later VPS path-contract root (same file names):
 

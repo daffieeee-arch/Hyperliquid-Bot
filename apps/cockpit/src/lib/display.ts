@@ -142,6 +142,50 @@ export function elapsedSecondsSinceRunId(runId: string, observedAt: string): num
   return Math.floor((observedMs - startedMs) / 1000);
 }
 
+export function presentLastPartAge(
+  lastPartMtimeUtc: string | undefined,
+  observedAt: string,
+): string {
+  if (lastPartMtimeUtc === undefined || lastPartMtimeUtc === "") {
+    return "n/a";
+  }
+  const lastMs = Date.parse(lastPartMtimeUtc);
+  const observedMs = Date.parse(observedAt);
+  if (!Number.isFinite(lastMs) || !Number.isFinite(observedMs) || observedMs < lastMs) {
+    return "n/a";
+  }
+  const seconds = Math.floor((observedMs - lastMs) / 1000);
+  if (seconds < 60) {
+    return `${String(seconds)}s`;
+  }
+  if (seconds < 3600) {
+    return `${String(Math.floor(seconds / 60))}m`;
+  }
+  if (seconds < 86400) {
+    return `${String(Math.floor(seconds / 3600))}h`;
+  }
+  return `${String(Math.floor(seconds / 86400))}d`;
+}
+
+export function venueCaptureChipStatus(
+  presentation: Data1AHealthPresentation,
+): "RUNNING" | "DEGRADED" | "STOPPED" {
+  if (presentation.live) {
+    return "RUNNING";
+  }
+  if (
+    presentation.tileLabel === "UNREADABLE" ||
+    presentation.tileLabel === "NOT WRITTEN" ||
+    presentation.tone === "down"
+  ) {
+    return "DEGRADED";
+  }
+  if (presentation.tone === "ok" || presentation.tone === "warn") {
+    return "STOPPED";
+  }
+  return "DEGRADED";
+}
+
 export function presentData1ADuration(snapshot: {
   runId: string;
   observed_at: string;

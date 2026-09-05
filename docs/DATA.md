@@ -291,7 +291,12 @@ and `DATA1A_RUN_ID=20260904t134940z-live-retained` (or copy
 `apps/cockpit/.env.example` to `apps/cockpit/.env.local`).
 `COCKPIT_DATA1A_RUN_ID` and `/?data1a_run_id=` are equivalent. The Operator
 Cockpit polls `/api/data1a-capture` every 5 seconds while the tab is open.
-Missing root or `run_id` fails closed. See
+The first PAPER screen also shows a four-venue strip (HL / Binance / Bitvavo /
+Kraken) that reuses this claim / health / `raw/part-*.parquet` pattern on the
+DATA-1F / DATA-1E / DATA-1B path contracts and polls
+`/api/venue-capture-health` every 5 seconds. Point optional sibling run ids
+with `DATA1F_RUN_ID`, `DATA1E_RUN_ID`, and `DATA1B_RUN_ID` on the same
+`ARTIFACT_ROOT`. Missing venues fail closed as MISSING. See
 [cockpit-first-paper-screen.md](runbooks/cockpit-first-paper-screen.md)
 and [data1a-wsl-pc-retained-capture.md](runbooks/data1a-wsl-pc-retained-capture.md).
 

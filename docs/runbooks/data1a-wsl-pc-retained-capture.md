@@ -228,7 +228,11 @@ panel labels that **RUNNING (health JSON pending until stop)** and polls
 `/api/data1a-capture` every **5 seconds** (`Cache-Control: no-store`) so
 duration, part count, bytes on disk, and last mtime move without a full page
 reload. Missing root or `run_id` fails closed; the cockpit does not invent PnL
-or part counts. Do not stop `hl-capture` to refresh the cockpit.
+or part counts. The same first PAPER screen also shows a four-venue strip
+(HL / Binance / Bitvavo / Kraken) via `/api/venue-capture-health`; sibling
+venues stay MISSING unless `DATA1F_RUN_ID` / `DATA1E_RUN_ID` / `DATA1B_RUN_ID`
+are set on the same `ARTIFACT_ROOT`. Do not stop `hl-capture` to refresh the
+cockpit.
 
 Copy `apps/cockpit/.env.example` to `apps/cockpit/.env.local` (gitignored) for
 the same pair. The repository-root `.env.example` documents the names but is

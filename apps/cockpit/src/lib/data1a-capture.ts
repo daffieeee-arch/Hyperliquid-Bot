@@ -2,14 +2,14 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 import {
-  DATA1A_CLAIM_SCHEMA,
-  DATA1A_HEALTH_SCHEMA,
   DATA1A_PARQUET_GLOB_PREFIX,
   DATA1A_PARQUET_SUFFIX,
-  DATA1A_PATH_CONTRACT_ID,
+  VENUE_CAPTURE_CONTRACTS,
   findRepoRoot,
   resolveData1ARunDir,
   type Data1AQuery,
+  type VenueCaptureContract,
+  type VenueRunResolution,
 } from "./paths";
 import type {
   Data1ACaptureClaim,
@@ -97,10 +97,10 @@ function optionalStringList(source: JsonObject, field: string, path: string): st
   return value;
 }
 
-function refuseTwentyFourSeven(source: JsonObject, path: string): false {
+function refuseTwentyFourSeven(source: JsonObject, path: string, refuseLabel: string): false {
   const flag = requireBoolean(source, "twenty_four_seven", path);
   if (flag) {
-    throw new Error(`${path} claims 24/7 service; the DATA-1A cockpit view refuses that.`);
+    throw new Error(`${path} claims 24/7 service; the ${refuseLabel} cockpit view refuses that.`);
   }
   return false;
 }
@@ -155,26 +155,28 @@ export function listPublishedParquetParts(rawDir: string): Data1APartListing {
   };
 }
 
-function loadClaim(runDir: string): Data1ACaptureClaim {
+function loadClaim(runDir: string, contract: VenueCaptureContract): Data1ACaptureClaim {
   const path = join(runDir, "capture-claim.json");
   const raw = readJsonObject(path);
-  if (raw.schema !== DATA1A_CLAIM_SCHEMA) {
-    throw new Error(`${path} schema is not ${DATA1A_CLAIM_SCHEMA}.`);
+  if (raw.schema !== contract.claimSchema) {
+    throw new Error(`${path} schema is not ${contract.claimSchema}.`);
   }
-  if (raw.path_contract !== DATA1A_PATH_CONTRACT_ID) {
-    throw new Error(`${path} path_contract is not ${DATA1A_PATH_CONTRACT_ID}.`);
+  if (raw.path_contract !== contract.pathContractId) {
+    throw new Error(`${path} path_contract is not ${contract.pathContractId}.`);
   }
   const signing = optionalBoolean(raw, "signing", path);
   if (signing === true) {
-    throw new Error(`${path} claims signing; the DATA-1A cockpit view refuses that.`);
+    throw new Error(
+      `${path} claims signing; the ${contract.refuseLabel} cockpit view refuses that.`,
+    );
   }
   return {
-    schema: DATA1A_CLAIM_SCHEMA,
-    path_contract: DATA1A_PATH_CONTRACT_ID,
+    schema: contract.claimSchema,
+    path_contract: contract.pathContractId,
     run_id: requireText(raw, "run_id", path),
     state: requireText(raw, "state", path),
     retained: requireBoolean(raw, "retained", path),
-    twenty_four_seven: refuseTwentyFourSeven(raw, path),
+    twenty_four_seven: refuseTwentyFourSeven(raw, path, contract.refuseLabel),
     credentialless: optionalBoolean(raw, "credentialless", path),
     signing,
     venue: optionalText(raw, "venue"),
@@ -185,7 +187,10 @@ function loadClaim(runDir: string): Data1ACaptureClaim {
   };
 }
 
-function loadHealth(runDir: string): {
+function loadHealth(
+  runDir: string,
+  contract: VenueCaptureContract,
+): {
   health: Data1ACaptureHealth | undefined;
   health_missing: boolean;
   health_error: string | undefined;
@@ -200,24 +205,24 @@ function loadHealth(runDir: string): {
   }
   try {
     const raw = readJsonObject(path);
-    if (raw.schema !== DATA1A_HEALTH_SCHEMA) {
-      throw new Error(`${path} schema is not ${DATA1A_HEALTH_SCHEMA}.`);
+    if (raw.schema !== contract.healthSchema) {
+      throw new Error(`${path} schema is not ${contract.healthSchema}.`);
     }
     if (raw.kind !== "capture-health") {
       throw new Error(`${path} kind is not capture-health.`);
     }
-    if (raw.path_contract !== DATA1A_PATH_CONTRACT_ID) {
-      throw new Error(`${path} path_contract is not ${DATA1A_PATH_CONTRACT_ID}.`);
+    if (raw.path_contract !== contract.pathContractId) {
+      throw new Error(`${path} path_contract is not ${contract.pathContractId}.`);
     }
     return {
       health: {
-        schema: DATA1A_HEALTH_SCHEMA,
+        schema: contract.healthSchema,
         kind: "capture-health",
-        path_contract: DATA1A_PATH_CONTRACT_ID,
+        path_contract: contract.pathContractId,
         run_id: requireText(raw, "run_id", path),
         status: requireText(raw, "status", path),
         retained: requireBoolean(raw, "retained", path),
-        twenty_four_seven: refuseTwentyFourSeven(raw, path),
+        twenty_four_seven: refuseTwentyFourSeven(raw, path, contract.refuseLabel),
         credentialless: optionalBoolean(raw, "credentialless", path),
         gaps: optionalInt(raw, "gaps", path),
         reconnects: optionalInt(raw, "reconnects", path),
@@ -238,28 +243,30 @@ function loadHealth(runDir: string): {
   }
 }
 
-export function loadData1ACaptureSnapshot(
-  env: NodeJS.Dict<string> = process.env,
-  repoRoot: string = findRepoRoot(),
-  query: Data1AQuery = {},
+function skipResolvedRunIdMatch(source: VenueRunResolution["source"]): boolean {
+  return source === "data1a-run-dir" || source === "venue-run-dir";
+}
+
+export function loadCaptureSnapshotForContract(
+  resolved: VenueRunResolution,
+  contract: VenueCaptureContract,
   now: () => string = () => new Date().toISOString(),
 ): Data1ACaptureSnapshot {
-  const resolved = resolveData1ARunDir(env, repoRoot, query);
   if (!existsSync(resolved.runDir)) {
     throw new Error(
-      `DATA-1A run directory is missing: ${resolved.runDir}. Set ARTIFACT_ROOT and DATA1A_RUN_ID (or COCKPIT_DATA1A_RUN_ID / ?data1a_run_id=) to an existing reconstructable capture. Counts are not invented.`,
+      `${contract.refuseLabel} run directory is missing: ${resolved.runDir}. Set ARTIFACT_ROOT and the venue run_id to an existing reconstructable capture. Counts are not invented.`,
     );
   }
-  const claim = loadClaim(resolved.runDir);
-  if (resolved.source !== "data1a-run-dir" && claim.run_id !== resolved.runId) {
+  const claim = loadClaim(resolved.runDir, contract);
+  if (!skipResolvedRunIdMatch(resolved.source) && claim.run_id !== resolved.runId) {
     throw new Error(
       `capture-claim.json run_id ${claim.run_id} does not match resolved run_id ${resolved.runId}.`,
     );
   }
-  const healthState = loadHealth(resolved.runDir);
+  const healthState = loadHealth(resolved.runDir, contract);
   if (
     healthState.health !== undefined &&
-    resolved.source !== "data1a-run-dir" &&
+    !skipResolvedRunIdMatch(resolved.source) &&
     healthState.health.run_id !== resolved.runId
   ) {
     throw new Error(
@@ -271,7 +278,7 @@ export function loadData1ACaptureSnapshot(
     runId: claim.run_id,
     source: resolved.source,
     observed_at: now(),
-    path_contract: DATA1A_PATH_CONTRACT_ID,
+    path_contract: contract.pathContractId,
     claim,
     health: healthState.health,
     health_missing: healthState.health_missing,
@@ -279,4 +286,24 @@ export function loadData1ACaptureSnapshot(
     parts: listPublishedParquetParts(join(resolved.runDir, "raw")),
     duckdb_present: existsSync(join(resolved.runDir, "research.duckdb")),
   };
+}
+
+export function loadData1ACaptureSnapshot(
+  env: NodeJS.Dict<string> = process.env,
+  repoRoot: string = findRepoRoot(),
+  query: Data1AQuery = {},
+  now: () => string = () => new Date().toISOString(),
+): Data1ACaptureSnapshot {
+  const resolved = resolveData1ARunDir(env, repoRoot, query);
+  try {
+    return loadCaptureSnapshotForContract(resolved, VENUE_CAPTURE_CONTRACTS.hl, now);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "";
+    if (message.includes("DATA-1A run directory is missing:")) {
+      throw new Error(
+        `DATA-1A run directory is missing: ${resolved.runDir}. Set ARTIFACT_ROOT and DATA1A_RUN_ID (or COCKPIT_DATA1A_RUN_ID / ?data1a_run_id=) to an existing reconstructable capture. Counts are not invented.`,
+      );
+    }
+    throw error;
+  }
 }

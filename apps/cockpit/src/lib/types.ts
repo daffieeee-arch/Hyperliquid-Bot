@@ -155,7 +155,7 @@ export type Data1APartListing = {
 export type Data1ACaptureSnapshot = {
   runDir: string;
   runId: string;
-  source: "data1a-run-dir" | "path-contract" | "default-fixture";
+  source: "data1a-run-dir" | "venue-run-dir" | "path-contract" | "default-fixture";
   observed_at: string;
   path_contract: string;
   claim: Data1ACaptureClaim;
@@ -168,3 +168,32 @@ export type Data1ACaptureSnapshot = {
 
 export type Data1ACaptureResponse =
   { ok: true; snapshot: Data1ACaptureSnapshot } | { ok: false; error: string };
+
+export type VenueCaptureChipStatus = "RUNNING" | "DEGRADED" | "STOPPED" | "MISSING";
+
+export type VenueCaptureChip = {
+  id: "hl" | "binance" | "bitvavo" | "kraken";
+  chip: "HL" | "BINANCE" | "BITVAVO" | "KRAKEN";
+  series: "DATA-1A" | "DATA-1B" | "DATA-1E" | "DATA-1F";
+  venue: string;
+  product: string;
+  path_contract: string;
+  status: VenueCaptureChipStatus;
+  status_detail: string;
+  tone: "ok" | "warn" | "down" | "neutral";
+  live: boolean;
+  part_count: number | undefined;
+  last_part_age: string;
+  last_part_mtime_utc: string | undefined;
+  run_id: string | undefined;
+  observed_at: string;
+  error: string | undefined;
+};
+
+export type VenueCaptureStrip = {
+  observed_at: string;
+  venues: VenueCaptureChip[];
+};
+
+export type VenueCaptureStripResponse =
+  { ok: true; strip: VenueCaptureStrip } | { ok: false; error: string };

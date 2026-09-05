@@ -9,8 +9,10 @@ import {
   presentCopiedNumber,
   presentCopiedText,
   presentData1ADuration,
+  presentLastPartAge,
   signedTone,
   uniqueStrings,
+  venueCaptureChipStatus,
   yesNo,
 } from "./display";
 
@@ -106,6 +108,79 @@ describe("cockpit display helpers", () => {
         claim: { duration_seconds: 86400 },
       }),
     ).toBe("86400s claimed");
+  });
+
+  it("formats last part age from mtime without inventing a zero age", () => {
+    expect(presentLastPartAge(undefined, "2026-09-04T13:49:45.000Z")).toBe("n/a");
+    expect(presentLastPartAge("2026-09-04T13:49:33.000Z", "2026-09-04T13:49:45.000Z")).toBe("12s");
+    expect(presentLastPartAge("2026-09-04T13:19:45.000Z", "2026-09-04T13:49:45.000Z")).toBe("30m");
+    expect(presentLastPartAge("2026-09-04T11:49:45.000Z", "2026-09-04T13:49:45.000Z")).toBe("2h");
+    expect(presentLastPartAge("2026-09-01T13:49:45.000Z", "2026-09-04T13:49:45.000Z")).toBe("3d");
+    expect(presentLastPartAge("2026-09-04T13:50:00.000Z", "2026-09-04T13:49:45.000Z")).toBe("n/a");
+  });
+
+  it("maps DATA-1A health presentation onto strip chips without inventing RUNNING", () => {
+    expect(
+      venueCaptureChipStatus(
+        data1aCaptureHealthPresentation({
+          health: undefined,
+          health_missing: true,
+          parts: {
+            raw_dir_present: true,
+            count: 2,
+            last_part_mtime_utc: "2026-09-04T13:49:00.000Z",
+          },
+        }),
+      ),
+    ).toBe("RUNNING");
+    expect(
+      venueCaptureChipStatus(
+        data1aCaptureHealthPresentation({
+          health: { status: "COMPLETED" },
+          health_missing: false,
+          parts: {
+            raw_dir_present: true,
+            count: 3,
+            last_part_mtime_utc: "2026-09-04T13:49:00.000Z",
+          },
+        }),
+      ),
+    ).toBe("STOPPED");
+    expect(
+      venueCaptureChipStatus(
+        data1aCaptureHealthPresentation({
+          health: { status: "OPERATOR_STOP" },
+          health_missing: false,
+          parts: {
+            raw_dir_present: true,
+            count: 41,
+            last_part_mtime_utc: "2026-09-04T01:17:00.000Z",
+          },
+        }),
+      ),
+    ).toBe("STOPPED");
+    expect(
+      venueCaptureChipStatus(
+        data1aCaptureHealthPresentation({
+          health: { status: "FAILED" },
+          health_missing: false,
+          parts: {
+            raw_dir_present: true,
+            count: 1,
+            last_part_mtime_utc: "2026-09-04T13:49:00.000Z",
+          },
+        }),
+      ),
+    ).toBe("DEGRADED");
+    expect(
+      venueCaptureChipStatus(
+        data1aCaptureHealthPresentation({
+          health: undefined,
+          health_missing: true,
+          parts: { raw_dir_present: false, count: undefined, last_part_mtime_utc: undefined },
+        }),
+      ),
+    ).toBe("DEGRADED");
   });
 
   it("copies finished DATA-1A health status instead of the pending-until-stop label", () => {

@@ -51,15 +51,17 @@ def elapsed_from_report(report: dict[str, object], fallback: float | None = None
 
 
 def transport_exception_fields(error: BaseException) -> dict[str, int | str]:
-    """Persist close code and exception class only. Never include reason text."""
+    """Persist close code and exception class only. Never include reason text.
+
+    Callers must not keep the exception object in frame locals across a later
+    raise; extract these fields and drop the exception reference.
+    """
 
     fields: dict[str, int | str] = {"exception_class": type(error).__name__}
-    close_code = getattr(error, "code", None)
+    received = getattr(error, "rcvd", None)
+    sent = getattr(error, "sent", None)
+    close_code = getattr(received, "code", None) if received is not None else None
     if not isinstance(close_code, int):
-        received = getattr(error, "rcvd", None)
-        close_code = getattr(received, "code", None) if received is not None else None
-    if not isinstance(close_code, int):
-        sent = getattr(error, "sent", None)
         close_code = getattr(sent, "code", None) if sent is not None else None
     if isinstance(close_code, int):
         fields["close_code"] = close_code

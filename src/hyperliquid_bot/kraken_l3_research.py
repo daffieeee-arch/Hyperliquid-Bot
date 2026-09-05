@@ -765,11 +765,13 @@ class KrakenL3ResearchCollector:
             except KrakenCaptureError:
                 raise
             except (WebSocketException, OSError) as error:
+                disconnect_fields = transport_exception_fields(error)
+                del error
                 if not connected:
                     await self._connection_failed(session_id, "public", previous_session_id)
                     connection_failure = True
                 else:
-                    await self._disconnected(session_id, "public", error)
+                    await self._disconnected(session_id, "public", disconnect_fields)
                     previous_session_id = session_id
             except Exception:
                 unexpected_boundary_failure = True
@@ -885,11 +887,13 @@ class KrakenL3ResearchCollector:
             except KrakenCaptureError:
                 raise
             except (WebSocketException, OSError) as error:
+                disconnect_fields = transport_exception_fields(error)
+                del error
                 if not connected:
                     await self._connection_failed(session_id, "l3", previous_session_id)
                     connection_failure = True
                 else:
-                    await self._disconnected(session_id, "l3", error)
+                    await self._disconnected(session_id, "l3", disconnect_fields)
                     previous_session_id = session_id
             except Exception:
                 unexpected_boundary_failure = True
@@ -1316,14 +1320,14 @@ class KrakenL3ResearchCollector:
         self,
         session_id: str,
         stream: str,
-        error: BaseException | None = None,
+        failure_fields: dict[str, int | str] | None = None,
     ) -> None:
-        failure_fields = transport_exception_fields(error) if error is not None else {}
+        fields = dict(failure_fields or {})
         capture_logger().info(
             "kraken disconnect transport_profile=%s exception_class=%s close_code=%s",
             stream,
-            failure_fields.get("exception_class"),
-            failure_fields.get("close_code"),
+            fields.get("exception_class"),
+            fields.get("close_code"),
         )
         await self._append_marker(
             session_id,
@@ -1332,7 +1336,7 @@ class KrakenL3ResearchCollector:
             stream=stream,
             transport_profile=stream,
             reason="transport_error",
-            **failure_fields,
+            **fields,
         )
         await self._append_marker(
             session_id,
@@ -1341,7 +1345,7 @@ class KrakenL3ResearchCollector:
             stream=stream,
             transport_profile=stream,
             reason="transport_disconnect; missed stream history is not reconstructable",
-            **failure_fields,
+            **fields,
         )
 
     async def _connection_failed(

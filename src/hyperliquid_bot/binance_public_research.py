@@ -587,6 +587,7 @@ class BinancePublicResearchCollector:
                 ) from None
             except (WebSocketException, OSError, ConnectionError) as error:
                 failure_fields = transport_exception_fields(error)
+                del error
                 capture_logger().info(
                     "binance disconnect transport_profile=%s exception_class=%s close_code=%s",
                     profile.name,

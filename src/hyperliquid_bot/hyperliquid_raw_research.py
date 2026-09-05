@@ -266,6 +266,7 @@ class HyperliquidRawResearchCollector:
                 raise
             except (WebSocketException, OSError, TimeoutError) as error:
                 failure_fields = transport_exception_fields(error)
+                del error
                 capture_logger().info(
                     "hyperliquid disconnect transport_profile=%s connected=%s "
                     "exception_class=%s close_code=%s",

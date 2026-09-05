@@ -509,7 +509,7 @@ class BitvavoMdProResearchCollector:
             await self._session_started(session_id, previous_session_id)
             connected = False
             failure: str | None = None
-            transport_error: BaseException | None = None
+            disconnect_fields: dict[str, int | str] = {}
             try:
                 async with self._connection_factory() as connection:
                     connected = True
@@ -540,7 +540,8 @@ class BitvavoMdProResearchCollector:
                 raise
             except (WebSocketException, OSError) as error:
                 failure = "transport"
-                transport_error = error
+                disconnect_fields = transport_exception_fields(error)
+                del error
             except Exception:
                 failure = "boundary"
 
@@ -560,7 +561,7 @@ class BitvavoMdProResearchCollector:
                     raise BitvavoMdProTransportError(
                         "Bitvavo Market Data Pro connection failed."
                     ) from None
-                await self._disconnected(session_id, transport_error)
+                await self._disconnected(session_id, disconnect_fields)
                 if reconnects >= self._config.max_reconnects:
                     raise BitvavoMdProTransportError(
                         "Bitvavo Market Data Pro reconnect bound was exhausted."
@@ -1119,14 +1120,14 @@ class BitvavoMdProResearchCollector:
     async def _disconnected(
         self,
         session_id: str,
-        error: BaseException | None = None,
+        failure_fields: dict[str, int | str] | None = None,
     ) -> None:
-        failure_fields = transport_exception_fields(error) if error is not None else {}
+        fields = dict(failure_fields or {})
         capture_logger().info(
             "bitvavo disconnect transport_profile=%s exception_class=%s close_code=%s",
             BITVAVO_MDPRO_FEED_PRODUCT,
-            failure_fields.get("exception_class"),
-            failure_fields.get("close_code"),
+            fields.get("exception_class"),
+            fields.get("close_code"),
         )
         await self._append_marker(
             session_id,
@@ -1135,7 +1136,7 @@ class BitvavoMdProResearchCollector:
             stream=BITVAVO_MDPRO_FEED_PRODUCT,
             transport_profile=BITVAVO_MDPRO_FEED_PRODUCT,
             reason="transport_error",
-            **failure_fields,
+            **fields,
         )
         await self._append_marker(
             session_id,
@@ -1144,7 +1145,7 @@ class BitvavoMdProResearchCollector:
             stream=BITVAVO_MDPRO_FEED_PRODUCT,
             transport_profile=BITVAVO_MDPRO_FEED_PRODUCT,
             reason="transport_disconnect; missed Pro L2 history is not reconstructable",
-            **failure_fields,
+            **fields,
         )
 
     async def _connection_failed(

@@ -1,8 +1,10 @@
-"""Authenticated Bitvavo Market Data Pro BTC-EUR L2 capture.
+"""Authenticated Bitvavo Market Data Pro BTC-EUR capture.
 
-Duration may be a short smoke or a retained multi-day run. The process still
-stops at an explicit duration or operator signal; this is not a 24/7 service.
-Read-only MD Pro keys enter only through documented environment names.
+The same Pro socket carries book (depth 1000) plus trades. Ticker is optional
+and flagged. Duration may be a short smoke or a retained multi-day run. The
+process still stops at an explicit duration or operator signal; this is not a
+24/7 service. Read-only MD Pro keys enter only through documented environment
+names. This path never falls back to DATA-1D Standard.
 """
 
 from __future__ import annotations
@@ -54,6 +56,9 @@ BITVAVO_MDPRO_WEBSOCKET_URL: Final = "wss://ws-mdpro.bitvavo.com/v2/"
 BITVAVO_MDPRO_VENUE: Final = "bitvavo"
 BITVAVO_MDPRO_PRODUCT: Final = "BTC-EUR"
 BITVAVO_MDPRO_FEED_PRODUCT: Final = "market_data_pro"
+BITVAVO_MDPRO_BOOK_DEPTH: Final = 1000
+BITVAVO_MDPRO_REQUIRED_CHANNELS: Final = ("book", "trades")
+BITVAVO_MDPRO_OPTIONAL_TICKER_CHANNEL: Final = "ticker"
 BITVAVO_MDPRO_SIGNATURE_PATH: Final = "/v2/websocket"
 SMOKE_CAPTURE_SECONDS: Final = 600.0
 MAX_CAPTURE_SECONDS: Final = 7 * 24 * 60 * 60
@@ -86,10 +91,12 @@ PROTECTED_TRADE_KEY_ENV: Final = (
     "OKX_PASSPHRASE",
 )
 
-_BOOK_SUBSCRIPTION_TEXT: Final = (
-    '{"action":"subscribe","channels":[{"markets":["BTC-EUR"],"name":"book"}]}'
-)
 _DECIMAL_TEXT: Final = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?\Z")
+_MARKET_CHANNEL_BY_EVENT: Final = {
+    "book": "mdpro_book",
+    "trade": "mdpro_trades",
+    "ticker": "mdpro_ticker",
+}
 _SENSITIVE_KEY_NAMES: Final = frozenset(
     {
         "apikey",
@@ -242,13 +249,14 @@ class BitvavoMdProCredentials:
 
 @dataclass(frozen=True, slots=True)
 class BitvavoMdProResearchConfig:
-    """Fixed BTC-EUR Pro-book scope with bounded transport controls."""
+    """Fixed BTC-EUR Pro book+trades scope with optional ticker and bounded transport."""
 
     authentication_window_ms: int = 10_000
     reconnect_delay_seconds: float = 3.0
     max_application_payload_bytes: int = 8 * 1024 * 1024
     max_buffered_book_updates: int = 10_000
     max_reconnects: int = 1
+    include_ticker: bool = False
 
     def __post_init__(self) -> None:
         if (
@@ -270,6 +278,12 @@ class BitvavoMdProResearchConfig:
             raise ValueError("max_buffered_book_updates must be a positive integer.")
         if type(self.max_reconnects) is not int or self.max_reconnects < 0:
             raise ValueError("max_reconnects must be a non-negative integer.")
+        if type(self.include_ticker) is not bool:
+            raise ValueError("include_ticker must be a bool.")
+
+    @property
+    def subscription_channels(self) -> tuple[str, ...]:
+        return mdpro_subscription_channels(include_ticker=self.include_ticker)
 
 
 @dataclass(frozen=True, slots=True)
@@ -409,7 +423,7 @@ class _BookState:
 
 
 class BitvavoMdProResearchCollector:
-    """Capture authenticated non-conflated BTC-EUR Pro price-level L2."""
+    """Capture authenticated non-conflated BTC-EUR Pro book, trades, and optional ticker."""
 
     def __init__(
         self,
@@ -562,6 +576,7 @@ class BitvavoMdProResearchCollector:
             max_buffered_updates=self._config.max_buffered_book_updates,
         )
         snapshot_received = False
+        expected_channels = frozenset(self._config.subscription_channels)
         while not stop_event.is_set():
             captured = await self._receive_or_stop(connection, stop_event)
             if captured is None:
@@ -569,6 +584,7 @@ class BitvavoMdProResearchCollector:
             result, unpersisted_failure = await self._record_market_inbound(
                 captured,
                 session_id,
+                expected_channels=expected_channels,
             )
             captured = None
             if unpersisted_failure is not None:
@@ -578,9 +594,11 @@ class BitvavoMdProResearchCollector:
             raw_ordinal, channel, document = result
             try:
                 normalized_frames: tuple[dict[str, object], ...]
+                normalized_channel: str
                 if channel == "mdpro_book":
                     normalized = book_state.ingest_update(document, raw_ordinal)
                     normalized_frames = () if normalized is None else (normalized,)
+                    normalized_channel = "normalized_mdpro_book"
                 elif channel == "mdpro_book_snapshot":
                     if snapshot_received:
                         raise BitvavoMdProDataIntegrityError(
@@ -594,6 +612,7 @@ class BitvavoMdProResearchCollector:
                     )
                     snapshot_received = True
                     normalized_frames = acceptance.normalized_frames
+                    normalized_channel = "normalized_mdpro_book"
                     await self._append_marker(
                         session_id,
                         "data_quality",
@@ -603,6 +622,17 @@ class BitvavoMdProResearchCollector:
                         retained_updates=acceptance.retained_updates,
                         reason="fresh_market_data_pro_depth_1000_book_state",
                     )
+                elif channel == "mdpro_trades":
+                    normalized_frames = (_normalize_trade(document, raw_ordinal),)
+                    normalized_channel = "normalized_mdpro_trades"
+                elif channel == "mdpro_ticker":
+                    if BITVAVO_MDPRO_OPTIONAL_TICKER_CHANNEL not in expected_channels:
+                        raise BitvavoMdProDataIntegrityError(
+                            "Bitvavo Market Data Pro ticker arrived without a ticker subscription.",
+                            quality_event="subscription_error",
+                        )
+                    normalized_frames = (_normalize_ticker(document, raw_ordinal),)
+                    normalized_channel = "normalized_mdpro_ticker"
                 else:
                     raise AssertionError("unreachable Market Data Pro channel")
             except BitvavoMdProDataIntegrityError as error:
@@ -612,7 +642,7 @@ class BitvavoMdProResearchCollector:
             for normalized in normalized_frames:
                 await self._append_local_payload(
                     session_id,
-                    "normalized_mdpro_book",
+                    normalized_channel,
                     normalized,
                 )
 
@@ -723,9 +753,12 @@ class BitvavoMdProResearchCollector:
         connection: WebSocketConnection,
         session_id: str,
     ) -> None:
+        channels = self._config.subscription_channels
         failed = False
         try:
-            await connection.send(_BOOK_SUBSCRIPTION_TEXT)
+            await connection.send(
+                mdpro_subscription_payload_text(include_ticker=self._config.include_ticker)
+            )
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -739,7 +772,8 @@ class BitvavoMdProResearchCollector:
             "subscription",
             "subscription_sent",
             stream=BITVAVO_MDPRO_FEED_PRODUCT,
-            subscription_type="book",
+            subscription_type="+".join(channels),
+            channels=list(channels),
             product=BITVAVO_MDPRO_PRODUCT,
             authenticated=True,
         )
@@ -750,47 +784,55 @@ class BitvavoMdProResearchCollector:
         session_id: str,
         stop_event: asyncio.Event,
     ) -> None:
-        failed = False
-        captured: CapturedApplicationPayload | None = None
-        document: dict[str, object] | None = None
-        try:
-            captured = await self._receive_or_stop(connection, stop_event)
-            if captured is None or self._credentials._contains_sensitive_material(
-                captured.payload_bytes
-            ):
+        expected = frozenset(self._config.subscription_channels)
+        acknowledged: set[str] = set()
+        while acknowledged != expected:
+            failed = False
+            captured: CapturedApplicationPayload | None = None
+            document: dict[str, object] | None = None
+            newly: frozenset[str] = frozenset()
+            try:
+                captured = await self._receive_or_stop(connection, stop_event)
+                if captured is None or self._credentials._contains_sensitive_material(
+                    captured.payload_bytes
+                ):
+                    failed = True
+                else:
+                    document = _decode_json_object(captured.payload_bytes)
+                    newly = _subscription_acknowledged_channels(document, expected=expected)
+                    failed = (
+                        self._credentials._contains_sensitive_decoded_material(document)
+                        or not newly
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
                 failed = True
-            else:
-                document = _decode_json_object(captured.payload_bytes)
-                failed = self._credentials._contains_sensitive_decoded_material(
-                    document
-                ) or not _book_subscription_acknowledged(document)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            failed = True
-        finally:
-            captured = None
-            document = None
-        if failed:
+            finally:
+                captured = None
+                document = None
+            if failed:
+                await self._append_marker(
+                    session_id,
+                    "data_quality",
+                    "subscription_failed",
+                    stream=BITVAVO_MDPRO_FEED_PRODUCT,
+                    reason="authenticated_pro_subscription_rejected_or_invalid",
+                )
+                raise BitvavoMdProAuthenticationError(
+                    "Bitvavo Market Data Pro subscription failed."
+                ) from None
+            acknowledged.update(newly)
             await self._append_marker(
                 session_id,
-                "data_quality",
-                "subscription_failed",
+                "subscription",
+                "subscription_acknowledged",
                 stream=BITVAVO_MDPRO_FEED_PRODUCT,
-                reason="authenticated_book_subscription_rejected_or_invalid",
+                subscription_type="+".join(channel for channel in expected if channel in newly),
+                channels=sorted(newly),
+                product=BITVAVO_MDPRO_PRODUCT,
+                authenticated=True,
             )
-            raise BitvavoMdProAuthenticationError(
-                "Bitvavo Market Data Pro book subscription failed."
-            ) from None
-        await self._append_marker(
-            session_id,
-            "subscription",
-            "subscription_acknowledged",
-            stream=BITVAVO_MDPRO_FEED_PRODUCT,
-            subscription_type="book",
-            product=BITVAVO_MDPRO_PRODUCT,
-            authenticated=True,
-        )
 
     async def _send_snapshot_request(
         self,
@@ -802,7 +844,7 @@ class BitvavoMdProResearchCollector:
         payload = json.dumps(
             {
                 "action": "getBook",
-                "depth": 1000,
+                "depth": BITVAVO_MDPRO_BOOK_DEPTH,
                 "market": BITVAVO_MDPRO_PRODUCT,
                 "requestId": request_id,
             },
@@ -829,7 +871,7 @@ class BitvavoMdProResearchCollector:
             stream=BITVAVO_MDPRO_FEED_PRODUCT,
             request_id=request_id,
             product=BITVAVO_MDPRO_PRODUCT,
-            depth=1000,
+            depth=BITVAVO_MDPRO_BOOK_DEPTH,
             authenticated=True,
         )
 
@@ -837,6 +879,8 @@ class BitvavoMdProResearchCollector:
         self,
         captured: CapturedApplicationPayload,
         session_id: str,
+        *,
+        expected_channels: frozenset[str],
     ) -> tuple[tuple[int, str, dict[str, object]] | None, str | None]:
         if len(captured.payload_bytes) > self._config.max_application_payload_bytes:
             return None, "payload_oversize"
@@ -855,13 +899,15 @@ class BitvavoMdProResearchCollector:
         except BitvavoMdProDataIntegrityError:
             return None, "schema_error"
         if channel == "control":
-            if _book_subscription_acknowledged(document):
+            newly = _subscription_acknowledged_channels(document, expected=expected_channels)
+            if newly:
                 await self._append_marker(
                     session_id,
                     "subscription",
                     "subscription_acknowledged",
                     stream=BITVAVO_MDPRO_FEED_PRODUCT,
-                    subscription_type="book",
+                    subscription_type="+".join(name for name in expected_channels if name in newly),
+                    channels=sorted(newly),
                     product=BITVAVO_MDPRO_PRODUCT,
                     authenticated=True,
                     reason="repeated_control_confirmation",
@@ -1271,6 +1317,87 @@ def _book_events(
     return events
 
 
+def _normalize_trade(document: dict[str, object], raw_ordinal: int) -> dict[str, object]:
+    allowed = {"amount", "event", "id", "market", "price", "side", "timestamp", "timestampNs"}
+    if (
+        set(document) - allowed
+        or not allowed <= set(document)
+        or document.get("event") != "trade"
+        or document.get("market") != BITVAVO_MDPRO_PRODUCT
+    ):
+        raise BitvavoMdProDataIntegrityError(
+            "Bitvavo Market Data Pro trade identity validation failed."
+        )
+    taker_side = _required_text(document, "side")
+    if taker_side not in {"buy", "sell"}:
+        raise BitvavoMdProDataIntegrityError(
+            "Bitvavo Market Data Pro trade side validation failed."
+        )
+    return {
+        "event": "normalized_mdpro_trade_frame",
+        "source_channel": "mdpro_trades",
+        "raw_message_ordinal": raw_ordinal,
+        "events": [
+            {
+                "event_index": 0,
+                "market": BITVAVO_MDPRO_PRODUCT,
+                "trade_id": _required_text(document, "id"),
+                "price": _decimal(document, "price", allow_zero=False),
+                "quantity": _decimal(document, "amount", allow_zero=False),
+                "taker_side": taker_side,
+                "event_time_ms": _unsigned_integer_text(document, "timestamp"),
+                "event_time_ns": _unsigned_integer_text(document, "timestampNs"),
+            }
+        ],
+    }
+
+
+def _normalize_ticker(document: dict[str, object], raw_ordinal: int) -> dict[str, object]:
+    allowed = {
+        "bestAsk",
+        "bestAskSize",
+        "bestBid",
+        "bestBidSize",
+        "event",
+        "lastPrice",
+        "market",
+    }
+    required = {"event", "market"}
+    if (
+        set(document) - allowed
+        or not required <= set(document)
+        or document.get("event") != "ticker"
+        or document.get("market") != BITVAVO_MDPRO_PRODUCT
+    ):
+        raise BitvavoMdProDataIntegrityError(
+            "Bitvavo Market Data Pro ticker identity validation failed."
+        )
+    bid_price = _optional_decimal(document, "bestBid", allow_zero=False)
+    bid_quantity = _optional_decimal(document, "bestBidSize", allow_zero=False)
+    ask_price = _optional_decimal(document, "bestAsk", allow_zero=False)
+    ask_quantity = _optional_decimal(document, "bestAskSize", allow_zero=False)
+    last_price = _optional_decimal(document, "lastPrice", allow_zero=False)
+    if (bid_price is None) != (bid_quantity is None) or (ask_price is None) != (
+        ask_quantity is None
+    ):
+        raise BitvavoMdProDataIntegrityError(
+            "Bitvavo Market Data Pro ticker price/size pair validation failed."
+        )
+    if bid_price is None and ask_price is None and last_price is None:
+        raise BitvavoMdProDataIntegrityError("Bitvavo Market Data Pro ticker update was empty.")
+    return {
+        "event": "normalized_mdpro_ticker_frame",
+        "source_channel": "mdpro_ticker",
+        "raw_message_ordinal": raw_ordinal,
+        "market": BITVAVO_MDPRO_PRODUCT,
+        "bid_price": bid_price,
+        "bid_quantity": bid_quantity,
+        "ask_price": ask_price,
+        "ask_quantity": ask_quantity,
+        "last_price": last_price,
+    }
+
+
 def _authentication_acknowledged(document: dict[str, object]) -> bool:
     if "error" in document or "errorCode" in document or document.get("event") == "error":
         return False
@@ -1282,13 +1409,36 @@ def _authentication_acknowledged(document: dict[str, object]) -> bool:
 
 
 def _book_subscription_acknowledged(document: dict[str, object]) -> bool:
-    if set(document) != {"event", "subscriptions"} or document.get("event") not in {
-        "book",
-        "subscribed",
-    }:
-        return False
+    return _subscription_acknowledged_channels(
+        document,
+        expected=frozenset({"book"}),
+    ) == frozenset({"book"})
+
+
+def _subscription_acknowledged_channels(
+    document: dict[str, object],
+    *,
+    expected: frozenset[str],
+) -> frozenset[str]:
+    if (
+        "error" in document
+        or "errorCode" in document
+        or document.get("event") == "error"
+        or set(document) != {"event", "subscriptions"}
+        or document.get("event") not in {"book", "subscribed"}
+    ):
+        return frozenset()
     subscriptions = document.get("subscriptions")
-    return type(subscriptions) is dict and subscriptions == {"book": [BITVAVO_MDPRO_PRODUCT]}
+    if type(subscriptions) is not dict or not subscriptions:
+        return frozenset()
+    acknowledged: set[str] = set()
+    for channel, markets in cast(dict[object, object], subscriptions).items():
+        if type(channel) is not str or channel not in expected:
+            return frozenset()
+        if type(markets) is not list or markets != [BITVAVO_MDPRO_PRODUCT]:
+            return frozenset()
+        acknowledged.add(channel)
+    return frozenset(acknowledged)
 
 
 def _classify_market_document(document: dict[str, object]) -> str:
@@ -1301,8 +1451,9 @@ def _classify_market_document(document: dict[str, object]) -> str:
         return "control"
     if document.get("action") == "getBook" and "response" in document:
         return "mdpro_book_snapshot"
-    if document.get("event") == "book" and "market" in document:
-        return "mdpro_book"
+    event = document.get("event")
+    if type(event) is str and event in _MARKET_CHANNEL_BY_EVENT and "market" in document:
+        return _MARKET_CHANNEL_BY_EVENT[event]
     raise BitvavoMdProDataIntegrityError(
         "Bitvavo Market Data Pro frame had no allowed market identity."
     )
@@ -1344,6 +1495,35 @@ def _object(value: object) -> dict[str, object]:
     if type(value) is not dict:
         raise BitvavoMdProDataIntegrityError("Bitvavo Market Data Pro object validation failed.")
     return cast(dict[str, object], value)
+
+
+def _required_text(document: dict[str, object], field: str) -> str:
+    value = document.get(field)
+    if type(value) is not str or not value:
+        raise BitvavoMdProDataIntegrityError(
+            "Bitvavo Market Data Pro text field validation failed."
+        )
+    return value
+
+
+def _decimal(
+    document: dict[str, object],
+    field: str,
+    *,
+    allow_zero: bool,
+) -> str:
+    return _decimal_value(document.get(field), allow_zero=allow_zero)
+
+
+def _optional_decimal(
+    document: dict[str, object],
+    field: str,
+    *,
+    allow_zero: bool,
+) -> str | None:
+    if field not in document:
+        return None
+    return _decimal(document, field, allow_zero=allow_zero)
 
 
 def _decimal_value(value: object, *, allow_zero: bool) -> str:
@@ -1420,13 +1600,54 @@ def _require_bounded_duration(duration_seconds: object) -> float:
     return duration
 
 
-def _config_for_duration(duration_seconds: float) -> BitvavoMdProResearchConfig:
+def mdpro_subscription_channels(*, include_ticker: bool = False) -> tuple[str, ...]:
+    """Return the Pro socket subscribe set. Trades are required; ticker is flagged."""
+
+    if type(include_ticker) is not bool:
+        raise ValueError("include_ticker must be a bool.")
+    if include_ticker:
+        return (*BITVAVO_MDPRO_REQUIRED_CHANNELS, BITVAVO_MDPRO_OPTIONAL_TICKER_CHANNEL)
+    return BITVAVO_MDPRO_REQUIRED_CHANNELS
+
+
+def mdpro_subscription_payload_text(*, include_ticker: bool = False) -> str:
+    """Deterministic Pro subscribe payload for BTC-EUR on the MD Pro socket."""
+
+    return json.dumps(
+        {
+            "action": "subscribe",
+            "channels": [
+                {"markets": [BITVAVO_MDPRO_PRODUCT], "name": name}
+                for name in mdpro_subscription_channels(include_ticker=include_ticker)
+            ],
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def data1e_feed_name(*, include_ticker: bool = False) -> str:
+    """Fail-closed Pro feed identity. Never a DATA-1D Standard feed string."""
+
+    if include_ticker:
+        return "bitvavo-mdpro-btc-eur-book-trades-ticker"
+    return "bitvavo-mdpro-btc-eur-book-trades"
+
+
+def _config_for_duration(
+    duration_seconds: float,
+    *,
+    include_ticker: bool = False,
+) -> BitvavoMdProResearchConfig:
     """Smoke keeps the Phase-1 reconnect cap; retained runs retry until duration ends."""
 
     duration = _require_bounded_duration(duration_seconds)
     if duration <= SMOKE_CAPTURE_SECONDS:
-        return BitvavoMdProResearchConfig()
-    return BitvavoMdProResearchConfig(max_reconnects=RETAINED_MAX_RECONNECTS)
+        return BitvavoMdProResearchConfig(include_ticker=include_ticker)
+    return BitvavoMdProResearchConfig(
+        max_reconnects=RETAINED_MAX_RECONNECTS,
+        include_ticker=include_ticker,
+    )
 
 
 def refuse_protected_trade_keys(environ: Mapping[str, str] | None = None) -> None:
@@ -1516,6 +1737,7 @@ async def run_bounded_capture(
     credentials: BitvavoMdProCredentials,
     stop_event: asyncio.Event | None = None,
     collector_factory: Callable[[RawResearchSink], BitvavoMdProResearchCollector] | None = None,
+    include_ticker: bool = False,
 ) -> dict[str, object]:
     """Run the authenticated capture, close Parquet, and build the DuckDB catalog."""
 
@@ -1527,7 +1749,7 @@ async def run_bounded_capture(
         else BitvavoMdProResearchCollector(
             writer,
             credentials,
-            config=_config_for_duration(duration),
+            config=_config_for_duration(duration, include_ticker=include_ticker),
         )
     )
     try:
@@ -1543,10 +1765,12 @@ def data1e_capture_claim(
     run_id: str,
     duration_seconds: float,
     paths: Data1ERunPaths,
+    include_ticker: bool = False,
 ) -> dict[str, object]:
     """Create-only start claim for a reconstructable DATA-1E run."""
 
     duration = _require_bounded_duration(duration_seconds)
+    channels = list(mdpro_subscription_channels(include_ticker=include_ticker))
     return {
         "schema": DATA1E_CLAIM_SCHEMA,
         "state": "STARTED_FAIL_CLOSED",
@@ -1554,7 +1778,12 @@ def data1e_capture_claim(
         "run_id": run_id,
         "venue": BITVAVO_MDPRO_VENUE,
         "product": DATA1E_PRODUCT,
-        "feed": "bitvavo-mdpro-btc-eur-book",
+        "feed": data1e_feed_name(include_ticker=include_ticker),
+        "feed_product": BITVAVO_MDPRO_FEED_PRODUCT,
+        "channels": channels,
+        "book_depth": BITVAVO_MDPRO_BOOK_DEPTH,
+        "include_ticker": include_ticker,
+        "standard_fallback": False,
         "websocket_url": BITVAVO_MDPRO_WEBSOCKET_URL,
         "credentialless": False,
         "signing": False,
@@ -1576,12 +1805,14 @@ def data1e_capture_health(
     duration_seconds: float,
     status: str,
     report: dict[str, object],
+    include_ticker: bool = False,
 ) -> dict[str, object]:
     """Create-only end health for a reconstructable DATA-1E run."""
 
     if status not in {"COMPLETED", "OPERATOR_STOP", "FAILED"}:
         raise ValueError("DATA-1E capture-health status is outside the documented bound.")
     duration = _require_bounded_duration(duration_seconds)
+    channels = list(mdpro_subscription_channels(include_ticker=include_ticker))
     return {
         "schema": DATA1E_HEALTH_SCHEMA,
         "kind": "capture-health",
@@ -1594,6 +1825,12 @@ def data1e_capture_health(
         "credentialless": False,
         "authenticated_read_only": True,
         "signing": False,
+        "feed": data1e_feed_name(include_ticker=include_ticker),
+        "feed_product": BITVAVO_MDPRO_FEED_PRODUCT,
+        "channels": channels,
+        "book_depth": BITVAVO_MDPRO_BOOK_DEPTH,
+        "include_ticker": include_ticker,
+        "standard_fallback": False,
         "events": report.get("events"),
         "payload_bytes": report.get("payload_bytes"),
         "parquet_files": report.get("parquet_files"),
@@ -1603,7 +1840,11 @@ def data1e_capture_health(
         "limitations": [
             "Published Parquet parts are reconstructable; a crash can lose the in-memory segment.",
             "This is not 24/7 service evidence or a trading edge.",
-            "Market Data Pro is authenticated View-only L2, never L3/MBO.",
+            "Market Data Pro is authenticated View-only L2 plus trades on the same Pro socket, "
+            "never L3/MBO.",
+            "Ticker is optional and flagged; it is never implied by the default book+trades "
+            "subscribe set.",
+            "This capture never falls back to DATA-1D Standard.",
             "Keys enter only through BITVAVO_MDPRO_API_KEY and BITVAVO_MDPRO_API_SECRET.",
             "Trade, withdrawal, transfer, or signing key names fail closed.",
         ],
@@ -1625,6 +1866,7 @@ async def run_reconstructable_capture(
     stop_event: asyncio.Event | None = None,
     operator_stop: Callable[[], bool] | None = None,
     collector_factory: Callable[[RawResearchSink], BitvavoMdProResearchCollector] | None = None,
+    include_ticker: bool = False,
 ) -> dict[str, object]:
     """Write DATA-1E Parquet/DuckDB to the documented reconstructable path."""
 
@@ -1636,7 +1878,12 @@ async def run_reconstructable_capture(
     paths.raw_dir.mkdir(exist_ok=False)
     _write_create_only_json(
         paths.capture_claim_path,
-        data1e_capture_claim(run_id=run_id, duration_seconds=duration_seconds, paths=paths),
+        data1e_capture_claim(
+            run_id=run_id,
+            duration_seconds=duration_seconds,
+            paths=paths,
+            include_ticker=include_ticker,
+        ),
     )
     report: dict[str, object] = {
         "events": 0,
@@ -1655,6 +1902,7 @@ async def run_reconstructable_capture(
             credentials=credentials,
             stop_event=stop_event,
             collector_factory=collector_factory,
+            include_ticker=include_ticker,
         )
         if operator_stop is not None and operator_stop():
             status = "OPERATOR_STOP"
@@ -1669,6 +1917,7 @@ async def run_reconstructable_capture(
                     duration_seconds=duration_seconds,
                     status=status,
                     report=report,
+                    include_ticker=include_ticker,
                 ),
             )
     return {
@@ -1687,8 +1936,10 @@ def _argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Authenticated Bitvavo Market Data Pro BTC-EUR exact-raw research capture. "
-            "Duration may exceed the historical 600s smoke cap up to 7 days. "
-            "Read-only MD Pro keys via BITVAVO_MDPRO_API_KEY and BITVAVO_MDPRO_API_SECRET. "
+            "Same Pro socket: book depth 1000 plus trades; ticker is optional via "
+            "--include-ticker. Duration may exceed the historical 600s smoke cap up to "
+            "7 days. Read-only MD Pro keys via BITVAVO_MDPRO_API_KEY and "
+            "BITVAVO_MDPRO_API_SECRET. Never falls back to DATA-1D Standard. "
             "This is not a 24/7 service. Do not start a multi-day retain from a Cloud Agent."
         )
     )
@@ -1697,6 +1948,12 @@ def _argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--artifact-root", type=Path)
     parser.add_argument("--run-id")
     parser.add_argument("--duration-seconds", required=True, type=float)
+    parser.add_argument(
+        "--include-ticker",
+        action="store_true",
+        default=False,
+        help="Also subscribe the optional Pro ticker channel on the same MD Pro socket.",
+    )
     return parser
 
 
@@ -1745,6 +2002,7 @@ async def _run_from_args(args: argparse.Namespace) -> dict[str, object]:
             credentials=credentials,
             stop_event=stop_event,
             operator_stop=lambda: operator_stopped,
+            include_ticker=bool(args.include_ticker),
         )
     return await run_bounded_capture(
         output_dir=cast(Path, args.output_dir),
@@ -1752,6 +2010,7 @@ async def _run_from_args(args: argparse.Namespace) -> dict[str, object]:
         duration_seconds=cast(float, args.duration_seconds),
         credentials=credentials,
         stop_event=stop_event,
+        include_ticker=bool(args.include_ticker),
     )
 
 

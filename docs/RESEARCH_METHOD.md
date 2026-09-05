@@ -107,7 +107,8 @@ registry template live in [experiments/exp_h1_leadlag.md](experiments/exp_h1_lea
 H2 basis remains out of scope. Operator reconstructable roots later live on TerraPC
 outside git; unit tests use synthetic panels only.
 
-Bitvavo DATA-1E (authenticated View-only MD Pro BTC-EUR) and Kraken DATA-1B (public L2 +
+Bitvavo DATA-1E (authenticated View-only MD Pro BTC-EUR book + trades on the same Pro
+socket; optional flagged ticker) and Kraken DATA-1B (public L2 +
 trades by default; optional L3) now have retained-path operator docs and create-only
 helpers. Do not start those captures until CoS assigns the window. See
 [DATA-1E operator PC/WSL runbook](runbooks/data1e-wsl-pc-retained-capture.md) and

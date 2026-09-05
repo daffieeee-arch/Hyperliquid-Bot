@@ -137,9 +137,21 @@ def test_wsl_runbook_documents_known_good_operator_paths() -> None:
     assert "LIVE" in text
     assert "standby-timeout-ac 0" in text
     assert "wsl --shutdown" in text
+    assert "Channels on the same Pro socket" in text
+    assert "`trades`" in text
+    assert "`ticker`" in text
+    assert "--include-ticker" in text
+    assert "getBook` depth **1000**" in text or "depth **1000**" in text
+    assert "bitvavo-mdpro-btc-eur-book-trades" in text
+    assert "standard_fallback" in text
+    assert "Never DATA-1D Standard" in text or "never DATA-1D Standard" in text
     vps = VPS_RUNBOOK.read_text(encoding="utf-8")
     assert "1 through 604800 seconds" in vps
     assert "Do not start a multi-day DATA-1E retain now" in vps
+    assert "book` (depth 1000) plus `trades`" in vps or "book (depth 1000) plus trades" in vps
+    assert "--include-ticker" in vps
+    assert "bitvavo-mdpro-btc-eur-book-trades" in vps
+    assert "standard_fallback" in vps
 
 
 def test_operator_scripts_are_executable_create_only_and_secret_free() -> None:

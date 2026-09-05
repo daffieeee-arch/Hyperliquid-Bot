@@ -5,7 +5,9 @@ Status: operator runbook for the reconstructable CLI
 workstation (TerraPC). This is **not** a 24/7 service, not D22-B, and not LIVE
 trading.
 
-Authenticated **View-only** Bitvavo Market Data Pro book for `BTC-EUR` only.
+Authenticated **View-only** Bitvavo Market Data Pro on the same Pro socket for
+`BTC-EUR`: `book` (depth 1000) plus `trades`. Optional `ticker` is flagged
+(`--include-ticker`) and is off by default. This is never DATA-1D Standard.
 No trade, withdrawal, transfer, or signing keys. No OKX. The VPS counterpart
 is [data1e-vps-retained-capture.md](data1e-vps-retained-capture.md).
 
@@ -76,6 +78,24 @@ This is not lossless recovery.
 
 The 2026-08-31 authenticated smoke remains evidence only for bounded
 reachability.
+
+## Channels on the same Pro socket
+
+Default subscribe set (one `wss://ws-mdpro.bitvavo.com/v2/` connection):
+
+| Channel | Required | Notes |
+| --- | --- | --- |
+| `book` | yes | Non-conflated Pro L2 plus in-band `getBook` depth **1000**. |
+| `trades` | yes | Same Pro socket. Stored as `mdpro_trades`, never Standard `trades`. |
+| `ticker` | no | Only when `--include-ticker` is set. Stored as `mdpro_ticker`. |
+
+Claim `feed` is `bitvavo-mdpro-btc-eur-book-trades`, or
+`bitvavo-mdpro-btc-eur-book-trades-ticker` when ticker is flagged.
+`standard_fallback` is always false. There is no Standard URL or channel
+fallback.
+
+To include ticker on a later CoS-assigned retain, add `--include-ticker` to the
+Python command. The create-only helpers stay default book+trades.
 
 ## Auth (read-only MD Pro via env)
 
@@ -264,4 +284,4 @@ copy a live DuckDB catalog into a new run.
 - profitability or strategy promotion
 - TrueNAS / ClickHouse reuse
 - OKX
-- a complete book beyond requested depth-1000, checksum coverage, or Pro trades/ticker
+- a complete book beyond requested depth-1000, checksum coverage, or live Pro trades/ticker retain coverage

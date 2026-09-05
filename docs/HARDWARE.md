@@ -47,7 +47,7 @@ tmux session (`bn-capture`) and must not start until the assigned DATA-1A
 `hl-capture` window finishes and CoS assigns Binance. See
 [DATA-1F operator PC/WSL runbook](runbooks/data1f-wsl-pc-retained-capture.md).
 
-Prepare-only operator paths also exist for DATA-1E Bitvavo MD Pro (`bv-capture`)
+Prepare-only operator paths also exist for DATA-1E Bitvavo MD Pro book+trades (`bv-capture`)
 and DATA-1B Kraken public L2+trades (`kr-capture`). Those helpers refuse
 `hl-capture` and `bn-capture` and must not be started until CoS assigns them.
 See [DATA-1E operator PC/WSL runbook](runbooks/data1e-wsl-pc-retained-capture.md)

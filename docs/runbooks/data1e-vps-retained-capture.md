@@ -4,7 +4,9 @@ Status: operator runbook for the reconstructable CLI
 `python -m hyperliquid_bot.bitvavo_mdpro_research`.
 This is **not** a 24/7 service, not D22-B, and not LIVE trading.
 
-Authenticated View-only Bitvavo Market Data Pro book for `BTC-EUR` only.
+Authenticated View-only Bitvavo Market Data Pro on the same Pro socket for
+`BTC-EUR`: `book` (depth 1000) plus `trades`. Optional `ticker` is flagged
+(`--include-ticker`) and is off by default. Never DATA-1D Standard.
 No trade keys, no signing, no OKX.
 
 For the Windows 11 + WSL2 Ubuntu operator PC (TerraPC), including tmux
@@ -52,6 +54,12 @@ Required (values never printed): `BITVAVO_MDPRO_API_KEY`,
 
 Refuse generic `BITVAVO_API_KEY` / `BITVAVO_API_SECRET` and other protected
 trade/signing names listed in the WSL runbook.
+
+Default channels on `wss://ws-mdpro.bitvavo.com/v2/`: `book` + `trades`, then
+`getBook` depth 1000. Add `--include-ticker` only when CoS wants the optional
+Pro ticker on the same socket. Claim `feed` is
+`bitvavo-mdpro-btc-eur-book-trades` (or `...-book-trades-ticker`).
+`standard_fallback` is false.
 
 ## Fail-closed start
 
@@ -105,3 +113,4 @@ To retain more data after a stop, start a **new** `run_id`.
 - profitability or strategy promotion
 - TrueNAS / ClickHouse reuse
 - OKX
+- live Pro trades/ticker retain coverage (subscribe-set is prepare-only until CoS starts)

@@ -190,7 +190,7 @@ async def test_four_exact_subscriptions_and_market_payloads_are_captured() -> No
     collector = HyperliquidRawResearchCollector(
         sink,
         config=HyperliquidRawResearchConfig(
-            heartbeat_interval_seconds=300.0,
+            heartbeat_interval_seconds=45.0,
             reconnect_delay_seconds=0.0,
         ),
         connection_factory=factory,
@@ -253,7 +253,7 @@ async def test_disconnect_reconnect_gap_and_malformed_payload_are_visible() -> N
     collector = HyperliquidRawResearchCollector(
         sink,
         config=HyperliquidRawResearchConfig(
-            heartbeat_interval_seconds=300.0,
+            heartbeat_interval_seconds=45.0,
             reconnect_delay_seconds=0.0,
         ),
         connection_factory=factory,
@@ -264,7 +264,10 @@ async def test_disconnect_reconnect_gap_and_malformed_payload_are_visible() -> N
 
     session_events = _local_events(sink.records, "session")
     assert any(
-        event.get("event") == "disconnected" and event.get("reason") == "transport_error"
+        event.get("event") == "disconnected"
+        and event.get("reason") == "transport_error"
+        and event.get("exception_class") == "ConnectionError"
+        and event.get("transport_profile") == "hyperliquid_public"
         for event in session_events
     )
     assert any(
@@ -360,6 +363,15 @@ async def test_reconstructable_capture_writes_the_path_contract(tmp_path: Path) 
     assert claim["twenty_four_seven"] is False
     assert health["status"] == "COMPLETED"
     assert health["path_contract"] == DATA1A_PATH_CONTRACT_ID
+    assert health["duration_seconds"] == 86_400.0
+    assert float(health["elapsed_seconds"]) < float(health["duration_seconds"])
+    assert health["elapsed_seconds"] != health["duration_seconds"]
+    log_path = paths.run_dir / "capture-sample-run.log"
+    assert log_path.is_file()
+    log_text = log_path.read_text(encoding="utf-8")
+    assert "data1a start" in log_text
+    assert "requested_duration_seconds" in log_text
+    assert "elapsed_seconds" in log_text
     with pytest.raises(FileExistsError, match="refuses to reuse"):
         await run_reconstructable_capture(
             artifact_root=tmp_path,
@@ -384,6 +396,7 @@ def test_data1a_claim_and_health_match_committed_sample_contract() -> None:
             "parquet_bytes": 0,
             "gaps": 0,
             "reconnects": 0,
+            "elapsed_seconds": 86_400.0,
         },
     )
     stored_claim = json.loads((fixture_dir / "capture-claim.json").read_text(encoding="utf-8"))
@@ -392,6 +405,25 @@ def test_data1a_claim_and_health_match_committed_sample_contract() -> None:
         assert claim[key] == value
     for key, value in stored_health.items():
         assert health[key] == value
+    assert health["elapsed_seconds"] == 86_400.0
+    assert health["duration_seconds"] == 86_400.0
+
+
+def test_heartbeat_matches_known_good_client_idle_window() -> None:
+    default = HyperliquidRawResearchConfig()
+    assert default.heartbeat_interval_seconds == 45.0
+    assert default.receive_timeout_seconds == 60.0
+    with pytest.raises(ValueError, match=r"\[5, 60\)"):
+        HyperliquidRawResearchConfig(heartbeat_interval_seconds=300.0)
+    with pytest.raises(ValueError, match=r"\[5, 60\)"):
+        HyperliquidRawResearchConfig(heartbeat_interval_seconds=60.0)
+    with pytest.raises(ValueError, match=r"\[5, 60\)"):
+        HyperliquidRawResearchConfig(heartbeat_interval_seconds=0.1)
+    with pytest.raises(ValueError, match="receive_timeout"):
+        HyperliquidRawResearchConfig(
+            heartbeat_interval_seconds=45.0,
+            receive_timeout_seconds=10.0,
+        )
 
 
 def test_cli_modes_are_mutually_exclusive(tmp_path: Path) -> None:

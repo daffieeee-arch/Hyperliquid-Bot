@@ -10,6 +10,7 @@ import argparse
 import asyncio
 import json
 import logging
+import math
 import signal
 import time
 import uuid
@@ -23,6 +24,15 @@ import duckdb
 from websockets.asyncio.client import connect
 from websockets.exceptions import WebSocketException
 
+from .capture_observability import (
+    add_transport_counts,
+    attach_observability_health,
+    capture_log_path,
+    capture_logger,
+    configure_capture_logger,
+    elapsed_from_report,
+    transport_exception_fields,
+)
 from .parquet_research import (
     ParquetResearchWriter,
     ParquetRotation,
@@ -52,6 +62,9 @@ SMOKE_CAPTURE_SECONDS: Final = 600.0
 MAX_CAPTURE_SECONDS: Final = 7 * 24 * 60 * 60
 DATA1A_CLAIM_SCHEMA: Final = "data-1a-retained-capture-claim-v1"
 DATA1A_HEALTH_SCHEMA: Final = "data-1a-retained-capture-health-v1"
+HYPERLIQUID_TRANSPORT_PROFILE: Final = "hyperliquid_public"
+_SERVER_IDLE_TIMEOUT_SECONDS: Final = 60.0
+_MIN_HEARTBEAT_SECONDS: Final = 5.0
 
 _GREETING: Final = b"Websocket connection established."
 _PING_TEXT: Final = '{"method":"ping"}'
@@ -106,15 +119,25 @@ class HyperliquidRawResearchConfig:
     """Fixed public BTC-PERP feed and bounded transport controls."""
 
     heartbeat_interval_seconds: float = 45.0
+    receive_timeout_seconds: float = 60.0
     reconnect_delay_seconds: float = 3.0
     max_application_payload_bytes: int = 8 * 1024 * 1024
 
     def __post_init__(self) -> None:
-        if (
-            type(self.heartbeat_interval_seconds) not in (int, float)
-            or self.heartbeat_interval_seconds <= 0
+        if type(self.heartbeat_interval_seconds) not in (int, float) or not math.isfinite(
+            float(self.heartbeat_interval_seconds)
         ):
-            raise ValueError("heartbeat_interval_seconds must be positive.")
+            raise ValueError("heartbeat_interval_seconds must be a finite number.")
+        heartbeat = float(self.heartbeat_interval_seconds)
+        if heartbeat < _MIN_HEARTBEAT_SECONDS or heartbeat >= _SERVER_IDLE_TIMEOUT_SECONDS:
+            raise ValueError("heartbeat_interval_seconds must be in [5, 60).")
+        if type(self.receive_timeout_seconds) not in (int, float) or not math.isfinite(
+            float(self.receive_timeout_seconds)
+        ):
+            raise ValueError("receive_timeout_seconds must be a finite number.")
+        receive_timeout = float(self.receive_timeout_seconds)
+        if receive_timeout < heartbeat:
+            raise ValueError("receive_timeout_seconds must cover heartbeat_interval_seconds.")
         if (
             type(self.reconnect_delay_seconds) not in (int, float)
             or self.reconnect_delay_seconds < 0
@@ -125,6 +148,8 @@ class HyperliquidRawResearchConfig:
             or self.max_application_payload_bytes <= 0
         ):
             raise ValueError("max_application_payload_bytes must be a positive integer.")
+        object.__setattr__(self, "heartbeat_interval_seconds", heartbeat)
+        object.__setattr__(self, "receive_timeout_seconds", receive_timeout)
 
 
 class HyperliquidRawResearchCollector:
@@ -185,10 +210,18 @@ class HyperliquidRawResearchCollector:
         previous_connected_session_id: str | None = None
         while not stop_event.is_set():
             session_id = self._session_id_factory()
+            capture_logger().info(
+                "hyperliquid session_start transport_profile=%s reason=%s",
+                HYPERLIQUID_TRANSPORT_PROFILE,
+                "initial_connection"
+                if previous_connected_session_id is None
+                else "reconnect_attempt",
+            )
             await self._append_marker(
                 session_id,
                 "session",
                 "session_started",
+                transport_profile=HYPERLIQUID_TRANSPORT_PROFILE,
                 reason=(
                     "initial_connection"
                     if previous_connected_session_id is None
@@ -199,13 +232,19 @@ class HyperliquidRawResearchCollector:
             try:
                 async with self._connection_factory() as connection:
                     connected = True
-                    await self._append_marker(session_id, "session", "connected")
+                    await self._append_marker(
+                        session_id,
+                        "session",
+                        "connected",
+                        transport_profile=HYPERLIQUID_TRANSPORT_PROFILE,
+                    )
                     if previous_connected_session_id is not None:
                         await self._append_marker(
                             session_id,
                             "session",
                             "reconnected",
                             previous_session_id=previous_connected_session_id,
+                            transport_profile=HYPERLIQUID_TRANSPORT_PROFILE,
                         )
                     await self._send_subscriptions(connection, session_id)
                     await self._receive_session(connection, session_id, stop_event)
@@ -225,19 +264,33 @@ class HyperliquidRawResearchCollector:
                         reason="capture_cancelled",
                     )
                 raise
-            except (WebSocketException, OSError):
+            except (WebSocketException, OSError, TimeoutError) as error:
+                failure_fields = transport_exception_fields(error)
+                del error
+                capture_logger().info(
+                    "hyperliquid disconnect transport_profile=%s connected=%s "
+                    "exception_class=%s close_code=%s",
+                    HYPERLIQUID_TRANSPORT_PROFILE,
+                    connected,
+                    failure_fields.get("exception_class"),
+                    failure_fields.get("close_code"),
+                )
                 if connected:
                     await self._append_marker(
                         session_id,
                         "session",
                         "disconnected",
                         reason="transport_error",
+                        transport_profile=HYPERLIQUID_TRANSPORT_PROFILE,
+                        **failure_fields,
                     )
                     await self._append_marker(
                         session_id,
                         "data_quality",
                         "gap_detected",
                         reason="transport_disconnect; missed stream history is not reconstructable",
+                        transport_profile=HYPERLIQUID_TRANSPORT_PROFILE,
+                        **failure_fields,
                     )
                     previous_connected_session_id = session_id
                 else:
@@ -246,6 +299,8 @@ class HyperliquidRawResearchCollector:
                         "session",
                         "connection_failed",
                         reason="transport_error",
+                        transport_profile=HYPERLIQUID_TRANSPORT_PROFILE,
+                        **failure_fields,
                     )
 
             if stop_event.is_set():
@@ -297,16 +352,23 @@ class HyperliquidRawResearchCollector:
             name="raw-research-receive",
         )
         next_heartbeat = self._monotonic() + float(self._config.heartbeat_interval_seconds)
+        last_inbound = self._monotonic()
         try:
             while True:
-                heartbeat_wait = max(0.0, next_heartbeat - self._monotonic())
+                now = self._monotonic()
+                heartbeat_wait = max(0.0, next_heartbeat - now)
+                receive_wait = max(
+                    0.0,
+                    last_inbound + float(self._config.receive_timeout_seconds) - now,
+                )
                 done, _ = await asyncio.wait(
                     (receive_task, stop_task),
-                    timeout=heartbeat_wait,
+                    timeout=min(heartbeat_wait, receive_wait),
                     return_when=asyncio.FIRST_COMPLETED,
                 )
                 if receive_task in done:
                     captured = receive_task.result()
+                    last_inbound = self._monotonic()
                     _, channel, document = await self._record_inbound(captured, session_id)
                     if channel == "subscriptionResponse" and document is not None:
                         subscription_type = _subscription_type_from_response(document)
@@ -344,6 +406,8 @@ class HyperliquidRawResearchCollector:
                     continue
                 if stop_task in done:
                     return
+                if self._monotonic() >= last_inbound + float(self._config.receive_timeout_seconds):
+                    raise TimeoutError("Hyperliquid public receive timed out.")
 
                 await self._send_heartbeat(connection, session_id)
                 next_heartbeat = self._monotonic() + float(self._config.heartbeat_interval_seconds)
@@ -447,7 +511,11 @@ class HyperliquidRawResearchCollector:
         event: str,
         **fields: str | int,
     ) -> int:
-        payload: dict[str, str | int] = {"event": event, **fields}
+        payload: dict[str, str | int] = {
+            "event": event,
+            "transport_profile": HYPERLIQUID_TRANSPORT_PROFILE,
+            **fields,
+        }
         payload_bytes = json.dumps(
             payload,
             ensure_ascii=True,
@@ -538,41 +606,42 @@ def build_capture_report(database_path: Path, parquet_dir: Path) -> dict[str, ob
         totals = connection.execute(
             "SELECT count(*), coalesce(sum(octet_length(payload_bytes)), 0) FROM raw_records"
         ).fetchone()
-        gap_row = connection.execute(
-            "SELECT count(*) FROM data_quality_events WHERE event = 'gap_detected'"
-        ).fetchone()
-        reconnect_row = connection.execute(
-            "SELECT count(*) FROM sessions WHERE event = 'reconnected'"
-        ).fetchone()
-        if totals is None or gap_row is None or reconnect_row is None:
+        if totals is None:
             raise RuntimeError("DuckDB did not return the requested capture aggregates.")
         total_events, total_payload_bytes = totals
-        gaps = gap_row[0]
-        reconnects = reconnect_row[0]
+        report = {
+            "channels": [
+                {
+                    "channel": str(channel),
+                    "direction": str(direction),
+                    "events": int(events),
+                    "payload_bytes": int(payload_bytes),
+                }
+                for channel, direction, events, payload_bytes in channel_rows
+            ],
+            "events": int(total_events),
+            "payload_bytes": int(total_payload_bytes),
+        }
+        add_transport_counts(
+            connection,
+            report,
+            gap_event="gap_detected",
+            reconnect_event="reconnected",
+        )
     finally:
         connection.close()
 
     parquet_files = tuple(sorted(parquet_dir.resolve().glob("*.parquet")))
     parquet_bytes = sum(path.stat().st_size for path in parquet_files)
     raw_bytes = int(total_payload_bytes)
-    return {
-        "channels": [
-            {
-                "channel": str(channel),
-                "direction": str(direction),
-                "events": int(events),
-                "payload_bytes": int(payload_bytes),
-            }
-            for channel, direction, events, payload_bytes in channel_rows
-        ],
-        "events": int(total_events),
-        "payload_bytes": raw_bytes,
-        "parquet_files": len(parquet_files),
-        "parquet_bytes": parquet_bytes,
-        "raw_payload_to_parquet_ratio": (raw_bytes / parquet_bytes if parquet_bytes else None),
-        "gaps": int(gaps),
-        "reconnects": int(reconnects),
-    }
+    report.update(
+        {
+            "parquet_files": len(parquet_files),
+            "parquet_bytes": parquet_bytes,
+            "raw_payload_to_parquet_ratio": (raw_bytes / parquet_bytes if parquet_bytes else None),
+        }
+    )
+    return report
 
 
 async def run_bounded_capture(
@@ -614,6 +683,9 @@ def data1a_capture_claim(
         "product": HYPERLIQUID_RESEARCH_PRODUCT,
         "feed": "hyperliquid-public-btc-perp-trades-bbo-l2-ctx",
         "websocket_url": HYPERLIQUID_MAINNET_WEBSOCKET_URL,
+        "heartbeat_interval_seconds": 45.0,
+        "receive_timeout_seconds": 60.0,
+        "application_ping": True,
         "credentialless": True,
         "signing": False,
         "duration_seconds": duration,
@@ -639,29 +711,36 @@ def data1a_capture_health(
     if status not in {"COMPLETED", "OPERATOR_STOP", "FAILED"}:
         raise ValueError("DATA-1A capture-health status is outside the documented bound.")
     duration = _require_bounded_duration(duration_seconds)
-    return {
-        "schema": DATA1A_HEALTH_SCHEMA,
-        "kind": "capture-health",
-        "path_contract": DATA1A_PATH_CONTRACT_ID,
-        "run_id": run_id,
-        "status": status,
-        "duration_seconds": duration,
-        "retained": duration > SMOKE_CAPTURE_SECONDS,
-        "twenty_four_seven": False,
-        "credentialless": True,
-        "events": report.get("events"),
-        "payload_bytes": report.get("payload_bytes"),
-        "parquet_files": report.get("parquet_files"),
-        "parquet_bytes": report.get("parquet_bytes"),
-        "gaps": report.get("gaps"),
-        "reconnects": report.get("reconnects"),
-        "limitations": [
-            "Published Parquet parts are reconstructable; a crash can lose the in-memory segment.",
-            "This is not 24/7 service evidence or a trading edge.",
-            "Hyperliquid supplies no sequence IDs on these feeds; gaps are conservative markers.",
-            "Public stream only; no API keys, signing, or extra venues.",
-        ],
-    }
+    elapsed = elapsed_from_report(report)
+    return attach_observability_health(
+        {
+            "schema": DATA1A_HEALTH_SCHEMA,
+            "kind": "capture-health",
+            "path_contract": DATA1A_PATH_CONTRACT_ID,
+            "run_id": run_id,
+            "status": status,
+            "duration_seconds": duration,
+            "retained": duration > SMOKE_CAPTURE_SECONDS,
+            "twenty_four_seven": False,
+            "credentialless": True,
+            "events": report.get("events"),
+            "payload_bytes": report.get("payload_bytes"),
+            "parquet_files": report.get("parquet_files"),
+            "parquet_bytes": report.get("parquet_bytes"),
+            "gaps": report.get("gaps"),
+            "reconnects": report.get("reconnects"),
+            "limitations": [
+                "Published Parquet parts are reconstructable; a crash can lose the "
+                "in-memory segment.",
+                "This is not 24/7 service evidence or a trading edge.",
+                "Hyperliquid supplies no sequence IDs on these feeds; gaps are "
+                "conservative markers.",
+                "Public stream only; no API keys, signing, or extra venues.",
+            ],
+        },
+        report,
+        elapsed_seconds=elapsed,
+    )
 
 
 def _write_create_only_json(path: Path, payload: dict[str, object]) -> None:
@@ -686,6 +765,15 @@ async def run_reconstructable_capture(
         raise FileExistsError(f"DATA-1A refuses to reuse existing run directory: {paths.run_dir}")
     paths.run_dir.mkdir(parents=True, exist_ok=False)
     paths.raw_dir.mkdir(exist_ok=False)
+    log_path = capture_log_path(paths.run_dir, run_id)
+    configure_capture_logger(log_path)
+    capture_logger().info(
+        "data1a start run_id=%s requested_duration_seconds=%s heartbeat_interval_seconds=45 "
+        "receive_timeout_seconds=60 log=%s",
+        run_id,
+        duration_seconds,
+        log_path,
+    )
     _write_create_only_json(
         paths.capture_claim_path,
         data1a_capture_claim(run_id=run_id, duration_seconds=duration_seconds, paths=paths),
@@ -697,8 +785,12 @@ async def run_reconstructable_capture(
         "parquet_bytes": 0,
         "gaps": 0,
         "reconnects": 0,
+        "elapsed_seconds": 0.0,
+        "transport_profiles": [],
+        "integrity_events": 0,
     }
     status = "FAILED"
+    started = time.monotonic()
     try:
         report = await run_bounded_capture(
             output_dir=paths.raw_dir,
@@ -712,6 +804,14 @@ async def run_reconstructable_capture(
         else:
             status = "COMPLETED"
     finally:
+        report = {**report, "elapsed_seconds": round(time.monotonic() - started, 6)}
+        capture_logger().info(
+            "data1a stop run_id=%s status=%s requested_duration_seconds=%s elapsed_seconds=%s",
+            run_id,
+            status,
+            duration_seconds,
+            report["elapsed_seconds"],
+        )
         if not paths.capture_health_path.exists():
             _write_create_only_json(
                 paths.capture_health_path,

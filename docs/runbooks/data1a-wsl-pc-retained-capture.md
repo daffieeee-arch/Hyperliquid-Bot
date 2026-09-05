@@ -48,6 +48,7 @@ Run directory contents (path contract Cockpit should later read):
 ~/hyperliquid-artifacts/reconstructable/data-1a/hyperliquid/BTC-PERP/<run_id>/
   capture-claim.json
   capture-health.json
+  capture-<run_id>.log
   raw/part-*.parquet
   research.duckdb
 ```
@@ -238,9 +239,50 @@ Copy `apps/cockpit/.env.example` to `apps/cockpit/.env.local` (gitignored) for
 the same pair. The repository-root `.env.example` documents the names but is
 not loaded by `next dev`.
 
+## Protect a 72h evidence window
+
+When the assigned goal is a 72-hour reconstructable tape (`DURATION_SECONDS=259200`):
+
+- Do **not** send `C-c`, SIGINT, SIGTERM, `tmux kill-session`, or `wsl --shutdown`.
+- Cloud Agents must not SSH, attach, or stop tmux `hl-capture` / `bn-capture` /
+  `bv-capture` / `kr-capture`.
+- Detached tmux survives closing the terminal; it does not survive a WSL VM stop
+  or host sleep.
+- `capture-health.json` is written at stop. Missing health while tmux is alive
+  is expected.
+- After stop, read health as:
+  - `duration_seconds` = requested window (example `259200`)
+  - `elapsed_seconds` = wall-clock time the process actually ran
+  - `status=OPERATOR_STOP` with `elapsed_seconds` < `duration_seconds` is an
+    operator interrupt, **not** a completed 72h tape
+  - `gaps` / `reconnects` are transport-only and also appear under
+    `transport_profiles`
+  - `sequence_gap` and other integrity events fail the run and are **not**
+    counted in `gaps`
+
+Collector INFO log (session/disconnect/reconnect, close code, exception class;
+no payloads or secrets):
+
+```text
+<run_dir>/capture-<run_id>.log
+```
+
+Optional tmux stdout/stderr copy:
+
+```text
+~/hyperliquid-artifacts/reconstructable/logs/capture-<run_id>.log
+```
+
+Heartbeat: the writer sends Hyperliquid `{"method":"ping"}` every 45s (below the
+official 60s server-outbound-idle timeout) and applies a 60s receive timeout.
+Protocol WebSocket pings stay off. A ~3h disconnect cadence is not a missed
+60s idle ping; persist `close_code` / `exception_class` and reconnect.
+
 ## How to stop
 
-Ask the collector to finish the current in-memory segment and write health:
+Ask the collector to finish the current in-memory segment and write health
+**only when the assigned window is complete or CoS orders a stop**. Do not C-c
+a live 72h evidence run.
 
 ```bash
 tmux send-keys -t hl-capture C-c

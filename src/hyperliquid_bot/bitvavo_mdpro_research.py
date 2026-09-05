@@ -33,6 +33,15 @@ import duckdb
 from websockets.asyncio.client import connect
 from websockets.exceptions import PayloadTooBig, WebSocketException
 
+from .capture_observability import (
+    add_transport_counts,
+    attach_observability_health,
+    capture_log_path,
+    capture_logger,
+    configure_capture_logger,
+    elapsed_from_report,
+    transport_exception_fields,
+)
 from .parquet_research import ParquetResearchWriter, ParquetRotation, create_research_catalog
 from .raw_research import (
     RAW_RESEARCH_SCHEMA_VERSION,
@@ -500,6 +509,7 @@ class BitvavoMdProResearchCollector:
             await self._session_started(session_id, previous_session_id)
             connected = False
             failure: str | None = None
+            disconnect_fields: dict[str, int | str] = {}
             try:
                 async with self._connection_factory() as connection:
                     connected = True
@@ -528,8 +538,10 @@ class BitvavoMdProResearchCollector:
                 BitvavoMdProSinkError,
             ):
                 raise
-            except (WebSocketException, OSError):
+            except (WebSocketException, OSError) as error:
                 failure = "transport"
+                disconnect_fields = transport_exception_fields(error)
+                del error
             except Exception:
                 failure = "boundary"
 
@@ -549,7 +561,7 @@ class BitvavoMdProResearchCollector:
                     raise BitvavoMdProTransportError(
                         "Bitvavo Market Data Pro connection failed."
                     ) from None
-                await self._disconnected(session_id)
+                await self._disconnected(session_id, disconnect_fields)
                 if reconnects >= self._config.max_reconnects:
                     raise BitvavoMdProTransportError(
                         "Bitvavo Market Data Pro reconnect bound was exhausted."
@@ -1101,23 +1113,39 @@ class BitvavoMdProResearchCollector:
                 "session",
                 "reconnected",
                 stream=BITVAVO_MDPRO_FEED_PRODUCT,
+                transport_profile=BITVAVO_MDPRO_FEED_PRODUCT,
                 previous_session_id=previous_session_id,
             )
 
-    async def _disconnected(self, session_id: str) -> None:
+    async def _disconnected(
+        self,
+        session_id: str,
+        failure_fields: dict[str, int | str] | None = None,
+    ) -> None:
+        fields = dict(failure_fields or {})
+        capture_logger().info(
+            "bitvavo disconnect transport_profile=%s exception_class=%s close_code=%s",
+            BITVAVO_MDPRO_FEED_PRODUCT,
+            fields.get("exception_class"),
+            fields.get("close_code"),
+        )
         await self._append_marker(
             session_id,
             "session",
             "disconnected",
             stream=BITVAVO_MDPRO_FEED_PRODUCT,
+            transport_profile=BITVAVO_MDPRO_FEED_PRODUCT,
             reason="transport_error",
+            **fields,
         )
         await self._append_marker(
             session_id,
             "data_quality",
             "gap_detected",
             stream=BITVAVO_MDPRO_FEED_PRODUCT,
+            transport_profile=BITVAVO_MDPRO_FEED_PRODUCT,
             reason="transport_disconnect; missed Pro L2 history is not reconstructable",
+            **fields,
         )
 
     async def _connection_failed(
@@ -1694,39 +1722,42 @@ def build_capture_report(database_path: Path, parquet_dir: Path) -> dict[str, ob
         totals = connection.execute(
             "SELECT count(*), coalesce(sum(octet_length(payload_bytes)), 0) FROM raw_records"
         ).fetchone()
-        gap_row = connection.execute(
-            "SELECT count(*) FROM data_quality_events WHERE event = 'gap_detected'"
-        ).fetchone()
-        reconnect_row = connection.execute(
-            "SELECT count(*) FROM sessions WHERE event = 'reconnected'"
-        ).fetchone()
-        if totals is None or gap_row is None or reconnect_row is None:
+        if totals is None:
             raise RuntimeError("DuckDB did not return the requested capture aggregates.")
         total_events, total_payload_bytes = totals
+        report = {
+            "channels": [
+                {
+                    "channel": str(channel),
+                    "direction": str(direction),
+                    "events": int(events),
+                    "payload_bytes": int(payload_bytes),
+                }
+                for channel, direction, events, payload_bytes in channel_rows
+            ],
+            "events": int(total_events),
+            "payload_bytes": int(total_payload_bytes),
+        }
+        add_transport_counts(
+            connection,
+            report,
+            gap_event="gap_detected",
+            reconnect_event="reconnected",
+        )
     finally:
         connection.close()
 
     parquet_files = tuple(sorted(parquet_dir.resolve().glob("*.parquet")))
     parquet_bytes = sum(path.stat().st_size for path in parquet_files)
     raw_bytes = int(total_payload_bytes)
-    return {
-        "channels": [
-            {
-                "channel": str(channel),
-                "direction": str(direction),
-                "events": int(events),
-                "payload_bytes": int(payload_bytes),
-            }
-            for channel, direction, events, payload_bytes in channel_rows
-        ],
-        "events": int(total_events),
-        "payload_bytes": raw_bytes,
-        "parquet_files": len(parquet_files),
-        "parquet_bytes": parquet_bytes,
-        "raw_payload_to_parquet_ratio": (raw_bytes / parquet_bytes if parquet_bytes else None),
-        "gaps": int(gap_row[0]),
-        "reconnects": int(reconnect_row[0]),
-    }
+    report.update(
+        {
+            "parquet_files": len(parquet_files),
+            "parquet_bytes": parquet_bytes,
+            "raw_payload_to_parquet_ratio": (raw_bytes / parquet_bytes if parquet_bytes else None),
+        }
+    )
+    return report
 
 
 async def run_bounded_capture(
@@ -1813,42 +1844,48 @@ def data1e_capture_health(
         raise ValueError("DATA-1E capture-health status is outside the documented bound.")
     duration = _require_bounded_duration(duration_seconds)
     channels = list(mdpro_subscription_channels(include_ticker=include_ticker))
-    return {
-        "schema": DATA1E_HEALTH_SCHEMA,
-        "kind": "capture-health",
-        "path_contract": DATA1E_PATH_CONTRACT_ID,
-        "run_id": run_id,
-        "status": status,
-        "duration_seconds": duration,
-        "retained": duration > SMOKE_CAPTURE_SECONDS,
-        "twenty_four_seven": False,
-        "credentialless": False,
-        "authenticated_read_only": True,
-        "signing": False,
-        "feed": data1e_feed_name(include_ticker=include_ticker),
-        "feed_product": BITVAVO_MDPRO_FEED_PRODUCT,
-        "channels": channels,
-        "book_depth": BITVAVO_MDPRO_BOOK_DEPTH,
-        "include_ticker": include_ticker,
-        "standard_fallback": False,
-        "events": report.get("events"),
-        "payload_bytes": report.get("payload_bytes"),
-        "parquet_files": report.get("parquet_files"),
-        "parquet_bytes": report.get("parquet_bytes"),
-        "gaps": report.get("gaps"),
-        "reconnects": report.get("reconnects"),
-        "limitations": [
-            "Published Parquet parts are reconstructable; a crash can lose the in-memory segment.",
-            "This is not 24/7 service evidence or a trading edge.",
-            "Market Data Pro is authenticated View-only L2 plus trades on the same Pro socket, "
-            "never L3/MBO.",
-            "Ticker is optional and flagged; it is never implied by the default book+trades "
-            "subscribe set.",
-            "This capture never falls back to DATA-1D Standard.",
-            "Keys enter only through BITVAVO_MDPRO_API_KEY and BITVAVO_MDPRO_API_SECRET.",
-            "Trade, withdrawal, transfer, or signing key names fail closed.",
-        ],
-    }
+    elapsed = elapsed_from_report(report)
+    return attach_observability_health(
+        {
+            "schema": DATA1E_HEALTH_SCHEMA,
+            "kind": "capture-health",
+            "path_contract": DATA1E_PATH_CONTRACT_ID,
+            "run_id": run_id,
+            "status": status,
+            "duration_seconds": duration,
+            "retained": duration > SMOKE_CAPTURE_SECONDS,
+            "twenty_four_seven": False,
+            "credentialless": False,
+            "authenticated_read_only": True,
+            "signing": False,
+            "feed": data1e_feed_name(include_ticker=include_ticker),
+            "feed_product": BITVAVO_MDPRO_FEED_PRODUCT,
+            "channels": channels,
+            "book_depth": BITVAVO_MDPRO_BOOK_DEPTH,
+            "include_ticker": include_ticker,
+            "standard_fallback": False,
+            "events": report.get("events"),
+            "payload_bytes": report.get("payload_bytes"),
+            "parquet_files": report.get("parquet_files"),
+            "parquet_bytes": report.get("parquet_bytes"),
+            "gaps": report.get("gaps"),
+            "reconnects": report.get("reconnects"),
+            "limitations": [
+                "Published Parquet parts are reconstructable; a crash can lose the "
+                "in-memory segment.",
+                "This is not 24/7 service evidence or a trading edge.",
+                "Market Data Pro is authenticated View-only L2 plus trades on the same Pro socket, "
+                "never L3/MBO.",
+                "Ticker is optional and flagged; it is never implied by the default book+trades "
+                "subscribe set.",
+                "This capture never falls back to DATA-1D Standard.",
+                "Keys enter only through BITVAVO_MDPRO_API_KEY and BITVAVO_MDPRO_API_SECRET.",
+                "Trade, withdrawal, transfer, or signing key names fail closed.",
+            ],
+        },
+        report,
+        elapsed_seconds=elapsed,
+    )
 
 
 def _write_create_only_json(path: Path, payload: dict[str, object]) -> None:
@@ -1876,6 +1913,14 @@ async def run_reconstructable_capture(
         raise FileExistsError(f"DATA-1E refuses to reuse existing run directory: {paths.run_dir}")
     paths.run_dir.mkdir(parents=True, exist_ok=False)
     paths.raw_dir.mkdir(exist_ok=False)
+    log_path = capture_log_path(paths.run_dir, run_id)
+    configure_capture_logger(log_path)
+    capture_logger().info(
+        "data1e start run_id=%s requested_duration_seconds=%s log=%s",
+        run_id,
+        duration_seconds,
+        log_path,
+    )
     _write_create_only_json(
         paths.capture_claim_path,
         data1e_capture_claim(
@@ -1892,8 +1937,12 @@ async def run_reconstructable_capture(
         "parquet_bytes": 0,
         "gaps": 0,
         "reconnects": 0,
+        "elapsed_seconds": 0.0,
+        "transport_profiles": [],
+        "integrity_events": 0,
     }
     status = "FAILED"
+    started = time.monotonic()
     try:
         report = await run_bounded_capture(
             output_dir=paths.raw_dir,
@@ -1909,6 +1958,14 @@ async def run_reconstructable_capture(
         else:
             status = "COMPLETED"
     finally:
+        report = {**report, "elapsed_seconds": round(time.monotonic() - started, 6)}
+        capture_logger().info(
+            "data1e stop run_id=%s status=%s requested_duration_seconds=%s elapsed_seconds=%s",
+            run_id,
+            status,
+            duration_seconds,
+            report["elapsed_seconds"],
+        )
         if not paths.capture_health_path.exists():
             _write_create_only_json(
                 paths.capture_health_path,

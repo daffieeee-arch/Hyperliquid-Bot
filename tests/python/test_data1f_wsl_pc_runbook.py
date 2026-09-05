@@ -122,6 +122,12 @@ def test_wsl_runbook_documents_known_good_operator_paths() -> None:
     assert "Cloud Agents are **unsuitable**" in text
     assert "must not SSH" in text
     assert "Do not start a multi-day DATA-1F retain now" in text
+    assert "elapsed_seconds" in text
+    assert "capture-<run_id>.log" in text
+    assert "Protect a 72h evidence window" in text
+    assert "usdm_market" in text
+    assert "/public" in text
+    assert "Do **not** send `C-c`" in text
     assert "CoS assigns" in text or "CoS assign" in text
     assert "LIVE" in text
     assert "No keys" in text

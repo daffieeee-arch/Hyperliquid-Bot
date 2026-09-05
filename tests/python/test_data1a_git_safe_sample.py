@@ -72,6 +72,7 @@ async def _write_two_part_run(root: Path, run_id: str) -> None:
             "parquet_bytes": 1,
             "gaps": 0,
             "reconnects": 0,
+            "elapsed_seconds": 14_400.0,
         },
     )
     paths.capture_health_path.write_text(

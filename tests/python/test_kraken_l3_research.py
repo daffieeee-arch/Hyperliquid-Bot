@@ -1660,6 +1660,7 @@ def test_data1b_claim_and_health_are_create_only_and_not_twenty_four_seven() -> 
             "parquet_bytes": 0,
             "gaps": 0,
             "reconnects": 0,
+            "elapsed_seconds": 86_400.0,
         },
         include_l3=False,
     )
@@ -1672,6 +1673,8 @@ def test_data1b_claim_and_health_are_create_only_and_not_twenty_four_seven() -> 
     assert claim["checksum_price_levels"] == CHECKSUM_PRICE_LEVELS
     assert health["twenty_four_seven"] is False
     assert health["authenticated_l3"] is False
+    assert health["elapsed_seconds"] == 86_400.0
+    assert health["duration_seconds"] == 86_400.0
     assert any("best 10 price levels" in item for item in cast(list[str], health["limitations"]))
 
 

@@ -1610,6 +1610,7 @@ def test_data1e_claim_and_health_are_create_only_and_not_twenty_four_seven() -> 
             "parquet_bytes": 0,
             "gaps": 0,
             "reconnects": 0,
+            "elapsed_seconds": 86_400.0,
         },
     )
     assert claim["schema"] == "data-1e-retained-capture-claim-v1"
@@ -1625,6 +1626,8 @@ def test_data1e_claim_and_health_are_create_only_and_not_twenty_four_seven() -> 
     assert claim["websocket_url"] == BITVAVO_MDPRO_WEBSOCKET_URL
     assert health["twenty_four_seven"] is False
     assert health["signing"] is False
+    assert health["elapsed_seconds"] == 86_400.0
+    assert health["duration_seconds"] == 86_400.0
     assert health["feed"] == "bitvavo-mdpro-btc-eur-book-trades"
     assert health["standard_fallback"] is False
     assert health["channels"] == ["book", "trades"]

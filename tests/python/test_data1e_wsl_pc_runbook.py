@@ -145,6 +145,10 @@ def test_wsl_runbook_documents_known_good_operator_paths() -> None:
     assert "bitvavo-mdpro-btc-eur-book-trades" in text
     assert "standard_fallback" in text
     assert "Never DATA-1D Standard" in text or "never DATA-1D Standard" in text
+    assert "elapsed_seconds" in text
+    assert "capture-<run_id>.log" in text
+    assert "Protect a 72h evidence window" in text
+    assert "Do **not** send `C-c`" in text
     vps = VPS_RUNBOOK.read_text(encoding="utf-8")
     assert "1 through 604800 seconds" in vps
     assert "Do not start a multi-day DATA-1E retain now" in vps

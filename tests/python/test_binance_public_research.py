@@ -24,7 +24,6 @@ from hyperliquid_bot.binance_public_research import (
     BINANCE_USDM_MARKET_WEBSOCKET_URL,
     BINANCE_USDM_OPEN_INTEREST_URL,
     BINANCE_USDM_PRODUCT,
-    BINANCE_USDM_PUBLIC_WEBSOCKET_URL,
     MAX_CAPTURE_SECONDS,
     RETAINED_MAX_RECONNECTS,
     SMOKE_CAPTURE_SECONDS,
@@ -214,7 +213,9 @@ def test_fixed_scope_uses_only_public_data_routes() -> None:
     assert "btcusdt@depth@100ms" in BINANCE_SPOT_WEBSOCKET_URL
     assert "timeUnit=MICROSECOND" in BINANCE_SPOT_WEBSOCKET_URL
     assert "/market/stream?" in BINANCE_USDM_MARKET_WEBSOCKET_URL
-    assert "/public/stream?" in BINANCE_USDM_PUBLIC_WEBSOCKET_URL
+    assert "btcusdt@bookTicker" in BINANCE_USDM_MARKET_WEBSOCKET_URL
+    assert "/public/stream?" not in BINANCE_USDM_MARKET_WEBSOCKET_URL
+    assert BINANCE_USDM_MARKET_WEBSOCKET_URL.count("stream?streams=") == 1
     assert BINANCE_SPOT_DEPTH_URL.startswith("https://data-api.binance.vision/")
     assert BINANCE_USDM_OPEN_INTEREST_URL.endswith("symbol=BTCUSDT")
 
@@ -409,7 +410,7 @@ def _collector(
     include_force_order: bool = True,
     max_reconnects: int = 0,
 ) -> tuple[BinancePublicResearchCollector, ScriptedConnectionFactory]:
-    stop_after = StopAfterConnections(stop_event, 3)
+    stop_after = StopAfterConnections(stop_event, 2)
     spot_factory = ScriptedConnectionFactory(
         spot_connections
         or (
@@ -436,17 +437,10 @@ def _collector(
                             if include_force_order
                             else None
                         ),
+                        _fixture_text("public_usdm_book_ticker_frame.json"),
                     )
                     if frame is not None
                 ),
-                on_last=stop_after,
-            ),
-        )
-    )
-    public_factory = ScriptedConnectionFactory(
-        (
-            FakeConnection(
-                (_fixture_text("public_usdm_book_ticker_frame.json"),),
                 on_last=stop_after,
             ),
         )
@@ -467,7 +461,6 @@ def _collector(
             ),
             spot_connection_factory=spot_factory,
             usdm_market_connection_factory=market_factory,
-            usdm_public_connection_factory=public_factory,
             spot_depth_fetcher=spot_snapshot,
             usdm_open_interest_fetcher=open_interest,
             utc_ns=Counter(1000),
@@ -637,7 +630,7 @@ async def test_parquet_roundtrip_and_all_binance_views_are_source_linked(tmp_pat
 async def test_transport_reconnect_uses_fresh_session_and_gap_marker() -> None:
     sink = MemorySink()
     stop_event = asyncio.Event()
-    stop_after = StopAfterConnections(stop_event, 3)
+    stop_after = StopAfterConnections(stop_event, 2)
     first = FakeConnection((ConnectionError("synthetic disconnect"),))
     second = FakeConnection(
         (
@@ -653,30 +646,35 @@ async def test_transport_reconnect_uses_fresh_session_and_gap_marker() -> None:
         spot_connections=(first, second),
         max_reconnects=1,
     )
-    # Replace the helper's callbacks for the two unaffected sockets with this test's coordinator.
+    # Replace the helper's callbacks for the unaffected socket with this test's coordinator.
     collector._usdm_market_connection_factory = ScriptedConnectionFactory(
         (
             FakeConnection(
                 (
                     _fixture_text("public_usdm_agg_trade_frame.json"),
                     _fixture_text("public_usdm_mark_price_frame.json"),
+                    _fixture_text("public_usdm_book_ticker_frame.json"),
                 ),
                 on_last=stop_after,
-            ),
-        )
-    )
-    collector._usdm_public_connection_factory = ScriptedConnectionFactory(
-        (
-            FakeConnection(
-                (_fixture_text("public_usdm_book_ticker_frame.json"),), on_last=stop_after
             ),
         )
     )
     await collector.capture_for(1, stop_event=stop_event)
     assert spot_factory.calls == 2
     quality = _local_documents(sink.records, "data_quality")
-    assert any(marker["event"] == "gap" for marker in quality)
+    assert any(
+        marker["event"] == "gap"
+        and marker.get("transport_profile") == "spot"
+        and marker.get("exception_class") == "ConnectionError"
+        for marker in quality
+    )
     sessions = _local_documents(sink.records, "session")
+    assert any(
+        marker["event"] == "disconnect"
+        and marker.get("transport_profile") == "spot"
+        and marker.get("exception_class") == "ConnectionError"
+        for marker in sessions
+    )
     spot_starts = [
         marker
         for marker in sessions
@@ -695,7 +693,7 @@ async def test_transport_reconnect_uses_fresh_session_and_gap_marker() -> None:
 async def test_documented_spot_server_shutdown_is_exact_raw_and_reconnects() -> None:
     sink = MemorySink()
     stop_event = asyncio.Event()
-    stop_after = StopAfterConnections(stop_event, 3)
+    stop_after = StopAfterConnections(stop_event, 2)
     first = FakeConnection((_fixture_text("public_spot_server_shutdown_frame.json"),))
     second = FakeConnection(
         (
@@ -717,15 +715,9 @@ async def test_documented_spot_server_shutdown_is_exact_raw_and_reconnects() -> 
                 (
                     _fixture_text("public_usdm_agg_trade_frame.json"),
                     _fixture_text("public_usdm_mark_price_frame.json"),
+                    _fixture_text("public_usdm_book_ticker_frame.json"),
                 ),
                 on_last=stop_after,
-            ),
-        )
-    )
-    collector._usdm_public_connection_factory = ScriptedConnectionFactory(
-        (
-            FakeConnection(
-                (_fixture_text("public_usdm_book_ticker_frame.json"),), on_last=stop_after
             ),
         )
     )
@@ -945,6 +937,14 @@ async def test_reconstructable_capture_writes_the_path_contract(tmp_path: Path) 
     assert claim["credentialless"] is True
     assert health["status"] == "COMPLETED"
     assert health["path_contract"] == DATA1F_PATH_CONTRACT_ID
+    assert health["duration_seconds"] == 86_400.0
+    assert float(health["elapsed_seconds"]) < float(health["duration_seconds"])
+    assert "independent_websocket_profiles" in claim
+    assert claim["independent_websocket_profiles"] == ["spot", "usdm_market"]
+    assert "usdm_public_websocket_url" not in claim
+    log_path = paths.run_dir / "capture-sample-run.log"
+    assert log_path.is_file()
+    assert "data1f start" in log_path.read_text(encoding="utf-8")
     with pytest.raises(FileExistsError, match="refuses to reuse"):
         await run_reconstructable_capture(
             artifact_root=tmp_path,
@@ -968,6 +968,12 @@ def test_data1f_claim_and_health_are_create_only_and_not_twenty_four_seven() -> 
             "parquet_bytes": 0,
             "gaps": 0,
             "reconnects": 0,
+            "elapsed_seconds": 86_400.0,
+            "transport_profiles": [
+                {"transport_profile": "spot", "gaps": 0, "reconnects": 0},
+                {"transport_profile": "usdm_market", "gaps": 0, "reconnects": 0},
+            ],
+            "integrity_events": 0,
         },
     )
     assert claim["schema"] == "data-1f-retained-capture-claim-v1"
@@ -976,6 +982,11 @@ def test_data1f_claim_and_health_are_create_only_and_not_twenty_four_seven() -> 
     assert claim["retained"] is True
     assert health["twenty_four_seven"] is False
     assert health["credentialless"] is True
+    assert health["elapsed_seconds"] == 86_400.0
+    assert health["duration_seconds"] == 86_400.0
+    profiles = health["transport_profiles"]
+    assert isinstance(profiles, list)
+    assert profiles[0]["transport_profile"] == "spot"
 
 
 def test_cli_modes_are_mutually_exclusive(tmp_path: Path) -> None:

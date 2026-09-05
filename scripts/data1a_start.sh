@@ -68,6 +68,10 @@ echo "tmux_alive=${tmux_state}"
 echo "signing=false"
 echo "credentialless=true"
 echo "twenty_four_seven=false"
+echo "capture_log=${RUN_DIR}/capture-${RUN_ID}.log"
+echo "tmux_log=${ARTIFACT_ROOT}/logs/capture-${RUN_ID}.log"
+echo "do_not_interrupt_72h=true"
+echo "cloud_agents_must_not_stop=true"
 
 if [[ "${CHECK_ONLY}" -eq 1 ]]; then
   echo "status=CHECK_ONLY"
@@ -80,8 +84,11 @@ mkdir -p "${ARTIFACT_ROOT}"
 unset TRADING_MODE
 unset D41_EXECUTION_MODE
 
+mkdir -p "${ARTIFACT_ROOT}/logs"
 tmux new-session -d -s "${TMUX_SESSION}" \
   "cd $(printf '%q' "${REPO_ROOT}") && unset TRADING_MODE D41_EXECUTION_MODE && export PYTHONPATH=src && exec uv run --frozen python -m hyperliquid_bot.hyperliquid_raw_research --artifact-root $(printf '%q' "${ARTIFACT_ROOT}") --run-id $(printf '%q' "${RUN_ID}") --duration-seconds $(printf '%q' "${DURATION_SECONDS}")"
+tmux pipe-pane -t "${TMUX_SESSION}" -o "cat >> $(printf '%q' "${ARTIFACT_ROOT}/logs/capture-${RUN_ID}.log")" || true
 
 echo "status=STARTED"
 echo "stop_with=tmux send-keys -t ${TMUX_SESSION} C-c"
+echo "do_not_send_c_c_during_72h_evidence=true"

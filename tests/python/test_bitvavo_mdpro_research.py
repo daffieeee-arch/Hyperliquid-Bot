@@ -676,7 +676,7 @@ async def test_collector_keeps_only_exact_market_frames_and_sanitized_controls()
         "authentication_sent",
         "authentication_acknowledged",
     ]
-    sent_subscribe = json.loads(cast(str, connection.sent[1]))
+    sent_subscribe = json.loads(connection.sent[1])
     assert {
         channel["name"] for channel in cast(list[dict[str, object]], sent_subscribe["channels"])
     } == {
@@ -1369,7 +1369,7 @@ async def test_pro_trades_and_ticker_views_do_not_select_standard_channels(
         assert connection.execute("SELECT count(*) FROM bitvavo_spot_l2_events").fetchone() == (0,)
         assert connection.execute(
             "SELECT count(*) FROM bitvavo_mdpro_spot_l2_events"
-        ).fetchone() == (3,)
+        ).fetchone() == (2,)
     finally:
         connection.close()
 

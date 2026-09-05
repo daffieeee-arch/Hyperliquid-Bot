@@ -40,10 +40,13 @@ jobs:
         run: uv run --frozen ruff check .
 
       - name: Type-check Python
-        run: uv run --frozen mypy src tests/python
+        run: uv run --frozen mypy src tests/python vertical_slices/course1_exit_gate
 
       - name: Test Python
         run: uv run --frozen pytest -q
+
+      - name: Verify COURSE-1 exit-gate evidence
+        run: uv run --frozen python -m vertical_slices.course1_exit_gate.verify verify
 
   d01-publication:
     runs-on: ubuntu-24.04

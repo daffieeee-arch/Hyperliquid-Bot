@@ -555,7 +555,8 @@ class BinancePublicResearchCollector:
                     ) from None
                 reconnects += 1
                 capture_logger().info(
-                    "binance reconnect transport_profile=%s attempt=%s reason=venue_server_shutdown",
+                    "binance reconnect transport_profile=%s attempt=%s "
+                    "reason=venue_server_shutdown",
                     profile.name,
                     reconnects,
                 )
@@ -1685,7 +1686,7 @@ def build_capture_report(database_path: Path, parquet_dir: Path) -> dict[str, ob
 
     parquet_files = tuple(sorted(parquet_dir.resolve().glob("*.parquet")))
     parquet_bytes = sum(path.stat().st_size for path in parquet_files)
-    raw_bytes = int(report["payload_bytes"])
+    raw_bytes = int(total_payload_bytes)
     report.update(
         {
             "parquet_files": len(parquet_files),
@@ -1789,13 +1790,16 @@ def data1f_capture_health(
             "gaps": report.get("gaps"),
             "reconnects": report.get("reconnects"),
             "limitations": [
-                "Published Parquet parts are reconstructable; a crash can lose the in-memory segment.",
+                "Published Parquet parts are reconstructable; a crash can lose the "
+                "in-memory segment.",
                 "This is not 24/7 service evidence or a trading edge.",
-                "Spot depth@100ms is heavier than DATA-1A; disk growth can reach tens of GB over 72h.",
+                "Spot depth@100ms is heavier than DATA-1A; disk growth can reach tens of "
+                "GB over 72h.",
                 "USD-M open interest is one REST observation at start, not a history.",
                 "Public stream only; no API keys, signing, or extra venues.",
                 "Transport gaps exclude fail-closed integrity events such as sequence_gap.",
-                "USD-M bookTicker shares the market/combined socket with aggTrade/markPrice/forceOrder.",
+                "USD-M bookTicker shares the market/combined socket with "
+                "aggTrade/markPrice/forceOrder.",
             ],
         },
         report,

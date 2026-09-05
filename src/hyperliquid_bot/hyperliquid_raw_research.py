@@ -124,17 +124,15 @@ class HyperliquidRawResearchConfig:
     max_application_payload_bytes: int = 8 * 1024 * 1024
 
     def __post_init__(self) -> None:
-        if (
-            type(self.heartbeat_interval_seconds) not in (int, float)
-            or not math.isfinite(float(self.heartbeat_interval_seconds))
+        if type(self.heartbeat_interval_seconds) not in (int, float) or not math.isfinite(
+            float(self.heartbeat_interval_seconds)
         ):
             raise ValueError("heartbeat_interval_seconds must be a finite number.")
         heartbeat = float(self.heartbeat_interval_seconds)
         if heartbeat < _MIN_HEARTBEAT_SECONDS or heartbeat >= _SERVER_IDLE_TIMEOUT_SECONDS:
             raise ValueError("heartbeat_interval_seconds must be in [5, 60).")
-        if (
-            type(self.receive_timeout_seconds) not in (int, float)
-            or not math.isfinite(float(self.receive_timeout_seconds))
+        if type(self.receive_timeout_seconds) not in (int, float) or not math.isfinite(
+            float(self.receive_timeout_seconds)
         ):
             raise ValueError("receive_timeout_seconds must be a finite number.")
         receive_timeout = float(self.receive_timeout_seconds)
@@ -634,7 +632,7 @@ def build_capture_report(database_path: Path, parquet_dir: Path) -> dict[str, ob
 
     parquet_files = tuple(sorted(parquet_dir.resolve().glob("*.parquet")))
     parquet_bytes = sum(path.stat().st_size for path in parquet_files)
-    raw_bytes = int(report["payload_bytes"])
+    raw_bytes = int(total_payload_bytes)
     report.update(
         {
             "parquet_files": len(parquet_files),
@@ -731,9 +729,11 @@ def data1a_capture_health(
             "gaps": report.get("gaps"),
             "reconnects": report.get("reconnects"),
             "limitations": [
-                "Published Parquet parts are reconstructable; a crash can lose the in-memory segment.",
+                "Published Parquet parts are reconstructable; a crash can lose the "
+                "in-memory segment.",
                 "This is not 24/7 service evidence or a trading edge.",
-                "Hyperliquid supplies no sequence IDs on these feeds; gaps are conservative markers.",
+                "Hyperliquid supplies no sequence IDs on these feeds; gaps are "
+                "conservative markers.",
                 "Public stream only; no API keys, signing, or extra venues.",
             ],
         },

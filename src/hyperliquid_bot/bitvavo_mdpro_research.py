@@ -1748,7 +1748,7 @@ def build_capture_report(database_path: Path, parquet_dir: Path) -> dict[str, ob
 
     parquet_files = tuple(sorted(parquet_dir.resolve().glob("*.parquet")))
     parquet_bytes = sum(path.stat().st_size for path in parquet_files)
-    raw_bytes = int(report["payload_bytes"])
+    raw_bytes = int(total_payload_bytes)
     report.update(
         {
             "parquet_files": len(parquet_files),
@@ -1846,40 +1846,41 @@ def data1e_capture_health(
     elapsed = elapsed_from_report(report)
     return attach_observability_health(
         {
-        "schema": DATA1E_HEALTH_SCHEMA,
-        "kind": "capture-health",
-        "path_contract": DATA1E_PATH_CONTRACT_ID,
-        "run_id": run_id,
-        "status": status,
-        "duration_seconds": duration,
-        "retained": duration > SMOKE_CAPTURE_SECONDS,
-        "twenty_four_seven": False,
-        "credentialless": False,
-        "authenticated_read_only": True,
-        "signing": False,
-        "feed": data1e_feed_name(include_ticker=include_ticker),
-        "feed_product": BITVAVO_MDPRO_FEED_PRODUCT,
-        "channels": channels,
-        "book_depth": BITVAVO_MDPRO_BOOK_DEPTH,
-        "include_ticker": include_ticker,
-        "standard_fallback": False,
-        "events": report.get("events"),
-        "payload_bytes": report.get("payload_bytes"),
-        "parquet_files": report.get("parquet_files"),
-        "parquet_bytes": report.get("parquet_bytes"),
-        "gaps": report.get("gaps"),
-        "reconnects": report.get("reconnects"),
-        "limitations": [
-            "Published Parquet parts are reconstructable; a crash can lose the in-memory segment.",
-            "This is not 24/7 service evidence or a trading edge.",
-            "Market Data Pro is authenticated View-only L2 plus trades on the same Pro socket, "
-            "never L3/MBO.",
-            "Ticker is optional and flagged; it is never implied by the default book+trades "
-            "subscribe set.",
-            "This capture never falls back to DATA-1D Standard.",
-            "Keys enter only through BITVAVO_MDPRO_API_KEY and BITVAVO_MDPRO_API_SECRET.",
-            "Trade, withdrawal, transfer, or signing key names fail closed.",
-        ],
+            "schema": DATA1E_HEALTH_SCHEMA,
+            "kind": "capture-health",
+            "path_contract": DATA1E_PATH_CONTRACT_ID,
+            "run_id": run_id,
+            "status": status,
+            "duration_seconds": duration,
+            "retained": duration > SMOKE_CAPTURE_SECONDS,
+            "twenty_four_seven": False,
+            "credentialless": False,
+            "authenticated_read_only": True,
+            "signing": False,
+            "feed": data1e_feed_name(include_ticker=include_ticker),
+            "feed_product": BITVAVO_MDPRO_FEED_PRODUCT,
+            "channels": channels,
+            "book_depth": BITVAVO_MDPRO_BOOK_DEPTH,
+            "include_ticker": include_ticker,
+            "standard_fallback": False,
+            "events": report.get("events"),
+            "payload_bytes": report.get("payload_bytes"),
+            "parquet_files": report.get("parquet_files"),
+            "parquet_bytes": report.get("parquet_bytes"),
+            "gaps": report.get("gaps"),
+            "reconnects": report.get("reconnects"),
+            "limitations": [
+                "Published Parquet parts are reconstructable; a crash can lose the "
+                "in-memory segment.",
+                "This is not 24/7 service evidence or a trading edge.",
+                "Market Data Pro is authenticated View-only L2 plus trades on the same Pro socket, "
+                "never L3/MBO.",
+                "Ticker is optional and flagged; it is never implied by the default book+trades "
+                "subscribe set.",
+                "This capture never falls back to DATA-1D Standard.",
+                "Keys enter only through BITVAVO_MDPRO_API_KEY and BITVAVO_MDPRO_API_SECRET.",
+                "Trade, withdrawal, transfer, or signing key names fail closed.",
+            ],
         },
         report,
         elapsed_seconds=elapsed,

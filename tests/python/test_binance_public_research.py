@@ -984,7 +984,9 @@ def test_data1f_claim_and_health_are_create_only_and_not_twenty_four_seven() -> 
     assert health["credentialless"] is True
     assert health["elapsed_seconds"] == 86_400.0
     assert health["duration_seconds"] == 86_400.0
-    assert health["transport_profiles"][0]["transport_profile"] == "spot"
+    profiles = health["transport_profiles"]
+    assert isinstance(profiles, list)
+    assert profiles[0]["transport_profile"] == "spot"
 
 
 def test_cli_modes_are_mutually_exclusive(tmp_path: Path) -> None:

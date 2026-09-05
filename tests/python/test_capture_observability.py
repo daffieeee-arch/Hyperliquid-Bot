@@ -19,6 +19,8 @@ from hyperliquid_bot.capture_observability import (
     require_elapsed_seconds,
     transport_exception_fields,
 )
+
+
 def test_elapsed_seconds_is_separate_from_requested_duration() -> None:
     assert require_elapsed_seconds(12.5) == 12.5
     assert elapsed_from_report({"elapsed_seconds": 41.0}) == 41.0
@@ -38,13 +40,7 @@ def test_elapsed_seconds_is_separate_from_requested_duration() -> None:
 
 
 def test_transport_exception_fields_keep_code_and_hide_reason() -> None:
-    try:
-        closed = ConnectionClosedError(
-            received=Close(CloseCode.GOING_AWAY, "do-not-store"),
-            sent=None,
-        )
-    except TypeError:
-        closed = ConnectionClosedError(Close(1001, "do-not-store"), None)
+    closed = ConnectionClosedError(Close(CloseCode.GOING_AWAY, "do-not-store"), None)
     fields = transport_exception_fields(closed)
     assert fields["exception_class"] == "ConnectionClosedError"
     assert int(fields["close_code"]) == 1001
@@ -84,7 +80,9 @@ def test_transport_counts_exclude_integrity_events(tmp_path: Path) -> None:
         assert report["gaps"] == 2
         assert report["reconnects"] == 1
         assert report["integrity_events"] == 1
-        profiles = {item["transport_profile"]: item for item in report["transport_profiles"]}
+        raw_profiles = report["transport_profiles"]
+        assert isinstance(raw_profiles, list)
+        profiles = {item["transport_profile"]: item for item in raw_profiles}
         assert profiles["spot"] == {"transport_profile": "spot", "gaps": 1, "reconnects": 1}
         assert profiles["usdm_market"] == {
             "transport_profile": "usdm_market",
@@ -116,4 +114,3 @@ def test_capture_log_is_non_empty_and_payload_free(tmp_path: Path) -> None:
     assert "1001" in text
     assert "api-key" not in text.lower()
     assert "BEGIN PRIVATE KEY" not in text
-

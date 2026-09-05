@@ -1726,7 +1726,7 @@ def build_capture_report(database_path: Path, parquet_dir: Path) -> dict[str, ob
 
     parquet_files = tuple(sorted(parquet_dir.resolve().glob("*.parquet")))
     parquet_bytes = sum(path.stat().st_size for path in parquet_files)
-    raw_bytes = int(report["payload_bytes"])
+    raw_bytes = int(total_payload_bytes)
     report.update(
         {
             "parquet_files": len(parquet_files),
@@ -1824,32 +1824,35 @@ def data1b_capture_health(
     elapsed = elapsed_from_report(report)
     return attach_observability_health(
         {
-        "schema": DATA1B_HEALTH_SCHEMA,
-        "kind": "capture-health",
-        "path_contract": DATA1B_PATH_CONTRACT_ID,
-        "run_id": run_id,
-        "status": status,
-        "duration_seconds": duration,
-        "retained": duration > SMOKE_CAPTURE_SECONDS,
-        "twenty_four_seven": False,
-        "credentialless": not include_l3,
-        "authenticated_l3": include_l3,
-        "signing": False,
-        "events": report.get("events"),
-        "payload_bytes": report.get("payload_bytes"),
-        "parquet_files": report.get("parquet_files"),
-        "parquet_bytes": report.get("parquet_bytes"),
-        "gaps": report.get("gaps"),
-        "reconnects": report.get("reconnects"),
-        "limitations": [
-            "Published Parquet parts are reconstructable; a crash can lose the in-memory segment.",
-            "This is not 24/7 service evidence or a trading edge.",
-            "Default retained path is public L2 + trades at depth 100; "
-            "optional L3 is never a silent fallback.",
-            "Optional L3 keys enter only through KRAKEN_WS_API_KEY and KRAKEN_WS_API_SECRET.",
-            "Generic KRAKEN_API_KEY / KRAKEN_API_SECRET names fail closed as the wrong key type.",
-            "Kraken CRC32 still covers only the best 10 price levels even at subscribed depth 100.",
-        ],
+            "schema": DATA1B_HEALTH_SCHEMA,
+            "kind": "capture-health",
+            "path_contract": DATA1B_PATH_CONTRACT_ID,
+            "run_id": run_id,
+            "status": status,
+            "duration_seconds": duration,
+            "retained": duration > SMOKE_CAPTURE_SECONDS,
+            "twenty_four_seven": False,
+            "credentialless": not include_l3,
+            "authenticated_l3": include_l3,
+            "signing": False,
+            "events": report.get("events"),
+            "payload_bytes": report.get("payload_bytes"),
+            "parquet_files": report.get("parquet_files"),
+            "parquet_bytes": report.get("parquet_bytes"),
+            "gaps": report.get("gaps"),
+            "reconnects": report.get("reconnects"),
+            "limitations": [
+                "Published Parquet parts are reconstructable; a crash can lose the "
+                "in-memory segment.",
+                "This is not 24/7 service evidence or a trading edge.",
+                "Default retained path is public L2 + trades at depth 100; "
+                "optional L3 is never a silent fallback.",
+                "Optional L3 keys enter only through KRAKEN_WS_API_KEY and KRAKEN_WS_API_SECRET.",
+                "Generic KRAKEN_API_KEY / KRAKEN_API_SECRET names fail closed as the "
+                "wrong key type.",
+                "Kraken CRC32 still covers only the best 10 price levels even at "
+                "subscribed depth 100.",
+            ],
         },
         report,
         elapsed_seconds=elapsed,

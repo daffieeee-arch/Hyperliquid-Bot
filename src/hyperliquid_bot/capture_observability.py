@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import math
 from pathlib import Path
-from typing import Final
+from typing import Final, cast
 
 import duckdb
 
@@ -37,7 +37,7 @@ def require_elapsed_seconds(value: object) -> float:
 
     if type(value) not in (int, float):
         raise TypeError("elapsed_seconds must be a built-in number.")
-    elapsed = float(value)
+    elapsed = float(cast(int | float, value))
     if not math.isfinite(elapsed) or elapsed < 0.0:
         raise ValueError("elapsed_seconds must be a non-negative finite number.")
     return elapsed
@@ -170,8 +170,8 @@ def add_transport_counts(
         }
         for name in names
     ]
-    report["gaps"] = sum(item["gaps"] for item in profiles)
-    report["reconnects"] = sum(item["reconnects"] for item in profiles)
+    report["gaps"] = sum(gap_by_profile.get(name, 0) for name in names)
+    report["reconnects"] = sum(reconnect_by_profile.get(name, 0) for name in names)
     report["transport_profiles"] = profiles
     report["integrity_events"] = int(integrity_row[0])
     return report

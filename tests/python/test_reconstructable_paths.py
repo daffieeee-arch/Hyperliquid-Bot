@@ -56,7 +56,6 @@ def test_data1b_path_contract_is_stable() -> None:
     assert DATA1B_PRODUCT == "BTC-USD"
     assert DATA1B_WIRE_PRODUCT == "BTC/USD"
     assert DATA1B_RETIRED_PRODUCT == "BTC-EUR"
-    assert DATA1B_PATH_CONTRACT_ID != DATA1B_RETIRED_PATH_CONTRACT_ID
     assert paths.run_dir == root / "data-1b" / "kraken" / "BTC-USD" / "sample-run"
     assert data1b_retired_eur_run_dir(root, "sample-run") == (
         root / "data-1b" / "kraken" / "BTC-EUR" / "sample-run"

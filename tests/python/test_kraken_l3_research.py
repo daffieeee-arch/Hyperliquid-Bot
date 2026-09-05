@@ -44,9 +44,9 @@ from hyperliquid_bot.kraken_l3_research import (
     _argument_parser,
     _L2BookState,
     _L3BookState,
-    _TradeState,
     _require_bounded_duration,
     _resolve_cli_mode,
+    _TradeState,
     data1b_capture_claim,
     data1b_capture_health,
     data1b_feed_name,
@@ -1692,7 +1692,9 @@ def test_data1b_claim_and_health_are_create_only_and_not_twenty_four_seven() -> 
     assert health["elapsed_seconds"] == 86_400.0
     assert health["duration_seconds"] == 86_400.0
     assert any("best 10 price levels" in item for item in cast(list[str], health["limitations"]))
-    assert any("EUR microstructure is Bitvavo" in item for item in cast(list[str], health["limitations"]))
+    assert any(
+        "EUR microstructure is Bitvavo" in item for item in cast(list[str], health["limitations"])
+    )
     assert any("no silent EUR fallback" in item for item in cast(list[str], health["limitations"]))
 
 
@@ -1705,7 +1707,7 @@ def test_data1b_product_identity_is_usd_and_fails_closed_on_eur_aliases() -> Non
             require_kraken_research_product(rejected)
     with pytest.raises(KrakenDataIntegrityError, match="product identity"):
         require_kraken_research_product("ETH/USD")
-    eur_trade = {
+    eur_trade: dict[str, object] = {
         "channel": "trade",
         "type": "update",
         "data": [

@@ -31,8 +31,10 @@ The additional `public_*` fixtures are deterministic synthetic frames for DATA-1
 WebSocket frames use the documented combined-stream envelope and microsecond timestamp option.
 The depth snapshot is shaped after public REST `GET /api/v3/depth`; diff-depth quantities are
 absolute price-level quantities and `"0"` means deletion. The USDⓈ-M frames use the current
-routed `/market` combined JSON stream contract, including `bookTicker`. USDⓈ-M `aggTrade` is a 100-ms server
-aggregate, not an individual trade; `nq` excludes RPI quantity while `q` can include it. Public
+routed combined JSON stream contract: `/market` for `aggTrade`/`markPrice`/`forceOrder` and
+`/public` for `bookTicker`. Combined streams must not mix those categories. USDⓈ-M `aggTrade`
+is a 100-ms server aggregate, not an individual trade; `nq` excludes RPI quantity while `q` can
+include it. Public
 USDⓈ-M `bookTicker` excludes RPI liquidity. `forceOrder` exposes at most one exchange-selected
 liquidation snapshot for a symbol in each 1,000-ms interval; current generated documentation and
 the effective changelog differ on whether that means latest or largest. Silence cannot mean zero
@@ -41,8 +43,9 @@ liquidations.
 All additional values are synthetic. No frame was captured from Binance, and no account, API key,
 credential, order, wallet, or private data is present.
 
-Additional official schema basis, reviewed 2026-08-31:
+Additional official schema basis, reviewed 2026-08-31 and rechecked 2026-09-05:
 
+- https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/Important-WebSocket-Change-Notice#public-high-frequency-public-data
 - https://developers.binance.com/en/docs/products/spot/faqs/market_data_only
 - https://developers.binance.com/en/docs/products/spot/market-data/web-socket-streams
 - https://developers.binance.com/en/docs/products/spot/market-data/rest-api/Order-Book

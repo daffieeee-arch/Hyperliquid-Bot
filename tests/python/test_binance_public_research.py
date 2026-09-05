@@ -24,6 +24,7 @@ from hyperliquid_bot.binance_public_research import (
     BINANCE_USDM_MARKET_WEBSOCKET_URL,
     BINANCE_USDM_OPEN_INTEREST_URL,
     BINANCE_USDM_PRODUCT,
+    BINANCE_USDM_PUBLIC_WEBSOCKET_URL,
     MAX_CAPTURE_SECONDS,
     RETAINED_MAX_RECONNECTS,
     SMOKE_CAPTURE_SECONDS,
@@ -213,11 +214,57 @@ def test_fixed_scope_uses_only_public_data_routes() -> None:
     assert "btcusdt@depth@100ms" in BINANCE_SPOT_WEBSOCKET_URL
     assert "timeUnit=MICROSECOND" in BINANCE_SPOT_WEBSOCKET_URL
     assert "/market/stream?" in BINANCE_USDM_MARKET_WEBSOCKET_URL
-    assert "btcusdt@bookTicker" in BINANCE_USDM_MARKET_WEBSOCKET_URL
-    assert "/public/stream?" not in BINANCE_USDM_MARKET_WEBSOCKET_URL
-    assert BINANCE_USDM_MARKET_WEBSOCKET_URL.count("stream?streams=") == 1
+    assert "/public/stream?" in BINANCE_USDM_PUBLIC_WEBSOCKET_URL
     assert BINANCE_SPOT_DEPTH_URL.startswith("https://data-api.binance.vision/")
     assert BINANCE_USDM_OPEN_INTEREST_URL.endswith("symbol=BTCUSDT")
+
+
+def _combined_stream_names(url: str) -> tuple[str, ...]:
+    marker = "stream?streams="
+    start = url.index(marker) + len(marker)
+    query = url[start:]
+    streams, _, _rest = query.partition("&")
+    return tuple(part for part in streams.split("/") if part)
+
+
+def test_usdm_combined_streams_follow_binance_2026_category_split() -> None:
+    assert BINANCE_USDM_PUBLIC_WEBSOCKET_URL.startswith(
+        "wss://fstream.binance.com/public/stream?streams="
+    )
+    assert BINANCE_USDM_MARKET_WEBSOCKET_URL.startswith(
+        "wss://fstream.binance.com/market/stream?streams="
+    )
+    public_streams = _combined_stream_names(BINANCE_USDM_PUBLIC_WEBSOCKET_URL)
+    market_streams = _combined_stream_names(BINANCE_USDM_MARKET_WEBSOCKET_URL)
+    assert public_streams == ("btcusdt@bookTicker",)
+    assert market_streams == (
+        "btcusdt@aggTrade",
+        "btcusdt@markPrice@1s",
+        "btcusdt@forceOrder",
+    )
+    assert "btcusdt@bookTicker" not in market_streams
+    assert "bookTicker" not in BINANCE_USDM_MARKET_WEBSOCKET_URL
+    assert "/public/" not in BINANCE_USDM_MARKET_WEBSOCKET_URL
+    assert "/market/" not in BINANCE_USDM_PUBLIC_WEBSOCKET_URL
+    public_category = {"bookTicker", "depth"}
+    market_category = {
+        "aggTrade",
+        "markPrice",
+        "markPrice@1s",
+        "forceOrder",
+        "kline",
+        "ticker",
+    }
+
+    def _channel(stream: str) -> str:
+        return stream.split("@", 1)[1]
+
+    public_channels = {_channel(stream) for stream in public_streams}
+    market_channels = {_channel(stream) for stream in market_streams}
+    assert public_channels <= public_category
+    assert market_channels <= market_category
+    assert public_channels.isdisjoint(market_category)
+    assert market_channels.isdisjoint(public_category)
 
     signature = inspect.signature(BinancePublicResearchCollector)
     assert not ({"key", "secret", "token", "credential", "auth"} & set(signature.parameters))
@@ -410,7 +457,7 @@ def _collector(
     include_force_order: bool = True,
     max_reconnects: int = 0,
 ) -> tuple[BinancePublicResearchCollector, ScriptedConnectionFactory]:
-    stop_after = StopAfterConnections(stop_event, 2)
+    stop_after = StopAfterConnections(stop_event, 3)
     spot_factory = ScriptedConnectionFactory(
         spot_connections
         or (
@@ -437,10 +484,17 @@ def _collector(
                             if include_force_order
                             else None
                         ),
-                        _fixture_text("public_usdm_book_ticker_frame.json"),
                     )
                     if frame is not None
                 ),
+                on_last=stop_after,
+            ),
+        )
+    )
+    public_factory = ScriptedConnectionFactory(
+        (
+            FakeConnection(
+                (_fixture_text("public_usdm_book_ticker_frame.json"),),
                 on_last=stop_after,
             ),
         )
@@ -461,6 +515,7 @@ def _collector(
             ),
             spot_connection_factory=spot_factory,
             usdm_market_connection_factory=market_factory,
+            usdm_public_connection_factory=public_factory,
             spot_depth_fetcher=spot_snapshot,
             usdm_open_interest_fetcher=open_interest,
             utc_ns=Counter(1000),
@@ -630,7 +685,7 @@ async def test_parquet_roundtrip_and_all_binance_views_are_source_linked(tmp_pat
 async def test_transport_reconnect_uses_fresh_session_and_gap_marker() -> None:
     sink = MemorySink()
     stop_event = asyncio.Event()
-    stop_after = StopAfterConnections(stop_event, 2)
+    stop_after = StopAfterConnections(stop_event, 3)
     first = FakeConnection((ConnectionError("synthetic disconnect"),))
     second = FakeConnection(
         (
@@ -646,16 +701,22 @@ async def test_transport_reconnect_uses_fresh_session_and_gap_marker() -> None:
         spot_connections=(first, second),
         max_reconnects=1,
     )
-    # Replace the helper's callbacks for the unaffected socket with this test's coordinator.
+    # Replace the helper's callbacks for the unaffected sockets with this test's coordinator.
     collector._usdm_market_connection_factory = ScriptedConnectionFactory(
         (
             FakeConnection(
                 (
                     _fixture_text("public_usdm_agg_trade_frame.json"),
                     _fixture_text("public_usdm_mark_price_frame.json"),
-                    _fixture_text("public_usdm_book_ticker_frame.json"),
                 ),
                 on_last=stop_after,
+            ),
+        )
+    )
+    collector._usdm_public_connection_factory = ScriptedConnectionFactory(
+        (
+            FakeConnection(
+                (_fixture_text("public_usdm_book_ticker_frame.json"),), on_last=stop_after
             ),
         )
     )
@@ -693,7 +754,7 @@ async def test_transport_reconnect_uses_fresh_session_and_gap_marker() -> None:
 async def test_documented_spot_server_shutdown_is_exact_raw_and_reconnects() -> None:
     sink = MemorySink()
     stop_event = asyncio.Event()
-    stop_after = StopAfterConnections(stop_event, 2)
+    stop_after = StopAfterConnections(stop_event, 3)
     first = FakeConnection((_fixture_text("public_spot_server_shutdown_frame.json"),))
     second = FakeConnection(
         (
@@ -715,9 +776,15 @@ async def test_documented_spot_server_shutdown_is_exact_raw_and_reconnects() -> 
                 (
                     _fixture_text("public_usdm_agg_trade_frame.json"),
                     _fixture_text("public_usdm_mark_price_frame.json"),
-                    _fixture_text("public_usdm_book_ticker_frame.json"),
                 ),
                 on_last=stop_after,
+            ),
+        )
+    )
+    collector._usdm_public_connection_factory = ScriptedConnectionFactory(
+        (
+            FakeConnection(
+                (_fixture_text("public_usdm_book_ticker_frame.json"),), on_last=stop_after
             ),
         )
     )
@@ -940,8 +1007,8 @@ async def test_reconstructable_capture_writes_the_path_contract(tmp_path: Path) 
     assert health["duration_seconds"] == 86_400.0
     assert float(health["elapsed_seconds"]) < float(health["duration_seconds"])
     assert "independent_websocket_profiles" in claim
-    assert claim["independent_websocket_profiles"] == ["spot", "usdm_market"]
-    assert "usdm_public_websocket_url" not in claim
+    assert claim["independent_websocket_profiles"] == ["spot", "usdm_market", "usdm_public"]
+    assert claim["usdm_public_websocket_url"] == BINANCE_USDM_PUBLIC_WEBSOCKET_URL
     log_path = paths.run_dir / "capture-sample-run.log"
     assert log_path.is_file()
     assert "data1f start" in log_path.read_text(encoding="utf-8")
@@ -972,6 +1039,7 @@ def test_data1f_claim_and_health_are_create_only_and_not_twenty_four_seven() -> 
             "transport_profiles": [
                 {"transport_profile": "spot", "gaps": 0, "reconnects": 0},
                 {"transport_profile": "usdm_market", "gaps": 0, "reconnects": 0},
+                {"transport_profile": "usdm_public", "gaps": 0, "reconnects": 0},
             ],
             "integrity_events": 0,
         },

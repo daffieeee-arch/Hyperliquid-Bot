@@ -994,20 +994,21 @@ Phase 1 of DATA-1F under D10 — multi-venue market data and feed coverage is of
 credential-free. It fixes two distinct products that share the native symbol `BTCUSDT`: Spot and
 the USDⓈ-M perpetual. Spot uses the market-data-only domain for individual `trade`, BBO
 `bookTicker`, and 100-ms diff-depth joined to one public depth-1,000 REST snapshot. USDⓈ-M uses
-the current routed `/market` combined socket for 100-ms `aggTrade`, `markPrice@1s`, `forceOrder`,
-and `bookTicker`, and one public current-open-interest REST response. USDⓈ-M `bookTicker` is not
-a separate `/public/stream` profile: merging it onto the same market/combined family as
-`aggTrade`/`markPrice`/`forceOrder` removes one independent WebSocket reconnect/gap counter.
-Spot BBO remains on the Spot combined stream and is not treated as a substitute for USDⓈ-M BBO.
-The adapter does not use an account, API key, signing, user-data stream, SBE, SDK, order method, or
-execution path, and it adds no dependency or canonical/provenance contract.
+the current routed `/market` socket for 100-ms `aggTrade`, `markPrice@1s`, and `forceOrder`, the
+routed `/public` socket for `bookTicker`, and one public current-open-interest REST response.
+Binance's 2026 USDⓈ-M WebSocket split places high-frequency `bookTicker`/`depth` on `/public`
+and regular `aggTrade`/`markPrice`/`forceOrder` on `/market`; combined streams must not mix
+those categories on one connection. Spot BBO remains on the Spot combined stream and is not
+treated as a substitute for USDⓈ-M BBO. The adapter does not use an account, API key, signing,
+user-data stream, SBE, SDK, order method, or execution path, and it adds no dependency or
+canonical/provenance contract.
 
 Every returned WebSocket application frame is timestamped and copied to immutable bytes before
 JSON parsing. A successful REST response is similarly timestamped at response completion and kept
 as the exact returned body. All source frames then use the shared DATA-1A raw record and atomic
-ZSTD-Parquet writer. Two WebSocket connections (`spot` and `usdm_market`) have distinct session IDs
-but share one run-wide
-ordinal. Direct combined-stream URLs have no subscription acknowledgement, so DATA-1F records
+ZSTD-Parquet writer. Three WebSocket connections (`spot`, `usdm_market`, and `usdm_public`)
+have distinct session IDs but share one run-wide ordinal. Direct combined-stream URLs have no
+subscription acknowledgement, so DATA-1F records
 honest local `subscription_requested` and first-frame `subscription_observed` markers rather than
 inventing an ACK. A reconnect creates a fresh session and, for Spot depth, empty book state and a
 fresh REST snapshot. The documented Spot `!serverShutdown` control event is retained byte-exactly,
@@ -1117,6 +1118,7 @@ presence does not establish liquidation completeness, just as silence would not 
 
 Official contracts checked for this slice:
 
+- https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/Important-WebSocket-Change-Notice#public-high-frequency-public-data
 - https://developers.binance.com/en/docs/products/spot/faqs/market_data_only
 - https://developers.binance.com/en/docs/products/spot/market-data/web-socket-streams
 - https://developers.binance.com/en/docs/products/spot/market-data/rest-api/Order-Book

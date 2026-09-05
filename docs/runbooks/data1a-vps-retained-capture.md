@@ -91,14 +91,31 @@ The reconstructable command is create-only. An existing run directory is refused
 - Do not commit `raw/part-*.parquet` or `research.duckdb`.
 - The process still exits at the requested duration or on SIGINT/SIGTERM.
 
+## Protect a 72h evidence window
+
+Do **not** stop a mid-window 72h evidence run. Cloud Agents must not stop
+captures. If systemd supervises the collector, use `Type=simple`,
+`KillSignal=SIGINT`, and `Restart=no`. Do not `systemctl stop` or
+`Restart=always` during an assigned 72h tape.
+
+After stop, `duration_seconds` is the requested window and `elapsed_seconds`
+is wall-clock time until stop. `OPERATOR_STOP` with a shorter elapsed time is
+an operator interrupt, not a completed tape. Collector log:
+`<run_dir>/capture-<run_id>.log`.
+
+Heartbeat: application `{"method":"ping"}` every 45s plus a 60s receive
+timeout. A ~3h disconnect is not a missed 60s idle ping.
+
 ## How to stop
 
 ```bash
 # Ask the collector to finish the current in-memory segment and write health.
+# Do not do this during an assigned 72h evidence window.
 kill -TERM "${COLLECTOR_PID}"
 ```
 
 Expected health statuses: `COMPLETED`, `OPERATOR_STOP`, or `FAILED`.
+`elapsed_seconds` must be read separately from requested `duration_seconds`.
 
 ## How to continue later (there is no resume)
 

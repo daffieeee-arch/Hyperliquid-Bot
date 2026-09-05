@@ -70,6 +70,7 @@ the `raw/` directory):
 ~/hyperliquid-artifacts/reconstructable/data-1f/binance/BTCUSDT/<run_id>/
   capture-claim.json
   capture-health.json
+  capture-<run_id>.log
   raw/part-*.parquet
   research.duckdb
 ```
@@ -235,9 +236,34 @@ The status helper prints tmux liveness for `bn-capture`, observational
 never prints payload bytes or secret values and never sends keys to
 `hl-capture`.
 
+## Protect a 72h evidence window
+
+When the assigned goal is a 72-hour reconstructable tape (`DURATION_SECONDS=259200`):
+
+- Do **not** send `C-c`, SIGINT, SIGTERM, `tmux kill-session`, or `wsl --shutdown`.
+- Cloud Agents must not SSH, attach, or stop tmux `hl-capture` / `bn-capture` /
+  `bv-capture` / `kr-capture`.
+- USD-M `bookTicker` now shares the `/market` combined socket with
+  `aggTrade`/`markPrice`/`forceOrder`. Reconnect accounting has two independent
+  WebSocket profiles (`spot`, `usdm_market`), not a third `/public` bookTicker
+  socket.
+- After stop, `duration_seconds` is the requested window and `elapsed_seconds`
+  is wall-clock time until stop. `OPERATOR_STOP` with
+  `elapsed_seconds` < `duration_seconds` is an operator interrupt, not a
+  completed 72h tape.
+- Transport `gaps` / `reconnects` are also listed under `transport_profiles`.
+  Integrity events such as `sequence_gap` still fail the run and are not
+  counted in `gaps`.
+
+Collector INFO log: `<run_dir>/capture-<run_id>.log` (must be non-empty; no
+payloads or secrets). Optional tmux copy:
+`<artifact-root>/logs/capture-<run_id>.log`.
+
 ## How to stop
 
-Ask the collector to finish the current in-memory segment and write health:
+Ask the collector to finish the current in-memory segment and write health
+**only when the assigned window is complete or CoS orders a stop**. Do not C-c
+a live 72h evidence run.
 
 ```bash
 tmux send-keys -t bn-capture C-c

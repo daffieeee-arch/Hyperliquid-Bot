@@ -28,6 +28,15 @@ from websockets.asyncio.client import connect
 from websockets.exceptions import PayloadTooBig, WebSocketException
 
 from .binance_spot_trades import BinanceTimestampUnit, decode_binance_spot_trade
+from .capture_observability import (
+    add_transport_counts,
+    attach_observability_health,
+    capture_log_path,
+    capture_logger,
+    configure_capture_logger,
+    elapsed_from_report,
+    transport_exception_fields,
+)
 from .parquet_research import ParquetResearchWriter, ParquetRotation, create_research_catalog
 from .raw_research import (
     RAW_RESEARCH_SCHEMA_VERSION,
@@ -63,10 +72,7 @@ BINANCE_SPOT_WEBSOCKET_URL: Final = (
 )
 BINANCE_USDM_MARKET_WEBSOCKET_URL: Final = (
     "wss://fstream.binance.com/market/stream?streams="
-    "btcusdt@aggTrade/btcusdt@markPrice@1s/btcusdt@forceOrder"
-)
-BINANCE_USDM_PUBLIC_WEBSOCKET_URL: Final = (
-    "wss://fstream.binance.com/public/stream?streams=btcusdt@bookTicker"
+    "btcusdt@aggTrade/btcusdt@markPrice@1s/btcusdt@forceOrder/btcusdt@bookTicker"
 )
 BINANCE_SPOT_DEPTH_URL: Final = (
     "https://data-api.binance.vision/api/v3/depth?symbol=BTCUSDT&limit=1000"
@@ -84,8 +90,6 @@ _USDM_MARKET_STREAM_CHANNELS: Final = {
     "btcusdt@aggTrade": "usdm_agg_trade",
     "btcusdt@markPrice@1s": "usdm_mark_price",
     "btcusdt@forceOrder": "usdm_force_order",
-}
-_USDM_PUBLIC_STREAM_CHANNELS: Final = {
     "btcusdt@bookTicker": "usdm_book_ticker",
 }
 _DECIMAL_TEXT: Final = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?\Z")
@@ -341,13 +345,7 @@ _USDM_MARKET_PROFILE: Final = _StreamProfile(
     "usdm_market",
     BINANCE_USDM_PRODUCT,
     _USDM_MARKET_STREAM_CHANNELS,
-    frozenset({"btcusdt@aggTrade", "btcusdt@markPrice@1s"}),
-)
-_USDM_PUBLIC_PROFILE: Final = _StreamProfile(
-    "usdm_public",
-    BINANCE_USDM_PRODUCT,
-    _USDM_PUBLIC_STREAM_CHANNELS,
-    frozenset(_USDM_PUBLIC_STREAM_CHANNELS),
+    frozenset({"btcusdt@aggTrade", "btcusdt@markPrice@1s", "btcusdt@bookTicker"}),
 )
 
 
@@ -361,7 +359,6 @@ class BinancePublicResearchCollector:
         config: BinancePublicResearchConfig | None = None,
         spot_connection_factory: ConnectionFactory | None = None,
         usdm_market_connection_factory: ConnectionFactory | None = None,
-        usdm_public_connection_factory: ConnectionFactory | None = None,
         spot_depth_fetcher: PayloadFetcher | None = None,
         usdm_open_interest_fetcher: PayloadFetcher | None = None,
         utc_ns: NanosecondClock = time.time_ns,
@@ -377,10 +374,6 @@ class BinancePublicResearchCollector:
         self._usdm_market_connection_factory = (
             usdm_market_connection_factory
             or _connection_factory(BINANCE_USDM_MARKET_WEBSOCKET_URL, self._config)
-        )
-        self._usdm_public_connection_factory = (
-            usdm_public_connection_factory
-            or _connection_factory(BINANCE_USDM_PUBLIC_WEBSOCKET_URL, self._config)
         )
         self._spot_depth_fetcher = spot_depth_fetcher or _payload_fetcher(
             BINANCE_SPOT_DEPTH_URL,
@@ -425,13 +418,6 @@ class BinancePublicResearchCollector:
                     internal_stop,
                 )
             ),
-            asyncio.create_task(
-                self._run_stream(
-                    _USDM_PUBLIC_PROFILE,
-                    self._usdm_public_connection_factory,
-                    internal_stop,
-                )
-            ),
             asyncio.create_task(self._capture_open_interest(internal_stop)),
         )
         timer = asyncio.create_task(asyncio.sleep(float(duration_seconds)))
@@ -456,7 +442,7 @@ class BinancePublicResearchCollector:
                     task_error = task.exception()
                     if task_error is not None:
                         failure = task_error
-                    elif task is not tasks[3]:
+                    elif task is not tasks[2]:
                         failure = BinanceTransportError(
                             "Binance required public stream ended unexpectedly."
                         )
@@ -501,6 +487,10 @@ class BinancePublicResearchCollector:
                 if profile is _SPOT_PROFILE
                 else None
             )
+            capture_logger().info(
+                "binance session_start transport_profile=%s",
+                profile.name,
+            )
             await self._marker(
                 profile.product,
                 "session",
@@ -544,7 +534,11 @@ class BinancePublicResearchCollector:
                     profile.product,
                     "session",
                     session_id,
-                    {"event": "disconnect", "reason": "venue_server_shutdown"},
+                    {
+                        "event": "disconnect",
+                        "reason": "venue_server_shutdown",
+                        "transport_profile": profile.name,
+                    },
                 )
                 await self._quality(
                     profile.product,
@@ -552,6 +546,7 @@ class BinancePublicResearchCollector:
                     "gap",
                     "venue_server_shutdown",
                     None,
+                    extra={"transport_profile": profile.name},
                 )
                 if reconnects >= self._config.max_reconnects:
                     stop_event.set()
@@ -559,11 +554,20 @@ class BinancePublicResearchCollector:
                         "Binance public reconnect bound was exhausted."
                     ) from None
                 reconnects += 1
+                capture_logger().info(
+                    "binance reconnect transport_profile=%s attempt=%s reason=venue_server_shutdown",
+                    profile.name,
+                    reconnects,
+                )
                 await self._marker(
                     profile.product,
                     "session",
                     session_id,
-                    {"event": "reconnect", "attempt": reconnects},
+                    {
+                        "event": "reconnect",
+                        "attempt": reconnects,
+                        "transport_profile": profile.name,
+                    },
                 )
                 await _wait_or_stop(self._config.reconnect_delay_seconds, stop_event)
             except PayloadTooBig:
@@ -573,18 +577,31 @@ class BinancePublicResearchCollector:
                     "truncation_error",
                     "transport_payload_truncated",
                     None,
+                    extra={"transport_profile": profile.name},
                 )
                 stop_event.set()
                 raise BinanceDataIntegrityError(
                     "Binance WebSocket payload exceeded the transport bound.",
                     quality_event="truncation_error",
                 ) from None
-            except (WebSocketException, OSError, ConnectionError):
+            except (WebSocketException, OSError, ConnectionError) as error:
+                failure_fields = transport_exception_fields(error)
+                capture_logger().info(
+                    "binance disconnect transport_profile=%s exception_class=%s close_code=%s",
+                    profile.name,
+                    failure_fields.get("exception_class"),
+                    failure_fields.get("close_code"),
+                )
                 await self._marker(
                     profile.product,
                     "session",
                     session_id,
-                    {"event": "disconnect", "reason": "transport_failure"},
+                    {
+                        "event": "disconnect",
+                        "reason": "transport_failure",
+                        "transport_profile": profile.name,
+                        **failure_fields,
+                    },
                 )
                 await self._quality(
                     profile.product,
@@ -592,6 +609,7 @@ class BinancePublicResearchCollector:
                     "gap",
                     "transport_disconnect",
                     None,
+                    extra={"transport_profile": profile.name, **failure_fields},
                 )
                 if stop_event.is_set():
                     return
@@ -601,11 +619,20 @@ class BinancePublicResearchCollector:
                         "Binance public reconnect bound was exhausted."
                     ) from None
                 reconnects += 1
+                capture_logger().info(
+                    "binance reconnect transport_profile=%s attempt=%s",
+                    profile.name,
+                    reconnects,
+                )
                 await self._marker(
                     profile.product,
                     "session",
                     session_id,
-                    {"event": "reconnect", "attempt": reconnects},
+                    {
+                        "event": "reconnect",
+                        "attempt": reconnects,
+                        "transport_profile": profile.name,
+                    },
                 )
                 await _wait_or_stop(self._config.reconnect_delay_seconds, stop_event)
             except BaseException:
@@ -1019,10 +1046,13 @@ class BinancePublicResearchCollector:
         event: str,
         reason: str,
         raw_message_ordinal: int | None,
+        extra: dict[str, object] | None = None,
     ) -> None:
         marker: dict[str, object] = {"event": event, "reason": reason}
         if raw_message_ordinal is not None:
             marker["raw_message_ordinal"] = raw_message_ordinal
+        if extra:
+            marker.update(extra)
         await self._marker(product, "data_quality", session_id, marker)
 
     async def _marker(
@@ -1628,41 +1658,42 @@ def build_capture_report(database_path: Path, parquet_dir: Path) -> dict[str, ob
         totals = connection.execute(
             "SELECT count(*), coalesce(sum(octet_length(payload_bytes)), 0) FROM raw_records"
         ).fetchone()
-        gap_row = connection.execute(
-            "SELECT count(*) FROM data_quality_events WHERE event = 'gap'"
-        ).fetchone()
-        reconnect_row = connection.execute(
-            "SELECT count(*) FROM sessions WHERE event = 'reconnect'"
-        ).fetchone()
-        if totals is None or gap_row is None or reconnect_row is None:
+        if totals is None:
             raise RuntimeError("DuckDB did not return the requested capture aggregates.")
         total_events, total_payload_bytes = totals
-        gaps = gap_row[0]
-        reconnects = reconnect_row[0]
+        report = {
+            "channels": [
+                {
+                    "channel": str(channel),
+                    "direction": str(direction),
+                    "events": int(events),
+                    "payload_bytes": int(payload_bytes),
+                }
+                for channel, direction, events, payload_bytes in channel_rows
+            ],
+            "events": int(total_events),
+            "payload_bytes": int(total_payload_bytes),
+        }
+        add_transport_counts(
+            connection,
+            report,
+            gap_event="gap",
+            reconnect_event="reconnect",
+        )
     finally:
         connection.close()
 
     parquet_files = tuple(sorted(parquet_dir.resolve().glob("*.parquet")))
     parquet_bytes = sum(path.stat().st_size for path in parquet_files)
-    raw_bytes = int(total_payload_bytes)
-    return {
-        "channels": [
-            {
-                "channel": str(channel),
-                "direction": str(direction),
-                "events": int(events),
-                "payload_bytes": int(payload_bytes),
-            }
-            for channel, direction, events, payload_bytes in channel_rows
-        ],
-        "events": int(total_events),
-        "payload_bytes": raw_bytes,
-        "parquet_files": len(parquet_files),
-        "parquet_bytes": parquet_bytes,
-        "raw_payload_to_parquet_ratio": (raw_bytes / parquet_bytes if parquet_bytes else None),
-        "gaps": int(gaps),
-        "reconnects": int(reconnects),
-    }
+    raw_bytes = int(report["payload_bytes"])
+    report.update(
+        {
+            "parquet_files": len(parquet_files),
+            "parquet_bytes": parquet_bytes,
+            "raw_payload_to_parquet_ratio": (raw_bytes / parquet_bytes if parquet_bytes else None),
+        }
+    )
+    return report
 
 
 async def run_bounded_capture(
@@ -1713,7 +1744,7 @@ def data1f_capture_claim(
         "feed": "binance-public-btcusdt-spot-usdm",
         "spot_websocket_url": BINANCE_SPOT_WEBSOCKET_URL,
         "usdm_market_websocket_url": BINANCE_USDM_MARKET_WEBSOCKET_URL,
-        "usdm_public_websocket_url": BINANCE_USDM_PUBLIC_WEBSOCKET_URL,
+        "independent_websocket_profiles": ["spot", "usdm_market"],
         "credentialless": True,
         "signing": False,
         "duration_seconds": duration,
@@ -1739,30 +1770,37 @@ def data1f_capture_health(
     if status not in {"COMPLETED", "OPERATOR_STOP", "FAILED"}:
         raise ValueError("DATA-1F capture-health status is outside the documented bound.")
     duration = _require_bounded_duration(duration_seconds)
-    return {
-        "schema": DATA1F_HEALTH_SCHEMA,
-        "kind": "capture-health",
-        "path_contract": DATA1F_PATH_CONTRACT_ID,
-        "run_id": run_id,
-        "status": status,
-        "duration_seconds": duration,
-        "retained": duration > SMOKE_CAPTURE_SECONDS,
-        "twenty_four_seven": False,
-        "credentialless": True,
-        "events": report.get("events"),
-        "payload_bytes": report.get("payload_bytes"),
-        "parquet_files": report.get("parquet_files"),
-        "parquet_bytes": report.get("parquet_bytes"),
-        "gaps": report.get("gaps"),
-        "reconnects": report.get("reconnects"),
-        "limitations": [
-            "Published Parquet parts are reconstructable; a crash can lose the in-memory segment.",
-            "This is not 24/7 service evidence or a trading edge.",
-            "Spot depth@100ms is heavier than DATA-1A; disk growth can reach tens of GB over 72h.",
-            "USD-M open interest is one REST observation at start, not a history.",
-            "Public stream only; no API keys, signing, or extra venues.",
-        ],
-    }
+    elapsed = elapsed_from_report(report)
+    return attach_observability_health(
+        {
+            "schema": DATA1F_HEALTH_SCHEMA,
+            "kind": "capture-health",
+            "path_contract": DATA1F_PATH_CONTRACT_ID,
+            "run_id": run_id,
+            "status": status,
+            "duration_seconds": duration,
+            "retained": duration > SMOKE_CAPTURE_SECONDS,
+            "twenty_four_seven": False,
+            "credentialless": True,
+            "events": report.get("events"),
+            "payload_bytes": report.get("payload_bytes"),
+            "parquet_files": report.get("parquet_files"),
+            "parquet_bytes": report.get("parquet_bytes"),
+            "gaps": report.get("gaps"),
+            "reconnects": report.get("reconnects"),
+            "limitations": [
+                "Published Parquet parts are reconstructable; a crash can lose the in-memory segment.",
+                "This is not 24/7 service evidence or a trading edge.",
+                "Spot depth@100ms is heavier than DATA-1A; disk growth can reach tens of GB over 72h.",
+                "USD-M open interest is one REST observation at start, not a history.",
+                "Public stream only; no API keys, signing, or extra venues.",
+                "Transport gaps exclude fail-closed integrity events such as sequence_gap.",
+                "USD-M bookTicker shares the market/combined socket with aggTrade/markPrice/forceOrder.",
+            ],
+        },
+        report,
+        elapsed_seconds=elapsed,
+    )
 
 
 def _write_create_only_json(path: Path, payload: dict[str, object]) -> None:
@@ -1787,6 +1825,14 @@ async def run_reconstructable_capture(
         raise FileExistsError(f"DATA-1F refuses to reuse existing run directory: {paths.run_dir}")
     paths.run_dir.mkdir(parents=True, exist_ok=False)
     paths.raw_dir.mkdir(exist_ok=False)
+    log_path = capture_log_path(paths.run_dir, run_id)
+    configure_capture_logger(log_path)
+    capture_logger().info(
+        "data1f start run_id=%s requested_duration_seconds=%s log=%s",
+        run_id,
+        duration_seconds,
+        log_path,
+    )
     _write_create_only_json(
         paths.capture_claim_path,
         data1f_capture_claim(run_id=run_id, duration_seconds=duration_seconds, paths=paths),
@@ -1798,8 +1844,12 @@ async def run_reconstructable_capture(
         "parquet_bytes": 0,
         "gaps": 0,
         "reconnects": 0,
+        "elapsed_seconds": 0.0,
+        "transport_profiles": [],
+        "integrity_events": 0,
     }
     status = "FAILED"
+    started = time.monotonic()
     try:
         report = await run_bounded_capture(
             output_dir=paths.raw_dir,
@@ -1813,6 +1863,14 @@ async def run_reconstructable_capture(
         else:
             status = "COMPLETED"
     finally:
+        report = {**report, "elapsed_seconds": round(time.monotonic() - started, 6)}
+        capture_logger().info(
+            "data1f stop run_id=%s status=%s requested_duration_seconds=%s elapsed_seconds=%s",
+            run_id,
+            status,
+            duration_seconds,
+            report["elapsed_seconds"],
+        )
         if not paths.capture_health_path.exists():
             _write_create_only_json(
                 paths.capture_health_path,

@@ -46,6 +46,7 @@ workstation the checkout name is `Hyperliquid-Bot-main`. Same repository.
 ~/hyperliquid-artifacts/reconstructable/data-1e/bitvavo/BTC-EUR/<run_id>/
   capture-claim.json
   capture-health.json
+  capture-<run_id>.log
   raw/part-*.parquet
   research.duckdb
 ```
@@ -231,9 +232,27 @@ cd ~/code/Hyperliquid-Bot-main
 RUN_ID=20260904t000000z-live-retained ./scripts/data1e_status.sh
 ```
 
+## Protect a 72h evidence window
+
+When the assigned goal is a 72-hour reconstructable tape (`DURATION_SECONDS=259200`):
+
+- Do **not** send `C-c`, SIGINT, SIGTERM, `tmux kill-session`, or `wsl --shutdown`.
+- Cloud Agents must not SSH, attach, or stop tmux `hl-capture` / `bn-capture` /
+  `bv-capture` / `kr-capture`.
+- After stop, `duration_seconds` is the requested window and `elapsed_seconds`
+  is wall-clock time until stop. `OPERATOR_STOP` with
+  `elapsed_seconds` < `duration_seconds` is an operator interrupt, not a
+  completed 72h tape.
+- Transport `gaps` / `reconnects` also appear under `transport_profiles`.
+
+Collector INFO log: `<run_dir>/capture-<run_id>.log`. Optional tmux copy:
+`<artifact-root>/logs/capture-<run_id>.log`.
+
 ## How to stop
 
-Ask the collector to finish the current in-memory segment and write health:
+Ask the collector to finish the current in-memory segment and write health
+**only when the assigned window is complete or CoS orders a stop**. Do not C-c
+a live 72h evidence run.
 
 ```bash
 tmux send-keys -t bv-capture C-c

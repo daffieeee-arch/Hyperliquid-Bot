@@ -95,13 +95,24 @@ PYTHONPATH=src uv run --frozen python -m hyperliquid_bot.kraken_l3_research \
 
 The reconstructable command is create-only. An existing run directory is refused.
 
+## Protect a 72h evidence window
+
+Do **not** stop a mid-window 72h evidence run. Cloud Agents must not stop
+captures. If systemd supervises the collector, use `Type=simple`,
+`KillSignal=SIGINT`, and `Restart=no`.
+
+After stop, `duration_seconds` is the requested window and `elapsed_seconds`
+is wall-clock time until stop. Collector log: `<run_dir>/capture-<run_id>.log`.
+
 ## How to stop
 
 ```bash
+# Do not do this during an assigned 72h evidence window.
 kill -TERM "${COLLECTOR_PID}"
 ```
 
 Expected health statuses: `COMPLETED`, `OPERATOR_STOP`, or `FAILED`.
+`elapsed_seconds` must be read separately from requested `duration_seconds`.
 
 ## How to continue later (there is no resume)
 

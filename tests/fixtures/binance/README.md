@@ -31,7 +31,7 @@ The additional `public_*` fixtures are deterministic synthetic frames for DATA-1
 WebSocket frames use the documented combined-stream envelope and microsecond timestamp option.
 The depth snapshot is shaped after public REST `GET /api/v3/depth`; diff-depth quantities are
 absolute price-level quantities and `"0"` means deletion. The USDⓈ-M frames use the current
-routed `/market` or `/public` JSON stream contracts. USDⓈ-M `aggTrade` is a 100-ms server
+routed `/market` combined JSON stream contract, including `bookTicker`. USDⓈ-M `aggTrade` is a 100-ms server
 aggregate, not an individual trade; `nq` excludes RPI quantity while `q` can include it. Public
 USDⓈ-M `bookTicker` excludes RPI liquidity. `forceOrder` exposes at most one exchange-selected
 liquidation snapshot for a symbol in each 1,000-ms interval; current generated documentation and

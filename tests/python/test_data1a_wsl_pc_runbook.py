@@ -116,6 +116,13 @@ def test_wsl_runbook_documents_known_good_operator_paths() -> None:
     assert "every **5 seconds**" in text
     assert "/api/data1a-capture" in text
     assert "Do **not** stop" in text or "do not stop" in text.lower()
+    assert "elapsed_seconds" in text
+    assert "duration_seconds" in text
+    assert "capture-<run_id>.log" in text
+    assert "Protect a 72h evidence window" in text
+    assert "Do **not** send `C-c`" in text
+    assert "Cloud Agents must not" in text
+    assert "heartbeat" in text.lower() or "45s" in text or "45 s" in text
 
 
 def test_operator_scripts_are_executable_create_only_and_secret_free() -> None:

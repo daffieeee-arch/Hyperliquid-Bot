@@ -267,7 +267,11 @@ a classification: durations of 1–600 seconds remain valid smokes; durations of
 600.1–604800 seconds are retained research captures (`retained: true`). A duration
 above 604800 seconds fails closed. This is not a 24/7 service: the process still
 ends at the requested duration or on SIGINT/SIGTERM, and a hard crash can lose the
-in-memory Parquet segment.
+in-memory Parquet segment. End-of-run `capture-health.json` stores `duration_seconds` as the
+requested window and `elapsed_seconds` as wall-clock time until stop. `OPERATOR_STOP` with
+`elapsed_seconds` below `duration_seconds` is an operator interrupt, not a completed tape.
+Transport `gaps` / `reconnects` are also broken out under `transport_profiles`. Integrity
+events such as `sequence_gap` still fail the run and are not counted in transport `gaps`.
 
 The COURSE-1 live-public PAPER soak remains a separate 1–600 second bound. Do not
 treat that soak cap as the DATA-1A capture contract.
@@ -283,9 +287,24 @@ Preferred reconstructable layout (the path contract the Operator Cockpit reads):
 <artifact-root>/data-1a/hyperliquid/BTC-PERP/<run_id>/
   capture-claim.json
   capture-health.json
+  capture-<run_id>.log
   raw/part-*.parquet
   research.duckdb
 ```
+
+`capture-<run_id>.log` is the collector INFO log (session/disconnect/reconnect, close code and
+exception class only; no payloads or secrets). Optional tmux stdout copy:
+`<artifact-root>/logs/capture-<run_id>.log`. After stop, `duration_seconds` is the requested
+window and `elapsed_seconds` is wall-clock time until stop.
+
+The DATA-1A writer sends Hyperliquid's documented application ping `{"method":"ping"}` every
+**45 seconds** (strictly below the official 60-second server-outbound-idle timeout) and now
+applies a **60-second receive timeout** aligned with the known-good `hyperliquid_ws_client`
+discipline. Protocol-level WebSocket pings stay disabled (`ping_interval=None`), matching that
+client. A regular ~3 hour disconnect cadence is **not** explained by a missing 60-second idle
+ping: BTC-PERP already produces inbound frames, and a missed heartbeat would close near 60
+seconds. Treat ~3h closes as venue/proxy max-session or half-open sockets; persist `close_code`
+/ `exception_class` on disconnect markers and reconnect. This is not a LIVE or signing change.
 
 To point local `next dev` at a live TerraPC retain without stopping the
 collector, export `ARTIFACT_ROOT=/home/dmesdary/hyperliquid-artifacts/reconstructable`
@@ -955,15 +974,19 @@ Phase 1 of DATA-1F under D10 — multi-venue market data and feed coverage is of
 credential-free. It fixes two distinct products that share the native symbol `BTCUSDT`: Spot and
 the USDⓈ-M perpetual. Spot uses the market-data-only domain for individual `trade`, BBO
 `bookTicker`, and 100-ms diff-depth joined to one public depth-1,000 REST snapshot. USDⓈ-M uses
-the current routed `/market` socket for 100-ms `aggTrade`, `markPrice@1s`, and `forceOrder`, the
-routed `/public` socket for `bookTicker`, and one public current-open-interest REST response. It
-does not use an account, API key, signing, user-data stream, SBE, SDK, order method, or execution
-path, and it adds no dependency or canonical/provenance contract.
+the current routed `/market` combined socket for 100-ms `aggTrade`, `markPrice@1s`, `forceOrder`,
+and `bookTicker`, and one public current-open-interest REST response. USDⓈ-M `bookTicker` is not
+a separate `/public/stream` profile: merging it onto the same market/combined family as
+`aggTrade`/`markPrice`/`forceOrder` removes one independent WebSocket reconnect/gap counter.
+Spot BBO remains on the Spot combined stream and is not treated as a substitute for USDⓈ-M BBO.
+The adapter does not use an account, API key, signing, user-data stream, SBE, SDK, order method, or
+execution path, and it adds no dependency or canonical/provenance contract.
 
 Every returned WebSocket application frame is timestamped and copied to immutable bytes before
 JSON parsing. A successful REST response is similarly timestamped at response completion and kept
 as the exact returned body. All source frames then use the shared DATA-1A raw record and atomic
-ZSTD-Parquet writer. Three WebSocket connections have distinct session IDs but share one run-wide
+ZSTD-Parquet writer. Two WebSocket connections (`spot` and `usdm_market`) have distinct session IDs
+but share one run-wide
 ordinal. Direct combined-stream URLs have no subscription acknowledgement, so DATA-1F records
 honest local `subscription_requested` and first-frame `subscription_observed` markers rather than
 inventing an ACK. A reconnect creates a fresh session and, for Spot depth, empty book state and a
@@ -1010,9 +1033,15 @@ Preferred reconstructable layout (create-only; Hypothesis `--binance-parquet-dir
 <artifact-root>/data-1f/binance/BTCUSDT/<run_id>/
   capture-claim.json
   capture-health.json
+  capture-<run_id>.log
   raw/part-*.parquet
   research.duckdb
 ```
+
+`capture-<run_id>.log` is the collector INFO log (session/disconnect/reconnect, close code and
+exception class only). It must be non-empty on a reconstructable run. It never contains payloads
+or secrets. Optional tmux stdout copy: `<artifact-root>/logs/capture-<run_id>.log`.
+`duration_seconds` remains the requested window; `elapsed_seconds` is wall-clock time until stop.
 
 ```bash
 PYTHONPATH=src uv run --frozen python -m hyperliquid_bot.binance_public_research \

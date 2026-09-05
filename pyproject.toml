@@ -33,9 +33,9 @@ select = ["B", "E", "F", "I", "RUF", "UP"]
 [tool.mypy]
 python_version = "3.13"
 strict = true
-mypy_path = "src"
+mypy_path = "src:."
 
 [tool.pytest.ini_options]
 addopts = ["--strict-config", "--strict-markers"]
-pythonpath = ["src"]
+pythonpath = ["src", "."]
 testpaths = ["tests/python"]

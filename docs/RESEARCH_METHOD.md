@@ -92,6 +92,14 @@ Operator docs for a later retained Binance capture are in
 until the TerraPC DATA-1A 72h series finishes and CoS assigns the window. Cloud Agents are
 unsuitable for a multi-day retain.
 
+WP-Q1 (`python -m hyperliquid_bot.panel_hl_binance`) is the next PAPER research gate after a
+retained DATA-1A series and an overlapping retained DATA-1F series exist. It writes a
+gap-aware receipt-UTC bucket panel (default 1s) or fails closed with `not_enough_data`.
+H1 lead-lag / H2 basis experiment runners (WP-Q2) must not start until that panel is
+`panel_ready`. A written panel is still only a descriptive join: it is not evidence of a
+trading result. Operator reconstructable roots later live on TerraPC outside git; unit tests
+use synthetic overlap only.
+
 Bitvavo DATA-1E (authenticated View-only MD Pro BTC-EUR) and Kraken DATA-1B (public L2 +
 trades by default; optional L3) now have retained-path operator docs and create-only
 helpers. Do not start those captures until CoS assigns the window. See

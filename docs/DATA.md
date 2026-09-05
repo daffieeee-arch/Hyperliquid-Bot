@@ -388,6 +388,53 @@ Committed fixtures under `tests/fixtures/hyperliquid/`, D01's 27-event PAPER rou
 momentum slot is a fixed 1-hour mid/trade-return scaffold that may only emit `noise`. This
 module never assigns `edge` and never prints profitability.
 
+### WP-Q1 — Hyperliquid + Binance receipt-clock panel
+
+`python -m hyperliquid_bot.panel_hl_binance` is a PAPER-only Quant join of one retained
+DATA-1A Hyperliquid BTC-PERP series and one retained DATA-1F Binance BTCUSDT series. It does
+not capture data, thaw v3 coverage, add venues, sign orders, or claim a trading result.
+H1 lead-lag and H2 basis experiments (WP-Q2) must not run until this panel is
+`panel_ready`.
+
+Preferred reconstructable inputs, both retained outside git:
+
+- `<artifact-root>/data-1a/hyperliquid/BTC-PERP/<hl_run_id>/`
+- `<artifact-root>/data-1f/binance/BTCUSDT/<bn_run_id>/`
+
+Each run needs `raw/part-*.parquet`, a DuckDB catalog rebuilt from `raw/` by
+`create_research_catalog`, and `capture-claim.json` with `retained: true` plus the matching
+path contract. Ad-hoc parquet/database pairs exist only for disposable synthetic tests.
+Point `--artifact-root` at the TerraPC reconstructable root when those retained runs exist;
+do not commit live captures.
+
+The join clock is receipt UTC (`received_utc_ns // bucket_ns`). Default `--bucket-ms` is
+**1000** (1 second), allowed range 1–3_600_000. Prices, mids, marks and funding stay text.
+A written `panel.parquet` (ZSTD) plus `panel-summary.json` is emitted only when every
+published gate passes. Otherwise the verdict is `not_enough_data` and no panel Parquet is
+written:
+
+| Gate | Constant |
+| --- | --- |
+| Valid retained `capture-claim.json` on both reconstructable sides | required |
+| Schema version | exactly 1 |
+| Overlapping receipt-UTC market span | required |
+| Minimum overlap buckets | 1 |
+| Maximum incomplete-bucket fraction on either side over the overlap window | 0.05 |
+
+A bucket is incomplete on Hyperliquid when it has no trade, BBO, or non-empty mid, and
+incomplete on Binance when it has no spot trade, spot BBO, USDM aggregate trade, or USDM
+mark. `overlap_ok` is both sides complete. The summary never uses a promotion token; verdicts
+are only `panel_ready` or `not_enough_data`.
+
+```bash
+PYTHONPATH=src uv run --frozen python -m hyperliquid_bot.panel_hl_binance \
+  --artifact-root /path/to/reconstructable \
+  --hl-run-id 20260904t134940z-live-retained \
+  --bn-run-id 20260904t000000z-live-retained \
+  --bucket-ms 1000 \
+  --output-dir /path/to/panel-out
+```
+
 The immediate next gate under D10 — multi-venue market data and feed coverage is DATA-1B — Kraken
 authenticated L3 capture, because true order-level history cannot be reconstructed later. Any
 future Kraken or Bitvavo credential must be a separate minimal read-only data key with no trading,

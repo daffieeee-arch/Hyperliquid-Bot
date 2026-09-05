@@ -4,9 +4,9 @@ Status: operator runbook for the reconstructable CLI
 `python -m hyperliquid_bot.kraken_l3_research`.
 This is **not** a 24/7 service, not D22-B, and not LIVE trading.
 
-Default path is public Kraken Spot `BTC/EUR` L2 + trades. Optional
-authenticated L3 uses `KRAKEN_WS_API_KEY` / `KRAKEN_WS_API_SECRET` only.
-No trade keys, no signing, no OKX.
+Default path is public Kraken Spot `BTC/EUR` L2 + trades at depth **100**.
+Optional authenticated L3 uses `KRAKEN_WS_API_KEY` / `KRAKEN_WS_API_SECRET`
+only and also defaults to depth 100. No trade keys, no signing, no OKX.
 
 For the Windows 11 + WSL2 Ubuntu operator PC (TerraPC), including tmux
 `kr-capture` start/status/stop, see
@@ -47,6 +47,20 @@ Helpers: `data1b_run_paths(artifact_root, run_id)`. The path segment is
 
 `run_id` must be 1–64 lowercase ASCII letters, digits, dot, dash, or underscore.
 
+## Depth, CRC, disk and bandwidth
+
+CLI defaults: `--l2-depth 100` and `--l3-depth 100`. Existing Kraken depths
+remain valid. CRC32 still covers **only the best 10 price levels** even at
+subscribed depth 100; deeper retained levels are local scope, not CRC-covered.
+
+Depth-100 snapshots are about 10× a depth-10 snapshot on connect/reconnect.
+Incremental updates are not automatically 10×. Optional L3 at depth 100 is
+heavier. No 72-hour depth-100 retain has been measured. Budget more disk and
+bandwidth than the historical depth-10 smoke: watch the VPS volume, and expect
+low-single-digit to low-tens of GB plus sustained KB/s–tens-of-KB/s for a
+public 72h L2+trades retain, more if L3 is enabled. This is an operator
+budget, not a measured rate.
+
 ## Auth env names
 
 Public default: no keys.
@@ -72,6 +86,7 @@ export DURATION_SECONDS=14400
 
 test ! -e "${ARTIFACT_ROOT}/data-1b/kraken/BTC-EUR/${RUN_ID}"
 
+# Python defaults: --l2-depth 100 --l3-depth 100. CRC32 still covers only the best 10 levels.
 PYTHONPATH=src uv run --frozen python -m hyperliquid_bot.kraken_l3_research \
   --artifact-root "${ARTIFACT_ROOT}" \
   --run-id "${RUN_ID}" \

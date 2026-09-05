@@ -136,9 +136,26 @@ def test_wsl_runbook_documents_known_good_operator_paths() -> None:
     assert "LIVE" in text
     assert "standby-timeout-ac 0" in text
     assert "wsl --shutdown" in text
+    assert "--l2-depth" in text
+    assert "--l3-depth" in text
+    assert "depth 100" in text
+    assert "best 10" in text
+    assert "CRC32" in text or "CRC" in text
+    assert "disk" in text.lower()
+    assert "bandwidth" in text.lower()
     vps = VPS_RUNBOOK.read_text(encoding="utf-8")
     assert "1 through 604800 seconds" in vps
     assert "Do not start a multi-day DATA-1B retain now" in vps
+    assert "depth 100" in vps
+    assert "best 10" in vps
+    assert "CRC32" in vps or "CRC" in vps
+    assert "disk" in vps.lower()
+    assert "bandwidth" in vps.lower()
+    data_md = (REPO_ROOT / "docs" / "DATA.md").read_text(encoding="utf-8")
+    assert "depth-100" in data_md or "depth 100" in data_md
+    assert "CRC32 always covers the best ten price levels" in data_md
+    assert "even at subscribed depth 100" in data_md
+    assert "Do not start a multi-day DATA-1B retain" in data_md
 
 
 def test_operator_scripts_are_executable_create_only_and_secret_free() -> None:
@@ -217,6 +234,9 @@ def test_start_check_only_is_create_only(tmp_path: Path) -> None:
     assert "credentialless=true" in completed.stdout
     assert "run_id=20260904t000000z-live-retained" in completed.stdout
     assert "signing=false" in completed.stdout
+    assert "l2_depth=100" in completed.stdout
+    assert "l3_depth=100" in completed.stdout
+    assert "checksum_price_levels=10" in completed.stdout
     run_dir = artifact_root / "data-1b" / "kraken" / "BTC-EUR" / "20260904t000000z-live-retained"
     assert not run_dir.exists()
 

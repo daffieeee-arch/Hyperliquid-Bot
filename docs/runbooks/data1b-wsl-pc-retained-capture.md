@@ -6,9 +6,9 @@ workstation (TerraPC). This is **not** a 24/7 service, not D22-B, and not LIVE
 trading.
 
 Default retained path: public Kraken Spot `BTC/EUR` **L2 book + trades** at
-`wss://ws.kraken.com/v2`. Authenticated L3 is optional and never a silent
-fallback. No OKX. The VPS counterpart is
-[data1b-vps-retained-capture.md](data1b-vps-retained-capture.md).
+`wss://ws.kraken.com/v2`, subscribed depth **100**. Authenticated L3 is optional
+(default depth 100 when enabled) and never a silent fallback. No OKX. The VPS
+counterpart is [data1b-vps-retained-capture.md](data1b-vps-retained-capture.md).
 
 **Do not start a multi-day DATA-1B retain now.** This PR is prepare-only.
 Wait until CoS assigns this window. This document does **not** attach to,
@@ -76,7 +76,27 @@ Public reconnects already loop until the duration ends. Authenticated L3, when
 enabled, still fails closed with no silent public-only downgrade.
 
 The 2026-08-31 authenticated smoke remains evidence only for bounded
-reachability.
+reachability. That smoke used historical depth-10.
+
+## Depth, CRC, disk and bandwidth
+
+CLI defaults: `--l2-depth 100` and `--l3-depth 100`. Existing Kraken sets remain
+valid (`10/25/100/500/1000` for L2, `10/100/1000` for L3). Helpers inherit the
+Python defaults and do not override them.
+
+CRC32 / checksum still covers **only the best 10 price levels**, asks before
+bids, even at subscribed depth 100. Levels 11–100 are retained and locally
+`scope_truncate`d when they leave the window; a matching checksum is not proof
+that those deeper levels are complete.
+
+Depth-100 snapshots are about 10× a depth-10 snapshot on each connect or
+reconnect. Incremental updates are not automatically 10×. Optional L3 at depth
+100 is heavier (individual orders × more levels). No 72-hour depth-100 retain
+has been measured. Budget more disk and bandwidth than the depth-10 smoke:
+watch WSL free space on the Linux filesystem (not `/mnt/c`), and expect
+low-single-digit to low-tens of GB plus sustained KB/s–tens-of-KB/s for a
+public 72h L2+trades retain, more if L3 is enabled. This is an operator
+budget, not a measured rate.
 
 ## Auth (public default; optional L3 via env)
 
@@ -162,6 +182,7 @@ git pull --ff-only
   test ! -e "${ARTIFACT_ROOT}/data-1b/kraken/BTC-EUR/${RUN_ID}"
   test -z "$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -x "${TMUX_SESSION}" || true)"
 
+  # Python defaults: --l2-depth 100 --l3-depth 100. CRC32 still covers only the best 10 levels.
   tmux new-session -d -s "${TMUX_SESSION}" \
     "cd ${HOME}/code/Hyperliquid-Bot-main && \
      unset TRADING_MODE D41_EXECUTION_MODE && \

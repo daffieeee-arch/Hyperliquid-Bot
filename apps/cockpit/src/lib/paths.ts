@@ -17,10 +17,10 @@ export const DATA1A_PATH_CONTRACT_ID = "data-1a-hyperliquid-btc-perp-v1";
 export const DATA1A_CLAIM_SCHEMA = "data-1a-retained-capture-claim-v1";
 export const DATA1A_HEALTH_SCHEMA = "data-1a-retained-capture-health-v1";
 export const DATA1A_RELATIVE_PREFIX = ["data-1a", "hyperliquid", "BTC-PERP"] as const;
-export const DATA1B_PATH_CONTRACT_ID = "data-1b-kraken-btc-eur-v1";
+export const DATA1B_PATH_CONTRACT_ID = "data-1b-kraken-btc-usd-v1";
 export const DATA1B_CLAIM_SCHEMA = "data-1b-retained-capture-claim-v1";
 export const DATA1B_HEALTH_SCHEMA = "data-1b-retained-capture-health-v1";
-export const DATA1B_RELATIVE_PREFIX = ["data-1b", "kraken", "BTC-EUR"] as const;
+export const DATA1B_RELATIVE_PREFIX = ["data-1b", "kraken", "BTC-USD"] as const;
 export const DATA1E_PATH_CONTRACT_ID = "data-1e-bitvavo-btc-eur-v1";
 export const DATA1E_CLAIM_SCHEMA = "data-1e-retained-capture-claim-v1";
 export const DATA1E_HEALTH_SCHEMA = "data-1e-retained-capture-health-v1";
@@ -125,7 +125,7 @@ export const VENUE_CAPTURE_CONTRACTS: Record<VenueCaptureId, VenueCaptureContrac
     chip: "KRAKEN",
     series: "DATA-1B",
     venue: "kraken",
-    product: "BTC-EUR",
+    product: "BTC-USD",
     pathContractId: DATA1B_PATH_CONTRACT_ID,
     claimSchema: DATA1B_CLAIM_SCHEMA,
     healthSchema: DATA1B_HEALTH_SCHEMA,

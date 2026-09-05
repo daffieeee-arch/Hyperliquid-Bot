@@ -1,1 +1,1 @@
-{"channel":"book","type":"update","data":[{"symbol":"BTC/EUR","bids":[{"price":60000.1000,"qty":1.10000000}],"asks":[{"price":60000.2500,"qty":0.40000000},{"price":60000.3000,"qty":0.00000000}],"checksum":1927720334,"timestamp":"2026-08-31T10:00:00.000000400Z"}]}
+{"channel":"book","type":"update","data":[{"symbol":"BTC/USD","bids":[{"price":60000.1000,"qty":1.10000000}],"asks":[{"price":60000.2500,"qty":0.40000000},{"price":60000.3000,"qty":0.00000000}],"checksum":1927720334,"timestamp":"2026-08-31T10:00:00.000000400Z"}]}

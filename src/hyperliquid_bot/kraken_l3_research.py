@@ -1,9 +1,12 @@
-"""Kraken BTC/EUR public L2/trades capture with optional authenticated L3.
+"""Kraken BTC/USD public L2/trades capture with optional authenticated L3.
 
 The default retained path is public book + trades only at depth 100.
 Authenticated L3 is optional (also depth 100 when enabled) and never a silent
 fallback. CRC32 still covers only the best 10 price levels. Duration may be a
 short smoke or a retained multi-day run. This is not a 24/7 service.
+
+Kraken Spot WebSocket v2 wire symbol is ``BTC/USD`` (not REST/v1 ``XBT/USD``).
+EUR microstructure stays on Bitvavo DATA-1E. There is no silent EUR fallback.
 """
 
 from __future__ import annotations
@@ -61,6 +64,10 @@ from .raw_research import (
 from .reconstructable_paths import (
     DATA1B_PATH_CONTRACT_ID,
     DATA1B_PRODUCT,
+    DATA1B_RETIRED_PATH_CONTRACT_ID,
+    DATA1B_RETIRED_PRODUCT,
+    DATA1B_RETIRED_WIRE_PRODUCT,
+    DATA1B_WIRE_PRODUCT,
     Data1BRunPaths,
     data1b_run_paths,
 )
@@ -70,7 +77,20 @@ KRAKEN_L3_WEBSOCKET_URL: Final = "wss://ws-l3.kraken.com/v2"
 KRAKEN_TOKEN_URL: Final = "https://api.kraken.com/0/private/GetWebSocketsToken"
 KRAKEN_TOKEN_PATH: Final = "/0/private/GetWebSocketsToken"
 KRAKEN_RESEARCH_VENUE: Final = "kraken"
-KRAKEN_RESEARCH_PRODUCT: Final = "BTC/EUR"
+KRAKEN_RESEARCH_PRODUCT: Final = DATA1B_WIRE_PRODUCT
+KRAKEN_REJECTED_WIRE_PRODUCTS: Final = frozenset(
+    {
+        DATA1B_RETIRED_WIRE_PRODUCT,
+        "XBT/EUR",
+        "XBT/USD",
+        "XXBTZEUR",
+        "XXBTZUSD",
+        "XBTUSD",
+        "XBTEUR",
+        "BTCUSD",
+        "BTCEUR",
+    }
+)
 SMOKE_CAPTURE_SECONDS: Final = 600.0
 MAX_CAPTURE_SECONDS: Final = 7 * 24 * 60 * 60
 DEFAULT_L2_DEPTH: Final = 100
@@ -110,12 +130,12 @@ PROTECTED_TRADE_KEY_ENV: Final = (
 _PUBLIC_SUBSCRIPTIONS: Final = (
     (
         "trade",
-        '{"method":"subscribe","params":{"channel":"trade","snapshot":false,"symbol":["BTC/EUR"]}}',
+        '{"method":"subscribe","params":{"channel":"trade","snapshot":false,"symbol":["BTC/USD"]}}',
     ),
     (
         "book",
         '{"method":"subscribe","params":{"channel":"book","depth":100,'
-        '"snapshot":true,"symbol":["BTC/EUR"]}}',
+        '"snapshot":true,"symbol":["BTC/USD"]}}',
     ),
 )
 _PUBLIC_CHANNELS: Final = frozenset({"trade", "book"})
@@ -299,7 +319,7 @@ class KrakenRestTokenProvider:
 
 @dataclass(frozen=True, slots=True)
 class KrakenL3ResearchConfig:
-    """Fixed BTC/EUR scope plus bounded transport and visible book depths."""
+    """Fixed BTC/USD scope plus bounded transport and visible book depths."""
 
     l2_depth: int = DEFAULT_L2_DEPTH
     l3_depth: int = DEFAULT_L3_DEPTH
@@ -346,9 +366,7 @@ class _TradeState:
         next_last = self._last_trade_id
         for event_index, value in enumerate(data):
             item = _object(value, "trade data item")
-            symbol = _required_text(item, "symbol")
-            if symbol != KRAKEN_RESEARCH_PRODUCT:
-                raise KrakenDataIntegrityError("Kraken trade schema validation failed.")
+            symbol = require_kraken_research_product(item.get("symbol"))
             trade_id_text = _unsigned_integer_text(item, "trade_id")
             trade_id = int(trade_id_text)
             if next_last is not None and trade_id <= next_last:
@@ -394,8 +412,7 @@ class _L2BookState:
         if len(data) != 1:
             raise KrakenDataIntegrityError("Kraken book schema validation failed.")
         item = _object(data[0], "book data item")
-        if _required_text(item, "symbol") != KRAKEN_RESEARCH_PRODUCT:
-            raise KrakenDataIntegrityError("Kraken book schema validation failed.")
+        require_kraken_research_product(item.get("symbol"))
         if message_type == "snapshot":
             self._levels = {"bid": {}, "ask": {}}
         elif not self._has_snapshot:
@@ -472,8 +489,7 @@ class _L3BookState:
         if len(data) != 1:
             raise KrakenDataIntegrityError("Kraken level3 schema validation failed.")
         item = _object(data[0], "level3 data item")
-        if _required_text(item, "symbol") != KRAKEN_RESEARCH_PRODUCT:
-            raise KrakenDataIntegrityError("Kraken level3 schema validation failed.")
+        require_kraken_research_product(item.get("symbol"))
         if message_type == "snapshot":
             self._orders.clear()
         elif not self._has_snapshot:
@@ -1148,7 +1164,11 @@ class KrakenL3ResearchCollector:
             raise error_type("Kraken subscription failed.")
         channel = result.get("channel")
         symbol = result.get("symbol")
-        if channel not in expected_channels or symbol != KRAKEN_RESEARCH_PRODUCT:
+        if channel not in expected_channels:
+            await self._schema_failure(session_id, stream, None)
+        try:
+            require_kraken_research_product(symbol)
+        except KrakenDataIntegrityError:
             await self._schema_failure(session_id, stream, None)
         channel_text = cast(str, channel)
         expected_snapshot = channel_text != "trade"
@@ -1646,6 +1666,30 @@ def _reject_json_constant(value: str) -> object:
     raise ValueError("non-standard JSON constant")
 
 
+def require_kraken_research_product(symbol: object) -> str:
+    """Accept only Kraken Spot WebSocket v2 ``BTC/USD``. EUR and REST aliases fail closed."""
+
+    if type(symbol) is not str or not symbol:
+        raise KrakenDataIntegrityError("Kraken product identity validation failed.")
+    if symbol in KRAKEN_REJECTED_WIRE_PRODUCTS:
+        raise KrakenDataIntegrityError(
+            "Kraken product identity failed closed: EUR or REST/v1 aliases are not DATA-1B."
+        )
+    if symbol != KRAKEN_RESEARCH_PRODUCT:
+        raise KrakenDataIntegrityError("Kraken product identity validation failed.")
+    return symbol
+
+
+def data1b_feed_name(*, include_l3: bool) -> str:
+    """Stable feed label for the current USD path contract. Never the retired EUR name."""
+
+    return (
+        "kraken-public-btc-usd-book-trades-l3"
+        if include_l3
+        else "kraken-public-btc-usd-book-trades"
+    )
+
+
 def _require_bounded_duration(duration_seconds: object) -> float:
     if type(duration_seconds) not in (int, float):
         raise TypeError("duration_seconds must be a built-in number.")
@@ -1788,11 +1832,11 @@ def data1b_capture_claim(
         "venue": KRAKEN_RESEARCH_VENUE,
         "product": DATA1B_PRODUCT,
         "wire_product": KRAKEN_RESEARCH_PRODUCT,
-        "feed": (
-            "kraken-public-btc-eur-book-trades-l3"
-            if include_l3
-            else "kraken-public-btc-eur-book-trades"
-        ),
+        "quote_currency": "USD",
+        "retired_path_contract": DATA1B_RETIRED_PATH_CONTRACT_ID,
+        "retired_product": DATA1B_RETIRED_PRODUCT,
+        "retired_wire_product": DATA1B_RETIRED_WIRE_PRODUCT,
+        "feed": data1b_feed_name(include_l3=include_l3),
         "public_websocket_url": KRAKEN_PUBLIC_WEBSOCKET_URL,
         "l3_websocket_url": KRAKEN_L3_WEBSOCKET_URL if include_l3 else None,
         "credentialless": not include_l3,
@@ -1856,6 +1900,9 @@ def data1b_capture_health(
                 "wrong key type.",
                 "Kraken CRC32 still covers only the best 10 price levels even at "
                 "subscribed depth 100.",
+                "EUR microstructure is Bitvavo DATA-1E. Kraken DATA-1B is BTC/USD "
+                "aligned with the HL/BN quote world. BTC/EUR, XBT/EUR, and XBT/USD "
+                "fail closed; there is no silent EUR fallback.",
             ],
         },
         report,
@@ -1970,12 +2017,13 @@ async def run_reconstructable_capture(
 def _argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Kraken BTC/EUR exact-raw research capture. Default is public L2 + trades "
+            "Kraken BTC/USD exact-raw research capture. Default is public L2 + trades "
             "at depth 100. Optional authenticated L3 uses KRAKEN_WS_API_KEY and "
             "KRAKEN_WS_API_SECRET and also defaults to depth 100. CRC32 still covers "
             "only the best 10 price levels. Duration may exceed the historical 600s "
             "smoke cap up to 7 days. This is not a 24/7 service. Do not start a "
-            "multi-day retain from a Cloud Agent."
+            "multi-day retain from a Cloud Agent. Wire symbol is BTC/USD "
+            "(Kraken Spot WebSocket v2). EUR stays on Bitvavo."
         )
     )
     parser.add_argument("--output-dir", type=Path)

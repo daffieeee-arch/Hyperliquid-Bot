@@ -1,5 +1,6 @@
 # Shared DATA-1B operator-PC helpers. Sourced by data1b_*.sh.
-# Public Kraken L2+trades by default. Optional L3 via KRAKEN_WS_* only.
+# Public Kraken BTC/USD L2+trades by default. Optional L3 via KRAKEN_WS_* only.
+# Path segment is BTC-USD. Retired BTC-EUR is not the current contract.
 # Create-only. Never print secret values.
 # Never attach to, resume, or stop hl-capture, bn-capture, or bv-capture.
 
@@ -47,10 +48,44 @@ data1b_require_run_id() {
   fi
 }
 
+data1b_product_segment() {
+  printf '%s\n' "BTC-USD"
+}
+
+data1b_wire_product() {
+  printf '%s\n' "BTC/USD"
+}
+
+data1b_path_contract_id() {
+  printf '%s\n' "data-1b-kraken-btc-usd-v1"
+}
+
+data1b_retired_product_segment() {
+  printf '%s\n' "BTC-EUR"
+}
+
 data1b_run_dir() {
   local artifact_root="$1"
   local run_id="$2"
-  printf '%s\n' "${artifact_root}/data-1b/kraken/BTC-EUR/${run_id}"
+  printf '%s\n' "${artifact_root}/data-1b/kraken/$(data1b_product_segment)/${run_id}"
+}
+
+data1b_retired_run_dir() {
+  local artifact_root="$1"
+  local run_id="$2"
+  printf '%s\n' "${artifact_root}/data-1b/kraken/$(data1b_retired_product_segment)/${run_id}"
+}
+
+data1b_refuse_retired_eur_identity() {
+  local artifact_root="$1"
+  local run_id="$2"
+  local retired
+  retired="$(data1b_retired_run_dir "${artifact_root}" "${run_id}")"
+  if [[ -e "${retired}" ]]; then
+    echo "Refuse: retired DATA-1B EUR path is not the current contract: ${retired}" >&2
+    echo "Current path is data-1b/kraken/BTC-USD/<run_id>/. There is no silent EUR fallback." >&2
+    return 1
+  fi
 }
 
 data1b_refuse_live_modes() {
@@ -155,7 +190,7 @@ data1b_tmux_alive() {
 
 data1b_list_run_ids() {
   local artifact_root="$1"
-  local parent="${artifact_root}/data-1b/kraken/BTC-EUR"
+  local parent="${artifact_root}/data-1b/kraken/$(data1b_product_segment)"
   if [[ ! -d "${parent}" ]]; then
     return 0
   fi

@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Final
 
 DATA1A_PATH_CONTRACT_ID: Final = "data-1a-hyperliquid-btc-perp-v1"
-DATA1B_PATH_CONTRACT_ID: Final = "data-1b-kraken-btc-eur-v1"
+DATA1B_PATH_CONTRACT_ID: Final = "data-1b-kraken-btc-usd-v1"
+DATA1B_RETIRED_PATH_CONTRACT_ID: Final = "data-1b-kraken-btc-eur-v1"
 DATA1E_PATH_CONTRACT_ID: Final = "data-1e-bitvavo-btc-eur-v1"
 DATA1F_PATH_CONTRACT_ID: Final = "data-1f-binance-btcusdt-v1"
 COURSE1_PATH_CONTRACT_ID: Final = "course1-live-public-paper-cockpit-v1"
@@ -20,8 +21,12 @@ DATA1A_VENUE: Final = "hyperliquid"
 DATA1A_PRODUCT: Final = "BTC-PERP"
 DATA1A_RELATIVE_PREFIX: Final = ("data-1a", DATA1A_VENUE, DATA1A_PRODUCT)
 DATA1B_VENUE: Final = "kraken"
-DATA1B_PRODUCT: Final = "BTC-EUR"
+DATA1B_PRODUCT: Final = "BTC-USD"
+DATA1B_WIRE_PRODUCT: Final = "BTC/USD"
+DATA1B_RETIRED_PRODUCT: Final = "BTC-EUR"
+DATA1B_RETIRED_WIRE_PRODUCT: Final = "BTC/EUR"
 DATA1B_RELATIVE_PREFIX: Final = ("data-1b", DATA1B_VENUE, DATA1B_PRODUCT)
+DATA1B_RETIRED_RELATIVE_PREFIX: Final = ("data-1b", DATA1B_VENUE, DATA1B_RETIRED_PRODUCT)
 DATA1E_VENUE: Final = "bitvavo"
 DATA1E_PRODUCT: Final = "BTC-EUR"
 DATA1E_RELATIVE_PREFIX: Final = ("data-1e", DATA1E_VENUE, DATA1E_PRODUCT)
@@ -64,7 +69,7 @@ DATA1A_PATH_CONTRACT: Final = """\
 """
 
 DATA1B_PATH_CONTRACT: Final = """\
-<artifact-root>/data-1b/kraken/BTC-EUR/<run_id>/
+<artifact-root>/data-1b/kraken/BTC-USD/<run_id>/
   capture-claim.json
   capture-health.json
   raw/part-*.parquet
@@ -128,7 +133,7 @@ def require_artifact_root(artifact_root: object) -> Path:
 
 @dataclass(frozen=True, slots=True)
 class Data1BRunPaths:
-    """Resolved DATA-1B reconstructable layout for one Kraken BTC-EUR run."""
+    """Resolved DATA-1B reconstructable layout for one Kraken BTC-USD run."""
 
     contract_id: str
     run_id: str
@@ -203,6 +208,14 @@ class Course1CockpitPaths:
     paper_path: Path
     public_stream_path: Path
     completed_run_path: Path
+
+
+def data1b_retired_eur_run_dir(artifact_root: Path, run_id: str) -> Path:
+    """Return the retired EUR layout. Never treat this as the current DATA-1B contract."""
+
+    root = require_artifact_root(artifact_root)
+    identity = require_run_id(run_id)
+    return root.joinpath(*DATA1B_RETIRED_RELATIVE_PREFIX, identity)
 
 
 def data1b_run_paths(artifact_root: Path, run_id: str) -> Data1BRunPaths:

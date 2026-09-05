@@ -1,12 +1,19 @@
-# DATA-1B VPS runbook — retained Kraken public BTC-EUR capture
+# DATA-1B VPS runbook — retained Kraken public BTC-USD capture
 
 Status: operator runbook for the reconstructable CLI
 `python -m hyperliquid_bot.kraken_l3_research`.
 This is **not** a 24/7 service, not D22-B, and not LIVE trading.
 
-Default path is public Kraken Spot `BTC/EUR` L2 + trades at depth **100**.
+Default path is public Kraken Spot `BTC/USD` L2 + trades at depth **100**.
 Optional authenticated L3 uses `KRAKEN_WS_API_KEY` / `KRAKEN_WS_API_SECRET`
 only and also defaults to depth 100. No trade keys, no signing, no OKX.
+
+**Quote-world split:** EUR microstructure is **Bitvavo DATA-1E**. Kraken DATA-1B
+is dense USD L3/tape aligned with the Hyperliquid / Binance quote world. Wire
+symbol is Kraken Spot WebSocket v2 `BTC/USD` (not REST/v1 `XBT/USD`).
+`BTC/EUR` / `XBT/EUR` / `XBT/USD` fail closed. There is **no silent EUR
+fallback**. Path contract `data-1b-kraken-btc-usd-v1` replaced retired
+`data-1b-kraken-btc-eur-v1`.
 
 For the Windows 11 + WSL2 Ubuntu operator PC (TerraPC), including tmux
 `kr-capture` start/status/stop, see
@@ -35,7 +42,7 @@ segment; already published `raw/part-*.parquet` files remain readable.
 ## Path contract
 
 ```text
-<artifact-root>/data-1b/kraken/BTC-EUR/<run_id>/
+<artifact-root>/data-1b/kraken/BTC-USD/<run_id>/
   capture-claim.json
   capture-health.json
   raw/part-*.parquet
@@ -43,7 +50,7 @@ segment; already published `raw/part-*.parquet` files remain readable.
 ```
 
 Helpers: `data1b_run_paths(artifact_root, run_id)`. The path segment is
-`BTC-EUR`; the wire symbol remains `BTC/EUR`.
+`BTC-USD`; the wire symbol is `BTC/USD`. Retired `BTC-EUR` is not current.
 
 `run_id` must be 1–64 lowercase ASCII letters, digits, dot, dash, or underscore.
 
@@ -84,7 +91,7 @@ export ARTIFACT_ROOT=/var/lib/hyperliquid-bot/reconstructable
 export RUN_ID="$(date -u +%Y%m%dt%H%M%Sz)-live-retained"
 export DURATION_SECONDS=14400
 
-test ! -e "${ARTIFACT_ROOT}/data-1b/kraken/BTC-EUR/${RUN_ID}"
+test ! -e "${ARTIFACT_ROOT}/data-1b/kraken/BTC-USD/${RUN_ID}"
 
 # Python defaults: --l2-depth 100 --l3-depth 100. CRC32 still covers only the best 10 levels.
 PYTHONPATH=src uv run --frozen python -m hyperliquid_bot.kraken_l3_research \

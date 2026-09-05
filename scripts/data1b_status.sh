@@ -22,8 +22,8 @@ else
   if [[ "${#RUN_IDS[@]}" -eq 1 ]]; then
     RUN_ID="${RUN_IDS[0]}"
   elif [[ "${#RUN_IDS[@]}" -eq 0 ]]; then
-    echo "No DATA-1B run directories under ${ARTIFACT_ROOT}/data-1b/kraken/BTC-EUR/" >&2
-    echo "Set RUN_ID to inspect a specific run." >&2
+    echo "No DATA-1B run directories under ${ARTIFACT_ROOT}/data-1b/kraken/$(data1b_product_segment)/" >&2
+    echo "Retired BTC-EUR is not the current contract and is not listed. Set RUN_ID to inspect a specific USD run." >&2
     RUN_ID=""
   else
     echo "Multiple DATA-1B runs found; set RUN_ID to select one:" >&2
@@ -77,6 +77,9 @@ fi
 
 echo "run_id=${RUN_ID}"
 echo "run_dir=${RUN_DIR}"
+echo "path_contract=$(data1b_path_contract_id)"
+echo "product=$(data1b_product_segment)"
+echo "wire_product=$(data1b_wire_product)"
 echo "claim_present=${claim_present}"
 echo "health_present=${health_present}"
 echo "health_status=${health_status}"

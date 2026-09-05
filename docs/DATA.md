@@ -91,6 +91,8 @@ Bitvavo Market Data Pro is a distinct authenticated read-only comparison feed, n
 free public Standard feed. DATA-1E implements its bounded BTC-EUR Pro book+trades adapter
 (optional flagged ticker) and smoke;
 simultaneous Standard/Pro collection requirements remain defined under feed-product identity below.
+EUR microstructure for the current vertical slice is Bitvavo. Kraken DATA-1B is
+the USD L3/tape (`BTC/USD`), not a second EUR book.
 
 Primary research uses:
 
@@ -106,10 +108,15 @@ Not every asset has a USDC market. Supported markets and precision must be disco
 
 Use Kraken's public market data and official paper tooling for:
 
-- spot and derivatives reference prices;
+- spot and derivatives reference prices in the **USD quote world**;
+- dense L2/L3 and tape on DATA-1B Spot `BTC/USD` (aligned with HL/BN);
 - order books, recent trades, OHLC and spreads;
 - paper spot and futures execution against live prices;
 - agent-assisted research through the local MCP interface.
+
+EUR microstructure is **not** a Kraken DATA-1B responsibility. That book stays
+on Bitvavo DATA-1E (`BTC-EUR`). Kraken REST/v1 `XBT/USD` is not the WebSocket
+v2 wire symbol.
 
 During the initial phase, Kraken MCP is restricted to safe services such as market and paper/futures-paper. Live trade, funding and transfer capabilities are not enabled.
 
@@ -486,12 +493,20 @@ withdrawal or transfer authority and must never enter chat, source, fixtures, ar
 Bitvavo internal personal research does not require a prior redistribution review. OKX is the next
 data-only increment after DATA-1B.
 
-### DATA-1B — Kraken BTC/EUR authenticated L3 research slice
+### DATA-1B — Kraken BTC/USD authenticated L3 research slice
+
+**Quote-world split:** EUR microstructure is **Bitvavo DATA-1E** (`BTC-EUR` on
+the MD Pro socket). Kraken DATA-1B is dense USD L2/L3 + tape aligned with the
+Hyperliquid BTC-PERP and Binance BTCUSDT quote world. The Kraken Spot
+WebSocket v2 wire symbol is `BTC/USD` (official book/trade/level3 examples;
+not REST/v1 `XBT/USD` / `XXBTZUSD`). `BTC/EUR`, `XBT/EUR`, and `XBT/USD`
+fail closed. There is no silent EUR fallback. Path contract
+`data-1b-kraken-btc-usd-v1` replaced retired `data-1b-kraken-btc-eur-v1`.
 
 Phase 1 of DATA-1B under D10 — multi-venue market data and feed coverage is deliberately offline
 for authenticated L3. The retained-operator CLI now exists for a public default path and an
 optional L3 path; it does not start capture by itself. The Kraken adapter is
-fixed to Spot `BTC/EUR` and can run public `trade` + depth-100 `book` alone, or both
+fixed to Spot `BTC/USD` and can run public `trade` + depth-100 `book` alone, or both
 connections as one fail-closed capture when L3 is explicitly requested:
 
 - public `trade` and depth-100 `book` at `wss://ws.kraken.com/v2`;
@@ -597,10 +612,10 @@ and VPS volume growth, and expect low-single-digit to low-tens of GB plus sustai
 KB/s–tens-of-KB/s for a public 72h L2+trades retain, more if L3 is enabled. This is an
 operator budget, not a measured rate.
 
-Preferred reconstructable layout (create-only; path segment `BTC-EUR`, wire symbol `BTC/EUR`):
+Preferred reconstructable layout (create-only; path segment `BTC-USD`, wire symbol `BTC/USD`):
 
 ```text
-<artifact-root>/data-1b/kraken/BTC-EUR/<run_id>/
+<artifact-root>/data-1b/kraken/BTC-USD/<run_id>/
   capture-claim.json
   capture-health.json
   raw/part-*.parquet
@@ -626,6 +641,7 @@ Cloud Agents are unsuitable for a multi-day retain and must not SSH to or stop T
 until CoS assigns this window.** Never resume the same `run_id`.
 
 On 2026-08-31, a bounded phase 2 smoke completed two short authenticated BTC/EUR L3 sessions
+(historical EUR identity; current DATA-1B primary product is BTC/USD)
 using two token requests and one controlled session restart. Each session received a positive
 acknowledgement, built a fresh snapshot before updates, validated CRC32, and validated
 post-snapshot updates. Exact raw-byte round-trip, Parquet/DuckDB readback, and credential-redaction
@@ -829,6 +845,10 @@ Official contracts checked for this slice:
 - https://docs.bitvavo.com/api-specs/exchange-websocket-api.yaml
 
 ### DATA-1E — Bitvavo Market Data Pro BTC-EUR research slice
+
+EUR microstructure stays here. Kraken DATA-1B is the USD L3/tape
+(`BTC/USD` / path `BTC-USD`) aligned with Hyperliquid and Binance; it is not
+a second EUR book.
 
 DATA-1E under D10 — multi-venue market data and feed coverage is an authenticated-boundary adapter
 for the same Pro socket at `wss://ws-mdpro.bitvavo.com/v2/`. It fixes the product to `BTC-EUR` and

@@ -97,7 +97,7 @@ def _run(
 
 
 def _write_run_tree(tmp_path: Path, run_id: str, *, parts: int = 2, health: bool = False) -> Path:
-    run_dir = tmp_path / "reconstructable" / "data-1b" / "kraken" / "BTC-EUR" / run_id
+    run_dir = tmp_path / "reconstructable" / "data-1b" / "kraken" / "BTC-USD" / run_id
     raw_dir = run_dir / "raw"
     raw_dir.mkdir(parents=True)
     (run_dir / "capture-claim.json").write_text(
@@ -119,7 +119,10 @@ def test_wsl_runbook_documents_known_good_operator_paths() -> None:
     text = WSL_RUNBOOK.read_text(encoding="utf-8")
     assert "~/code/Hyperliquid-Bot-main" in text
     assert "~/hyperliquid-artifacts/reconstructable" in text
-    assert "data-1b/kraken/BTC-EUR/<run_id>/" in text
+    assert "data-1b/kraken/BTC-USD/<run_id>/" in text
+    assert "BTC/USD" in text
+    assert "EUR microstructure" in text
+    assert "no silent EUR fallback" in text.lower() or "not a silent EUR fallback" in text
     assert "kr-capture" in text
     assert "hl-capture" in text
     assert "bn-capture" in text
@@ -241,8 +244,37 @@ def test_start_check_only_is_create_only(tmp_path: Path) -> None:
     assert "l2_depth=100" in completed.stdout
     assert "l3_depth=100" in completed.stdout
     assert "checksum_price_levels=10" in completed.stdout
-    run_dir = artifact_root / "data-1b" / "kraken" / "BTC-EUR" / "20260904t000000z-live-retained"
+    assert "path_contract=data-1b-kraken-btc-usd-v1" in completed.stdout
+    assert "product=BTC-USD" in completed.stdout
+    assert "wire_product=BTC/USD" in completed.stdout
+    assert "retired_eur_fallback=false" in completed.stdout
+    run_dir = artifact_root / "data-1b" / "kraken" / "BTC-USD" / "20260904t000000z-live-retained"
     assert not run_dir.exists()
+
+
+def test_start_refuses_retired_eur_path_as_current_contract(tmp_path: Path) -> None:
+    run_id = "20260904t000000z-live-retained"
+    retired = tmp_path / "reconstructable" / "data-1b" / "kraken" / "BTC-EUR" / run_id
+    retired.mkdir(parents=True)
+    (retired / "capture-claim.json").write_text("{}", encoding="utf-8")
+    completed = _run("data1b_start.sh", tmp_path, args=("--check-only",))
+    assert completed.returncode != 0
+    combined = completed.stdout + completed.stderr
+    assert "retired" in combined.lower()
+    assert "BTC-EUR" in combined
+    assert "no silent EUR fallback" in combined
+    usd = tmp_path / "reconstructable" / "data-1b" / "kraken" / "BTC-USD" / run_id
+    assert not usd.exists()
+
+
+def test_status_does_not_treat_retired_eur_runs_as_current(tmp_path: Path) -> None:
+    retired = tmp_path / "reconstructable" / "data-1b" / "kraken" / "BTC-EUR" / "old-eur-run"
+    retired.mkdir(parents=True)
+    completed = _run("data1b_status.sh", tmp_path, run_id="")
+    assert completed.returncode != 0
+    combined = completed.stdout + completed.stderr
+    assert "BTC-USD" in combined
+    assert "old-eur-run" not in combined
 
 
 def test_start_refuses_existing_run_directory(tmp_path: Path) -> None:

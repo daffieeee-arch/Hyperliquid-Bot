@@ -108,9 +108,12 @@ H2 basis remains out of scope. Operator reconstructable roots later live on Terr
 outside git; unit tests use synthetic panels only.
 
 Bitvavo DATA-1E (authenticated View-only MD Pro BTC-EUR book + trades on the same Pro
-socket; optional flagged ticker) and Kraken DATA-1B (public L2 +
-trades by default; optional L3) now have retained-path operator docs and create-only
-helpers. Do not start those captures until CoS assigns the window. See
+socket; optional flagged ticker) owns **EUR microstructure**. Kraken DATA-1B is
+the dense **USD** L2/L3 + tape (wire `BTC/USD`, path `BTC-USD`) aligned with
+Hyperliquid BTC-PERP and Binance BTCUSDT. Public L2 + trades by default;
+optional L3. EUR/XBT aliases fail closed; there is no silent EUR fallback.
+Both venues now have retained-path operator docs and create-only helpers. Do
+not start those captures until CoS assigns the window. See
 [DATA-1E operator PC/WSL runbook](runbooks/data1e-wsl-pc-retained-capture.md) and
 [DATA-1B operator PC/WSL runbook](runbooks/data1b-wsl-pc-retained-capture.md). Cloud
 Agents are unsuitable for a multi-day retain.

@@ -214,11 +214,11 @@ describe("DATA-1A path contract", () => {
         "20260904t000000z-live-retained",
       ),
     ).toBe(
-      "/var/lib/hyperliquid-bot/reconstructable/data-1b/kraken/BTC-EUR/20260904t000000z-live-retained",
+      "/var/lib/hyperliquid-bot/reconstructable/data-1b/kraken/BTC-USD/20260904t000000z-live-retained",
     );
     expect(DATA1F_PATH_CONTRACT_ID).toBe("data-1f-binance-btcusdt-v1");
     expect(DATA1E_PATH_CONTRACT_ID).toBe("data-1e-bitvavo-btc-eur-v1");
-    expect(DATA1B_PATH_CONTRACT_ID).toBe("data-1b-kraken-btc-eur-v1");
+    expect(DATA1B_PATH_CONTRACT_ID).toBe("data-1b-kraken-btc-usd-v1");
     expect(VENUE_CAPTURE_STRIP_ORDER).toEqual(["hl", "binance", "bitvavo", "kraken"]);
   });
 
@@ -266,7 +266,7 @@ describe("DATA-1A path contract", () => {
     );
     expect(resolved.runId).toBe("query-run");
     expect(resolved.runDir).toBe(
-      "/home/dmesdary/hyperliquid-artifacts/reconstructable/data-1b/kraken/BTC-EUR/query-run",
+      "/home/dmesdary/hyperliquid-artifacts/reconstructable/data-1b/kraken/BTC-USD/query-run",
     );
   });
 

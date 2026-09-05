@@ -63,6 +63,17 @@ def _assert_cost_grid(metrics_block: dict[str, object]) -> None:
         assert set(delta_block) == _cost_keys()
 
 
+def _mapping(payload: object, key: str) -> dict[str, object]:
+    assert isinstance(payload, dict)
+    value = payload[key]
+    assert isinstance(value, dict)
+    return value
+
+
+def _oos_metrics(payload: object) -> dict[str, object]:
+    return _mapping(_mapping(payload, "metrics"), "oos")
+
+
 def _write_panel_summary(
     path: Path,
     *,
@@ -96,7 +107,9 @@ def _write_panel_parquet(
     for index in range(buckets):
         stamp = _BASE_UTC_NS + index * _SECOND_NS
         row_usable = usable and (index % usable_every == 0)
-        hl_mid = Decimal("100000") + (Decimal(index) * Decimal("2") if follow_impulse else Decimal(0))
+        hl_mid = Decimal("100000") + (
+            Decimal(index) * Decimal("250") if follow_impulse else Decimal(0)
+        )
         bn_spot = Decimal("99900") + Decimal(index)
         hl_bid = hl_mid - Decimal("1")
         hl_ask = hl_mid + Decimal("1")
@@ -229,17 +242,21 @@ def test_synthetic_panel_is_noise_even_when_returns_look_good(tmp_path: Path) ->
     assert result.usable_bucket_count == 45
     payload = result.to_json_dict()
     _assert_no_edge_verdict(payload)
-    _assert_cost_grid(payload["metrics"]["oos"])
+    _assert_cost_grid(_oos_metrics(payload))
     written = json.loads((output_dir / SUMMARY_JSON_NAME).read_text(encoding="utf-8"))
     _assert_no_edge_verdict(written)
-    _assert_cost_grid(written["metrics"]["oos"])
+    written_oos = _oos_metrics(written)
+    _assert_cost_grid(written_oos)
     assert written["verdict"] == "noise"
-    positive_cells = [
-        cell
-        for delta in written["metrics"]["oos"].values()
-        for cell in delta.values()
-        if Decimal(cell["mean_after_cost_hl_return"]) > 0
-    ]
+    positive_cells: list[dict[str, object]] = []
+    for delta in written_oos.values():
+        assert isinstance(delta, dict)
+        for cell in delta.values():
+            assert isinstance(cell, dict)
+            mean = cell["mean_after_cost_hl_return"]
+            assert isinstance(mean, str)
+            if Decimal(mean) > 0:
+                positive_cells.append(cell)
     assert positive_cells
     assert all(cell["verdict"] == "noise" for cell in positive_cells)
 
@@ -257,7 +274,7 @@ def test_tiny_panel_is_not_enough_data(tmp_path: Path) -> None:
     assert result.verdict is H1VerdictName.NOT_ENOUGH_DATA
     payload = result.to_json_dict()
     _assert_no_edge_verdict(payload)
-    _assert_cost_grid(payload["metrics"]["oos"])
+    _assert_cost_grid(_oos_metrics(payload))
     assert payload["verdict"] == "not_enough_data"
     assert any("usable_bucket_count" in reason for reason in result.reasons) or any(
         "trade_count" in reason for reason in result.reasons
@@ -361,7 +378,7 @@ def test_cli_prints_noise_json(
     assert payload["verdict"] == "noise"
     assert payload["promotion_decision"] == "forbidden"
     _assert_no_edge_verdict(payload)
-    _assert_cost_grid(payload["metrics"]["oos"])
+    _assert_cost_grid(_oos_metrics(payload))
 
 
 def test_registry_template_has_no_fake_metrics() -> None:
@@ -407,6 +424,6 @@ async def test_runner_consumes_wpq1_synthetic_panel(tmp_path: Path) -> None:
     assert result.verdict is H1VerdictName.NOISE
     payload = result.to_json_dict()
     _assert_no_edge_verdict(payload)
-    _assert_cost_grid(payload["metrics"]["oos"])
-    assert payload["dataset"]["panel_version"] == "panel_hl_binance/wp-q1"
+    _assert_cost_grid(_oos_metrics(payload))
+    assert _mapping(payload, "dataset")["panel_version"] == "panel_hl_binance/wp-q1"
     assert NS_PER_MS * DEFAULT_BUCKET_MS == result.bucket_ns

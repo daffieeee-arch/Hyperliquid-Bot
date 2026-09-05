@@ -6,7 +6,7 @@ trading edge.
 
 It consumes a WP-Q1 ``panel_hl_binance`` panel (or builds one via that module),
 masks gap/incomplete buckets, and scores one predeclared signal at three fixed
-Δ horizons under 1× / 1.5× / 2× Hyperliquid cost stress.
+Δ horizons under 1x / 1.5x / 2x Hyperliquid cost stress.
 
 Verdicts are ``noise`` or ``not_enough_data`` only. This module refuses to
 assign ``edge``. Positive-looking after-cost metrics are still ``noise``.
@@ -381,7 +381,7 @@ def evaluate_h1_leadlag(
             DEFAULT_BUCKET_MS if summary_bucket_ms is None else summary_bucket_ms
         )
     except (TypeError, ValueError) as error:
-        summary_reasons = summary_reasons + (f"panel summary bucket_ms is invalid: {error}",)
+        summary_reasons = (*summary_reasons, f"panel summary bucket_ms is invalid: {error}")
         resolved_bucket_ms = require_bucket_ms(bucket_ms)
 
     if summary_reasons:
@@ -503,10 +503,7 @@ def evaluate_h1_leadlag(
 
     return _finish_result(
         verdict=assign_h1_verdict(H1VerdictName.NOISE),
-        reasons=(
-            "H1 scaffold completed the predeclared Δ and cost grid; "
-            "verdict remains noise"
-        ),
+        reasons=("H1 scaffold completed the predeclared Δ and cost grid; verdict remains noise"),
         input_mode=input_mode,
         parquet_path=parquet_path,
         summary_path=summary_path,
@@ -647,8 +644,7 @@ def _load_panel_summary(path: Path | None) -> tuple[dict[str, object] | None, tu
     verdict = loaded.get("verdict")
     if verdict != PanelVerdictName.PANEL_READY.value:
         return loaded, (
-            "WP-Q1 panel summary is not panel_ready; H1 fails closed "
-            f"(verdict={verdict!r})",
+            f"WP-Q1 panel summary is not panel_ready; H1 fails closed (verdict={verdict!r})",
         )
     return loaded, ()
 
@@ -727,9 +723,7 @@ def _signal_trades(
         later = by_ns.get(stamp + horizon_ns)
         if prior is None or later is None:
             continue
-        if not (
-            bucket_is_usable(bucket) and bucket_is_usable(prior) and bucket_is_usable(later)
-        ):
+        if not (bucket_is_usable(bucket) and bucket_is_usable(prior) and bucket_is_usable(later)):
             continue
         bn_now = bn_impulse_price(bucket)
         bn_prev = bn_impulse_price(prior)

@@ -1813,7 +1813,8 @@ def data1b_capture_health(
         "limitations": [
             "Published Parquet parts are reconstructable; a crash can lose the in-memory segment.",
             "This is not 24/7 service evidence or a trading edge.",
-            "Default retained path is public L2 + trades at depth 100; optional L3 is never a silent fallback.",
+            "Default retained path is public L2 + trades at depth 100; "
+            "optional L3 is never a silent fallback.",
             "Optional L3 keys enter only through KRAKEN_WS_API_KEY and KRAKEN_WS_API_SECRET.",
             "Generic KRAKEN_API_KEY / KRAKEN_API_SECRET names fail closed as the wrong key type.",
             "Kraken CRC32 still covers only the best 10 price levels even at subscribed depth 100.",

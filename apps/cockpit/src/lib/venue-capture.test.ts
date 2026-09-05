@@ -155,7 +155,7 @@ describe("multi-venue capture-health strip", () => {
       bvId,
     );
     writeClaim(
-      join(artifactRoot, "data-1b", "kraken", "BTC-EUR", krId),
+      join(artifactRoot, "data-1b", "kraken", "BTC-USD", krId),
       DATA1B_CLAIM_SCHEMA,
       DATA1B_PATH_CONTRACT_ID,
       krId,

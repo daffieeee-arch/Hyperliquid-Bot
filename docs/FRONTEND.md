@@ -39,7 +39,7 @@ store:
 <artifact-root>/data-1a/hyperliquid/BTC-PERP/<run_id>/
 <artifact-root>/data-1f/binance/BTCUSDT/<run_id>/
 <artifact-root>/data-1e/bitvavo/BTC-EUR/<run_id>/
-<artifact-root>/data-1b/kraken/BTC-EUR/<run_id>/
+<artifact-root>/data-1b/kraken/BTC-USD/<run_id>/
   capture-claim.json
   capture-health.json
   raw/part-*.parquet

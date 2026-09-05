@@ -1,4 +1,4 @@
-"""Offline DATA-1B tests for Kraken BTC/EUR authenticated L3 capture."""
+"""Offline DATA-1B tests for Kraken BTC/USD authenticated L3 capture."""
 
 from __future__ import annotations
 
@@ -46,10 +46,13 @@ from hyperliquid_bot.kraken_l3_research import (
     _L3BookState,
     _require_bounded_duration,
     _resolve_cli_mode,
+    _TradeState,
     data1b_capture_claim,
     data1b_capture_health,
+    data1b_feed_name,
     load_optional_l3_token_provider,
     refuse_protected_trade_keys,
+    require_kraken_research_product,
     run_reconstructable_capture,
 )
 from hyperliquid_bot.parquet_research import (
@@ -63,7 +66,13 @@ from hyperliquid_bot.raw_research import (
     RawResearchSink,
     capture_application_payload,
 )
-from hyperliquid_bot.reconstructable_paths import DATA1B_PATH_CONTRACT_ID, data1b_run_paths
+from hyperliquid_bot.reconstructable_paths import (
+    DATA1B_PATH_CONTRACT_ID,
+    DATA1B_PRODUCT,
+    DATA1B_RETIRED_PATH_CONTRACT_ID,
+    DATA1B_WIRE_PRODUCT,
+    data1b_run_paths,
+)
 
 _FIXTURE_DIR = Path(__file__).parents[1] / "fixtures" / "kraken"
 
@@ -652,7 +661,7 @@ async def test_exact_raw_parquet_roundtrip_and_string_preserving_kraken_views(
         assert any(
             marker.get("event") == "subscription_sent"
             and marker.get("subscription_type") == "level3"
-            and marker.get("product") == "BTC/EUR"
+            and marker.get("product") == "BTC/USD"
             and marker.get("authenticated") is True
             for marker in subscription_markers
         )
@@ -696,7 +705,7 @@ async def test_exact_raw_parquet_roundtrip_and_string_preserving_kraken_views(
             "params": {
                 "channel": "trade",
                 "snapshot": False,
-                "symbol": ["BTC/EUR"],
+                "symbol": ["BTC/USD"],
             },
         },
         {
@@ -705,7 +714,7 @@ async def test_exact_raw_parquet_roundtrip_and_string_preserving_kraken_views(
                 "channel": "book",
                 "depth": 100,
                 "snapshot": True,
-                "symbol": ["BTC/EUR"],
+                "symbol": ["BTC/USD"],
             },
         },
     ]
@@ -1375,7 +1384,7 @@ def test_l3_depth_truncation_is_local_scope_event_not_a_wire_delete() -> None:
         "type": "snapshot",
         "data": [
             {
-                "symbol": "BTC/EUR",
+                "symbol": "BTC/USD",
                 "bids": [
                     {
                         "order_id": "BEST-BID",
@@ -1666,6 +1675,13 @@ def test_data1b_claim_and_health_are_create_only_and_not_twenty_four_seven() -> 
     )
     assert claim["schema"] == "data-1b-retained-capture-claim-v1"
     assert claim["path_contract"] == DATA1B_PATH_CONTRACT_ID
+    assert claim["path_contract"] == "data-1b-kraken-btc-usd-v1"
+    assert claim["retired_path_contract"] == DATA1B_RETIRED_PATH_CONTRACT_ID
+    assert claim["product"] == DATA1B_PRODUCT
+    assert claim["wire_product"] == DATA1B_WIRE_PRODUCT
+    assert claim["quote_currency"] == "USD"
+    assert claim["feed"] == data1b_feed_name(include_l3=False)
+    assert claim["feed"] == "kraken-public-btc-usd-book-trades"
     assert claim["resume_policy"] == "never resume or overwrite an existing DATA-1B run directory"
     assert claim["retained"] is True
     assert claim["l2_depth"] == DEFAULT_L2_DEPTH
@@ -1676,6 +1692,38 @@ def test_data1b_claim_and_health_are_create_only_and_not_twenty_four_seven() -> 
     assert health["elapsed_seconds"] == 86_400.0
     assert health["duration_seconds"] == 86_400.0
     assert any("best 10 price levels" in item for item in cast(list[str], health["limitations"]))
+    assert any(
+        "EUR microstructure is Bitvavo" in item for item in cast(list[str], health["limitations"])
+    )
+    assert any("no silent EUR fallback" in item for item in cast(list[str], health["limitations"]))
+
+
+def test_data1b_product_identity_is_usd_and_fails_closed_on_eur_aliases() -> None:
+    assert KRAKEN_RESEARCH_PRODUCT == "BTC/USD"
+    assert DATA1B_PATH_CONTRACT_ID == "data-1b-kraken-btc-usd-v1"
+    assert require_kraken_research_product("BTC/USD") == "BTC/USD"
+    for rejected in ("BTC/EUR", "XBT/EUR", "XBT/USD", "XXBTZEUR", "XXBTZUSD", "XBTUSD"):
+        with pytest.raises(KrakenDataIntegrityError, match="failed closed"):
+            require_kraken_research_product(rejected)
+    with pytest.raises(KrakenDataIntegrityError, match="product identity"):
+        require_kraken_research_product("ETH/USD")
+    eur_trade: dict[str, object] = {
+        "channel": "trade",
+        "type": "update",
+        "data": [
+            {
+                "symbol": "BTC/EUR",
+                "side": "buy",
+                "qty": "0.1",
+                "price": "60000.1",
+                "ord_type": "limit",
+                "trade_id": "1",
+                "timestamp": "2026-08-31T10:00:00.000000100Z",
+            }
+        ],
+    }
+    with pytest.raises(KrakenDataIntegrityError, match="failed closed"):
+        _TradeState().normalize(eur_trade, 1)
 
 
 def test_cli_modes_are_mutually_exclusive(tmp_path: Path) -> None:

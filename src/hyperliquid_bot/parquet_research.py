@@ -457,12 +457,12 @@ def _create_kraken_payload_views(connection: duckdb.DuckDBPyConnection) -> None:
              json_extract_string(decode(raw.payload_bytes), '$.raw_message_ordinal') AS BIGINT
          )
          AND source.venue = 'kraken'
-         AND source.product = 'BTC/EUR'
+         AND source.product = 'BTC/USD'
          AND source.channel = 'trade'
          AND source.direction = 'inbound',
              LATERAL json_each(decode(raw.payload_bytes), '$.events') AS event
         WHERE raw.venue = 'kraken'
-          AND raw.product = 'BTC/EUR'
+          AND raw.product = 'BTC/USD'
           AND raw.channel = 'normalized_trade'
           AND raw.direction = 'local'
           AND raw.frame_type = 'marker'
@@ -501,12 +501,12 @@ def _create_kraken_payload_views(connection: duckdb.DuckDBPyConnection) -> None:
              json_extract_string(decode(raw.payload_bytes), '$.raw_message_ordinal') AS BIGINT
          )
          AND source.venue = 'kraken'
-         AND source.product = 'BTC/EUR'
+         AND source.product = 'BTC/USD'
          AND source.channel = 'book'
          AND source.direction = 'inbound',
              LATERAL json_each(decode(raw.payload_bytes), '$.events') AS event
         WHERE raw.venue = 'kraken'
-          AND raw.product = 'BTC/EUR'
+          AND raw.product = 'BTC/USD'
           AND raw.channel = 'normalized_book'
           AND raw.direction = 'local'
           AND raw.frame_type = 'marker'
@@ -548,12 +548,12 @@ def _create_kraken_payload_views(connection: duckdb.DuckDBPyConnection) -> None:
              json_extract_string(decode(raw.payload_bytes), '$.raw_message_ordinal') AS BIGINT
          )
          AND source.venue = 'kraken'
-         AND source.product = 'BTC/EUR'
+         AND source.product = 'BTC/USD'
          AND source.channel = 'level3'
          AND source.direction = 'inbound',
              LATERAL json_each(decode(raw.payload_bytes), '$.events') AS event
         WHERE raw.venue = 'kraken'
-          AND raw.product = 'BTC/EUR'
+          AND raw.product = 'BTC/USD'
           AND raw.channel = 'normalized_level3'
           AND raw.direction = 'local'
           AND raw.frame_type = 'marker'

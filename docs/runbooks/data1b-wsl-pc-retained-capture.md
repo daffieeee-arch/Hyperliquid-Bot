@@ -1,14 +1,20 @@
-# DATA-1B operator PC/WSL runbook — retained Kraken public BTC-EUR capture
+# DATA-1B operator PC/WSL runbook — retained Kraken public BTC-USD capture
 
 Status: operator runbook for the reconstructable CLI
 `python -m hyperliquid_bot.kraken_l3_research`. Windows 11 + WSL2 Ubuntu
 workstation (TerraPC). This is **not** a 24/7 service, not D22-B, and not LIVE
 trading.
 
-Default retained path: public Kraken Spot `BTC/EUR` **L2 book + trades** at
+Default retained path: public Kraken Spot `BTC/USD` **L2 book + trades** at
 `wss://ws.kraken.com/v2`, subscribed depth **100**. Authenticated L3 is optional
 (default depth 100 when enabled) and never a silent fallback. No OKX. The VPS
 counterpart is [data1b-vps-retained-capture.md](data1b-vps-retained-capture.md).
+
+**Quote-world split:** EUR microstructure is **Bitvavo DATA-1E**. Kraken DATA-1B
+is dense USD L3/tape aligned with the Hyperliquid / Binance quote world. The
+Kraken Spot WebSocket v2 wire symbol is `BTC/USD` (not REST/v1 `XBT/USD`).
+`BTC/EUR`, `XBT/EUR`, and `XBT/USD` fail closed. There is **no silent EUR
+fallback**. Retired path contract `data-1b-kraken-btc-eur-v1` is not current.
 
 **Do not start a multi-day DATA-1B retain now.** This PR is prepare-only.
 Wait until CoS assigns this window. This document does **not** attach to,
@@ -34,8 +40,9 @@ not `/mnt/c`.
 | --- | --- |
 | Repo checkout | `~/code/Hyperliquid-Bot-main` on `main` |
 | Artifact root | `~/hyperliquid-artifacts/reconstructable` |
-| Product layout | `data-1b/kraken/BTC-EUR/<run_id>/` |
-| Wire product | `BTC/EUR` |
+| Product layout | `data-1b/kraken/BTC-USD/<run_id>/` |
+| Path contract | `data-1b-kraken-btc-usd-v1` |
+| Wire product | `BTC/USD` |
 | tmux session | `kr-capture` (**never** `hl-capture`, `bn-capture`, or `bv-capture`) |
 | Example retained duration | `259200` seconds (72 hours) |
 
@@ -43,7 +50,7 @@ not `/mnt/c`.
 workstation the checkout name is `Hyperliquid-Bot-main`. Same repository.
 
 ```text
-~/hyperliquid-artifacts/reconstructable/data-1b/kraken/BTC-EUR/<run_id>/
+~/hyperliquid-artifacts/reconstructable/data-1b/kraken/BTC-USD/<run_id>/
   capture-claim.json
   capture-health.json
   capture-<run_id>.log
@@ -53,7 +60,8 @@ workstation the checkout name is `Hyperliquid-Bot-main`. Same repository.
 
 Helpers: `data1b_run_paths(artifact_root, run_id)`. `run_id` must be 1–64
 lowercase ASCII letters, digits, dot, dash, or underscore. The path segment is
-`BTC-EUR` (filesystem-safe); the wire symbol remains `BTC/EUR`.
+`BTC-USD` (filesystem-safe); the wire symbol is `BTC/USD`. Retired `BTC-EUR`
+artifacts are not the current contract and are not a silent EUR fallback.
 
 Keep `${ARTIFACT_ROOT}` **outside git**. Do not commit `raw/part-*.parquet` or
 `research.duckdb`.
@@ -180,7 +188,7 @@ git pull --ff-only
   test "${TMUX_SESSION}" != "bn-capture"
   test "${TMUX_SESSION}" != "bv-capture"
   mkdir -p "${ARTIFACT_ROOT}"
-  test ! -e "${ARTIFACT_ROOT}/data-1b/kraken/BTC-EUR/${RUN_ID}"
+  test ! -e "${ARTIFACT_ROOT}/data-1b/kraken/BTC-USD/${RUN_ID}"
   test -z "$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -x "${TMUX_SESSION}" || true)"
 
   # Python defaults: --l2-depth 100 --l3-depth 100. CRC32 still covers only the best 10 levels.
@@ -226,7 +234,7 @@ tmux has-session -t hl-capture && echo "hl_capture_tmux_alive=yes" || echo "hl_c
 tmux has-session -t bn-capture && echo "bn_capture_tmux_alive=yes" || echo "bn_capture_tmux_alive=no"
 tmux has-session -t bv-capture && echo "bv_capture_tmux_alive=yes" || echo "bv_capture_tmux_alive=no"
 
-RUN_DIR="${ARTIFACT_ROOT}/data-1b/kraken/BTC-EUR/${RUN_ID}"
+RUN_DIR="${ARTIFACT_ROOT}/data-1b/kraken/BTC-USD/${RUN_ID}"
 ls -ld "${RUN_DIR}"
 test -f "${RUN_DIR}/capture-claim.json" && echo "claim_present=yes"
 test -f "${RUN_DIR}/capture-health.json" && echo "health_present=yes" || echo "health_present=no"
@@ -286,7 +294,7 @@ Confirm:
 
 ```bash
 tmux has-session -t kr-capture && echo still_alive || echo stopped
-python3 -c 'import json,pathlib,os; p=pathlib.Path(os.path.expanduser("~/hyperliquid-artifacts/reconstructable/data-1b/kraken/BTC-EUR/'"${RUN_ID}"'/capture-health.json")); print(json.loads(p.read_text())["status"])'
+python3 -c 'import json,pathlib,os; p=pathlib.Path(os.path.expanduser("~/hyperliquid-artifacts/reconstructable/data-1b/kraken/BTC-USD/'"${RUN_ID}"'/capture-health.json")); print(json.loads(p.read_text())["status"])'
 ```
 
 ## How to continue later (there is no resume)

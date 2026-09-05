@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # DATA-1B operator-PC start helper for WSL2 Ubuntu.
-# Create-only public Kraken L2+trades (optional L3 via KRAKEN_WS_*).
+# Create-only public Kraken BTC/USD L2+trades (optional L3 via KRAKEN_WS_*).
 # Never resumes a run_id. Never attaches to or stops hl-capture, bn-capture, or bv-capture.
+# Retired BTC-EUR is not the current contract and is never a silent fallback.
 
 set -euo pipefail
 
@@ -45,6 +46,7 @@ if [[ -e "${RUN_DIR}" ]]; then
   echo "Refuse to start: DATA-1B run directory already exists (create-only, no resume): ${RUN_DIR}" >&2
   exit 1
 fi
+data1b_refuse_retired_eur_identity "${ARTIFACT_ROOT}" "${RUN_ID}"
 
 if [[ ! -d "${REPO_ROOT}" ]]; then
   echo "Refuse to start: repo checkout is missing: ${REPO_ROOT}" >&2
@@ -69,6 +71,10 @@ echo "repo_root=${REPO_ROOT}"
 echo "artifact_root=${ARTIFACT_ROOT}"
 echo "run_id=${RUN_ID}"
 echo "run_dir=${RUN_DIR}"
+echo "path_contract=$(data1b_path_contract_id)"
+echo "product=$(data1b_product_segment)"
+echo "wire_product=$(data1b_wire_product)"
+echo "retired_eur_fallback=false"
 echo "tmux_session=${TMUX_SESSION}"
 echo "duration_seconds=${DURATION_SECONDS}"
 echo "tmux_alive=${tmux_state}"

@@ -398,8 +398,8 @@ module never assigns `edge` and never prints profitability.
 `python -m hyperliquid_bot.panel_hl_binance` is a PAPER-only Quant join of one retained
 DATA-1A Hyperliquid BTC-PERP series and one retained DATA-1F Binance BTCUSDT series. It does
 not capture data, thaw v3 coverage, add venues, sign orders, or claim a trading result.
-H1 lead-lag and H2 basis experiments (WP-Q2) must not run until this panel is
-`panel_ready`.
+H1 lead-lag (WP-Q2) may run only against a `panel_ready` panel from this join.
+H2 basis remains out of scope.
 
 Preferred reconstructable inputs, both retained outside git:
 
@@ -439,6 +439,24 @@ PYTHONPATH=src uv run --frozen python -m hyperliquid_bot.panel_hl_binance \
   --bucket-ms 1000 \
   --output-dir /path/to/panel-out
 ```
+
+### WP-Q2 — H1 lead-lag scaffold
+
+`python -m hyperliquid_bot.exp_h1_leadlag` is a PAPER-only Quant consumer of the WP-Q1
+panel. It does not capture data, thaw v3 coverage, add venues, sign orders, or claim a
+trading result. Point it at `panel.parquet` + `panel-summary.json`, or pass reconstructable
+DATA-1A / DATA-1F run ids and let it call `panel_hl_binance` first.
+
+The runner masks gap / incomplete / non-overlap buckets, scores one predeclared signal
+(Binance prior-bucket return sign → Hyperliquid forward return) at Δ = 1 / 5 / 30
+buckets, and applies Hyperliquid taker + half-spread cost at 1.0× / 1.5× / 2.0×. The
+caller must pass `--oos-start-utc-ns` and `--oos-end-utc-ns`. Verdicts are only `noise`
+or `not_enough_data`. The module refuses verdict `edge` even when after-cost metrics look
+positive. Fail closed when the panel is missing, the WP-Q1 summary is `not_enough_data`,
+usable overlap after the mask is too small, or any predeclared Δ has too few OOS trades.
+
+See [experiments/exp_h1_leadlag.md](experiments/exp_h1_leadlag.md) for the pre-registration
+and registry template. Tests use synthetic panels only.
 
 The immediate next gate under D10 — multi-venue market data and feed coverage is DATA-1B — Kraken
 authenticated L3 capture, because true order-level history cannot be reconstructed later. Any

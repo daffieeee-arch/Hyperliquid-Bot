@@ -22,6 +22,7 @@ from websockets.exceptions import PayloadTooBig, WebSocketException
 from hyperliquid_bot.bitvavo_mdpro_research import (
     BITVAVO_MDPRO_API_KEY_ENV,
     BITVAVO_MDPRO_API_SECRET_ENV,
+    BITVAVO_MDPRO_BOOK_DEPTH,
     BITVAVO_MDPRO_FEED_PRODUCT,
     BITVAVO_MDPRO_PRODUCT,
     BITVAVO_MDPRO_SIGNATURE_PATH,
@@ -45,11 +46,17 @@ from hyperliquid_bot.bitvavo_mdpro_research import (
     _decode_json_object,
     _normalize_book_snapshot,
     _normalize_book_update,
+    _normalize_ticker,
+    _normalize_trade,
     _require_bounded_duration,
     _resolve_cli_mode,
+    _subscription_acknowledged_channels,
     data1e_capture_claim,
     data1e_capture_health,
+    data1e_feed_name,
     load_mdpro_credentials_from_env,
+    mdpro_subscription_channels,
+    mdpro_subscription_payload_text,
     refuse_protected_trade_keys,
     run_reconstructable_capture,
 )
@@ -88,6 +95,50 @@ def _auth_ack(*, authenticated: bool = True) -> str:
 def _book_ack(*, event: str = "book") -> str:
     return json.dumps(
         {"event": event, "subscriptions": {"book": ["BTC-EUR"]}},
+        separators=(",", ":"),
+    )
+
+
+def _pro_ack(*channels: str, event: str = "subscribed") -> str:
+    names = channels or ("book", "trades")
+    return json.dumps(
+        {"event": event, "subscriptions": {name: ["BTC-EUR"] for name in names}},
+        separators=(",", ":"),
+    )
+
+
+def _trade(
+    *,
+    trade_id: str = "391f4d94-485f-4fb0-b11f-39da1cfcfc2d",
+    market: str = BITVAVO_MDPRO_PRODUCT,
+    side: str = "sell",
+) -> str:
+    return json.dumps(
+        {
+            "event": "trade",
+            "id": trade_id,
+            "amount": "0.000963610000000001",
+            "price": "9311.200000000000000001",
+            "timestamp": 1_566_817_150_381,
+            "market": market,
+            "side": side,
+            "timestampNs": 1_752_139_200_000_000_000,
+        },
+        separators=(",", ":"),
+    )
+
+
+def _ticker(*, market: str = BITVAVO_MDPRO_PRODUCT) -> str:
+    return json.dumps(
+        {
+            "event": "ticker",
+            "market": market,
+            "bestBid": "9156.800000000000000001",
+            "bestBidSize": "0.128405310000000001",
+            "bestAsk": "9157.900000000000000001",
+            "bestAskSize": "0.128660500000000001",
+            "lastPrice": "9156.900000000000000001",
+        },
         separators=(",", ":"),
     )
 
@@ -246,7 +297,7 @@ def _marker_documents(
 def _successful_messages(*, snapshot_sequence: int = 100) -> list[str]:
     return [
         _auth_ack(),
-        _book_ack(),
+        _pro_ack("book", "trades"),
         _snapshot(snapshot_sequence, nonce=snapshot_sequence),
         _book_update(
             snapshot_sequence + 1,
@@ -280,8 +331,10 @@ async def _capture_transport_error(
 
 def test_fixed_scope_and_small_credential_surface() -> None:
     assert BITVAVO_MDPRO_WEBSOCKET_URL == "wss://ws-mdpro.bitvavo.com/v2/"
+    assert "ws.bitvavo.com" not in BITVAVO_MDPRO_WEBSOCKET_URL
     assert BITVAVO_MDPRO_PRODUCT == "BTC-EUR"
     assert BITVAVO_MDPRO_FEED_PRODUCT == "market_data_pro"
+    assert BITVAVO_MDPRO_BOOK_DEPTH == 1000
     signature = inspect.signature(BitvavoMdProResearchCollector)
     assert "credentials" in signature.parameters
     assert not {
@@ -291,6 +344,55 @@ def test_fixed_scope_and_small_credential_surface() -> None:
         "fallback",
         "standard_connection",
     } & set(signature.parameters)
+
+
+def test_subscribe_set_is_pro_book_and_trades_with_optional_ticker() -> None:
+    assert mdpro_subscription_channels() == ("book", "trades")
+    assert mdpro_subscription_channels(include_ticker=False) == ("book", "trades")
+    assert mdpro_subscription_channels(include_ticker=True) == ("book", "trades", "ticker")
+    default_payload = json.loads(mdpro_subscription_payload_text())
+    ticker_payload = json.loads(mdpro_subscription_payload_text(include_ticker=True))
+    assert default_payload == {
+        "action": "subscribe",
+        "channels": [
+            {"markets": ["BTC-EUR"], "name": "book"},
+            {"markets": ["BTC-EUR"], "name": "trades"},
+        ],
+    }
+    assert ticker_payload["channels"][-1] == {"markets": ["BTC-EUR"], "name": "ticker"}
+    assert data1e_feed_name() == "bitvavo-mdpro-btc-eur-book-trades"
+    assert data1e_feed_name(include_ticker=True) == "bitvavo-mdpro-btc-eur-book-trades-ticker"
+    assert "standard" not in data1e_feed_name()
+    assert "ws.bitvavo.com/v2" not in mdpro_subscription_payload_text()
+
+
+def test_pro_subscription_ack_accepts_combined_and_incremental_official_forms() -> None:
+    expected = frozenset({"book", "trades"})
+    combined = _subscription_acknowledged_channels(
+        _document(_pro_ack("book", "trades")),
+        expected=expected,
+    )
+    incremental_book = _subscription_acknowledged_channels(
+        _document(_book_ack(event="book")),
+        expected=expected,
+    )
+    incremental_trades = _subscription_acknowledged_channels(
+        _document(_pro_ack("trades")),
+        expected=expected,
+    )
+    assert combined == expected
+    assert incremental_book == frozenset({"book"})
+    assert incremental_trades == frozenset({"trades"})
+    assert not _subscription_acknowledged_channels(
+        _document(
+            '{"event":"subscribed","subscriptions":{"book":["BTC-EUR"],"ticker":["BTC-EUR"]}}'
+        ),
+        expected=expected,
+    )
+    assert not _subscription_acknowledged_channels(
+        _document('{"event":"subscribed","subscriptions":{"trades":["ETH-EUR"]}}'),
+        expected=expected,
+    )
 
 
 def test_credentials_sign_exact_official_preimage_and_repr_is_redacted() -> None:
@@ -399,6 +501,33 @@ def test_official_fixtures_preserve_decimals_ranges_and_wire_order() -> None:
     ]
     assert snapshot["sequence_start"] == snapshot["sequence_end"] == "438525"
     assert snapshot["message_type"] == "snapshot"
+
+
+def test_official_trade_and_ticker_fixtures_preserve_decimals_and_pro_identity() -> None:
+    trade = _normalize_trade(_document(_fixture_bytes("trade_frame.json")), 9)
+    ticker = _normalize_ticker(_document(_fixture_bytes("ticker_frame.json")), 10)
+    assert trade["event"] == "normalized_mdpro_trade_frame"
+    assert trade["source_channel"] == "mdpro_trades"
+    assert trade["events"] == [
+        {
+            "event_index": 0,
+            "market": "BTC-EUR",
+            "trade_id": "391f4d94-485f-4fb0-b11f-39da1cfcfc2d",
+            "price": "9311.200000000000000001",
+            "quantity": "0.000963610000000001",
+            "taker_side": "sell",
+            "event_time_ms": "1566817150381",
+            "event_time_ns": "1752139200000000000",
+        }
+    ]
+    assert ticker["event"] == "normalized_mdpro_ticker_frame"
+    assert ticker["source_channel"] == "mdpro_ticker"
+    assert ticker["bid_price"] == "9156.800000000000000001"
+    assert ticker["last_price"] == "9156.900000000000000001"
+    with pytest.raises(BitvavoMdProDataIntegrityError):
+        _normalize_trade(_document(_trade(market="ETH-EUR")), 1)
+    with pytest.raises(BitvavoMdProDataIntegrityError):
+        _normalize_ticker(_document(_ticker(market="ETH-EUR")), 1)
 
 
 def test_snapshot_first_and_grouped_range_chain() -> None:
@@ -531,9 +660,7 @@ async def test_collector_keeps_only_exact_market_frames_and_sanitized_controls()
     assert len(connection.sent) == 3
     auth = cast(str, connection.sent[0])
     assert json.loads(auth)["action"] == "authenticate"
-    assert connection.sent[1] == (
-        '{"action":"subscribe","channels":[{"markets":["BTC-EUR"],"name":"book"}]}'
-    )
+    assert connection.sent[1] == mdpro_subscription_payload_text(include_ticker=False)
     assert connection.sent[2] == (
         '{"action":"getBook","depth":1000,"market":"BTC-EUR","requestId":1}'
     )
@@ -549,6 +676,95 @@ async def test_collector_keeps_only_exact_market_frames_and_sanitized_controls()
         "authentication_sent",
         "authentication_acknowledged",
     ]
+    sent_subscribe = json.loads(cast(str, connection.sent[1]))
+    assert {
+        channel["name"] for channel in cast(list[dict[str, object]], sent_subscribe["channels"])
+    } == {
+        "book",
+        "trades",
+    }
+
+
+@pytest.mark.asyncio
+async def test_incremental_pro_acks_then_trades_stay_on_the_same_socket() -> None:
+    stop_event = asyncio.Event()
+    messages = [
+        _auth_ack(),
+        _book_ack(event="book"),
+        _pro_ack("trades"),
+        _snapshot(100),
+        _book_update(101),
+        _trade(),
+    ]
+    connection = FakeConnection(messages, on_last=stop_event.set)
+    sink = MemorySink()
+    collector = BitvavoMdProResearchCollector(
+        sink,
+        _credentials(),
+        connection_factory=ScriptedConnectionFactory([connection]),
+        session_id_factory=SessionIds(),
+    )
+    await collector.capture_for(5.0, stop_event=stop_event)
+    inbound = [record for record in sink.records if record.direction is MessageDirection.INBOUND]
+    assert [record.channel for record in inbound] == [
+        "mdpro_book_snapshot",
+        "mdpro_book",
+        "mdpro_trades",
+    ]
+    assert all(record.product == "BTC-EUR" for record in inbound)
+    assert all(record.venue == "bitvavo" for record in inbound)
+    assert not any(record.channel in {"trades", "ticker", "book"} for record in inbound)
+    normalized_trades = [
+        json.loads(record.payload_bytes)
+        for record in sink.records
+        if record.channel == "normalized_mdpro_trades"
+    ]
+    assert normalized_trades[0]["source_channel"] == "mdpro_trades"
+    assert json.loads(cast(str, connection.sent[1]))["channels"][0]["name"] == "book"
+    assert {item["name"] for item in json.loads(cast(str, connection.sent[1]))["channels"]} == {
+        "book",
+        "trades",
+    }
+
+
+@pytest.mark.asyncio
+async def test_optional_ticker_is_flagged_and_unsolicited_ticker_fails_closed() -> None:
+    stop_event = asyncio.Event()
+    enabled = FakeConnection(
+        [
+            _auth_ack(),
+            _pro_ack("book", "trades", "ticker"),
+            _snapshot(100),
+            _book_update(101),
+            _ticker(),
+        ],
+        on_last=stop_event.set,
+    )
+    sink = MemorySink()
+    collector = BitvavoMdProResearchCollector(
+        sink,
+        _credentials(),
+        config=BitvavoMdProResearchConfig(include_ticker=True),
+        connection_factory=ScriptedConnectionFactory([enabled]),
+        session_id_factory=SessionIds(),
+    )
+    await collector.capture_for(5.0, stop_event=stop_event)
+    assert [
+        record.channel for record in sink.records if record.direction is MessageDirection.INBOUND
+    ][-1] == "mdpro_ticker"
+    assert "ticker" in {item["name"] for item in json.loads(cast(str, enabled.sent[1]))["channels"]}
+
+    refused = FakeConnection(
+        [_auth_ack(), _pro_ack("book", "trades"), _snapshot(100), _book_update(101), _ticker()]
+    )
+    with pytest.raises(BitvavoMdProDataIntegrityError) as raised:
+        await BitvavoMdProResearchCollector(
+            MemorySink(),
+            _credentials(),
+            connection_factory=ScriptedConnectionFactory([refused]),
+            session_id_factory=SessionIds(),
+        ).capture_for(5.0)
+    assert raised.value.quality_event == "subscription_error"
 
 
 @pytest.mark.asyncio
@@ -642,7 +858,7 @@ async def test_secret_bearing_market_frame_is_blocked_before_persistence() -> No
     signature = cast(str, json.loads(auth_payload)["signature"])
     messages = [
         _auth_ack(),
-        _book_ack(),
+        _pro_ack("book", "trades"),
         json.dumps(
             {
                 "event": "book",
@@ -715,7 +931,7 @@ async def test_json_escaped_credentials_never_reach_records_or_parquet(
         credentials,
         config=BitvavoMdProResearchConfig(max_reconnects=0),
         connection_factory=ScriptedConnectionFactory(
-            [FakeConnection([_auth_ack(), _book_ack(), escaped_frame])]
+            [FakeConnection([_auth_ack(), _pro_ack("book", "trades"), escaped_frame])]
         ),
         timestamp_ms=lambda: 2,
         session_id_factory=SessionIds(),
@@ -775,7 +991,7 @@ async def test_transport_failures_drop_sensitive_lower_exception_context(
         else:
             lower_error = WebSocketException(sentinel)
         connection_factory = ScriptedConnectionFactory(
-            [FakeConnection([_auth_ack(), _book_ack(), lower_error])]
+            [FakeConnection([_auth_ack(), _pro_ack("book", "trades"), lower_error])]
         )
 
     sink = MemorySink()
@@ -841,7 +1057,7 @@ async def test_reconnect_reauthenticates_and_starts_with_empty_book_state() -> N
 async def test_sequence_failure_is_terminal_without_transport_retry() -> None:
     messages = [
         _auth_ack(),
-        _book_ack(),
+        _pro_ack("book", "trades"),
         _snapshot(100),
         _book_update(102),
     ]
@@ -868,7 +1084,7 @@ async def test_buffered_live_update_can_join_snapshot_without_reordering_wire_re
     stop_event = asyncio.Event()
     messages = [
         _auth_ack(),
-        _book_ack(),
+        _pro_ack("book", "trades"),
         _book_update(101, 103),
         _snapshot(100),
     ]
@@ -900,7 +1116,7 @@ async def test_buffered_live_update_can_join_snapshot_without_reordering_wire_re
 @pytest.mark.asyncio
 async def test_missing_post_snapshot_update_is_not_a_successful_capture() -> None:
     stop_event = asyncio.Event()
-    messages = [_auth_ack(), _book_ack(), _snapshot(100)]
+    messages = [_auth_ack(), _pro_ack("book", "trades"), _snapshot(100)]
     collector = BitvavoMdProResearchCollector(
         MemorySink(),
         _credentials(),
@@ -916,7 +1132,7 @@ async def test_missing_post_snapshot_update_is_not_a_successful_capture() -> Non
 
 @pytest.mark.asyncio
 async def test_oversize_complete_market_frame_is_not_partially_persisted() -> None:
-    messages = [_auth_ack(), _book_ack(), _snapshot(100)]
+    messages = [_auth_ack(), _pro_ack("book", "trades"), _snapshot(100)]
     sink = MemorySink()
     collector = BitvavoMdProResearchCollector(
         sink,
@@ -935,7 +1151,7 @@ async def test_oversize_complete_market_frame_is_not_partially_persisted() -> No
 async def test_transport_truncation_and_writer_failure_are_terminal() -> None:
     truncation_messages: list[str | bytes | BaseException] = [
         _auth_ack(),
-        _book_ack(),
+        _pro_ack("book", "trades"),
         PayloadTooBig(9, 8),
     ]
     truncation_factory = ScriptedConnectionFactory([FakeConnection(truncation_messages)])
@@ -1024,6 +1240,14 @@ async def test_exact_parquet_roundtrip_view_isolation_and_secret_absence(tmp_pat
         ]
         assert [row[2] for row in stored] == ["mdpro_book_snapshot", "mdpro_book"]
         assert "bitvavo_mdpro_spot_l2_events" in RESEARCH_VIEW_NAMES
+        assert "bitvavo_mdpro_spot_trades" in RESEARCH_VIEW_NAMES
+        assert "bitvavo_mdpro_spot_bbo" in RESEARCH_VIEW_NAMES
+        assert connection.execute("SELECT count(*) FROM bitvavo_mdpro_spot_trades").fetchone() == (
+            0,
+        )
+        assert connection.execute("SELECT count(*) FROM bitvavo_mdpro_spot_bbo").fetchone() == (0,)
+        assert connection.execute("SELECT count(*) FROM bitvavo_spot_trades").fetchone() == (0,)
+        assert connection.execute("SELECT count(*) FROM bitvavo_spot_bbo").fetchone() == (0,)
         assert connection.execute(
             "SELECT count(*) FROM bitvavo_mdpro_spot_l2_events"
         ).fetchone() == (4,)
@@ -1074,6 +1298,83 @@ async def test_exact_parquet_roundtrip_view_isolation_and_secret_absence(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_pro_trades_and_ticker_views_do_not_select_standard_channels(
+    tmp_path: Path,
+) -> None:
+    parquet_dir = tmp_path / "parquet"
+    database_path = tmp_path / "research.duckdb"
+    writer = ParquetResearchWriter(
+        parquet_dir,
+        rotation=ParquetRotation(
+            max_records=20,
+            max_payload_bytes=1_000_000,
+            max_interval_seconds=300,
+        ),
+    )
+    stop_event = asyncio.Event()
+    messages = [
+        _auth_ack(),
+        _pro_ack("book", "trades", "ticker"),
+        _snapshot(100),
+        _book_update(101),
+        _trade(),
+        _ticker(),
+    ]
+    collector = BitvavoMdProResearchCollector(
+        writer,
+        _credentials(),
+        config=BitvavoMdProResearchConfig(include_ticker=True),
+        connection_factory=ScriptedConnectionFactory(
+            [FakeConnection(messages, on_last=stop_event.set)]
+        ),
+        session_id_factory=SessionIds(),
+    )
+    await collector.capture_for(5.0, stop_event=stop_event)
+    await writer.aclose()
+    create_research_catalog(parquet_dir, database_path)
+
+    connection = duckdb.connect(str(database_path), read_only=True)
+    try:
+        inbound = connection.execute(
+            """
+            SELECT channel
+            FROM raw_records
+            WHERE direction = 'inbound'
+            ORDER BY message_ordinal
+            """
+        ).fetchall()
+        assert [row[0] for row in inbound] == [
+            "mdpro_book_snapshot",
+            "mdpro_book",
+            "mdpro_trades",
+            "mdpro_ticker",
+        ]
+        assert connection.execute("SELECT count(*) FROM bitvavo_mdpro_spot_trades").fetchone() == (
+            1,
+        )
+        assert connection.execute(
+            "SELECT feed_product, price, quantity, taker_side FROM bitvavo_mdpro_spot_trades"
+        ).fetchone() == (
+            "market_data_pro",
+            "9311.200000000000000001",
+            "0.000963610000000001",
+            "sell",
+        )
+        assert connection.execute("SELECT count(*) FROM bitvavo_mdpro_spot_bbo").fetchone() == (1,)
+        assert connection.execute(
+            "SELECT feed_product, bbo_complete FROM bitvavo_mdpro_spot_bbo"
+        ).fetchone() == ("market_data_pro", True)
+        assert connection.execute("SELECT count(*) FROM bitvavo_spot_trades").fetchone() == (0,)
+        assert connection.execute("SELECT count(*) FROM bitvavo_spot_bbo").fetchone() == (0,)
+        assert connection.execute("SELECT count(*) FROM bitvavo_spot_l2_events").fetchone() == (0,)
+        assert connection.execute(
+            "SELECT count(*) FROM bitvavo_mdpro_spot_l2_events"
+        ).fetchone() == (3,)
+    finally:
+        connection.close()
+
+
+@pytest.mark.asyncio
 async def test_depth_1000_snapshot_view_fully_materializes(tmp_path: Path) -> None:
     parquet_dir = tmp_path / "parquet"
     database_path = tmp_path / "research.duckdb"
@@ -1090,7 +1391,7 @@ async def test_depth_1000_snapshot_view_fully_materializes(tmp_path: Path) -> No
     asks = [[f"5001.{index:03d}", "0.020000000000000001"] for index in range(1000)]
     messages = [
         _auth_ack(),
-        _book_ack(),
+        _pro_ack("book", "trades"),
         _snapshot(438_525, bids=bids, asks=asks),
         _book_update(438_526, bids=[["4999.999", "0"]]),
     ]
@@ -1201,6 +1502,8 @@ def test_config_validation() -> None:
         BitvavoMdProResearchConfig(max_reconnects=-1)
     with pytest.raises(ValueError):
         BitvavoMdProResearchConfig(max_buffered_book_updates=0)
+    with pytest.raises(ValueError):
+        BitvavoMdProResearchConfig(include_ticker=cast(bool, 1))
 
 
 def test_fixture_directory_contains_no_authentication_material() -> None:
@@ -1278,6 +1581,9 @@ async def test_reconstructable_capture_writes_the_path_contract(tmp_path: Path) 
     assert claim["retained"] is True
     assert claim["signing"] is False
     assert claim["authenticated_read_only"] is True
+    assert claim["feed"] == "bitvavo-mdpro-btc-eur-book-trades"
+    assert claim["standard_fallback"] is False
+    assert claim["channels"] == ["book", "trades"]
     assert health["status"] == "COMPLETED"
     assert health["path_contract"] == DATA1E_PATH_CONTRACT_ID
     with pytest.raises(FileExistsError, match="refuses to reuse"):
@@ -1310,8 +1616,28 @@ def test_data1e_claim_and_health_are_create_only_and_not_twenty_four_seven() -> 
     assert claim["path_contract"] == DATA1E_PATH_CONTRACT_ID
     assert claim["resume_policy"] == "never resume or overwrite an existing DATA-1E run directory"
     assert claim["retained"] is True
+    assert claim["feed"] == "bitvavo-mdpro-btc-eur-book-trades"
+    assert claim["feed_product"] == "market_data_pro"
+    assert claim["channels"] == ["book", "trades"]
+    assert claim["book_depth"] == 1000
+    assert claim["include_ticker"] is False
+    assert claim["standard_fallback"] is False
+    assert claim["websocket_url"] == BITVAVO_MDPRO_WEBSOCKET_URL
     assert health["twenty_four_seven"] is False
     assert health["signing"] is False
+    assert health["feed"] == "bitvavo-mdpro-btc-eur-book-trades"
+    assert health["standard_fallback"] is False
+    assert health["channels"] == ["book", "trades"]
+    ticker_claim = data1e_capture_claim(
+        run_id="sample-run",
+        duration_seconds=86_400,
+        paths=paths,
+        include_ticker=True,
+    )
+    assert ticker_claim["feed"] == "bitvavo-mdpro-btc-eur-book-trades-ticker"
+    assert ticker_claim["channels"] == ["book", "trades", "ticker"]
+    assert ticker_claim["include_ticker"] is True
+    assert ticker_claim["standard_fallback"] is False
 
 
 def test_cli_modes_are_mutually_exclusive(tmp_path: Path) -> None:

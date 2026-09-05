@@ -100,7 +100,8 @@ H1 lead-lag / H2 basis experiment runners (WP-Q2) must not start until that pane
 trading result. Operator reconstructable roots later live on TerraPC outside git; unit tests
 use synthetic overlap only.
 
-Bitvavo DATA-1E (authenticated View-only MD Pro BTC-EUR) and Kraken DATA-1B (public L2 +
+Bitvavo DATA-1E (authenticated View-only MD Pro BTC-EUR book + trades on the same Pro
+socket; optional flagged ticker) and Kraken DATA-1B (public L2 +
 trades by default; optional L3) now have retained-path operator docs and create-only
 helpers. Do not start those captures until CoS assigns the window. See
 [DATA-1E operator PC/WSL runbook](runbooks/data1e-wsl-pc-retained-capture.md) and

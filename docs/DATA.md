@@ -88,7 +88,8 @@ Use Bitvavo Standard as a free public data source for EUR and available USDC spo
 - EUR/USDC and asset quote-route comparison.
 
 Bitvavo Market Data Pro is a distinct authenticated read-only comparison feed, not part of the
-free public Standard feed. DATA-1E implements its bounded BTC-EUR Pro book adapter and smoke;
+free public Standard feed. DATA-1E implements its bounded BTC-EUR Pro book+trades adapter
+(optional flagged ticker) and smoke;
 simultaneous Standard/Pro collection requirements remain defined under feed-product identity below.
 
 Primary research uses:
@@ -170,7 +171,8 @@ and node-provided products, including their L2, L3, order-level/L4, trade, BBO, 
 funding, open-interest, liquidation, option, implied-volatility and Greek capabilities.
 
 Bitvavo Standard and Market Data Pro are distinct feeds. DATA-1E provides one bounded authenticated
-Pro book adapter and smoke; it does not create a persistent account or credential integration. Any
+Pro book+trades adapter (optional flagged ticker) and smoke; it does not create a persistent
+account or credential integration. Any
 Pro key is dedicated to data only, receives no Trade or Withdraw permission, is IP-allowlisted
 where possible, is never reused as an execution key, and may never silently fall back to Standard
 while claiming Pro identity. Standard and Pro must later support simultaneous A/B collection.
@@ -766,14 +768,16 @@ Official contracts checked for this slice:
 
 ### DATA-1E — Bitvavo Market Data Pro BTC-EUR research slice
 
-Phase 1 of DATA-1E under D10 — multi-venue market data and feed coverage is an offline-only,
-authenticated-boundary adapter for the `book` channel and in-band `getBook` snapshot at
-`wss://ws-mdpro.bitvavo.com/v2/`. It fixes the product to `BTC-EUR` and deliberately excludes Pro
-trades and ticker: DATA-1D already captures their public Standard counterparts, while the distinct
-documented value of Market Data Pro for this slice is non-conflated price-level L2 with explicit
-sequence ranges. This is L2, never L3/MBO. There is no documented checksum, and the deprecated Pro
-`nonce` is retained only as an optional source field; it is neither an integrity input nor
-comparable to Standard or REST nonces.
+DATA-1E under D10 — multi-venue market data and feed coverage is an authenticated-boundary adapter
+for the same Pro socket at `wss://ws-mdpro.bitvavo.com/v2/`. It fixes the product to `BTC-EUR` and
+subscribes `book` plus `trades` on that socket, then requests in-band `getBook` at depth 1000.
+Ticker is optional and flagged (`--include-ticker`); it is never implied by the default
+book+trades set. This path never falls back to DATA-1D Standard. The distinct documented value of
+Market Data Pro remains non-conflated price-level L2 with explicit sequence ranges; Pro trades
+(and optional ticker) are captured as separately identified `mdpro_*` channels so they cannot be
+confused with Standard `trades` / `ticker` / `book`. This is L2, never L3/MBO. There is no
+documented checksum, and the deprecated Pro `nonce` is retained only as an optional source field;
+it is neither an integrity input nor comparable to Standard or REST nonces.
 
 Every connection must authenticate before subscription. The signed preimage is exactly
 `<timestamp_ms>GET/v2/websocket`, with a hexadecimal HMAC-SHA256 signature. The implementation uses
@@ -786,21 +790,27 @@ existing DATA-1A raw-record and atomic ZSTD-Parquet path.
 
 The official Pro schema uses `event="book"` for the book confirmation while the sibling Pro
 subscription schemas use `event="subscribed"`. The adapter accepts only those two documented event
-forms and still requires the subscriptions map to equal exactly `{"book":["BTC-EUR"]}`; neither
-form can be mistaken for a market-data update because an update must carry the market and book
-fields instead.
+forms. A confirmation may acknowledge a subset of the subscribed channels (`book`, `trades`, and
+optionally `ticker`) as long as every market list equals exactly `["BTC-EUR"]`; extra or Standard
+markets fail closed. Incremental confirmations are accumulated until the subscribed set is
+complete. Neither form can be mistaken for a market-data update because an update must carry the
+market and payload fields instead of a subscriptions map.
 
-The one new source-linked DuckDB view is:
+The source-linked DuckDB views are:
 
 ```text
 bitvavo_mdpro_spot_l2_events
+bitvavo_mdpro_spot_trades
+bitvavo_mdpro_spot_bbo
 ```
 
-It exposes `feed_product='market_data_pro'`, the exact source ordinal and receipt clocks, payload
-SHA-256, snapshot or update type, deprecated nonce, venue nanosecond timestamp, start/end sequence,
-wire order, side, action, and unchanged decimal strings. Distinct `mdpro_book` and
-`mdpro_book_snapshot` source channels prevent this view from selecting DATA-1D Standard rows. A
-Pro capture still uses a separate Parquet corpus; no Standard/Pro equivalence is implied.
+They expose `feed_product='market_data_pro'`, the exact source ordinal and receipt clocks, payload
+SHA-256, and unchanged decimal strings. Distinct `mdpro_book`, `mdpro_book_snapshot`,
+`mdpro_trades`, and `mdpro_ticker` source channels prevent these views from selecting DATA-1D
+Standard rows. A Pro capture still uses a separate Parquet corpus; no Standard/Pro equivalence is
+implied. The claim `feed` string is `bitvavo-mdpro-btc-eur-book-trades`, or
+`bitvavo-mdpro-btc-eur-book-trades-ticker` when ticker is flagged. It is never a Standard feed
+name.
 
 The snapshot `mdSeqNo` is the last engine event included. A buffered update wholly covered by that
 snapshot (`endMdSeqNo <= mdSeqNo`) is discarded. The first retained update must start at
@@ -825,7 +835,8 @@ Any bounded phase-2 smoke or retained operator path requires a dedicated Bitvavo
 the UI `View access` permission (called `Read-only` in the Pro introduction), all trade,
 withdrawal, transfer, administrative, and subaccount permissions disabled, and IP allowlisting
 where practical. That permission can expose account information even though this adapter calls
-only authenticate, subscribe, and `getBook`; the key is therefore still sensitive.
+only authenticate, subscribe (`book` + `trades`, optional `ticker`), and `getBook`; the key is
+therefore still sensitive.
 
 The retained-operator path loads View-only keys only from `BITVAVO_MDPRO_API_KEY` and
 `BITVAVO_MDPRO_API_SECRET`. Values are never printed, logged, committed, or written to
@@ -876,15 +887,19 @@ decompressed artifacts and reported no API key, secret, or generated signature m
 
 This controlled restart is not evidence for spontaneous transport-reconnect reliability. The
 smoke does not prove checksum coverage, price levels beyond the requested snapshot depth, live Pro
-trades or ticker coverage, every possible update shape, continuous completeness, 24-hour
+trades or ticker retain coverage, every possible update shape, continuous completeness, 24-hour
 reliability, hard-crash durability, strategy edge, deployment readiness, production suitability,
-or execution capability. It remains L2 price-level research data, never L3/MBO.
+or execution capability. The collector now subscribes Pro `trades` (and optional `ticker`) on the
+same socket; that subscribe-set change is prepare-only until CoS starts a retain. It remains L2
+price-level research data plus separately identified Pro trades/ticker, never L3/MBO.
 
 Official contracts checked for this slice:
 
 - https://docs.bitvavo.com/docs/ws-market-data-pro-api/introduction/
 - https://docs.bitvavo.com/docs/ws-market-data-pro-sync/
 - https://docs.bitvavo.com/docs/ws-market-data-pro-api/book-subscription/
+- https://docs.bitvavo.com/docs/ws-market-data-pro-api/trades-subscription/
+- https://docs.bitvavo.com/docs/ws-market-data-pro-api/ticker-subscription/
 - https://docs.bitvavo.com/docs/ws-market-data-pro-api/get-order-book/
 - https://docs.bitvavo.com/api-specs/ws-market-data-pro-api.yaml
 - https://docs.bitvavo.com/docs/get-started/

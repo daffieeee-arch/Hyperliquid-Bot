@@ -28,6 +28,12 @@ function sourceLabel(source: PaperRunSnapshot["source"]): string {
   return "paper-run-dir";
 }
 
+// Provenance/preflight fields are optional in the claim contract. When a field
+// is absent the desk shows "not recorded" instead of fabricating an identity.
+function orNotRecorded(value: string | undefined): string {
+  return value === undefined || value === "" ? "not recorded" : value;
+}
+
 function Masthead({
   snapshot,
   snapshotError,
@@ -240,6 +246,56 @@ function SnapshotDesk({ snapshot }: { snapshot: PaperRunSnapshot }) {
           <p className="source">
             Source {snapshot.source}: <code>{snapshot.runDir}</code>
           </p>
+        </section>
+
+        <section className="panel">
+          <div className="panel-head">
+            <h2>Run provenance &amp; preflight</h2>
+            <p className="panel-kicker">
+              Reconstructable run identity and the pre-submit risk caps that were enforced
+            </p>
+          </div>
+          <KvTable
+            rows={[
+              { label: "Run identity", value: orNotRecorded(snapshot.claim.run_identity) },
+              { label: "Config sha256", value: orNotRecorded(snapshot.claim.config_sha256) },
+              { label: "Source sha256", value: orNotRecorded(snapshot.claim.source_sha256) },
+              {
+                label: "Strategy class",
+                value: orNotRecorded(snapshot.claim.preflight?.strategy_class),
+              },
+              {
+                label: "Order qty",
+                value:
+                  snapshot.claim.preflight === undefined
+                    ? "not recorded"
+                    : `${snapshot.claim.preflight.order_quantity_btc} BTC`,
+              },
+              {
+                label: "Max entry notional",
+                value:
+                  snapshot.claim.preflight === undefined
+                    ? "not recorded"
+                    : `${snapshot.claim.preflight.max_entry_notional_usdc} USDC`,
+              },
+              {
+                label: "Max assumed loss",
+                value:
+                  snapshot.claim.preflight === undefined
+                    ? "not recorded"
+                    : `${snapshot.claim.preflight.max_assumed_loss_usdc} USDC`,
+              },
+              {
+                label: "Same D01 smoke risk",
+                value:
+                  snapshot.claim.preflight === undefined
+                    ? "not recorded"
+                    : yesNo(snapshot.claim.preflight.same_d01_smoke_risk),
+              },
+              { label: "WebSocket", value: orNotRecorded(snapshot.claim.websocket_url) },
+              { label: "Resume policy", value: orNotRecorded(snapshot.claim.resume_policy) },
+            ]}
+          />
         </section>
       </div>
 

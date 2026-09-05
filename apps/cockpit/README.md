@@ -35,6 +35,13 @@ unset or `PAPER`; `LIVE`, `TESTNET`, and `SHADOW` fail closed.
    explicit empty state.
 7. PAPER intent/fill blotter copied from `orders.json` / `fills.json`. Empty
    runs stay empty; rows are not invented.
+8. Run provenance &amp; preflight from `run-claim.json`: `run_identity`,
+   `config_sha256`, `source_sha256`, `websocket_url`, `resume_policy`, and the
+   pre-submit risk caps (`strategy_class`, `order_quantity_btc`,
+   `max_entry_notional_usdc`, `max_assumed_loss_usdc`, `same_d01_smoke_risk`).
+   These fields are optional in the claim contract: when a run omits them the
+   panel shows **not recorded** rather than fabricating an identity, and a
+   present-but-malformed block fails the desk closed.
 
 ## JSON it reads
 

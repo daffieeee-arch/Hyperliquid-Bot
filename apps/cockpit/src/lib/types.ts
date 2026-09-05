@@ -1,5 +1,13 @@
 export type JsonObject = Record<string, unknown>;
 
+export type PaperRunPreflight = {
+  strategy_class: string;
+  order_quantity_btc: string;
+  max_entry_notional_usdc: string;
+  max_assumed_loss_usdc: string;
+  same_d01_smoke_risk: boolean;
+};
+
 export type PaperRunClaim = {
   mode: "PAPER";
   run_id: string;
@@ -8,6 +16,12 @@ export type PaperRunClaim = {
   feed?: string;
   state?: string;
   d22b_venue_authoritative_reconciliation?: boolean;
+  run_identity?: string;
+  config_sha256?: string;
+  source_sha256?: string;
+  websocket_url?: string;
+  resume_policy?: string;
+  preflight?: PaperRunPreflight;
 };
 
 export type PaperPosition = {

@@ -18,6 +18,7 @@ import type {
   PaperPosition,
   PaperPnl,
   PaperRunClaim,
+  PaperRunPreflight,
   PaperRunSnapshot,
 } from "./types";
 
@@ -50,6 +51,20 @@ function requireBoolean(source: JsonObject, field: string, path: string): boolea
   const value = source[field];
   if (typeof value !== "boolean") {
     throw new Error(`${path} is missing boolean field ${field}.`);
+  }
+  return value;
+}
+
+// Optional provenance/preflight fields are absent in the minimal sample-run
+// claim. Absent stays undefined (the cockpit shows "not recorded" rather than
+// inventing a value); present-but-malformed still fails closed.
+function optionalText(source: JsonObject, field: string, path: string): string | undefined {
+  const value = source[field];
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "string" || value === "") {
+    throw new Error(`${path} field ${field} must be a non-empty string when present.`);
   }
   return value;
 }
@@ -95,6 +110,24 @@ function requireContract(source: JsonObject, path: string): void {
   }
 }
 
+function loadPreflight(raw: JsonObject, path: string): PaperRunPreflight | undefined {
+  const value = raw.preflight;
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!isRecord(value)) {
+    throw new Error(`${path}.preflight must be an object when present.`);
+  }
+  const preflightPath = `${path}.preflight`;
+  return {
+    strategy_class: requireText(value, "strategy_class", preflightPath),
+    order_quantity_btc: requireText(value, "order_quantity_btc", preflightPath),
+    max_entry_notional_usdc: requireText(value, "max_entry_notional_usdc", preflightPath),
+    max_assumed_loss_usdc: requireText(value, "max_assumed_loss_usdc", preflightPath),
+    same_d01_smoke_risk: requireBoolean(value, "same_d01_smoke_risk", preflightPath),
+  };
+}
+
 function loadClaim(runDir: string): PaperRunClaim {
   const path = cockpitFilePath(runDir, "run-claim.json");
   const raw = readJsonObject(path);
@@ -114,6 +147,30 @@ function loadClaim(runDir: string): PaperRunClaim {
   }
   if (typeof raw.d22b_venue_authoritative_reconciliation === "boolean") {
     claim.d22b_venue_authoritative_reconciliation = raw.d22b_venue_authoritative_reconciliation;
+  }
+  const runIdentity = optionalText(raw, "run_identity", path);
+  if (runIdentity !== undefined) {
+    claim.run_identity = runIdentity;
+  }
+  const configSha256 = optionalText(raw, "config_sha256", path);
+  if (configSha256 !== undefined) {
+    claim.config_sha256 = configSha256;
+  }
+  const sourceSha256 = optionalText(raw, "source_sha256", path);
+  if (sourceSha256 !== undefined) {
+    claim.source_sha256 = sourceSha256;
+  }
+  const websocketUrl = optionalText(raw, "websocket_url", path);
+  if (websocketUrl !== undefined) {
+    claim.websocket_url = websocketUrl;
+  }
+  const resumePolicy = optionalText(raw, "resume_policy", path);
+  if (resumePolicy !== undefined) {
+    claim.resume_policy = resumePolicy;
+  }
+  const preflight = loadPreflight(raw, path);
+  if (preflight !== undefined) {
+    claim.preflight = preflight;
   }
   return claim;
 }

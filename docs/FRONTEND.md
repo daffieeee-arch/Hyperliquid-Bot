@@ -98,7 +98,8 @@ Frontend development happens in WSL2 on the Windows workstation. Next.js hot rel
 The local frontend uses:
 
 - mock/fixture data;
-- a local FastAPI instance;
+- a local FastAPI instance ([control-service runbook](runbooks/control-service-local.md);
+  cockpit remains on Next.js API routes and is not wired yet);
 - disposable local ClickHouse/Grafana where needed;
 - explicit environment banners;
 - no real trading credentials.

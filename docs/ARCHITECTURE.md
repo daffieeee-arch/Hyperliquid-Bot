@@ -477,6 +477,12 @@ FastAPI and, when required, PostgreSQL manage configuration and lifecycle state,
 
 PostgreSQL is the planned durable transactional store, but it is not a blocker for the first local vertical slice. The initial implementation may begin with versioned configuration and explicit interfaces before introducing the service.
 
+A PAPER-only FastAPI health/readiness baseline now exists in
+`src/hyperliquid_bot/control_service` (`GET /health` liveness, `GET /ready`
+fail-closed PAPER selection). It is not a COURSE-1 dependency, does not sign
+orders, and is not wired to the cockpit, collectors, ClickHouse or Grafana.
+See [control-service-local.md](runbooks/control-service-local.md).
+
 ### Observability Plane
 
 Grafana and OpenTelemetry/Grafana Alloy expose metrics, logs, traces, alerts and forensic timelines. Observability has read access to trading analytics and must not become a path to sign orders.

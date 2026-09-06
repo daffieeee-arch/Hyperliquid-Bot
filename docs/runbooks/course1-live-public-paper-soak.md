@@ -75,6 +75,8 @@ Fail-closed startup:
 - any populated protected Hyperliquid key / vault / account-address name refuses start
 - `TESTNET` / `SHADOW` / `LIVE` refuse start
 - existing `--artifact-dir` refuses reuse
+- D01 smoke-risk plus `paper_risk` sizing/portfolio hard limits can `RISK_REJECTED`
+  an oversize or over-limit intent; no venue order exists
 
 `paper-pnl.json` copies the assumed D01 overlay. Funding remains `0`. Empty
 orders/fills are honest. Do not invent PnL.

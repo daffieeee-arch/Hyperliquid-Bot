@@ -22,6 +22,49 @@ These values are starting hypotheses, not immutable production limits:
 
 Paper defaults are not automatically copied into live configuration. Live limits require separate approval.
 
+## PAPER Phase 1A implemented gates
+
+The project-owned module `hyperliquid_bot.paper_risk` implements the documented
+stop-based sizing rule and fail-closed portfolio limits for PAPER only. It
+extends the COURSE-1 soak and D22-A pre-submit path; it does not replace the
+frozen D01 publication smoke-risk function, relax a D01 rejection, or authorize
+LIVE / TESTNET / SHADOW.
+
+Sizing (never rounded up):
+
+```text
+account_risk_budget = equity * risk_per_trade_fraction
+effective_stop = stop_distance_fraction * volatility_multiple   # multiple >= 1
+position_notional = account_risk_budget / effective_stop
+```
+
+Default PAPER fractions (starting hypotheses, not live limits):
+
+| Gate | Default | Breach behavior |
+| --- | --- | --- |
+| `risk_based_size` | 0.25% equity / stop distance | reject new entry |
+| `max_paper_leverage` | 1.0x equity | reject new entry |
+| `max_gross_exposure` | 1.0x equity | reject new entry |
+| `max_net_exposure` | 1.0x equity | reject new entry |
+| `max_simultaneous_positions` | 3 | reject new entry |
+| `max_asset_concentration` | 50% equity | reject new entry |
+| `max_strategy_concentration` | 50% equity | reject new entry |
+| `max_venue_concentration` | 100% equity (single-venue PAPER) | reject new entry |
+| `daily_loss_guard` | 1% equity already lost | reject new entry |
+| `weekly_loss_guard` | 3% equity already lost | reject new entry |
+| `drawdown_kill` | 7% from peak equity | reject new entry |
+| `no_averaging_down` | no add to an open name | reject new entry |
+
+Reduce-only exits remain allowed when an entry halt is already breached so an
+open PAPER position can still flatten. Invalid or incomplete portfolio state
+raises rather than passing. Hard limits are never relaxed by this module.
+
+The bounded COURSE-1 / D22-A smoke book currently supplies a clean snapshot
+(starting cash, current position, mark). Daily, weekly and drawdown gates are
+implemented and unit-tested; they bind as soon as a caller provides realized
+PnL / peak equity. FastAPI health/readiness is a separate follow-up and is not
+part of this risk gate.
+
 ## Position sizing
 
 For a simple stop-based position:

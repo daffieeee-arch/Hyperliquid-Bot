@@ -36,6 +36,11 @@ from nautilus_trader.model.enums import OrderSide, TimeInForce
 from nautilus_trader.model.events import OrderFilled
 from nautilus_trader.model.identifiers import ClientOrderId  # type: ignore[import-not-found]
 
+from hyperliquid_bot.paper_risk import (
+    PaperOrderIntent,
+    extend_d01_risk_decision,
+    paper_snapshot_for_bounded_book,
+)
 from vertical_slices.d01_btc_perp.slice import (
     DEFAULT_CONFIG,
     DEFAULT_COSTS,
@@ -244,6 +249,22 @@ def make_pre_submit_record(
         reduce_only=reduce_only,
         current_position=current_position,
         config=context.config,
+    )
+    risk = extend_d01_risk_decision(
+        risk,
+        snapshot=paper_snapshot_for_bounded_book(
+            equity_usdc=context.config.starting_cash_usdc,
+            price=risk_price,
+            current_position=current_position,
+        ),
+        intent=PaperOrderIntent(
+            side=side.name,
+            quantity=quantity,
+            price=risk_price,
+            reduce_only=reduce_only,
+            stop_distance_fraction=context.config.assumed_stop_distance_fraction,
+        ),
+        trading_mode=os.environ.get("TRADING_MODE"),
     )
     d01_intent = {
         "run_identity": context.logical_run_identity,

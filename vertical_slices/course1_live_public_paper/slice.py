@@ -1,9 +1,10 @@
 """Bounded COURSE-1 live-public PAPER soak.
 
-Feeds the unchanged D01 smoke strategy and smoke-risk path from a short
-credentialless Hyperliquid public BTC-PERP trade/BBO stream instead of the
-committed 27-event D01 fixture. NautilusTrader stays WRAP-isolated. This is
-not D22-B, 24/7 collection, funding settlement, venue reconciliation, or
+Feeds the unchanged D01 smoke strategy from a short credentialless Hyperliquid
+public BTC-PERP trade/BBO stream. D01 smoke-risk still runs first;
+``paper_risk`` then applies PAPER sizing and portfolio hard limits and never
+relaxes a D01 rejection. NautilusTrader stays WRAP-isolated. This is not
+D22-B, 24/7 collection, funding settlement, venue reconciliation, or
 promotion evidence.
 """
 
@@ -16,8 +17,8 @@ import logging
 import os
 import ssl
 import time
-from collections.abc import AsyncIterator, Callable, Mapping
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping
+from contextlib import AbstractAsyncContextManager, asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -50,7 +51,13 @@ from hyperliquid_bot.hyperliquid_trades import (
     normalize_hyperliquid_trade,
 )
 from hyperliquid_bot.local_mode import require_local_paper_mode
+from hyperliquid_bot.paper_risk import (
+    PaperOrderIntent,
+    extend_d01_risk_decision,
+    paper_snapshot_for_bounded_book,
+)
 from hyperliquid_bot.reconstructable_paths import COURSE1_COCKPIT_FILE_NAMES
+from vertical_slices.d01_btc_perp import slice as d01_slice
 from vertical_slices.d01_btc_perp.slice import (
     DEFAULT_CONFIG,
     DEFAULT_COSTS,
@@ -83,6 +90,56 @@ ALLOWED_CHANNELS: Final = frozenset(
 )
 REPOSITORY_ROOT: Final = Path(__file__).resolve().parents[2]
 VENUE_AUTHORITATIVE_RECONCILIATION_IMPLEMENTED: Final = False
+
+
+def _paper_guarded_risk(
+    *,
+    side: OrderSide,
+    quantity: Decimal,
+    price: Decimal,
+    reduce_only: bool,
+    current_position: Decimal,
+    config: SliceConfig,
+) -> dict[str, object]:
+    """Run D01 smoke-risk first, then PAPER sizing and portfolio hard limits."""
+
+    decision = evaluate_order_risk(
+        side=side,
+        quantity=quantity,
+        price=price,
+        reduce_only=reduce_only,
+        current_position=current_position,
+        config=config,
+    )
+    return extend_d01_risk_decision(
+        decision,
+        snapshot=paper_snapshot_for_bounded_book(
+            equity_usdc=config.starting_cash_usdc,
+            price=price,
+            current_position=current_position,
+        ),
+        intent=PaperOrderIntent(
+            side=side.name,
+            quantity=quantity,
+            price=price,
+            reduce_only=reduce_only,
+            stop_distance_fraction=config.assumed_stop_distance_fraction,
+        ),
+        trading_mode=os.environ.get("TRADING_MODE"),
+    )
+
+
+@contextmanager
+def _bind_paper_risk_to_d01_path() -> Iterator[None]:
+    """Install PAPER hard limits on the D01 function the smoke strategy calls."""
+
+    original = d01_slice.evaluate_order_risk
+    d01_slice.evaluate_order_risk = _paper_guarded_risk
+    try:
+        yield
+    finally:
+        d01_slice.evaluate_order_risk = original
+
 
 _TRANSPORT_PRIVACY_LOGGER: Final = logging.Logger(
     "hyperliquid_bot.course1_live_public_paper_transport",
@@ -248,6 +305,9 @@ def source_identity() -> dict[str, object]:
             slice_root / "run_slice.py"
         ),
         "vertical_slices/d01_btc_perp/slice.py": _sha256_file(d01_root / "slice.py"),
+        "src/hyperliquid_bot/paper_risk.py": _sha256_file(
+            REPOSITORY_ROOT / "src" / "hyperliquid_bot" / "paper_risk.py"
+        ),
         "fit_gates/d41_nautilus/fit_gate.py": _sha256_file(d41_root / "fit_gate.py"),
         "fit_gates/d41_nautilus/requirements.lock": _sha256_file(d41_root / "requirements.lock"),
     }
@@ -546,7 +606,7 @@ async def _collect_and_drive(
                             preflight_done = True
                             current_price = Decimal(str(tick.price))
                             for side in (OrderSide.BUY, OrderSide.SELL):
-                                preview = evaluate_order_risk(
+                                preview = _paper_guarded_risk(
                                     side=side,
                                     quantity=config.order_quantity_btc,
                                     price=current_price,
@@ -1000,7 +1060,7 @@ def run_soak(
     node.add_exec_client_factory(HYPERLIQUID, SandboxLiveExecClientFactory)
     node.build()
     try:
-        with _derived_internal_paper_mode():
+        with _derived_internal_paper_mode(), _bind_paper_risk_to_d01_path():
             reports, stream = loop.run_until_complete(
                 asyncio.wait_for(
                     _collect_and_drive(

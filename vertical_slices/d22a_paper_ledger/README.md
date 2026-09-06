@@ -19,6 +19,7 @@ production durability or concurrency claim.
 committed D01 MarketEventEnvelope-v2 dataset
   -> unchanged D01 adapter and inherited tick-decision code
   -> unchanged D01 precision/stale/gap and smoke-risk rules
+  -> paper_risk sizing and portfolio hard limits (PAPER only; never relaxes D01)
   -> PRE_SUBMIT SQLite commit
        intent + risk decision + sandbox order command + stable project IDs
   -> credentialless Nautilus 1.231.0 sandbox-PAPER order

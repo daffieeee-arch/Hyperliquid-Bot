@@ -25,7 +25,7 @@ It does **not** prove:
 Hyperliquid public MAINNET trades + BBO (BTC only)
   -> existing v2 trade decoder/adapter and a fail-closed BBO parse
   -> unchanged D01SmokeStrategy
-  -> unchanged D01 evaluate_order_risk
+  -> D01 evaluate_order_risk, then paper_risk hard limits (never relaxes D01)
   -> credentialless Nautilus 1.231.0 sandbox PAPER
   -> orders, fills, position, assumed USDC cash/equity/PnL
 ```
@@ -65,7 +65,7 @@ public wire-format frames through the same decoder and PAPER driver. A live
 | Status | Meaning |
 | --- | --- |
 | `COMPLETED_FLAT` | The unchanged smoke lifecycle entered and flattened on public ticks |
-| `RISK_REJECTED` | The unchanged D01 smoke-risk rule blocked an intent; no venue order exists |
+| `RISK_REJECTED` | D01 smoke-risk or PAPER sizing/portfolio hard limits blocked an intent; no venue order exists |
 | `BOUNDED_TIMEOUT` | The duration ended before a complete flat lifecycle |
 
 Live BTC prices can exceed the fixed D01 smoke-loss budget (`0.25 USDC` at

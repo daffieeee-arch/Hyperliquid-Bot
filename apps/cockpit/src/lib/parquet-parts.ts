@@ -12,6 +12,34 @@ function isPublishedParquetPart(name: string): boolean {
   );
 }
 
+export type PublishedPartFile = {
+  name: string;
+  path: string;
+  bytes: number;
+  mtimeUtc: string;
+};
+
+/**
+ * Published parts in publication order.
+ *
+ * Part names are `part-<6-digit number>-…`, so a lexical sort is the writer's
+ * order. Hidden `.…partial` files are never listed: only an atomically
+ * renamed `.parquet` counts as published.
+ */
+export function listPublishedPartFiles(rawDir: string): PublishedPartFile[] {
+  if (!existsSync(rawDir)) {
+    return [];
+  }
+  return readdirSync(rawDir)
+    .filter((name) => isPublishedParquetPart(name))
+    .sort()
+    .map((name) => {
+      const path = join(rawDir, name);
+      const stats = statSync(path);
+      return { name, path, bytes: stats.size, mtimeUtc: new Date(stats.mtimeMs).toISOString() };
+    });
+}
+
 export function listPublishedParquetParts(rawDir: string): Data1APartListing {
   if (!existsSync(rawDir)) {
     return {

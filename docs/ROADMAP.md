@@ -49,7 +49,12 @@ The active sequence is:
    `docs/runbooks/data1b-vps-retained-capture.md`; those captures are prepare-only
    and must not start until CoS assigns the window. Cloud Agents are unsuitable
    for a multi-day retain.
-6. after the local route passes, record the definitive runtime ADR and only then perform the VPS
+6. **Complete (PAPER path):** `hyperliquid_bot.paper_risk` applies documented
+   risk-based sizing and fail-closed portfolio/exposure limits on the COURSE-1
+   soak and D22-A pre-submit path. The frozen D01 publication smoke-risk
+   function is extended, not replaced. FastAPI health/readiness remains a
+   separate follow-up.
+7. after the local route passes, record the definitive runtime ADR and only then perform the VPS
    migration.
 
 The fit decision is not a benchmark exercise. It checks only the blocking product and safety

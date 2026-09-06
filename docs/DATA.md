@@ -1042,7 +1042,31 @@ quantity that `nq` separately excludes. Standard USDⓈ-M BBO excludes RPI order
 publishes only one exchange-selected liquidation snapshot per symbol and 1,000-ms window; silence
 never means zero liquidations or a complete tape. Mark price carries index price, estimated
 settlement, funding rate, moving average, and next funding time. Current OI is one point-in-time
-REST observation, not history. The four source-linked, string-preserving research views are:
+REST observation, not history.
+
+Required versus optional DATA-1F streams (fail-closed liveness):
+
+| Profile | Required | Optional |
+| --- | --- | --- |
+| `spot` | `btcusdt@trade`, `btcusdt@bookTicker`, `btcusdt@depth@100ms` | none |
+| `usdm_market` | `btcusdt@aggTrade`, `btcusdt@markPrice@1s` | `btcusdt@forceOrder` |
+| `usdm_public` | `btcusdt@bookTicker` | none |
+
+Official update speeds for the required channels are real-time (`trade`, both `bookTicker`
+streams, USD-M `aggTrade`) or periodic (`depth@100ms` at 100 ms, `markPrice@1s` at 1 s). Official
+Spot JSON and SBE market streams send a server `ping` frame every 20 seconds and disconnect if no
+`pong` arrives within one minute; a connection is valid for about 24 hours and may emit
+`serverShutdown`. Those ping/pong rules are **transport keepalive**, not an application-data SLA,
+and unsolicited client pongs do not prevent disconnection. DATA-1F therefore does not invent a
+client ping interval. It uses **60 seconds** of required-stream **application** silence
+(`required_stream_starvation_seconds`) as the integrity bound: the official one-minute pong window,
+and 60× the slowest required periodic stream (`markPrice@1s`). Mid-run silence past that bound
+emits a `liveness_error` quality marker and fails the run (`FAILED`). Transport `gaps` /
+`reconnects` stay honest and separate; they are not this abort. `forceOrder` silence is never
+treated as starvation. An empty required stream cannot be accepted as a healthy retain on
+`OPERATOR_STOP` or duration end.
+
+The four source-linked, string-preserving research views are:
 
 ```text
 binance_spot_trades
@@ -1073,6 +1097,10 @@ Preferred reconstructable layout (create-only; Hypothesis `--binance-parquet-dir
 exception class only). It must be non-empty on a reconstructable run. It never contains payloads
 or secrets. Optional tmux stdout copy: `<artifact-root>/logs/capture-<run_id>.log`.
 `duration_seconds` remains the requested window; `elapsed_seconds` is wall-clock time until stop.
+Claim and health also record `required_streams`, `optional_streams`, and
+`required_stream_starvation_seconds` (60). A mid-run required-stream starve or an empty required
+stream at stop writes `liveness_error` and status `FAILED`; that count is `integrity_events`, not
+transport `gaps`.
 
 ```bash
 PYTHONPATH=src uv run --frozen python -m hyperliquid_bot.binance_public_research \
@@ -1128,6 +1156,11 @@ presence does not establish liquidation completeness, just as silence would not 
 
 Official contracts checked for this slice:
 
+- https://github.com/binance/binance-spot-api-docs/blob/master/web-socket-streams.md
+- https://raw.githubusercontent.com/binance/binance-spot-api-docs/master/web-socket-streams.md
+- https://github.com/binance/binance-spot-api-docs/blob/master/sbe-market-data-streams.md
+- https://github.com/binance/binance-spot-api-docs/blob/master/CHANGELOG.md
+- https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/Important-WebSocket-Change-Notice
 - https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/Important-WebSocket-Change-Notice#public-high-frequency-public-data
 - https://developers.binance.com/en/docs/products/spot/faqs/market_data_only
 - https://developers.binance.com/en/docs/products/spot/market-data/web-socket-streams

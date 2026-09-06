@@ -128,6 +128,12 @@ def test_wsl_runbook_documents_known_good_operator_paths() -> None:
     assert "usdm_market" in text
     assert "usdm_public" in text
     assert "/public" in text
+    assert "liveness_error" in text
+    assert "required_stream_starvation_seconds" in text
+    assert "forceOrder" in text
+    vps_text = VPS_RUNBOOK.read_text(encoding="utf-8")
+    assert "liveness_error" in vps_text
+    assert "forceOrder" in vps_text
     assert "Do **not** send `C-c`" in text
     assert "CoS assigns" in text or "CoS assign" in text
     assert "LIVE" in text

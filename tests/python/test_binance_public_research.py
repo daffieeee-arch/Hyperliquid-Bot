@@ -26,6 +26,7 @@ from hyperliquid_bot.binance_public_research import (
     BINANCE_USDM_PRODUCT,
     BINANCE_USDM_PUBLIC_WEBSOCKET_URL,
     MAX_CAPTURE_SECONDS,
+    REQUIRED_STREAM_STARVATION_SECONDS,
     RETAINED_MAX_RECONNECTS,
     SMOKE_CAPTURE_SECONDS,
     BinanceDataIntegrityError,
@@ -573,6 +574,198 @@ async def test_sparse_force_order_is_optional_and_silence_is_not_zero() -> None:
     assert not _local_documents(sink.records, "data_quality")
 
 
+def _hanging_collector(
+    sink: RawResearchSink,
+    *,
+    spot_messages: Sequence[str | bytes | BaseException] = (),
+    market_messages: Sequence[str | bytes | BaseException] = (),
+    public_messages: Sequence[str | bytes | BaseException] = (),
+    starvation_seconds: float = REQUIRED_STREAM_STARVATION_SECONDS,
+    max_reconnects: int = 0,
+) -> BinancePublicResearchCollector:
+    async def spot_snapshot() -> CapturedApplicationPayload:
+        return _captured("public_spot_depth_snapshot.json", utc_ns=200, monotonic_ns=201)
+
+    async def open_interest() -> CapturedApplicationPayload:
+        return _captured("public_usdm_open_interest.json", utc_ns=202, monotonic_ns=203)
+
+    return BinancePublicResearchCollector(
+        sink,
+        config=BinancePublicResearchConfig(
+            reconnect_delay_seconds=0,
+            max_reconnects=max_reconnects,
+            required_stream_starvation_seconds=starvation_seconds,
+        ),
+        spot_connection_factory=ScriptedConnectionFactory((FakeConnection(spot_messages),)),
+        usdm_market_connection_factory=ScriptedConnectionFactory(
+            (FakeConnection(market_messages),)
+        ),
+        usdm_public_connection_factory=ScriptedConnectionFactory(
+            (FakeConnection(public_messages),)
+        ),
+        spot_depth_fetcher=spot_snapshot,
+        usdm_open_interest_fetcher=open_interest,
+        utc_ns=Counter(1000),
+        monotonic_ns=Counter(2000),
+        session_id_factory=SessionIds(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_empty_required_streams_fail_closed_and_are_not_a_healthy_retain() -> None:
+    sink = MemorySink()
+    collector = _hanging_collector(sink)
+    with pytest.raises(BinanceDataIntegrityError, match="not observed") as raised:
+        await collector.capture_for(1)
+    assert raised.value.quality_event == "liveness_error"
+    quality = _local_documents(sink.records, "data_quality")
+    assert any(
+        marker["event"] == "liveness_error" and marker["reason"] == "required_streams_unobserved"
+        for marker in quality
+    )
+    assert not any(marker["event"] == "gap" for marker in quality)
+
+
+@pytest.mark.asyncio
+async def test_empty_required_stream_operator_stop_writes_failed_health(
+    tmp_path: Path,
+) -> None:
+    stop_event = asyncio.Event()
+
+    def collector_factory(sink: RawResearchSink) -> BinancePublicResearchCollector:
+        return _hanging_collector(sink)
+
+    async def request_stop() -> None:
+        await asyncio.sleep(0.05)
+        stop_event.set()
+
+    stopper = asyncio.create_task(request_stop())
+    with pytest.raises(BinanceDataIntegrityError, match="not observed"):
+        await run_reconstructable_capture(
+            artifact_root=tmp_path,
+            run_id="empty-required",
+            duration_seconds=86_400,
+            stop_event=stop_event,
+            operator_stop=lambda: True,
+            collector_factory=collector_factory,
+        )
+    stopper.cancel()
+    paths = data1f_run_paths(tmp_path, "empty-required")
+    health = json.loads(paths.capture_health_path.read_text(encoding="utf-8"))
+    assert health["status"] == "FAILED"
+    assert health["status"] != "OPERATOR_STOP"
+    assert int(health["integrity_events"]) >= 1
+    assert health["gaps"] == 0
+
+
+@pytest.mark.asyncio
+async def test_mid_run_required_stream_starvation_fails_closed() -> None:
+    sink = MemorySink()
+    collector = _hanging_collector(
+        sink,
+        spot_messages=(
+            _fixture_text("public_spot_trade_frame.json"),
+            _fixture_text("public_spot_book_ticker_frame.json"),
+            _fixture_text("public_spot_depth_frame.json"),
+        ),
+        market_messages=(
+            _fixture_text("public_usdm_agg_trade_frame.json"),
+            _fixture_text("public_usdm_mark_price_frame.json"),
+        ),
+        public_messages=(_fixture_text("public_usdm_book_ticker_frame.json"),),
+        starvation_seconds=0.05,
+    )
+    with pytest.raises(BinanceDataIntegrityError, match="starved") as raised:
+        await collector.capture_for(10)
+    assert raised.value.quality_event == "liveness_error"
+    quality = _local_documents(sink.records, "data_quality")
+    starved = [
+        marker
+        for marker in quality
+        if marker["event"] == "liveness_error" and marker["reason"] == "required_stream_starved"
+    ]
+    assert starved
+    assert starved[0]["threshold_seconds"] == 0.05
+    assert "stream" in starved[0]
+    assert float(cast(float, starved[0]["silence_seconds"])) >= 0.05
+    assert not any(marker["event"] == "gap" for marker in quality)
+
+
+@pytest.mark.asyncio
+async def test_force_order_silence_is_not_required_stream_starvation() -> None:
+    stop_event = asyncio.Event()
+    market_frames = (
+        _fixture_text("public_usdm_agg_trade_frame.json"),
+        _fixture_text("public_usdm_mark_price_frame.json"),
+    )
+
+    class RepeatingRequiredConnection:
+        def __init__(self, frames: Sequence[str]) -> None:
+            self._cycle = tuple(frames)
+            self._index = 0
+
+        async def recv(self) -> str | bytes:
+            await asyncio.sleep(0.02)
+            if stop_event.is_set():
+                await asyncio.Event().wait()
+            frame = self._cycle[self._index]
+            self._index = (self._index + 1) % len(self._cycle)
+            return frame
+
+    async def spot_snapshot() -> CapturedApplicationPayload:
+        return _captured("public_spot_depth_snapshot.json", utc_ns=200, monotonic_ns=201)
+
+    async def open_interest() -> CapturedApplicationPayload:
+        return _captured("public_usdm_open_interest.json", utc_ns=202, monotonic_ns=203)
+
+    sink = MemorySink()
+    collector = BinancePublicResearchCollector(
+        sink,
+        config=BinancePublicResearchConfig(
+            reconnect_delay_seconds=0,
+            max_reconnects=0,
+            required_stream_starvation_seconds=0.2,
+        ),
+        spot_connection_factory=ScriptedConnectionFactory(
+            (
+                RepeatingRequiredConnection(
+                    (
+                        _fixture_text("public_spot_trade_frame.json"),
+                        _fixture_text("public_spot_book_ticker_frame.json"),
+                        _fixture_text("public_spot_depth_frame.json"),
+                    )
+                ),
+            )
+        ),
+        usdm_market_connection_factory=ScriptedConnectionFactory(
+            (RepeatingRequiredConnection(market_frames),)
+        ),
+        usdm_public_connection_factory=ScriptedConnectionFactory(
+            (RepeatingRequiredConnection((_fixture_text("public_usdm_book_ticker_frame.json"),)),)
+        ),
+        spot_depth_fetcher=spot_snapshot,
+        usdm_open_interest_fetcher=open_interest,
+        utc_ns=Counter(1000),
+        monotonic_ns=Counter(2000),
+        session_id_factory=SessionIds(),
+    )
+
+    async def request_stop() -> None:
+        await asyncio.sleep(0.45)
+        stop_event.set()
+
+    stopper = asyncio.create_task(request_stop())
+    try:
+        await collector.capture_for(10, stop_event=stop_event)
+    finally:
+        stopper.cancel()
+    assert not any(record.channel == "usdm_force_order" for record in sink.records)
+    assert not any(
+        marker["event"] == "liveness_error"
+        for marker in _local_documents(sink.records, "data_quality")
+    )
+
+
 @pytest.mark.asyncio
 async def test_receive_boundary_clocks_immediately_and_does_not_drop_completed_frame() -> None:
     observations: list[str] = []
@@ -941,6 +1134,9 @@ async def test_sink_failure_is_context_free_and_never_reconnects() -> None:
         ("reconnect_delay_seconds", float("inf")),
         ("http_timeout_seconds", float("nan")),
         ("http_timeout_seconds", float("inf")),
+        ("required_stream_starvation_seconds", 0),
+        ("required_stream_starvation_seconds", float("nan")),
+        ("required_stream_starvation_seconds", float("inf")),
     ),
 )
 def test_config_rejects_unbounded_or_invalid_controls(field: str, value: object) -> None:
@@ -961,6 +1157,7 @@ async def test_capture_duration_is_bounded() -> None:
 
 def test_retained_duration_raises_the_historical_smoke_cap() -> None:
     assert SMOKE_CAPTURE_SECONDS == 180.0
+    assert REQUIRED_STREAM_STARVATION_SECONDS == 60.0
     assert MAX_CAPTURE_SECONDS == 7 * 24 * 60 * 60
     assert RETAINED_MAX_RECONNECTS == 10_080
     assert _require_bounded_duration(180.1) == 180.1
@@ -1009,6 +1206,21 @@ async def test_reconstructable_capture_writes_the_path_contract(tmp_path: Path) 
     assert "independent_websocket_profiles" in claim
     assert claim["independent_websocket_profiles"] == ["spot", "usdm_market", "usdm_public"]
     assert claim["usdm_public_websocket_url"] == BINANCE_USDM_PUBLIC_WEBSOCKET_URL
+    assert claim["required_stream_starvation_seconds"] == REQUIRED_STREAM_STARVATION_SECONDS
+    required_streams = claim["required_streams"]
+    optional_streams = claim["optional_streams"]
+    assert isinstance(required_streams, dict)
+    assert isinstance(optional_streams, dict)
+    assert required_streams["spot"] == [
+        "btcusdt@bookTicker",
+        "btcusdt@depth@100ms",
+        "btcusdt@trade",
+    ]
+    assert required_streams["usdm_market"] == [
+        "btcusdt@aggTrade",
+        "btcusdt@markPrice@1s",
+    ]
+    assert optional_streams["usdm_market"] == ["btcusdt@forceOrder"]
     log_path = paths.run_dir / "capture-sample-run.log"
     assert log_path.is_file()
     assert "data1f start" in log_path.read_text(encoding="utf-8")
@@ -1052,6 +1264,13 @@ def test_data1f_claim_and_health_are_create_only_and_not_twenty_four_seven() -> 
     assert health["credentialless"] is True
     assert health["elapsed_seconds"] == 86_400.0
     assert health["duration_seconds"] == 86_400.0
+    assert health["required_stream_starvation_seconds"] == REQUIRED_STREAM_STARVATION_SECONDS
+    optional_streams = health["optional_streams"]
+    assert isinstance(optional_streams, dict)
+    assert optional_streams["usdm_market"] == ["btcusdt@forceOrder"]
+    limitations = health["limitations"]
+    assert isinstance(limitations, list)
+    assert any("liveness_error" in str(item) for item in limitations)
     profiles = health["transport_profiles"]
     assert isinstance(profiles, list)
     assert profiles[0]["transport_profile"] == "spot"

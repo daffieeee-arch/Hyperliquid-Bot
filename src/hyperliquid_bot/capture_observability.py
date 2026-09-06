@@ -25,11 +25,13 @@ _INTEGRITY_GAP_EVENTS: Final = frozenset(
         "schema_error",
         "snapshot_error",
         "subscription_error",
+        "liveness_error",
         "truncation_error",
         "buffer_overflow",
         "payload_size_error",
     }
 )
+_INTEGRITY_EVENT_SQL: Final = ", ".join(f"'{event}'" for event in sorted(_INTEGRITY_GAP_EVENTS))
 
 
 def require_elapsed_seconds(value: object) -> float:
@@ -150,12 +152,10 @@ def add_transport_counts(
         [reconnect_event],
     ).fetchall()
     integrity_row = connection.execute(
-        """
+        f"""
         SELECT count(*)
         FROM data_quality_events
-        WHERE event IN ('sequence_gap', 'sequence_error', 'schema_error',
-                        'snapshot_error', 'subscription_error', 'truncation_error',
-                        'buffer_overflow', 'payload_size_error')
+        WHERE event IN ({_INTEGRITY_EVENT_SQL})
         """
     ).fetchone()
     if integrity_row is None:

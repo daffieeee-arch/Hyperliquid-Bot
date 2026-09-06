@@ -110,6 +110,13 @@ kill -TERM "${COLLECTOR_PID}"
 
 Expected health statuses: `COMPLETED`, `OPERATOR_STOP`, or `FAILED`.
 `elapsed_seconds` must be read separately from requested `duration_seconds`.
+Required-stream application silence past 60s (`required_stream_starvation_seconds`)
+fails closed mid-run with `liveness_error` and status `FAILED`; that is not a
+transport `gap`. Official Spot JSON/SBE: server ping ~20s, pong within 1 minute,
+connection ~24h, `serverShutdown`. Required update speeds are real-time or
+100ms–1s. Do not invent a client keepalive. `forceOrder` silence is optional and
+is not starvation. An empty required stream must not be accepted as a healthy
+retain on `OPERATOR_STOP`.
 
 ## How to continue later (there is no resume)
 

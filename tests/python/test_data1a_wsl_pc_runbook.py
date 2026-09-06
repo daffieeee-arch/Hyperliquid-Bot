@@ -6,8 +6,10 @@ import json
 import os
 import stat
 import subprocess
+import time
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = REPO_ROOT / "scripts"
@@ -72,7 +74,17 @@ def _run(
     )
 
 
-def _write_run_tree(tmp_path: Path, run_id: str, *, parts: int = 2, health: bool = False) -> Path:
+def _write_run_tree(
+    tmp_path: Path,
+    run_id: str,
+    *,
+    parts: int = 2,
+    health: bool = False,
+    health_status: str = "OPERATOR_STOP",
+    health_extra: dict[str, Any] | None = None,
+    stale_seconds: float | None = None,
+    log_text: str | None = None,
+) -> Path:
     run_dir = tmp_path / "reconstructable" / "data-1a" / "hyperliquid" / "BTC-PERP" / run_id
     raw_dir = run_dir / "raw"
     raw_dir.mkdir(parents=True)
@@ -81,13 +93,22 @@ def _write_run_tree(tmp_path: Path, run_id: str, *, parts: int = 2, health: bool
         encoding="utf-8",
     )
     if health:
+        payload: dict[str, Any] = {"status": health_status, "run_id": run_id}
+        if health_extra:
+            payload.update(health_extra)
         (run_dir / "capture-health.json").write_text(
-            json.dumps({"status": "OPERATOR_STOP", "run_id": run_id}),
+            json.dumps(payload),
             encoding="utf-8",
         )
     for index in range(parts):
         (raw_dir / f"part-{index:05d}.parquet").write_bytes(b"not-a-real-parquet")
     (raw_dir / ".partial-ignored.parquet").write_bytes(b"hidden")
+    if stale_seconds is not None:
+        stamp = time.time() - stale_seconds
+        for part in raw_dir.glob("part-*.parquet"):
+            os.utime(part, (stamp, stamp))
+    if log_text is not None:
+        (run_dir / f"capture-{run_id}.log").write_text(log_text, encoding="utf-8")
     return run_dir
 
 
@@ -125,6 +146,7 @@ def test_wsl_runbook_documents_known_good_operator_paths() -> None:
     assert "Do **not** send `C-c`" in text
     assert "Cloud Agents must not" in text
     assert "heartbeat" in text.lower() or "45s" in text or "45 s" in text
+    assert "freshest live retain" in text
 
 
 def test_operator_scripts_are_executable_create_only_and_secret_free() -> None:
@@ -134,9 +156,18 @@ def test_operator_scripts_are_executable_create_only_and_secret_free() -> None:
         "data1a_start.sh",
         "data1a_stop.sh",
     )
+    shared = SCRIPTS / "data1_status_lib.sh"
     assert sourced.is_file()
+    assert shared.is_file()
     sourced_text = sourced.read_text(encoding="utf-8")
     assert "Never print secret values" in sourced_text
+    shared_syntax = subprocess.run(
+        ["bash", "-n", str(shared)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert shared_syntax.returncode == 0, shared_syntax.stderr
     assert "BEGIN PRIVATE KEY" not in sourced_text
     completed_lib = subprocess.run(
         ["bash", "-n", str(sourced)],
@@ -170,7 +201,10 @@ def test_status_reports_tmux_and_parquet_part_count(tmp_path: Path) -> None:
     assert "tmux_session=hl-capture" in stdout
     assert "tmux_alive=" in stdout
     assert "run_id=20260904t134940z-live-retained" in stdout
+    assert "run_id_source=explicit" in stdout
     assert "claim_present=yes" in stdout
+    assert "transport_reconnects=n/a" in stdout
+    assert "transport_gaps=n/a" in stdout
     assert "health_present=no" in stdout
     assert "parquet_parts=3" in stdout
     assert SECRET_PROBE not in stdout
@@ -252,3 +286,70 @@ def test_stop_does_not_resume_and_fails_closed_without_session(tmp_path: Path) -
     combined = completed.stdout + completed.stderr
     assert "Never resume" in combined or "never resume" in combined
     assert SECRET_PROBE not in combined
+
+
+def test_status_auto_picks_freshest_live_retain_when_run_id_unset(tmp_path: Path) -> None:
+    _write_run_tree(
+        tmp_path,
+        "20260903t000000z-live-retained",
+        parts=2,
+        health=True,
+        health_status="COMPLETED",
+    )
+    _write_run_tree(tmp_path, "20260905t232635z-live-retained", parts=2)
+    completed = _run("data1a_status.sh", tmp_path, extra={"RUN_ID": ""})
+    assert completed.returncode == 0, completed.stderr
+    assert "run_id=20260905t232635z-live-retained" in completed.stdout
+    assert "run_id_source=auto-detect" in completed.stdout
+    assert (
+        "20260903t000000z-live-retained"
+        not in completed.stdout.split("run_id=", 1)[1].split("\n", 1)[0]
+    )
+
+
+def test_status_lists_multiple_stopped_runs_when_no_live_retain(tmp_path: Path) -> None:
+    _write_run_tree(
+        tmp_path,
+        "20260903t000000z-live-retained",
+        parts=1,
+        health=True,
+        health_status="FAILED",
+    )
+    _write_run_tree(
+        tmp_path,
+        "20260904t134940z-live-retained",
+        parts=1,
+        health=True,
+        health_status="OPERATOR_STOP",
+    )
+    completed = _run("data1a_status.sh", tmp_path, extra={"RUN_ID": ""})
+    assert completed.returncode == 2
+    combined = completed.stdout + completed.stderr
+    assert "Multiple DATA-1A runs found" in combined
+    assert "none are a live retain" in combined
+    assert "run_id=" in completed.stdout
+
+
+def test_status_prints_reconnect_hints_from_capture_log(tmp_path: Path) -> None:
+    _write_run_tree(
+        tmp_path,
+        "20260905t232635z-live-retained",
+        parts=1,
+        log_text=(
+            "2026-09-05 23:26:36 INFO hyperliquid session_start "
+            "transport_profile=hyperliquid_public reason=initial_connection\n"
+            "2026-09-05 23:30:00 INFO hyperliquid session_start "
+            "transport_profile=hyperliquid_public reason=reconnect_attempt\n"
+        ),
+    )
+    completed = _run(
+        "data1a_status.sh",
+        tmp_path,
+        extra={"RUN_ID": ""},
+        run_id="20260905t232635z-live-retained",
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "run_id=20260905t232635z-live-retained" in completed.stdout
+    assert "transport_hints_source=capture-log" in completed.stdout
+    assert "transport_reconnects=hyperliquid_public:1" in completed.stdout
+    assert "transport_gaps=n/a" in completed.stdout

@@ -321,7 +321,10 @@ Current 72h retain ids: HL / Bitvavo / Kraken
 Unset venue run_ids auto-detect the freshest live retain (claim + fresh
 `raw/part-*.parquet`, no health JSON). Explicit `DATA1A_RUN_ID` /
 `DATA1F_RUN_ID` / `DATA1E_RUN_ID` / `DATA1B_RUN_ID` (or
-`COCKPIT_*` aliases / `/?data1a_run_id=`) still win. Copy
+`COCKPIT_*` aliases / `/?data1a_run_id=`) still win.
+Operator `data1{a,b,e,f}_status.sh` helpers use the same default when
+`RUN_ID` is unset (claim + fresh parts; health JSON may be absent mid-run;
+stopped `COMPLETED`/`FAILED`/`OPERATOR_STOP` dirs are not preferred). Copy
 `apps/cockpit/.env.example` to `apps/cockpit/.env.local` if preferred.
 The Operator Cockpit polls `/api/data1a-capture` every 5 seconds while the tab
 is open. `COCKPIT_CAPTURE_FRESH_MAX_S=180` (tunable) is the fail-closed RUNNING

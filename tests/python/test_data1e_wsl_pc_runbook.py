@@ -6,8 +6,10 @@ import json
 import os
 import stat
 import subprocess
+import time
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = REPO_ROOT / "scripts"
@@ -98,7 +100,17 @@ def _run(
     )
 
 
-def _write_run_tree(tmp_path: Path, run_id: str, *, parts: int = 2, health: bool = False) -> Path:
+def _write_run_tree(
+    tmp_path: Path,
+    run_id: str,
+    *,
+    parts: int = 2,
+    health: bool = False,
+    health_status: str = "OPERATOR_STOP",
+    health_extra: dict[str, Any] | None = None,
+    stale_seconds: float | None = None,
+    log_text: str | None = None,
+) -> Path:
     run_dir = tmp_path / "reconstructable" / "data-1e" / "bitvavo" / "BTC-EUR" / run_id
     raw_dir = run_dir / "raw"
     raw_dir.mkdir(parents=True)
@@ -107,13 +119,22 @@ def _write_run_tree(tmp_path: Path, run_id: str, *, parts: int = 2, health: bool
         encoding="utf-8",
     )
     if health:
+        payload: dict[str, Any] = {"status": health_status, "run_id": run_id}
+        if health_extra:
+            payload.update(health_extra)
         (run_dir / "capture-health.json").write_text(
-            json.dumps({"status": "OPERATOR_STOP", "run_id": run_id}),
+            json.dumps(payload),
             encoding="utf-8",
         )
     for index in range(parts):
         (raw_dir / f"part-{index:05d}.parquet").write_bytes(b"not-a-real-parquet")
     (raw_dir / ".partial-ignored.parquet").write_bytes(b"hidden")
+    if stale_seconds is not None:
+        stamp = time.time() - stale_seconds
+        for part in raw_dir.glob("part-*.parquet"):
+            os.utime(part, (stamp, stamp))
+    if log_text is not None:
+        (run_dir / f"capture-{run_id}.log").write_text(log_text, encoding="utf-8")
     return run_dir
 
 
@@ -149,6 +170,7 @@ def test_wsl_runbook_documents_known_good_operator_paths() -> None:
     assert "capture-<run_id>.log" in text
     assert "Protect a 72h evidence window" in text
     assert "Do **not** send `C-c`" in text
+    assert "freshest live retain" in text
     vps = VPS_RUNBOOK.read_text(encoding="utf-8")
     assert "1 through 604800 seconds" in vps
     assert "Do not start a multi-day DATA-1E retain now" in vps
@@ -206,7 +228,9 @@ def test_status_reports_tmux_and_parquet_part_count(tmp_path: Path) -> None:
     assert "hl_capture_tmux_alive=" in stdout
     assert "bn_capture_tmux_alive=" in stdout
     assert "run_id=20260904t000000z-live-retained" in stdout
+    assert "run_id_source=explicit" in stdout
     assert "claim_present=yes" in stdout
+    assert "transport_reconnects=n/a" in stdout
     assert "health_present=no" in stdout
     assert "parquet_parts=3" in stdout
     assert "never_touch=hl-capture,bn-capture" in stdout
@@ -311,3 +335,19 @@ def test_stop_does_not_resume_and_refuses_protected_sessions(tmp_path: Path) -> 
     forbidden_text = forbidden.stdout + forbidden.stderr
     assert "hl-capture" in forbidden_text
     assert "must not use" in forbidden_text or "Refuse" in forbidden_text
+
+
+def test_status_auto_picks_live_retain_over_stopped_run(tmp_path: Path) -> None:
+    _write_run_tree(
+        tmp_path,
+        "20260904t000000z-live-retained",
+        parts=2,
+        health=True,
+        health_status="OPERATOR_STOP",
+    )
+    _write_run_tree(tmp_path, "20260905t232635z-live-retained", parts=3)
+    completed = _run("data1e_status.sh", tmp_path, extra={"RUN_ID": ""})
+    assert completed.returncode == 0, completed.stderr
+    assert "run_id=20260905t232635z-live-retained" in completed.stdout
+    assert "run_id_source=auto-detect" in completed.stdout
+    assert "parquet_parts=3" in completed.stdout

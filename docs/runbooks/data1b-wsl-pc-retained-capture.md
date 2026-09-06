@@ -226,7 +226,8 @@ tmux session or a run directory. It does **not** start capture.
 ```bash
 cd ~/code/Hyperliquid-Bot-main
 export ARTIFACT_ROOT="${HOME}/hyperliquid-artifacts/reconstructable"
-export RUN_ID=20260904t000000z-live-retained   # replace with the assigned run
+# Optional; omit RUN_ID to auto-detect the freshest live retain.
+export RUN_ID=20260904t000000z-live-retained
 export TMUX_SESSION=kr-capture
 
 tmux has-session -t "${TMUX_SESSION}" && echo "tmux_alive=yes" || echo "tmux_alive=no"
@@ -245,8 +246,16 @@ Optional helper:
 
 ```bash
 cd ~/code/Hyperliquid-Bot-main
+# Omit RUN_ID to auto-detect the freshest live retain.
 RUN_ID=20260904t000000z-live-retained ./scripts/data1b_status.sh
 ```
+
+When `RUN_ID` is unset, status defaults to the freshest live retain under
+the venue path contract (claim present, fresh `raw/part-*.parquet` mtime;
+health JSON may be absent mid-run). Stopped `COMPLETED` / `FAILED` /
+`OPERATOR_STOP` dirs are not preferred when a live candidate exists. The
+chosen `run_id` is printed. Reconnect/gap hints print per
+`transport_profile` when already known (`n/a` if unknown).
 
 ## Protect a 72h evidence window
 

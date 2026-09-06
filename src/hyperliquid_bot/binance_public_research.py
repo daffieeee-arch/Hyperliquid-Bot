@@ -76,6 +76,11 @@ REQUIRED_STREAM_STARVATION_SECONDS: Final = 60.0
 # library still auto-replies to server Pings when these are None.
 BINANCE_WEBSOCKET_CLIENT_PING_INTERVAL: Final[float | None] = None
 BINANCE_WEBSOCKET_CLIENT_PING_TIMEOUT: Final[float | None] = None
+# websockets default incoming queue is 16. Spot depth@100ms and USD-M
+# /public bookTicker can fill that under load (live 1011 asymmetry:
+# usdm_public >> spot >> usdm_market). Match the HL/OKX raw collectors.
+BINANCE_WEBSOCKET_HIGH_FREQUENCY_MAX_QUEUE: Final = 1024
+BINANCE_WEBSOCKET_MARKET_MAX_QUEUE: Final = 16
 # Cap below required_stream_starvation_seconds so backoff cannot starve
 # the mid-run liveness gate. Official Spot limit: 300 connections / 5 min / IP.
 BINANCE_RECONNECT_BACKOFF_CAP_SECONDS: Final = 24.0
@@ -1755,8 +1760,21 @@ def _reconnect_wait_seconds(base_seconds: float, attempt: int) -> float:
     return delay if delay < cap else cap
 
 
-def _websocket_connect_kwargs(config: BinancePublicResearchConfig) -> dict[str, object]:
-    """Shared connect options for spot, usdm_market, and usdm_public."""
+def _websocket_incoming_max_queue(websocket_url: str) -> int:
+    """Larger incoming queue only for high-frequency Spot and USD-M /public."""
+
+    if websocket_url == BINANCE_USDM_MARKET_WEBSOCKET_URL:
+        return BINANCE_WEBSOCKET_MARKET_MAX_QUEUE
+    if websocket_url in {BINANCE_SPOT_WEBSOCKET_URL, BINANCE_USDM_PUBLIC_WEBSOCKET_URL}:
+        return BINANCE_WEBSOCKET_HIGH_FREQUENCY_MAX_QUEUE
+    raise ValueError("unknown Binance public research WebSocket URL.")
+
+
+def _websocket_connect_kwargs(
+    config: BinancePublicResearchConfig,
+    websocket_url: str,
+) -> dict[str, object]:
+    """Shared connect options; max_queue is higher for Spot and /public."""
 
     return {
         "max_size": config.max_application_payload_bytes,
@@ -1766,6 +1784,7 @@ def _websocket_connect_kwargs(config: BinancePublicResearchConfig) -> dict[str, 
         "close_timeout": 5,
         "ping_interval": BINANCE_WEBSOCKET_CLIENT_PING_INTERVAL,
         "ping_timeout": BINANCE_WEBSOCKET_CLIENT_PING_TIMEOUT,
+        "max_queue": _websocket_incoming_max_queue(websocket_url),
     }
 
 
@@ -1785,6 +1804,7 @@ def _connection_factory(
                 close_timeout=5,
                 ping_interval=BINANCE_WEBSOCKET_CLIENT_PING_INTERVAL,
                 ping_timeout=BINANCE_WEBSOCKET_CLIENT_PING_TIMEOUT,
+                max_queue=_websocket_incoming_max_queue(websocket_url),
             ),
         )
 

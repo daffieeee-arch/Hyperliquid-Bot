@@ -29,6 +29,8 @@ from hyperliquid_bot.binance_public_research import (
     BINANCE_USDM_PUBLIC_WEBSOCKET_URL,
     BINANCE_WEBSOCKET_CLIENT_PING_INTERVAL,
     BINANCE_WEBSOCKET_CLIENT_PING_TIMEOUT,
+    BINANCE_WEBSOCKET_HIGH_FREQUENCY_MAX_QUEUE,
+    BINANCE_WEBSOCKET_MARKET_MAX_QUEUE,
     MAX_CAPTURE_SECONDS,
     REQUIRED_STREAM_STARVATION_SECONDS,
     RETAINED_MAX_RECONNECTS,
@@ -53,6 +55,7 @@ from hyperliquid_bot.binance_public_research import (
     _resolve_cli_mode,
     _SpotBookState,
     _websocket_connect_kwargs,
+    _websocket_incoming_max_queue,
     data1f_capture_claim,
     data1f_capture_health,
     run_reconstructable_capture,
@@ -282,13 +285,32 @@ def test_usdm_combined_streams_follow_binance_2026_category_split() -> None:
 
 
 def test_websocket_connect_disables_client_keepalive_pings() -> None:
-    options = _websocket_connect_kwargs(BinancePublicResearchConfig())
+    public_options = _websocket_connect_kwargs(
+        BinancePublicResearchConfig(),
+        BINANCE_USDM_PUBLIC_WEBSOCKET_URL,
+    )
+    market_options = _websocket_connect_kwargs(
+        BinancePublicResearchConfig(),
+        BINANCE_USDM_MARKET_WEBSOCKET_URL,
+    )
+    spot_options = _websocket_connect_kwargs(
+        BinancePublicResearchConfig(),
+        BINANCE_SPOT_WEBSOCKET_URL,
+    )
     assert BINANCE_WEBSOCKET_CLIENT_PING_INTERVAL is None
     assert BINANCE_WEBSOCKET_CLIENT_PING_TIMEOUT is None
-    assert options["ping_interval"] is None
-    assert options["ping_timeout"] is None
-    assert options["proxy"] is None
-    assert options["max_size"] == BinancePublicResearchConfig().max_application_payload_bytes
+    assert public_options["ping_interval"] is None
+    assert public_options["ping_timeout"] is None
+    assert public_options["proxy"] is None
+    assert public_options["max_size"] == BinancePublicResearchConfig().max_application_payload_bytes
+    assert public_options["max_queue"] == BINANCE_WEBSOCKET_HIGH_FREQUENCY_MAX_QUEUE
+    assert spot_options["max_queue"] == BINANCE_WEBSOCKET_HIGH_FREQUENCY_MAX_QUEUE
+    assert market_options["max_queue"] == BINANCE_WEBSOCKET_MARKET_MAX_QUEUE
+    assert _websocket_incoming_max_queue(BINANCE_USDM_PUBLIC_WEBSOCKET_URL) == 1024
+    assert _websocket_incoming_max_queue(BINANCE_SPOT_WEBSOCKET_URL) == 1024
+    assert _websocket_incoming_max_queue(BINANCE_USDM_MARKET_WEBSOCKET_URL) == 16
+    with pytest.raises(ValueError, match="unknown Binance public research WebSocket URL"):
+        _websocket_incoming_max_queue("wss://example.invalid/stream")
 
 
 def test_reconnect_backoff_is_mild_and_stays_under_starve_bound() -> None:
@@ -332,6 +354,7 @@ async def test_connection_factory_passes_disabled_client_keepalive(
     assert options["ping_interval"] is None
     assert options["ping_timeout"] is None
     assert options["proxy"] is None
+    assert options["max_queue"] == BINANCE_WEBSOCKET_HIGH_FREQUENCY_MAX_QUEUE
 
 
 def test_spot_trade_and_bbo_preserve_decimal_lexemes_and_time_contract() -> None:

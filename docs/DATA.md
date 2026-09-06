@@ -1068,9 +1068,11 @@ server ping. DATA-1F therefore sets `ping_interval=None` / `ping_timeout=None` s
 Binance server Pings. A leftover library default (`ping_interval=20`, `ping_timeout=20`) closed
 with **code 1011** (`ConnectionClosedError`, keepalive ping timeout) when `/public` bookTicker
 did not answer client Pings — the TerraPC `usdm_public` reconnect churn after #52. Spot and
-`usdm_market` share the same kwargs but see far fewer 1011s because those sockets are quieter
-and their clusters more often answer client Pings; the documented keepalive is still
-server-driven on every profile. Gaps stay honest: a 1011 still writes `gap` /
+`usdm_market` share the same keepalive kwargs but see far fewer 1011s because those sockets
+are quieter and their clusters more often answer client Pings; the documented keepalive is
+still server-driven on every profile. Spot and `usdm_public` also use `max_queue=1024`
+(library default is 16) so high-frequency `bookTicker` / `depth@100ms` frames do not stall
+the incoming buffer; `usdm_market` stays at 16. Gaps stay honest: a 1011 still writes `gap` /
 `transport_disconnect` and a reconnect marker. Reconnect wait uses mild exponential backoff
 (3s, 6s, 12s, cap 24s) so a three-profile storm stays under the official **300 connections /
 5 minutes / IP** Spot limit. The cap is below the 60s starve bound. It uses **60 seconds** of

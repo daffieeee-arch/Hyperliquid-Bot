@@ -263,7 +263,9 @@ When the assigned goal is a 72-hour reconstructable tape (`DURATION_SECONDS=2592
   100ms–1s. DATA-1F sets `ping_interval=None` so only Binance server pings drive
   keepalive; the library still auto-pongs. The previous `websockets` default
   client Ping timed out as **close_code=1011** on high-frequency `/public`
-  bookTicker and caused `usdm_public` reconnect churn. Gaps remain recorded.
+  bookTicker and caused `usdm_public` reconnect churn. Spot and `usdm_public`
+  use `max_queue=1024` so HF frames do not stall the default 16-frame buffer.
+  Gaps remain recorded.
   Mild reconnect backoff (cap 24s) stays under the 300 connections / 5 minutes /
   IP limit and under the 60s starve bound. Application silence past
   `required_stream_starvation_seconds` (60s) fails closed with

@@ -5,13 +5,13 @@ import { usePathname, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 
+import { ActiveThemeLabel } from "./active-theme-label";
 import { CapturePulse } from "./capture-pulse";
 import { NavLinks } from "./nav-links";
 import { Button } from "../ui/button";
 import { ThemeToggle } from "../theme-toggle";
 import { activeRouteId, cockpitRoute } from "../../lib/navigation";
 import type { VenueCaptureQuery } from "../../lib/paths";
-import { DEFAULT_THEME_COPY } from "../../lib/theme";
 import { VENUE_CAPTURE_QUERY_KEYS } from "../../lib/venue-capture-poll";
 
 const CONSTRAINTS = [
@@ -176,7 +176,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
         <footer className="app-footer">
           <span>PAPER ONLY</span>
-          <span>{DEFAULT_THEME_COPY}</span>
+          <ActiveThemeLabel />
           <details className="spacer">
             <summary>Fail-closed constraints</summary>
             <div className="app-footer-list">

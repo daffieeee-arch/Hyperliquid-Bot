@@ -52,8 +52,8 @@ export function MarketsPanel({
       <div className="markets-head">
         <h2>MARKETS</h2>
         <p className="panel-kicker">
-          Bound HL BTC-PERP public mid + public candleSnapshot · sibling last/BBO fail closed · not
-          Paper PnL
+          Bound HL BTC-PERP public mid + public candleSnapshot · public mid ≠ research truth ·
+          sibling last/BBO fail closed · not Paper PnL
         </p>
       </div>
       {strip.ok ? (

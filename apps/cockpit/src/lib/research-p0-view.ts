@@ -3,6 +3,9 @@ import type { VenueCaptureChip } from "./types";
 export const RESEARCH_UNAVAILABLE = "UNAVAILABLE";
 export const RESEARCH_P0_SOURCE =
   "capture-claim.json / capture-health.json / research-out summaries";
+export const PUBLIC_MID_NOT_RESEARCH = "public mid ≠ research truth";
+export const RESEARCH_ZONE_KICKER =
+  "Artifact / summary cards only · fail-closed UNAVAILABLE · public mid ≠ research truth";
 export const BINANCE_IMPULSE_DEFAULT = "binance_usdm_mark";
 export const BINANCE_IDENTITY_WARNING =
   "Never blend Spot and USDM into one price. Switch the impulse instrument explicitly.";

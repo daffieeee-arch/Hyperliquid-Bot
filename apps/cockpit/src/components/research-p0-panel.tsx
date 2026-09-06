@@ -7,8 +7,10 @@ import { KvTable } from "./kv-table";
 import { researchStubView } from "../lib/research";
 import {
   H1_LEADLAG_NOTE,
+  PUBLIC_MID_NOT_RESEARCH,
   RESEARCH_P0_SOURCE,
   RESEARCH_UNAVAILABLE,
+  RESEARCH_ZONE_KICKER,
   type ResearchHealthRow,
   type ResearchIdentityRow,
   type ResearchP0View,
@@ -191,9 +193,24 @@ export function ResearchP0Panel({ view }: { view: ResearchP0View }) {
   return (
     <section className="zone" aria-label="RESEARCH">
       <h2 className="zone-label">Research</h2>
-      <p className="zone-kicker">
-        Quant P0 only · no edge · no strategy PnL · {RESEARCH_P0_SOURCE}
-      </p>
+      <p className="zone-kicker">{RESEARCH_ZONE_KICKER}</p>
+      <Card aria-label="Research viewer bound">
+        <CardHeader>
+          <CardTitle>Research viewer</CardTitle>
+          <CardDescription>Quant P0 artifact / summary cards · no live tape</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <KvTable
+            rows={[
+              { label: "Truth source", value: RESEARCH_P0_SOURCE },
+              { label: "Public mid", value: PUBLIC_MID_NOT_RESEARCH, tone: "warn" },
+              { label: "Candles", value: "MARKETS only · not research truth", tone: "warn" },
+              { label: "Missing artifacts", value: RESEARCH_UNAVAILABLE, tone: "warn" },
+              { label: "Edge / strategy PnL", value: RESEARCH_UNAVAILABLE, tone: "warn" },
+            ]}
+          />
+        </CardContent>
+      </Card>
       <Card aria-label="Run registry">
         <CardHeader>
           <CardTitle>Run registry</CardTitle>

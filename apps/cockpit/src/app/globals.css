@@ -836,6 +836,14 @@ main {
   overflow-wrap: anywhere;
 }
 
+.kv-detail {
+  display: block;
+  margin-top: 0.08rem;
+  color: var(--dim);
+  font-size: 0.68rem;
+  letter-spacing: 0;
+}
+
 .blotter-panel {
   padding-bottom: 0.45rem;
 }
@@ -916,15 +924,46 @@ main {
   bottom: 0;
   z-index: 3;
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem 1rem;
-  padding: 0.28rem 0.75rem;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  padding: 0.22rem 0.75rem;
   border-top: 1px solid var(--line);
   background: var(--bg-mast);
   color: var(--dim);
   font-family: var(--font-mono), ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 0.68rem;
   letter-spacing: 0.08em;
+}
+
+.statusbar-scan {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.85rem;
+}
+
+.statusbar-constraints {
+  min-width: 0;
+}
+
+.statusbar-constraints summary {
+  cursor: pointer;
+  color: var(--paper);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  list-style: none;
+}
+
+.statusbar-constraints summary::-webkit-details-marker {
+  display: none;
+}
+
+.statusbar-constraints-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.85rem;
+  padding: 0.28rem 0 0.08rem;
 }
 
 .tone-up,
@@ -1112,5 +1151,13 @@ main {
 
   .paper-badge {
     min-width: 0;
+  }
+
+  .statusbar {
+    flex-wrap: wrap;
+  }
+
+  .statusbar-constraints:not([open]) {
+    margin-left: auto;
   }
 }

@@ -11,7 +11,9 @@ import {
   BINANCE_IMPULSE_DEFAULT,
   H1_LEADLAG_NOTE,
   PANEL_VERSION_EXPECTED,
+  PUBLIC_MID_NOT_RESEARCH,
   RESEARCH_UNAVAILABLE,
+  RESEARCH_ZONE_KICKER,
   buildOverlapClock,
   buildResearchIdentity,
   buildResearchP0View,
@@ -86,6 +88,8 @@ describe("research P0", () => {
     expect(view.sufficiency.reasons[0]).toMatch(/UNAVAILABLE|not pointed|No panel-summary/i);
     expect(view.overlap.elapsed).toBe(RESEARCH_UNAVAILABLE);
     expect(view.identityWarning).toBe(BINANCE_IDENTITY_WARNING);
+    expect(RESEARCH_ZONE_KICKER).toMatch(/Artifact \/ summary cards only/);
+    expect(PUBLIC_MID_NOT_RESEARCH).toMatch(/public mid/);
   });
 
   it("copies a pointed panel-summary.json and leaves missing mid-run health as UNAVAILABLE", () => {

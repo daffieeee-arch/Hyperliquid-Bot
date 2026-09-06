@@ -72,8 +72,8 @@ export function MidChart() {
         <>
           <div ref={hostRef} className="mid-chart-canvas" />
           <p className="note">
-            {state.snapshot.interval} · {PUBLIC_CANDLE_SOURCE} · not Paper PnL ·{" "}
-            {state.snapshot.fetched_at}
+            {state.snapshot.interval} · {PUBLIC_CANDLE_SOURCE} · public mid ≠ research · not Paper
+            PnL · {state.snapshot.fetched_at}
           </p>
         </>
       ) : (

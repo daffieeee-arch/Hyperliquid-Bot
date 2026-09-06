@@ -1,4 +1,5 @@
-import { joinIntentsToFills, type IntentFillRow } from "./intent-fill";
+import { formatAssumedUsdcDisplay } from "./display";
+import { joinIntentsToFills, RISK_REASON_UNAVAILABLE, type IntentFillRow } from "./intent-fill";
 import { COURSE1_PATH_CONTRACT_ID, COURSE1_RELATIVE_PREFIX } from "./paths";
 import {
   DOCUMENTED_CAPS_SOURCE,
@@ -48,6 +49,7 @@ export type PaperBotResults = {
   entry: string;
   mark: string;
   assumedPnl: string;
+  assumedPnlExact: string;
   assumedPnlLabel: string;
   assumedNetPnl: string;
   endingEquity: string;
@@ -88,6 +90,52 @@ export type PaperBotView = {
 const MISSING_PREFLIGHT = "run-claim.json preflight omitted";
 const LAST_DECISION_MISSING =
   "orders.json has no last paper_risk outcome; ACCEPT/REJECT is not invented";
+
+export const DOCUMENTED_TAPE_DEMO_REJECT_ID = "DEMO-#65-risk_based_size";
+export const DOCUMENTED_TAPE_DEMO_NOTE =
+  "#65 / D01 catalog demo reject · not a soak fill · not LIVE";
+export const DOCUMENTED_TAPE_DEMO_SOURCE =
+  "documented #65 paper_risk catalog · demo row · not copied from this soak";
+
+export function documentedPaperRiskDemoReject(): IntentFillRow {
+  const gate = resolvePaperRiskGate("risk_based_size");
+  if (gate === undefined) {
+    throw new Error("documented #65 gate risk_based_size is missing from the catalog.");
+  }
+  return {
+    clientOrderId: DOCUMENTED_TAPE_DEMO_REJECT_ID,
+    side: PAPER_BOT_UNAVAILABLE,
+    quantity: PAPER_BOT_UNAVAILABLE,
+    orderType: PAPER_BOT_UNAVAILABLE,
+    intentReason: DOCUMENTED_TAPE_DEMO_NOTE,
+    reduceOnly: false,
+    riskReasons: gate.reason,
+    riskReasonSource: DOCUMENTED_TAPE_DEMO_SOURCE,
+    gateCode: gate.id,
+    gateReason: gate.reason,
+    outcome: "REJECT",
+    fillOrdinal: RISK_REASON_UNAVAILABLE,
+    fillPrice: RISK_REASON_UNAVAILABLE,
+    fillLiquidity: RISK_REASON_UNAVAILABLE,
+    positionAfter: RISK_REASON_UNAVAILABLE,
+    matched: false,
+  };
+}
+
+export function tapeWithVisibleRejects(rows: readonly IntentFillRow[]): IntentFillRow[] {
+  if (rows.some((row) => row.outcome === "REJECT")) {
+    return lastTapeRows(rows);
+  }
+  const demo = documentedPaperRiskDemoReject();
+  if (rows.length === 0) {
+    return [demo];
+  }
+  const last = rows[rows.length - 1];
+  if (last === undefined) {
+    return [demo];
+  }
+  return lastTapeRows([...rows.slice(0, -1), demo, last]);
+}
 
 export function course1SoakClaimPath(runId: string): string {
   return `${COURSE1_RELATIVE_PREFIX.join("/")}/${runId}`;
@@ -144,6 +192,7 @@ function unavailableResults(): PaperBotResults {
     entry: PAPER_BOT_UNAVAILABLE,
     mark: PAPER_BOT_UNAVAILABLE,
     assumedPnl: PAPER_BOT_UNAVAILABLE,
+    assumedPnlExact: PAPER_BOT_UNAVAILABLE,
     assumedPnlLabel: ASSUMED_PNL_LABEL,
     assumedNetPnl: PAPER_BOT_UNAVAILABLE,
     endingEquity: PAPER_BOT_UNAVAILABLE,
@@ -280,7 +329,8 @@ export function buildPaperBotView(
       riskRejections: paperRiskRejectionView(snapshot.health.risk_rejections),
     };
   }
-  const tape = lastTapeRows(joinIntentsToFills(snapshot.orders.intents, snapshot.fills.fills));
+  const soakTape = joinIntentsToFills(snapshot.orders.intents, snapshot.fills.fills);
+  const tape = tapeWithVisibleRejects(soakTape);
   const preflight = buildPreflightCaps(snapshot);
   const size = `${snapshot.position.final_position_btc} BTC`;
   return {
@@ -296,13 +346,14 @@ export function buildPaperBotView(
       strategyClass: preflight.strategyClass,
       venueOrdersSubmitted: snapshot.orders.venue_orders_submitted ? "yes" : "no",
     },
-    why: buildLastDecision(tape),
+    why: buildLastDecision(lastTapeRows(soakTape)),
     results: {
       side: paperSide(snapshot.position.final_position_btc),
       size,
       entry: copiedEntryPrice(snapshot.position.final_position_btc, snapshot.fills.fills),
       mark: snapshot.pnl.mark_price,
-      assumedPnl: `${snapshot.pnl.net_pnl_usdc_assumed} USDC`,
+      assumedPnl: `${formatAssumedUsdcDisplay(snapshot.pnl.net_pnl_usdc_assumed)} USDC`,
+      assumedPnlExact: `${snapshot.pnl.net_pnl_usdc_assumed} USDC`,
       assumedPnlLabel: ASSUMED_PNL_LABEL,
       assumedNetPnl: `${snapshot.pnl.net_pnl_usdc_assumed} USDC`,
       endingEquity: `${snapshot.pnl.ending_equity_usdc_assumed} USDC`,

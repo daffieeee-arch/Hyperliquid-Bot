@@ -2,7 +2,7 @@
 
 Status: local fixture-backed PAPER Operator Cockpit workstation (Tailwind v4 +
 official free shadcn/ui + Lucide + TanStack Table + recharts KPI sparklines +
-Lightweight Charts; default C Fail-Closed Amber, optional A Desk Dark).
+Lightweight Charts; default Fail-Closed Amber, optional Desk Dark).
 Sticky DESK chrome, then Health → Markets → Research (Quant P0) → PAPER →
 Risk. The DESK bot card is COURSE-1 soak / paperbroker only (not DATA
 retain). PAPER only.

@@ -17,6 +17,7 @@ export type IntentFillRow = {
   riskReasons: string;
   riskReasonSource: string;
   gateCode: string;
+  gateReason: string;
   outcome: IntentFillOutcome;
   fillOrdinal: string;
   fillPrice: string;
@@ -29,6 +30,7 @@ function copiedRiskReasons(intent: PaperOrderIntent): {
   value: string;
   source: string;
   gateCode: string;
+  gateReason: string;
   outcome: IntentFillOutcome;
 } {
   if (intent.risk_reasons === undefined || intent.risk_reasons.length === 0) {
@@ -36,6 +38,7 @@ function copiedRiskReasons(intent: PaperOrderIntent): {
       value: RISK_REASON_UNAVAILABLE,
       source: RISK_REASON_UNAVAILABLE_SOURCE,
       gateCode: RISK_REASON_UNAVAILABLE,
+      gateReason: RISK_REASON_UNAVAILABLE,
       outcome: "UNAVAILABLE",
     };
   }
@@ -46,6 +49,7 @@ function copiedRiskReasons(intent: PaperOrderIntent): {
     value: intent.risk_reasons.join(" · "),
     source: "orders.json paper_risk reason codes",
     gateCode: matchedGate?.id ?? intent.risk_reasons[0] ?? RISK_REASON_UNAVAILABLE,
+    gateReason: matchedGate?.reason ?? intent.risk_reasons.join(" · "),
     outcome: "REJECT",
   };
 }
@@ -76,6 +80,7 @@ export function joinIntentsToFills(
         riskReasons: reasons.value,
         riskReasonSource: reasons.source,
         gateCode: reasons.gateCode,
+        gateReason: reasons.gateReason,
         outcome: reasons.outcome === "REJECT" ? "REJECT" : "ACCEPT",
         fillOrdinal: String(candidate.fill_ordinal),
         fillPrice: candidate.price,
@@ -94,6 +99,7 @@ export function joinIntentsToFills(
       riskReasons: reasons.value,
       riskReasonSource: reasons.source,
       gateCode: reasons.gateCode,
+      gateReason: reasons.gateReason,
       outcome: reasons.outcome,
       fillOrdinal: RISK_REASON_UNAVAILABLE,
       fillPrice: RISK_REASON_UNAVAILABLE,

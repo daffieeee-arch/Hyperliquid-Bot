@@ -6,9 +6,9 @@ import { applyCockpitTheme } from "./theme-provider";
 import { Button } from "./ui/button";
 import {
   COCKPIT_THEME_LABELS,
-  COCKPIT_THEMES,
   DEFAULT_COCKPIT_THEME,
-  parseCockpitTheme,
+  operatorCockpitThemes,
+  parseOperatorCockpitTheme,
   type CockpitTheme,
 } from "../lib/theme";
 
@@ -16,12 +16,12 @@ export function ThemeToggle() {
   const [theme, setTheme] = useState<CockpitTheme>(DEFAULT_COCKPIT_THEME);
 
   useEffect(() => {
-    setTheme(parseCockpitTheme(document.documentElement.dataset.theme));
+    setTheme(parseOperatorCockpitTheme(document.documentElement.dataset.theme));
   }, []);
 
   return (
-    <div className="theme-toggle" role="group" aria-label="Cockpit visual variant">
-      {COCKPIT_THEMES.map((id) => (
+    <div className="theme-toggle" role="group" aria-label="Cockpit theme">
+      {operatorCockpitThemes().map((id) => (
         <Button
           key={id}
           type="button"

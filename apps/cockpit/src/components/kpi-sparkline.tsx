@@ -25,7 +25,9 @@ export function PublicCloseSparkline() {
           />
         </LineChart>
       </ResponsiveContainer>
-      <p className="note">KPI sparkline · public candle closes only · not Paper PnL</p>
+      <p className="note">
+        KPI sparkline · public candle closes only · not research truth · not Paper PnL
+      </p>
     </div>
   );
 }

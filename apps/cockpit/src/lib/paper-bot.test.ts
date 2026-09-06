@@ -8,6 +8,7 @@ import {
   ASSUMED_PNL_LABEL,
   COURSE1_SOAK_KIND,
   D22B_BLOCKED,
+  DOCUMENTED_TAPE_DEMO_REJECT_ID,
   NOT_VENUE_RECONCILED,
   PAPER_BOT_UNAVAILABLE,
   buildLastDecision,
@@ -54,7 +55,8 @@ describe("DESK COURSE-1 soak card", () => {
     expect(view.results.size).toBe("0.00000 BTC");
     expect(view.results.entry).toBe(PAPER_BOT_UNAVAILABLE);
     expect(view.results.mark).toBe("81156.0");
-    expect(view.results.assumedPnl).toBe("-0.0126583080 USDC");
+    expect(view.results.assumedPnl).toBe("-0.0127 USDC");
+    expect(view.results.assumedPnlExact).toBe("-0.0126583080 USDC");
     expect(view.results.assumedPnlLabel).toBe(ASSUMED_PNL_LABEL);
     expect(view.results.venueReconciled).toBe(NOT_VENUE_RECONCILED);
     expect(view.results.d22b).toBe(D22B_BLOCKED);
@@ -64,10 +66,14 @@ describe("DESK COURSE-1 soak card", () => {
   it("shows last-N tape with rejected rows and a read-only #65 caps strip", () => {
     const snapshot = loadPaperRunSnapshot({ TRADING_MODE: "PAPER" }, repoRoot);
     const view = buildPaperBotView(snapshot, undefined);
-    expect(view.tape).toHaveLength(2);
+    expect(view.tape).toHaveLength(3);
     expect(view.tape[0]?.outcome).toBe("ACCEPT");
     expect(view.tape[0]?.gateCode).toBe(RISK_REASON_UNAVAILABLE);
-    expect(view.tape[1]?.outcome).toBe("ACCEPT");
+    const rejected = view.tape.find((row) => row.outcome === "REJECT");
+    expect(rejected?.clientOrderId).toBe(DOCUMENTED_TAPE_DEMO_REJECT_ID);
+    expect(rejected?.gateCode).toBe("risk_based_size");
+    expect(rejected?.gateReason).toMatch(/risk-based size/);
+    expect(view.tape[view.tape.length - 1]?.outcome).toBe("ACCEPT");
     expect(view.preflight.equity).toBe("100000 USDC assumed");
     expect(view.preflight.riskPerTrade).toBe(DOCUMENTED_RISK_PER_TRADE);
     expect(view.preflight.maxLeverage).toBe(DOCUMENTED_MAX_LEVERAGE);
@@ -91,6 +97,7 @@ describe("DESK COURSE-1 soak card", () => {
         riskReasons: "entry notional exceeds risk-based size (risk budget / stop distance)",
         riskReasonSource: "orders.json paper_risk reason codes",
         gateCode: "risk_based_size",
+        gateReason: "entry notional exceeds risk-based size (risk budget / stop distance)",
         outcome: "REJECT",
         fillOrdinal: RISK_REASON_UNAVAILABLE,
         fillPrice: RISK_REASON_UNAVAILABLE,

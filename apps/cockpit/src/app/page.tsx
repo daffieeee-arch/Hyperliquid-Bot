@@ -134,16 +134,24 @@ export default async function FirstPaperScreen({
         </div>
       </main>
       <footer className="statusbar">
-        <span>PAPER ONLY</span>
-        <span>NO WALLET SIGNING</span>
-        <span>NO LIVE CAPITAL</span>
-        <span>NO CAPTURE START/STOP</span>
-        <span>SOAK != RETAIN</span>
-        <span>ASSUMED != VENUE RECONCILED</span>
-        <span>RISK != INVENTED</span>
-        <span>RESEARCH P0 · FAIL-CLOSED</span>
-        <span>PUBLIC MID != PAPER PNL</span>
-        <span>DEFAULT C AMBER</span>
+        <div className="statusbar-scan">
+          <span>PAPER ONLY</span>
+          <span>Fail-Closed Amber</span>
+        </div>
+        <details className="statusbar-constraints">
+          <summary>Fail-closed constraints</summary>
+          <div className="statusbar-constraints-list">
+            <span>NO WALLET SIGNING</span>
+            <span>NO LIVE CAPITAL</span>
+            <span>NO CAPTURE START/STOP</span>
+            <span>SOAK != RETAIN</span>
+            <span>ASSUMED != VENUE RECONCILED</span>
+            <span>RISK != INVENTED</span>
+            <span>RESEARCH P0 · FAIL-CLOSED</span>
+            <span>PUBLIC MID != RESEARCH</span>
+            <span>PUBLIC MID != PAPER PNL</span>
+          </div>
+        </details>
       </footer>
     </div>
   );

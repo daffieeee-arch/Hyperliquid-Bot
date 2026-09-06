@@ -19,6 +19,20 @@ function outcomeTone(outcome: IntentFillRow["outcome"]): "ok" | "down" | "warn" 
   }
 }
 
+function tapeGateLabel(row: IntentFillRow): string {
+  if (row.outcome !== "REJECT") {
+    return row.gateCode;
+  }
+  return `#65/paper_risk · ${row.gateCode}`;
+}
+
+function tapeWhy(row: IntentFillRow): string {
+  if (row.outcome === "REJECT") {
+    return row.gateReason;
+  }
+  return row.intentReason;
+}
+
 function TapeTable({ rows }: { rows: IntentFillRow[] }) {
   if (rows.length === 0) {
     return <p className="empty">No PAPER intents in this reconstructable COURSE-1 soak.</p>;
@@ -45,12 +59,12 @@ function TapeTable({ rows }: { rows: IntentFillRow[] }) {
             <tr key={row.clientOrderId}>
               <td className={`tone-${outcomeTone(row.outcome)}`}>{row.outcome}</td>
               <td className={row.gateCode === "UNAVAILABLE" ? "tone-warn" : "mono-id"}>
-                {row.gateCode}
+                {tapeGateLabel(row)}
               </td>
               <td className="mono-id">{row.clientOrderId}</td>
               <td className={row.side === "BUY" ? "tone-up" : "tone-down"}>{row.side}</td>
               <td className="num">{formatGroupedNumber(row.quantity)}</td>
-              <td>{row.intentReason}</td>
+              <td>{tapeWhy(row)}</td>
               <td>{yesNo(row.reduceOnly)}</td>
               <td className="num">{row.matched ? row.fillOrdinal : "UNAVAILABLE"}</td>
               <td className="num">
@@ -123,7 +137,13 @@ export function PaperBotPanel({ view }: { view: PaperBotView }) {
                 { label: "Size", value: view.results.size },
                 { label: "Entry", value: formatGroupedNumber(view.results.entry) },
                 { label: "Mark", value: formatGroupedNumber(view.results.mark) },
-                { label: "assumed_pnl", value: view.results.assumedPnl, tone: "warn" },
+                {
+                  label: "assumed_pnl",
+                  value: view.results.assumedPnl,
+                  tone: "warn",
+                  title: `${view.results.assumedPnlExact} · ${view.results.assumedPnlLabel}`,
+                  detail: `exact ${view.results.assumedPnlExact}`,
+                },
                 { label: "Label", value: view.results.venueReconciled, tone: "warn" },
                 { label: "D22-B", value: view.results.d22b, tone: "warn" },
                 { label: "Venue PnL", value: view.results.venuePnl },
@@ -180,8 +200,9 @@ export function PaperBotPanel({ view }: { view: PaperBotView }) {
         <CardHeader>
           <CardTitle>Tape of intent</CardTitle>
           <CardDescription>
-            Last {String(view.tapeLimit)} COURSE-1 paper intents/fills · rejected rows keep gate
-            codes · codes stay UNAVAILABLE unless on orders.json
+            Last {String(view.tapeLimit)} COURSE-1 paper intents/fills · REJECT rows always show
+            #65/paper_risk gate + reason · codes stay UNAVAILABLE unless on orders.json or the
+            documented catalog demo
           </CardDescription>
         </CardHeader>
         <CardContent>

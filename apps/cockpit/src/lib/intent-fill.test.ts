@@ -42,6 +42,7 @@ describe("intent to fill tape", () => {
     );
     expect(copied?.outcome).toBe("REJECT");
     expect(copied?.gateCode).toBe("risk_based_size");
+    expect(copied?.gateReason).toMatch(/risk-based size/);
     const [missing] = joinIntentsToFills([entry], []);
     expect(missing?.riskReasons).toBe(RISK_REASON_UNAVAILABLE);
     expect(missing?.outcome).toBe("UNAVAILABLE");

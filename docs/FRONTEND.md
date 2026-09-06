@@ -10,7 +10,7 @@ Build a professional trading workstation, not a decorative dashboard. The operat
 - React;
 - Next.js 15 App Router;
 - Tailwind CSS v4 + official free shadcn/ui (Radix, New York; sidebar/dashboard-01 layout ideas only) + Lucide + TanStack Table + recharts (KPI sparklines from real public candle closes only) + TradingView Lightweight Charts (Apache-2.0; see `apps/cockpit/NOTICE`);
-- visual default **C Fail-Closed Amber** (status-first) with optional **A Desk Dark** density; **B critique** stays for Design only and is demoted (not card-marketing). Research Lab sparse theme is later, not this screen;
+- visual default **Fail-Closed Amber** (status-first) with optional **Desk Dark** density. Critique variants stay in `docs/design-previews/` only — not prod chrome. Research Lab sparse theme is later, not this screen;
 - WebSocket for realtime state (planned; first screen polls HTTP);
 - REST/HTTP for control/query operations;
 - strict typing and component tests;
@@ -27,7 +27,7 @@ The browser never receives trading secrets.
 | DATA retain identity | four-venue strip binds | DATA-1A sample-run; BN/BV/KR **MISSING** unless `ARTIFACT_ROOT` | never blended with soak PnL |
 | Public HL mid / candles | credentialless `/info` `allMids` + `candleSnapshot` | n/a | **UNAVAILABLE** if the public route fails |
 | Position / assumed PnL | `paper-position.json` / `paper-pnl.json` | soak fixture | labeled **not venue-reconciled**; never D22-B |
-| Intents → fills | `orders.json` / `fills.json` | soak fixture (entry/exit) | `paper_risk` reason codes **UNAVAILABLE** unless present |
+| Intents → fills | `orders.json` / `fills.json` | soak fixture (entry/exit) | REJECT rows always show a #65/`paper_risk` gate; soak is ACCEPT-only so the tape inserts a documented catalog demo reject (not LIVE, not a soak fill) |
 | `#65` gate catalog | documented `paper_risk` defaults | n/a | per-run halt state **UNAVAILABLE** |
 | Preflight caps | `run-claim.json` preflight | soak fixture | **not recorded** / **UNAVAILABLE** if omitted |
 | D01 bind | `same_d01_smoke_risk` | soak fixture | **UNAVAILABLE** if preflight omitted |
@@ -53,14 +53,14 @@ chips, and hash nav. IA order:
 3. **MARKETS:** public HL BTC-PERP mid plus public `candleSnapshot` chart when
    the credentialless `/info` route answers; sibling last/BBO stay
    **UNAVAILABLE**. A recharts KPI sparkline renders only from those public
-   closes.
-4. **RESEARCH (Quant P0):** run registry from claims, capture health
-   (gaps/reconnects/`transport_profiles[]`), WP-Q1 sufficiency from
+   closes. Public mid is labeled **not research truth**.
+4. **RESEARCH (Quant P0):** artifact / summary cards only (run registry from
+   claims, capture health, WP-Q1 sufficiency from
    `research-out/**/panel-summary.json` via `GET /api/research-summaries`,
-   instrument identity (HL BTC-PERP; BN impulse `binance_usdm_mark` default),
-   and overlap clock. Missing files stay **UNAVAILABLE**. No edge, no
-   strategy PnL, no 72h claim mid-run. H1 lead-lag stays an UNAVAILABLE stub
-   (`promotion_decision=forbidden`).
+   instrument identity, overlap clock). No live public mid chart. Missing
+   files stay **UNAVAILABLE**. No edge, no strategy PnL, no 72h claim
+   mid-run. H1 lead-lag stays an UNAVAILABLE stub
+   (`promotion_decision=forbidden`). Public mid ≠ research truth.
 5. **PAPER / DESK bot (COURSE-1 soak only):** What is PAPER + `run_id` + soak
    claim path, labeled **COURSE-1 soak** (not DATA retain). Why is the last
    risk outcome ACCEPT or a #65/D01 reject **gate name** plus short reason.

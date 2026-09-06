@@ -1,14 +1,16 @@
 import { NextResponse } from "next/server";
 
 import { requirePaperTradingMode } from "../../../lib/paths";
-import { fetchPublicBtcPerpCandles } from "../../../lib/public-candles";
+import { fetchPublicBtcPerpCandles, parsePublicCandleInterval } from "../../../lib/public-candles";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(): Promise<NextResponse> {
+export async function GET(request: Request): Promise<NextResponse> {
   try {
     requirePaperTradingMode(process.env.TRADING_MODE);
-    const snapshot = await fetchPublicBtcPerpCandles();
+    const url = new URL(request.url);
+    const interval = parsePublicCandleInterval(url.searchParams.get("interval") ?? undefined);
+    const snapshot = await fetchPublicBtcPerpCandles(interval);
     return NextResponse.json(snapshot, { headers: { "cache-control": "no-store" } });
   } catch (error: unknown) {
     const message =

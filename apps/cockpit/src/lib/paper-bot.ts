@@ -84,6 +84,8 @@ export type PaperBotView = {
   preflight: PreflightCapsView;
   tape: IntentFillRow[];
   tapeLimit: number;
+  tapeRejects: TapeRejectSummary;
+  gateExamples: PaperRiskGateExample[];
   riskRejections: PaperRiskRejectionView;
 };
 
@@ -91,50 +93,68 @@ const MISSING_PREFLIGHT = "run-claim.json preflight omitted";
 const LAST_DECISION_MISSING =
   "orders.json has no last paper_risk outcome; ACCEPT/REJECT is not invented";
 
-export const DOCUMENTED_TAPE_DEMO_REJECT_ID = "DEMO-#65-risk_based_size";
-export const DOCUMENTED_TAPE_DEMO_NOTE =
-  "#65 / D01 catalog demo reject · not a soak fill · not LIVE";
-export const DOCUMENTED_TAPE_DEMO_SOURCE =
-  "documented #65 paper_risk catalog · demo row · not copied from this soak";
+export const GATE_EXAMPLE_SOURCE =
+  "documented #65 / D01 paper_risk catalog · illustrative shape · never mixed into run history";
 
-export function documentedPaperRiskDemoReject(): IntentFillRow {
-  const gate = resolvePaperRiskGate("risk_based_size");
-  if (gate === undefined) {
-    throw new Error("documented #65 gate risk_based_size is missing from the catalog.");
-  }
-  return {
-    clientOrderId: DOCUMENTED_TAPE_DEMO_REJECT_ID,
-    side: PAPER_BOT_UNAVAILABLE,
-    quantity: PAPER_BOT_UNAVAILABLE,
-    orderType: PAPER_BOT_UNAVAILABLE,
-    intentReason: DOCUMENTED_TAPE_DEMO_NOTE,
-    reduceOnly: false,
-    riskReasons: gate.reason,
-    riskReasonSource: DOCUMENTED_TAPE_DEMO_SOURCE,
-    gateCode: gate.id,
-    gateReason: gate.reason,
-    outcome: "REJECT",
-    fillOrdinal: RISK_REASON_UNAVAILABLE,
-    fillPrice: RISK_REASON_UNAVAILABLE,
-    fillLiquidity: RISK_REASON_UNAVAILABLE,
-    positionAfter: RISK_REASON_UNAVAILABLE,
-    matched: false,
-  };
+export type PaperRiskGateExample = {
+  gateCode: string;
+  label: string;
+  reason: string;
+  onBreach: string;
+  source: typeof GATE_EXAMPLE_SOURCE;
+};
+
+/**
+ * Illustrative gate rows for the "how a reject reads" reference card.
+ *
+ * These describe the documented catalog only. They are deliberately a separate
+ * type from `IntentFillRow` so an example can never be appended to a real
+ * intent tape: run history stays exactly what `orders.json` recorded.
+ */
+export function paperRiskGateExamples(): PaperRiskGateExample[] {
+  return ["risk_based_size", "drawdown_kill", "no_averaging_down"].flatMap((id) => {
+    const gate = resolvePaperRiskGate(id);
+    if (gate === undefined) {
+      return [];
+    }
+    return [
+      {
+        gateCode: gate.id,
+        label: gate.label,
+        reason: gate.reason,
+        onBreach: gate.onBreach,
+        source: GATE_EXAMPLE_SOURCE,
+      },
+    ];
+  });
 }
 
-export function tapeWithVisibleRejects(rows: readonly IntentFillRow[]): IntentFillRow[] {
-  if (rows.some((row) => row.outcome === "REJECT")) {
-    return lastTapeRows(rows);
-  }
-  const demo = documentedPaperRiskDemoReject();
-  if (rows.length === 0) {
-    return [demo];
-  }
-  const last = rows[rows.length - 1];
-  if (last === undefined) {
-    return [demo];
-  }
-  return lastTapeRows([...rows.slice(0, -1), demo, last]);
+export type TapeRejectSummary = {
+  /** Rejects present in the copied run history. */
+  count: number;
+  /** Gate codes recorded on those rejects. */
+  gateCodes: string[];
+  /** True when the run recorded no reject at all, so the tape shows none. */
+  none: boolean;
+  note: string;
+};
+
+export function summariseTapeRejects(rows: readonly IntentFillRow[]): TapeRejectSummary {
+  const rejects = rows.filter((row) => row.outcome === "REJECT");
+  const gateCodes = [
+    ...new Set(
+      rejects.map((row) => row.gateCode).filter((code) => code !== RISK_REASON_UNAVAILABLE),
+    ),
+  ];
+  return {
+    count: rejects.length,
+    gateCodes,
+    none: rejects.length === 0,
+    note:
+      rejects.length === 0
+        ? "This run recorded no paper_risk reject. The catalog reference below shows how one reads."
+        : `${String(rejects.length)} reject row(s) copied from orders.json risk_reasons.`,
+  };
 }
 
 export function course1SoakClaimPath(runId: string): string {
@@ -312,6 +332,8 @@ export function buildPaperBotView(
       preflight: unavailablePreflight(),
       tape: [],
       tapeLimit: TAPE_LAST_N,
+      tapeRejects: summariseTapeRejects([]),
+      gateExamples: paperRiskGateExamples(),
       riskRejections: paperRiskRejectionView(undefined),
     };
   }
@@ -326,11 +348,13 @@ export function buildPaperBotView(
       preflight: unavailablePreflight(),
       tape: [],
       tapeLimit: TAPE_LAST_N,
+      tapeRejects: summariseTapeRejects([]),
+      gateExamples: paperRiskGateExamples(),
       riskRejections: paperRiskRejectionView(snapshot.health.risk_rejections),
     };
   }
   const soakTape = joinIntentsToFills(snapshot.orders.intents, snapshot.fills.fills);
-  const tape = tapeWithVisibleRejects(soakTape);
+  const tape = lastTapeRows(soakTape);
   const preflight = buildPreflightCaps(snapshot);
   const size = `${snapshot.position.final_position_btc} BTC`;
   return {
@@ -364,6 +388,8 @@ export function buildPaperBotView(
     preflight,
     tape,
     tapeLimit: TAPE_LAST_N,
+    tapeRejects: summariseTapeRejects(tape),
+    gateExamples: paperRiskGateExamples(),
     riskRejections: paperRiskRejectionView(snapshot.health.risk_rejections),
   };
 }

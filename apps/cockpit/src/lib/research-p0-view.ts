@@ -53,6 +53,23 @@ export type ResearchOverlapClock = {
   badge: "partial" | "gate_pending" | "aligned";
 };
 
+/**
+ * How a panel summary relates to the runs the operator currently has selected.
+ *
+ * `unknown` and `mismatched` are not decoration: a verdict that cannot be
+ * attributed to the bound runs must never read as a verdict about them.
+ */
+export type ResearchRunBinding = "matched" | "mismatched" | "unknown" | "unavailable";
+
+export const RESEARCH_RUN_BINDING_NOTE: Record<ResearchRunBinding, string> = {
+  matched: "Summary run_id matches the bound capture run(s).",
+  mismatched:
+    "Summary belongs to different run_id(s) than the current selection; it is not a verdict about the bound runs.",
+  unknown:
+    "Summary carries no run_id; it cannot be attributed to the current selection and stays advisory.",
+  unavailable: "No panel summary is pointed, so there is nothing to attribute.",
+};
+
 export type ResearchSufficiency = {
   verdict: string;
   reasons: string[];
@@ -61,7 +78,53 @@ export type ResearchSufficiency = {
   overlapBuckets: string;
   panelVersion: string;
   source: string;
+  /** run_id values copied from the summary. Empty when the summary is anonymous. */
+  runIds: string[];
+  runBinding: ResearchRunBinding;
 };
+
+/**
+ * Verdicts that may render as a positive (green) result.
+ *
+ * Everything else — including `not_enough_data` — is at best neutral. A
+ * sufficiency gate that did not pass must never borrow the success colour.
+ */
+export const RESEARCH_POSITIVE_VERDICTS: readonly string[] = ["panel_ready", "sufficient"];
+
+export const RESEARCH_NEGATIVE_VERDICTS: readonly string[] = [
+  "not_enough_data",
+  "insufficient",
+  "gate_pending",
+  "blocked",
+  "failed",
+];
+
+export type ResearchVerdictTone = "ok" | "warn" | "down" | "muted";
+
+/**
+ * Tone for a copied sufficiency verdict.
+ *
+ * Allowlist-based on purpose: an unrecognised verdict stays muted rather than
+ * inheriting a colour that implies a result the data does not support. A
+ * positive verdict is downgraded to `warn` when it cannot be attributed to the
+ * selected runs.
+ */
+export function researchVerdictTone(
+  verdict: string,
+  binding: ResearchRunBinding = "matched",
+): ResearchVerdictTone {
+  const normalized = verdict.trim().toLowerCase();
+  if (normalized === "" || normalized === RESEARCH_UNAVAILABLE.toLowerCase()) {
+    return "muted";
+  }
+  if (RESEARCH_NEGATIVE_VERDICTS.includes(normalized)) {
+    return "warn";
+  }
+  if (RESEARCH_POSITIVE_VERDICTS.includes(normalized)) {
+    return binding === "matched" ? "ok" : "warn";
+  }
+  return "muted";
+}
 
 export type ResearchP0View = {
   registry: ResearchRegistryRow[];
@@ -70,4 +133,9 @@ export type ResearchP0View = {
   identityWarning: typeof BINANCE_IDENTITY_WARNING;
   overlap: ResearchOverlapClock;
   sufficiency: ResearchSufficiency;
+  /** run_id values currently bound by the capture strip, used for attribution. */
+  boundRunIds: string[];
+  /** Read timestamp so the research zone can show its own freshness. */
+  observedAt: string;
+  error: string | undefined;
 };

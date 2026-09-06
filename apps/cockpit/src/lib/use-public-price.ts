@@ -2,11 +2,10 @@
 
 import { useEffect, useState } from "react";
 
-import { DATA1A_CAPTURE_POLL_MS } from "./data1a-capture-poll";
 import type { PublicMidState } from "./markets";
 import { parsePublicBtcPerpPayload, type PublicBtcPerpPrice } from "./public-price";
 
-export function usePublicBtcPerp(): PublicMidState {
+export function usePublicBtcPerp(refreshToken = 0): PublicMidState {
   const [state, setState] = useState<PublicMidState>({ status: "loading" });
 
   useEffect(() => {
@@ -41,14 +40,10 @@ export function usePublicBtcPerp(): PublicMidState {
     }
 
     void refresh();
-    const timer = window.setInterval(() => {
-      void refresh();
-    }, DATA1A_CAPTURE_POLL_MS);
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
     };
-  }, []);
+  }, [refreshToken]);
 
   return state;
 }

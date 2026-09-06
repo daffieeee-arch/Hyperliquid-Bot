@@ -1,8 +1,31 @@
 import { BTC_PERP_COIN, HYPERLIQUID_PUBLIC_INFO_URL } from "./public-price";
 
 export const PUBLIC_CANDLE_SOURCE = "hyperliquid-public-info-candleSnapshot";
-export const PUBLIC_CANDLE_INTERVAL = "15m";
-export const PUBLIC_CANDLE_LOOKBACK_MS = 24 * 60 * 60 * 1000;
+
+/** Intervals the public `/info` candleSnapshot endpoint serves for BTC. */
+export const PUBLIC_CANDLE_INTERVALS = ["5m", "15m", "1h", "4h"] as const;
+
+export type PublicCandleInterval = (typeof PUBLIC_CANDLE_INTERVALS)[number];
+
+export const PUBLIC_CANDLE_INTERVAL: PublicCandleInterval = "15m";
+
+/** Lookback tuned so every interval returns a comparable number of bars. */
+export const PUBLIC_CANDLE_LOOKBACK_MS: Record<PublicCandleInterval, number> = {
+  "5m": 8 * 60 * 60 * 1000,
+  "15m": 24 * 60 * 60 * 1000,
+  "1h": 4 * 24 * 60 * 60 * 1000,
+  "4h": 14 * 24 * 60 * 60 * 1000,
+};
+
+export function isPublicCandleInterval(value: unknown): value is PublicCandleInterval {
+  return (
+    typeof value === "string" && (PUBLIC_CANDLE_INTERVALS as readonly string[]).includes(value)
+  );
+}
+
+export function parsePublicCandleInterval(value: unknown): PublicCandleInterval {
+  return isPublicCandleInterval(value) ? value : PUBLIC_CANDLE_INTERVAL;
+}
 
 export type PublicBtcCandle = {
   time: number;
@@ -15,7 +38,7 @@ export type PublicBtcCandle = {
 export type PublicBtcCandleSnapshot = {
   coin: string;
   instrument: string;
-  interval: typeof PUBLIC_CANDLE_INTERVAL;
+  interval: PublicCandleInterval;
   candles: PublicBtcCandle[];
   source: typeof PUBLIC_CANDLE_SOURCE;
   endpoint: string;
@@ -92,7 +115,7 @@ export function parsePublicCandleSnapshot(payload: unknown): PublicBtcCandleSnap
   if (
     payload.source !== PUBLIC_CANDLE_SOURCE ||
     payload.instrument !== "BTC-PERP" ||
-    payload.interval !== PUBLIC_CANDLE_INTERVAL ||
+    !isPublicCandleInterval(payload.interval) ||
     payload.signing !== false ||
     payload.credentialless !== true ||
     typeof payload.fetched_at !== "string" ||
@@ -107,7 +130,7 @@ export function parsePublicCandleSnapshot(payload: unknown): PublicBtcCandleSnap
   return {
     coin: payload.coin,
     instrument: "BTC-PERP",
-    interval: PUBLIC_CANDLE_INTERVAL,
+    interval: payload.interval,
     candles: payload.candles.map(parseNormalizedCandle),
     source: PUBLIC_CANDLE_SOURCE,
     endpoint: payload.endpoint,
@@ -118,12 +141,13 @@ export function parsePublicCandleSnapshot(payload: unknown): PublicBtcCandleSnap
 }
 
 export async function fetchPublicBtcPerpCandles(
+  interval: PublicCandleInterval = PUBLIC_CANDLE_INTERVAL,
   fetchImpl: typeof fetch = fetch,
   now: () => number = () => Date.now(),
   nowIso: () => string = () => new Date().toISOString(),
 ): Promise<PublicBtcCandleSnapshot> {
   const endTime = now();
-  const startTime = endTime - PUBLIC_CANDLE_LOOKBACK_MS;
+  const startTime = endTime - PUBLIC_CANDLE_LOOKBACK_MS[interval];
   const response = await fetchImpl(HYPERLIQUID_PUBLIC_INFO_URL, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -131,7 +155,7 @@ export async function fetchPublicBtcPerpCandles(
       type: "candleSnapshot",
       req: {
         coin: BTC_PERP_COIN,
-        interval: PUBLIC_CANDLE_INTERVAL,
+        interval,
         startTime,
         endTime,
       },
@@ -146,7 +170,7 @@ export async function fetchPublicBtcPerpCandles(
   return {
     coin: BTC_PERP_COIN,
     instrument: "BTC-PERP",
-    interval: PUBLIC_CANDLE_INTERVAL,
+    interval,
     candles: parsePublicCandleRows(payload),
     source: PUBLIC_CANDLE_SOURCE,
     endpoint: HYPERLIQUID_PUBLIC_INFO_URL,

@@ -12,12 +12,14 @@ import {
 import {
   BINANCE_IDENTITY_WARNING,
   BINANCE_IMPULSE_DEFAULT,
+  RESEARCH_RUN_BINDING_NOTE,
   RESEARCH_UNAVAILABLE,
   type ResearchHealthRow,
   type ResearchIdentityRow,
   type ResearchOverlapClock,
   type ResearchP0View,
   type ResearchRegistryRow,
+  type ResearchRunBinding,
   type ResearchSufficiency,
 } from "./research-p0-view";
 import type {
@@ -35,9 +37,13 @@ export {
   OVERLAP_72H_SECONDS,
   PANEL_VERSION_EXPECTED,
   PUBLIC_MID_NOT_RESEARCH,
+  RESEARCH_NEGATIVE_VERDICTS,
+  RESEARCH_POSITIVE_VERDICTS,
   RESEARCH_P0_SOURCE,
+  RESEARCH_RUN_BINDING_NOTE,
   RESEARCH_UNAVAILABLE,
   RESEARCH_ZONE_KICKER,
+  researchVerdictTone,
 } from "./research-p0-view";
 export type {
   ResearchHealthRow,
@@ -45,7 +51,9 @@ export type {
   ResearchOverlapClock,
   ResearchP0View,
   ResearchRegistryRow,
+  ResearchRunBinding,
   ResearchSufficiency,
+  ResearchVerdictTone,
 } from "./research-p0-view";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -148,7 +156,69 @@ export function buildOverlapClock(strip: VenueCaptureStrip | undefined): Researc
   };
 }
 
-export function parsePanelSummary(payload: unknown, source: string): ResearchSufficiency {
+const RUN_ID_FIELDS = [
+  "run_id",
+  "hl_run_id",
+  "bn_run_id",
+  "bv_run_id",
+  "kr_run_id",
+  "binance_run_id",
+  "hyperliquid_run_id",
+] as const;
+
+/**
+ * Copy every run_id the summary declares.
+ *
+ * Accepts both scalar fields and a `run_ids` list/object so a summary produced
+ * by a multi-venue panel can still be attributed. Nothing is inferred from the
+ * file path: an anonymous summary stays anonymous.
+ */
+export function panelSummaryRunIds(payload: unknown): string[] {
+  if (!isRecord(payload)) {
+    return [];
+  }
+  const found: string[] = [];
+  for (const field of RUN_ID_FIELDS) {
+    const value = payload[field];
+    if (typeof value === "string" && value.trim() !== "") {
+      found.push(value.trim());
+    }
+  }
+  const list = payload.run_ids;
+  if (Array.isArray(list)) {
+    for (const item of list) {
+      if (typeof item === "string" && item.trim() !== "") {
+        found.push(item.trim());
+      }
+    }
+  } else if (isRecord(list)) {
+    for (const item of Object.values(list)) {
+      if (typeof item === "string" && item.trim() !== "") {
+        found.push(item.trim());
+      }
+    }
+  }
+  return [...new Set(found)];
+}
+
+export function classifyRunBinding(
+  summaryRunIds: readonly string[],
+  boundRunIds: readonly string[],
+): ResearchRunBinding {
+  if (summaryRunIds.length === 0) {
+    return "unknown";
+  }
+  if (boundRunIds.length === 0) {
+    return "unknown";
+  }
+  return summaryRunIds.some((id) => boundRunIds.includes(id)) ? "matched" : "mismatched";
+}
+
+export function parsePanelSummary(
+  payload: unknown,
+  source: string,
+  boundRunIds: readonly string[] = [],
+): ResearchSufficiency {
   if (!isRecord(payload)) {
     return unavailableSufficiency("panel-summary.json is not an object");
   }
@@ -163,7 +233,10 @@ export function parsePanelSummary(payload: unknown, source: string): ResearchSuf
   const reasons = Array.isArray(sufficiency?.reasons)
     ? sufficiency.reasons.filter((item): item is string => typeof item === "string")
     : [];
+  const runIds = panelSummaryRunIds(payload);
   return {
+    runIds,
+    runBinding: classifyRunBinding(runIds, boundRunIds),
     verdict: typeof payload.verdict === "string" ? payload.verdict : RESEARCH_UNAVAILABLE,
     reasons,
     hlGapFraction:
@@ -193,6 +266,8 @@ export function unavailableSufficiency(reason: string): ResearchSufficiency {
     overlapBuckets: RESEARCH_UNAVAILABLE,
     panelVersion: RESEARCH_UNAVAILABLE,
     source: reason,
+    runIds: [],
+    runBinding: "unavailable",
   };
 }
 
@@ -227,28 +302,61 @@ export function listResearchOutSummaries(root: string, maxFiles = 16): string[] 
   return found;
 }
 
-export function loadPanelSummaryFromRoot(root: string | undefined): ResearchSufficiency {
+/**
+ * Pick the panel summary that belongs to the bound capture runs.
+ *
+ * Reading the first file on disk silently attributes an unrelated verdict to
+ * whatever the operator happens to have selected. Instead every summary is
+ * parsed, the ones whose run_id intersects the selection win, and if none
+ * match the newest readable summary is returned already flagged as
+ * `mismatched` / `unknown` so the UI can refuse to present it as a verdict
+ * about the current runs.
+ */
+export function loadPanelSummaryFromRoot(
+  root: string | undefined,
+  boundRunIds: readonly string[] = [],
+): ResearchSufficiency {
   if (root === undefined || root === "" || !existsSync(root)) {
     return unavailableSufficiency(
       "research-out/panel-summary.json is not pointed; sufficiency stays UNAVAILABLE",
     );
   }
   const files = listResearchOutSummaries(root);
-  const first = files[0];
-  if (first === undefined) {
+  if (files.length === 0) {
     return unavailableSufficiency(
       "No panel-summary.json under research-out; WP-Q1 gates stay UNAVAILABLE",
     );
   }
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(first, "utf8"));
-    return parsePanelSummary(parsed, relative(root, first));
-  } catch (error: unknown) {
-    if (error instanceof Error && error.message.includes("fails closed")) {
-      throw error;
+  const parsed: ResearchSufficiency[] = [];
+  let unreadable = 0;
+  for (const file of files) {
+    try {
+      const payload: unknown = JSON.parse(readFileSync(file, "utf8"));
+      parsed.push(parsePanelSummary(payload, relative(root, file), boundRunIds));
+    } catch (error: unknown) {
+      if (error instanceof Error && error.message.includes("fails closed")) {
+        throw error;
+      }
+      unreadable += 1;
     }
-    return unavailableSufficiency("panel-summary.json is unreadable; values are not invented");
   }
+  const matched = parsed.find((summary) => summary.runBinding === "matched");
+  if (matched !== undefined) {
+    return matched;
+  }
+  const fallback = parsed[0];
+  if (fallback === undefined) {
+    return unavailableSufficiency(
+      `panel-summary.json is unreadable (${String(unreadable)} file(s)); values are not invented`,
+    );
+  }
+  return {
+    ...fallback,
+    reasons: [
+      RESEARCH_RUN_BINDING_NOTE[fallback.runBinding],
+      ...fallback.reasons.filter((reason) => reason !== ""),
+    ],
+  };
 }
 
 export function researchOutRoot(env: NodeJS.Dict<string>): string | undefined {
@@ -304,13 +412,23 @@ export function buildResearchP0View(
       healthPending: snapshot?.health_missing === true,
     };
   });
-  void nowIso; // elapsed vs 72h stays UNAVAILABLE; never claimed mid-run
+  const boundRunIds = [
+    ...new Set(
+      venues
+        .map((venue) => venue.run_id)
+        .filter((runId): runId is string => runId !== undefined && runId !== ""),
+    ),
+  ];
   return {
     registry,
     health,
     identity: buildResearchIdentity(),
     identityWarning: BINANCE_IDENTITY_WARNING,
     overlap: buildOverlapClock(strip.ok ? strip.strip : undefined),
-    sufficiency: loadPanelSummaryFromRoot(researchOutRoot(env)),
+    sufficiency: loadPanelSummaryFromRoot(researchOutRoot(env), boundRunIds),
+    boundRunIds,
+    // elapsed vs 72h stays UNAVAILABLE; observed_at only timestamps the read.
+    observedAt: strip.ok ? strip.strip.observed_at : nowIso,
+    error: strip.ok ? undefined : strip.error,
   };
 }

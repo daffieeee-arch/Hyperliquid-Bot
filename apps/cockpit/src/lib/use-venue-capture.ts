@@ -2,14 +2,21 @@
 
 import { useEffect, useState } from "react";
 
-import { DATA1A_CAPTURE_POLL_MS } from "./data1a-capture-poll";
 import type { VenueCaptureQuery } from "./paths";
 import type { VenueCaptureStripResponse } from "./types";
 import { fetchVenueCaptureStrip, venueCapturePollError } from "./venue-capture-poll";
 
+/**
+ * Capture strip bound to the shared cockpit clock.
+ *
+ * The hook no longer owns an interval: `refreshToken` comes from
+ * `CockpitRefreshProvider` so the strip, research and market panels all move
+ * on the same tick instead of drifting apart.
+ */
 export function useVenueCapturePoll(
   query: VenueCaptureQuery,
   initial: VenueCaptureStripResponse,
+  refreshToken = 0,
 ): VenueCaptureStripResponse {
   const [result, setResult] = useState<VenueCaptureStripResponse>(initial);
   const data1a = query.data1a_run_id ?? "";
@@ -40,14 +47,10 @@ export function useVenueCapturePoll(
     }
 
     void refresh();
-    const timer = window.setInterval(() => {
-      void refresh();
-    }, DATA1A_CAPTURE_POLL_MS);
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
     };
-  }, [data1a, data1b, data1e, data1f]);
+  }, [data1a, data1b, data1e, data1f, refreshToken]);
 
   return result;
 }

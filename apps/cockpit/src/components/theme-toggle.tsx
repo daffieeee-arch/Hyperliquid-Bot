@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 
 import { applyCockpitTheme } from "./theme-provider";
-import { Button } from "./ui/button";
 import {
   COCKPIT_THEME_LABELS,
   DEFAULT_COCKPIT_THEME,
@@ -20,13 +19,11 @@ export function ThemeToggle() {
   }, []);
 
   return (
-    <div className="theme-toggle" role="group" aria-label="Cockpit theme">
+    <div className="seg" role="group" aria-label="Cockpit theme">
       {operatorCockpitThemes().map((id) => (
-        <Button
+        <button
           key={id}
           type="button"
-          size="sm"
-          variant={theme === id ? "paper" : "outline"}
           aria-pressed={theme === id}
           onClick={() => {
             applyCockpitTheme(id);
@@ -34,7 +31,7 @@ export function ThemeToggle() {
           }}
         >
           {COCKPIT_THEME_LABELS[id]}
-        </Button>
+        </button>
       ))}
     </div>
   );

@@ -6,3 +6,32 @@ https://github.com/tradingview/lightweight-charts
 
 This cockpit uses the official Lightweight Charts package for public HL
 BTC-PERP candle rendering only. The browser never signs orders.
+
+The in-chart attribution logo is disabled (`layout.attributionLogo: false`).
+The library's license permits this only when the product still names
+TradingView as the creator and links to https://www.tradingview.com/, so the
+cockpit renders that notice in the application footer under "Attribution".
+If that footer notice is ever removed, re-enable `attributionLogo`.
+
+---
+
+class-variance-authority
+License: Apache License, Version 2.0
+https://github.com/joe-bell/cva
+
+---
+
+Other third-party UI dependencies and their licenses:
+
+- shadcn/ui component patterns — MIT
+- Radix UI primitives — MIT
+- Tailwind CSS — MIT
+- @tanstack/react-table — MIT
+- recharts — MIT
+- lucide-react — ISC
+
+Layout and density inspiration was taken from the free, permissively licensed
+shadcn/ui blocks (MIT) and the Tabler admin template (MIT). No paid component
+pack is used: shadcnblocks.com Pro, TailAdmin PRO and paid Tremor blocks are
+deliberately out of scope. ApexCharts is deliberately not used — releases from
+6.0.0 moved to a revenue-gated dual license.

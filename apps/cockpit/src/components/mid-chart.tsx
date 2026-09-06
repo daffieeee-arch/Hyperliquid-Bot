@@ -18,10 +18,22 @@ import { Notice } from "./ui/notice";
 import { PUBLIC_CANDLE_SOURCE, type PublicCandleInterval } from "../lib/public-candles";
 import { usePublicBtcPerpCandles } from "../lib/use-public-candles";
 
+/**
+ * Colour spaces the canvas renderer can actually parse.
+ *
+ * Lightweight Charts understands hex, rgb/rgba, hsl/hsla, hwb and named
+ * colours. Modern CSS functions such as `oklch()` and `color()` silently fail,
+ * so a token in one of those spaces falls back to the hard-coded default
+ * rather than handing the chart an unparseable string.
+ */
+const UNPARSEABLE_COLOR = /^(oklch|oklab|lch|lab|color)\(/i;
+
 function readChartTheme() {
   const styles = getComputedStyle(document.documentElement);
-  const read = (name: string, fallback: string): string =>
-    styles.getPropertyValue(name).trim() || fallback;
+  const read = (name: string, fallback: string): string => {
+    const value = styles.getPropertyValue(name).trim();
+    return value === "" || UNPARSEABLE_COLOR.test(value) ? fallback : value;
+  };
   return {
     background: read("--panel", "#12151b"),
     text: read("--muted", "#97a3b4"),

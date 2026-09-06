@@ -6,6 +6,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { ActiveThemeLabel } from "./active-theme-label";
+import { Attribution } from "./attribution";
 import { CapturePulse } from "./capture-pulse";
 import { NavLinks } from "./nav-links";
 import { Button } from "../ui/button";
@@ -177,7 +178,8 @@ export function AppShell({ children }: { children: ReactNode }) {
         <footer className="app-footer">
           <span>PAPER ONLY</span>
           <ActiveThemeLabel />
-          <details className="spacer">
+          <Attribution />
+          <details>
             <summary>Fail-closed constraints</summary>
             <div className="app-footer-list">
               {CONSTRAINTS.map((item) => (

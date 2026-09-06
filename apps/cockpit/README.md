@@ -186,28 +186,43 @@ To watch a DATA-1A reconstructable capture on the same machine (do not stop the
 collector). Next.js loads `apps/cockpit/.env.local`; the repository-root
 `.env.example` is documentation only.
 
-TerraPC WSL2 (current 72h retain; Linux filesystem, not `/mnt/c`).
-HL / Bitvavo / Kraken share `20260905t232635z-live-retained`. Binance is the
-post-#58 retain `20260906t101559z-live-retained`. Do not prefer the stopped
-earlier Binance id `20260905t235830z-live-retained`.
-Leaving the venue run_ids unset auto-detects the freshest live retain on each
-path contract. Explicit env / query still wins:
+TerraPC WSL2 (current 72h retain; Linux filesystem, not `/mnt/c`). The
+recommended binding is **auto-detect**: set only `ARTIFACT_ROOT` and leave every
+venue run_id unset. Per venue the cockpit then binds the freshest run that has a
+`capture-claim.json`, no `capture-health.json` (i.e. not stopped) and a
+`raw/part-*.parquet` newer than `COCKPIT_CAPTURE_FRESH_MAX_S` (180s). A venue
+that restarted — Binance after DATA-1F #58, for example — is therefore picked
+up by its new run directory without editing any configuration, and a stopped
+run is never bound as RUNNING:
 
 ```bash
 export TRADING_MODE=PAPER
 export ARTIFACT_ROOT=/home/dmesdary/hyperliquid-artifacts/reconstructable
-# Optional; omit to auto-detect the freshest live retain per venue:
-export DATA1A_RUN_ID=20260905t232635z-live-retained
-export DATA1E_RUN_ID=20260905t232635z-live-retained
-export DATA1B_RUN_ID=20260905t232635z-live-retained
-export DATA1F_RUN_ID=20260906t101559z-live-retained
 pnpm --filter @hyperliquid-bot/cockpit dev
 ```
 
-Or copy `apps/cockpit/.env.example` to `apps/cockpit/.env.local` and uncomment
-the TerraPC lines. `COCKPIT_DATA1A_RUN_ID` is an equivalent alias.
-With `ARTIFACT_ROOT` already exported you can also open
-`http://127.0.0.1:3000/?data1a_run_id=20260905t232635z-live-retained`.
+Before pinning a run id by hand, check what is actually on disk; the ids in
+older notes (`20260905t232635z-live-retained` for HL / Bitvavo / Kraken,
+`20260906t101559z-live-retained` for the restarted Binance) describe one
+moment and go stale as soon as a collector restarts:
+
+```bash
+ls -lt "$ARTIFACT_ROOT"/data-1f/binance/BTCUSDT/          # newest run dir first
+ls -lt "$ARTIFACT_ROOT"/data-1f/binance/BTCUSDT/<run>/raw | head   # parts still growing?
+```
+
+Explicit env / query still wins over auto-detect when you need to inspect a
+specific (possibly historical) run — every screen then labels it
+`HISTORICAL RUN` instead of `LIVE CAPTURE`:
+
+```bash
+export DATA1A_RUN_ID=<run id you verified above>
+export DATA1F_RUN_ID=<run id you verified above>
+```
+
+Or copy `apps/cockpit/.env.example` to `apps/cockpit/.env.local`.
+`COCKPIT_DATA1A_RUN_ID` is an equivalent alias. With `ARTIFACT_ROOT` already
+exported you can also open `http://127.0.0.1:3000/?data1a_run_id=<run id>`.
 
 Query aliases: `?data1f_run_id=`, `?data1e_run_id=`, `?data1b_run_id=`.
 `COCKPIT_DATA1F_RUN_ID` / `COCKPIT_DATA1E_RUN_ID` / `COCKPIT_DATA1B_RUN_ID`
@@ -237,6 +252,60 @@ auto-detects a live retain or stays MISSING. COURSE-1 PAPER JSON stays on the
 fixture unless `COCKPIT_ARTIFACT_ROOT` + `COCKPIT_RUN_ID` are also set. DESK,
 MARKETS, and RISK reuse those same binds. Missing RISK fields stay
 UNAVAILABLE.
+
+### Data origin, read time and source time
+
+Every screen carries three separate signals so a ticking clock is never taken
+as proof of fresh data:
+
+- **Origin badge** (`LIVE CAPTURE` / `HISTORICAL RUN` / `DEMO FIXTURE` /
+  `UNBOUND` / `MIXED SOURCES`): where the numbers come from. The topbar badge
+  summarises the bound venues; each page head and each venue card repeats its
+  own. The repository fixture is always `DEMO FIXTURE`, even when it is fresh.
+- **read HH:MM:SSZ**: the last *successful* backend read, per panel. A failed
+  tick turns it red (`read failed …`), keeps the previous values on screen and
+  adds a "request failed" item to the Overview attention list.
+- **Source time** (`newest part`, `last event`, `registry read`): the timestamp
+  the data itself carries. `data … old` on a venue card is the age of the newest
+  stored event, not of the read.
+
+Finished PAPER runs stay on screen as `HISTORICAL SNAPSHOT`; they are re-read on
+every tick but their values do not change.
+
+### Stored market data (`/api/market-tape`)
+
+Markets, Overview and System show what the collectors actually wrote: last
+trade, best bid/offer, spread (quote units and bps), recent trades, published
+part count and volume, newest part, last data time and publication lag. Spot,
+perpetual and quote currency are separate rows keyed by the collector's own
+product string (`BTC-PERP`, `BTCUSDT-SPOT`, `BTCUSDT-USDS-M-PERPETUAL`,
+`BTC-EUR`, `BTC/USD`).
+
+The backend reads the published `raw/part-*.parquet` files directly (DuckDB
+ZSTD Parquet via `hyparquet`; the writer's hidden `.partial` files are never
+opened). Parsed parts are cached per run in the Node process, so a browser
+refresh only costs the parts published since the previous read. On the first
+visit to a run only the newest three parts are decoded; older parts are counted
+towards `published`/volume but not re-read (`… older counted only`). Values
+therefore lag the collector by at most one unpublished segment (≤60s or 5 000
+records); the card shows that lag explicitly. No venue API is called and no
+credentials are involved.
+
+To exercise the whole chain without touching a real collector, generate a
+throw-away simulated retain and publish extra parts into it:
+
+```bash
+PYTHONPATH=src python3 tests/fixtures/market_tape/generate_fixtures.py \
+  --out /tmp/sim-retain --base-utc now
+TRADING_MODE=PAPER ARTIFACT_ROOT=/tmp/sim-retain pnpm --filter @hyperliquid-bot/cockpit dev
+# later, while the cockpit is open:
+PYTHONPATH=src python3 tests/fixtures/market_tape/generate_fixtures.py \
+  --out /tmp/sim-retain --base-utc now --append-part
+```
+
+The new part appears on the next refresh tick; after 180s without a new part
+auto-detect stops binding the simulated runs and the venues go MISSING, exactly
+as they would for a stopped collector.
 
 See `docs/runbooks/cockpit-first-paper-screen.md`,
 `docs/runbooks/data1a-wsl-pc-retained-capture.md`, and

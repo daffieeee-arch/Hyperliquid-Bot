@@ -1,23 +1,38 @@
-# First PAPER cockpit screen
+# PAPER Operator Cockpit
 
-One local Next.js screen. PAPER Operator Cockpit workstation: sticky **DESK**
-chrome (PAPER badge, freshness, compact venue chips, hash nav), then **Health
-→ Markets → Research → PAPER → Risk**. Health keeps the existing four-venue
-strip / picker / DATA-1A plus D01 bind and BN `usdm_public`. MARKETS shows
-public HL mid + public candle chart. RESEARCH is Quant P0 only. PAPER keeps
-separate soak vs retain cards. The DESK bot card is COURSE-1 soak only:
-What (run_id + claim path), last-decision Why (ACCEPT or #65 gate),
-assumed_pnl Results, last-N intent tape, and a read-only preflight caps
-strip. RISK stays reconstructable vs UNAVAILABLE.
+A local Next.js operator workstation with a persistent sidebar and five
+workspaces:
+
+| Route | Answers |
+|---|---|
+| `/` | What is running, what needs a human, what research exists |
+| `/markets` | Public HL mid and candles (5m/15m/1h/4h), bound instruments |
+| `/research` | Run registry, capture health and WP-Q1 summaries tied to a run |
+| `/paper` | COURSE-1 soak: what ran, why, assumed results, intent tape |
+| `/system` | Run binding, DATA-1A detail, risk overlay, #65 gate catalog |
+
+Every polled panel shares one refresh clock, so no zone drifts onto stale
+numbers while the rest of the page moves on. The topbar shows the last tick
+and can pause or force a refresh.
+
+Three data states are kept apart everywhere: **missing** (never written),
+**stale** (past the freshness bound) and **error** (present but unreadable).
+`pending` covers written-at-stop artifacts where mid-run absence is expected.
 
 Stack is €0 OSS: Next.js 15, Tailwind CSS v4, official free shadcn/ui (Radix;
-sidebar/dashboard-01 ideas only), Lucide, TanStack Table, recharts (real KPI
-series only), TradingView Lightweight Charts (Apache-2.0; `NOTICE`). Visual
-default **C Fail-Closed Amber** with optional **Desk Dark**. Critique variants
-stay in `docs/design-previews/` only. Not a clone of any commercial terminal and not a wholesale
-exchange-UI fork. PAPER is badged and watermarked. Missing fields stay
-**UNAVAILABLE**. Position and assumed overlay PnL are labeled **not
-venue-reconciled**. Collectors are never started or stopped from this UI.
+sidebar/dashboard layout ideas only), Lucide, TanStack Table v9 (sorting),
+recharts (real public closes only), TradingView Lightweight Charts
+(Apache-2.0; `NOTICE`). Visual default **C Fail-Closed Amber** with optional
+**Desk Dark**. Critique variants stay in `docs/design-previews/` only. Not a
+clone of any commercial terminal and not a wholesale exchange-UI fork. PAPER
+is badged. Missing fields stay **UNAVAILABLE**. Position and assumed overlay
+PnL are labeled **not venue-reconciled**. Collectors are never started or
+stopped from this UI.
+
+The candle chart is created once and reused: refreshes call `setData` between
+a `getVisibleLogicalRange` / `setVisibleLogicalRange` pair, so polling never
+discards the zoom or pan you set. Documented `paper_risk` gate examples are a
+separate type from tape rows and can never be mixed into run history.
 
 The browser never signs orders and never holds keys. `TRADING_MODE` must be
 unset or `PAPER`; `LIVE`, `TESTNET`, and `SHADOW` fail closed.

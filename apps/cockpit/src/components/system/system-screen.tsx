@@ -11,10 +11,16 @@ import { KvList } from "../ui/kv";
 import { Notice } from "../ui/notice";
 import { Stat } from "../ui/stat";
 import { useCockpitRefresh } from "../providers/cockpit-refresh";
-import { captureChipDataState, dataStateMeta, dataStateTone } from "../../lib/data-state";
+import {
+  captureChipDataState,
+  dataStateMeta,
+  dataStateTone,
+  worstDataState,
+} from "../../lib/data-state";
 import { data1aCaptureHealthPresentation, presentCopiedNumber } from "../../lib/display";
 import type { VenueCaptureQuery } from "../../lib/paths";
-import { PAPER_HARD_LIMIT_GATES, type PaperRiskGate } from "../../lib/paper-risk-gates";
+import { PAPER_HARD_LIMIT_GATES } from "../../lib/paper-risk-gates";
+import type { PaperRiskGate } from "../../lib/paper-risk-gates";
 import type { RiskField, RiskView } from "../../lib/risk";
 import type { SecondRowView } from "../../lib/second-row";
 import type { Data1ACaptureResponse, VenueCaptureStripResponse } from "../../lib/types";
@@ -99,6 +105,9 @@ export function SystemScreen({
   }, [risk.copied, risk.unavailable, riskFilter]);
 
   const presentation = data1a.ok ? data1aCaptureHealthPresentation(data1a.snapshot) : undefined;
+  const worstState = strip.ok
+    ? worstDataState(strip.strip.venues.map((venue) => captureChipDataState(venue.status)))
+    : "error";
 
   return (
     <div className="stack">
@@ -268,20 +277,16 @@ export function SystemScreen({
           </div>
         </CardBody>
         <div className="card-foot">
-          Worst bound state right now:{" "}
           {strip.ok ? (
-            <span
-              className={`tone-${dataStateTone(
-                strip.strip.venues
-                  .map((venue) => captureChipDataState(venue.status))
-                  .sort()
-                  .at(0) ?? "ok",
-              )}`}
-            >
-              {strip.strip.venues.length} venues bound
-            </span>
+            <>
+              Worst state across {String(strip.strip.venues.length)} bound venues:{" "}
+              <span className={`tone-${dataStateTone(worstState)}`}>
+                {dataStateMeta(worstState).label}
+              </span>{" "}
+              — {dataStateMeta(worstState).meaning}
+            </>
           ) : (
-            "strip unavailable"
+            "Capture strip unavailable, so no state can be reported."
           )}
         </div>
       </Card>

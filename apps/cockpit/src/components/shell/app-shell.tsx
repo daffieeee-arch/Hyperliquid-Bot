@@ -98,10 +98,6 @@ export function AppShell({ children }: { children: ReactNode }) {
         <div className="nav-foot">
           <span className="nav-heading">Appearance</span>
           <ThemeToggle />
-          <p className="card-desc" style={{ padding: "0 0.55rem" }}>
-            PAPER only. The browser never signs, never holds keys and never starts or stops a
-            collector.
-          </p>
         </div>
       </aside>
 
@@ -160,12 +156,15 @@ export function AppShell({ children }: { children: ReactNode }) {
           >
             <Menu aria-hidden="true" />
           </Button>
-          <span className="topbar-title">
-            <strong>{route.title}</strong>
-            <span className="truncate-1">{route.subtitle}</span>
-          </span>
+          <nav className="topbar-crumb" aria-label="Breadcrumb">
+            <span className="crumb-root">Cockpit</span>
+            <span className="crumb-root sep" aria-hidden="true">
+              /
+            </span>
+            <strong className="truncate-1">{route.label}</strong>
+          </nav>
           <div className="topbar-actions">
-            <span className="paper-pill">
+            <span className="paper-pill" title="PAPER only. No signing, no live capital.">
               <span className="dot" aria-hidden="true" />
               Paper
             </span>

@@ -4,7 +4,7 @@ import {
   worstDataState,
   type DataState,
 } from "./data-state";
-import { PAPER_BOT_UNAVAILABLE, type PaperBotView } from "./paper-bot";
+import type { PaperBotView } from "./paper-bot";
 import {
   RESEARCH_RUN_BINDING_NOTE,
   RESEARCH_UNAVAILABLE,
@@ -259,5 +259,3 @@ export function buildOverviewView(
     attention,
   };
 }
-
-export { PAPER_BOT_UNAVAILABLE };

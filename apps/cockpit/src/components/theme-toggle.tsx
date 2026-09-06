@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { applyCockpitTheme } from "./theme-provider";
 import {
   COCKPIT_THEME_LABELS,
+  COCKPIT_THEME_SHORT_LABELS,
   DEFAULT_COCKPIT_THEME,
   operatorCockpitThemes,
   parseOperatorCockpitTheme,
@@ -25,12 +26,13 @@ export function ThemeToggle() {
           key={id}
           type="button"
           aria-pressed={theme === id}
+          title={COCKPIT_THEME_LABELS[id]}
           onClick={() => {
             applyCockpitTheme(id);
             setTheme(id);
           }}
         >
-          {COCKPIT_THEME_LABELS[id]}
+          {COCKPIT_THEME_SHORT_LABELS[id]}
         </button>
       ))}
     </div>

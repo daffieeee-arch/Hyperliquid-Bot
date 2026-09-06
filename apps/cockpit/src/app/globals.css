@@ -372,10 +372,19 @@ body {
 
 .nav-foot {
   margin-top: auto;
-  padding-top: 1rem;
+  padding-top: 1.25rem;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 0.4rem;
+}
+
+.nav-foot .seg {
+  width: 100%;
+}
+
+.nav-foot .seg button {
+  flex: 1;
+  text-align: center;
 }
 
 /* ---------------------------------------------------------------------------
@@ -402,22 +411,29 @@ body {
   }
 }
 
-.topbar-title {
+/* Breadcrumb, not a second page title: the page owns the heading. */
+.topbar-crumb {
   display: flex;
-  flex-direction: column;
-  line-height: 1.15;
+  align-items: center;
+  gap: 0.4rem;
   min-width: 0;
-}
-
-.topbar-title strong {
-  font-size: 0.95rem;
-  font-weight: 600;
-  color: var(--text-strong);
-}
-
-.topbar-title span {
-  font-size: 0.7rem;
+  font-size: 0.78rem;
   color: var(--dim);
+}
+
+.topbar-crumb strong {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.topbar-crumb .sep {
+  color: var(--line-strong);
+}
+
+@media (max-width: 640px) {
+  .topbar-crumb .crumb-root {
+    display: none;
+  }
 }
 
 .topbar-actions {
@@ -425,19 +441,21 @@ body {
   display: flex;
   align-items: center;
   gap: 0.4rem;
+  min-width: 0;
 }
 
 .paper-pill {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
+  gap: 0.3rem;
+  flex: none;
   padding: 0.2rem 0.5rem;
   border-radius: 99px;
   background: var(--paper);
   color: var(--paper-ink);
-  font-size: 0.65rem;
+  font-size: 0.62rem;
   font-weight: 700;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   white-space: nowrap;
 }
@@ -662,6 +680,7 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 0.28rem;
+  flex: none;
   padding: 0.12rem 0.42rem;
   border: 1px solid transparent;
   border-radius: 99px;
@@ -1106,6 +1125,21 @@ a.attention-row:hover {
   flex: none;
 }
 
+@media (max-width: 640px) {
+  .attention-row {
+    flex-wrap: wrap;
+  }
+
+  .attention-copy {
+    flex-basis: 100%;
+    order: 3;
+  }
+
+  .attention-side {
+    order: 2;
+  }
+}
+
 /* ---------------------------------------------------------------------------
    Disclosure (technical detail on demand)
    --------------------------------------------------------------------------- */
@@ -1130,6 +1164,17 @@ a.attention-row:hover {
 
 .disclosure > summary::-webkit-details-marker {
   display: none;
+}
+
+.disclosure > summary::before {
+  content: "▸";
+  font-size: 0.7rem;
+  line-height: 1;
+  transition: transform 0.15s ease;
+}
+
+.disclosure[open] > summary::before {
+  transform: rotate(90deg);
 }
 
 .disclosure > summary:hover {

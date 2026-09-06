@@ -19,7 +19,7 @@ The browser never receives trading secrets.
 The first cockpit screen now reads COURSE-1 PAPER JSON, a four-venue
 capture-health strip, and a thin DATA-1A capture-health panel. It shows public
 BTC-PERP mid, paper position, assumed overlay PnL, COURSE-1 soak health, HL /
-Binance / Bitvavo / Kraken reconstructable capture chips, DATA-1A capture
+Binance / Bitvavo / Kraken reconstructable capture rows, DATA-1A capture
 health, and the copied PAPER intent/fill blotter. The layout is a dense dark
 terminal so those values are readable at a glance; PAPER is badged and
 watermarked. It is inspired by professional market workstations, not a clone of
@@ -63,9 +63,10 @@ and a venue run_id is unset, the strip / DATA-1A panel auto-detects the
 freshest live retain on that path contract (claim + fresh parts, no health
 JSON). Stale or stopped directories are listed in the run picker but are not
 auto-bound as RUNNING. Missing artifact root remains an explicit empty state.
-The strip shows the bound `run_id` and binding source (query / env /
-auto-detect) per venue, plus overlap start when one venue (often Binance)
-started later. DATA-1A capture duration is 1–604800
+The strip is a compact table: status, last part age, part count, last
+mtime, bind source, and run_id per venue. Gaps/reconnects are copied from
+`capture-health.json` when present and stay n/a while health is pending.
+Overlap start is shown when one venue (often Binance) started later. DATA-1A capture duration is 1–604800
 seconds; the COURSE-1 soak remains 1–600 seconds. Locally
 the first screen defaults to
 `tests/fixtures/course1_cockpit/live-public-soak/` (`run_id`
@@ -77,10 +78,11 @@ same root: `DATA1F_RUN_ID` (Binance), `DATA1E_RUN_ID` (Bitvavo),
 `DATA1B_RUN_ID` (Kraken). TerraPC WSL example:
 `ARTIFACT_ROOT=/home/dmesdary/hyperliquid-artifacts/reconstructable` with
 HL/Bitvavo/Kraken `20260905t232635z-live-retained` and Binance
-`20260905t235830z-live-retained` (copy `apps/cockpit/.env.example`
+`20260906t101559z-live-retained` (do not prefer stopped
+`20260905t235830z-live-retained`; copy `apps/cockpit/.env.example`
 to `apps/cockpit/.env.local`, or export in the WSL shell before `next dev`).
 For a phone on the same Wi-Fi, bind `next dev --hostname 0.0.0.0` (`dev:lan`)
-and open `http://192.168.1.2:PORT` — not cellular. See `docs/DATA.md`,
+and open `http://192.168.1.2:3001` — not cellular. See `docs/DATA.md`,
 `docs/runbooks/data1a-vps-retained-capture.md`,
 `docs/runbooks/data1a-wsl-pc-retained-capture.md`,
 `docs/runbooks/cockpit-first-paper-screen.md`, `apps/cockpit/README.md`, and

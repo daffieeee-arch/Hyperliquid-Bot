@@ -238,6 +238,8 @@ export type VenueCaptureChip = {
   part_count: number | undefined;
   last_part_age: string;
   last_part_mtime_utc: string | undefined;
+  gaps: number | undefined;
+  reconnects: number | undefined;
   run_id: string | undefined;
   binding_source: CaptureBindingSource;
   observed_at: string;

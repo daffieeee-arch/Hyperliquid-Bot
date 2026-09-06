@@ -19,6 +19,11 @@ import {
   DATA1F_PATH_CONTRACT_ID,
   VENUE_CAPTURE_CONTRACTS,
 } from "./paths";
+import {
+  TERRAPC_BINANCE_ACTIVE_RETAIN_RUN_ID,
+  TERRAPC_BINANCE_STOPPED_RETAIN_RUN_ID,
+  TERRAPC_SHARED_RETAIN_RUN_ID,
+} from "./terrapc-defaults";
 import type { VenueCaptureChip } from "./types";
 
 const repoRoot = resolve(fileURLToPath(new URL("../../../../", import.meta.url)));
@@ -65,6 +70,8 @@ function chip(
     part_count: 1,
     last_part_age: "12s",
     last_part_mtime_utc: "2026-09-05T23:58:48.000Z",
+    gaps: undefined,
+    reconnects: undefined,
     run_id: undefined,
     binding_source: "unbound",
     observed_at: observedAt,
@@ -244,5 +251,116 @@ describe("capture run discovery", () => {
       "2026-09-05T23:26:35Z",
       "2026-09-05T23:26:35Z",
     ]);
+  });
+
+  it("auto-picks the post-#58 Binance retain and does not prefer the stopped earlier BN id", () => {
+    const artifactRoot = mkdtempSync(join(tmpdir(), "capture-bn-pref-"));
+    const now = "2026-09-06T10:16:20.000Z";
+    const stoppedDir = join(
+      artifactRoot,
+      "data-1f",
+      "binance",
+      "BTCUSDT",
+      TERRAPC_BINANCE_STOPPED_RETAIN_RUN_ID,
+    );
+    const liveDir = join(
+      artifactRoot,
+      "data-1f",
+      "binance",
+      "BTCUSDT",
+      TERRAPC_BINANCE_ACTIVE_RETAIN_RUN_ID,
+    );
+    writeClaim(
+      stoppedDir,
+      DATA1F_CLAIM_SCHEMA,
+      DATA1F_PATH_CONTRACT_ID,
+      TERRAPC_BINANCE_STOPPED_RETAIN_RUN_ID,
+    );
+    writePart(stoppedDir, "2026-09-06T10:16:15Z");
+    writeJson(join(stoppedDir, "capture-health.json"), {
+      schema: DATA1F_HEALTH_SCHEMA,
+      kind: "capture-health",
+      path_contract: DATA1F_PATH_CONTRACT_ID,
+      run_id: TERRAPC_BINANCE_STOPPED_RETAIN_RUN_ID,
+      status: "COMPLETED",
+      retained: true,
+      twenty_four_seven: false,
+    });
+    writeClaim(
+      liveDir,
+      DATA1F_CLAIM_SCHEMA,
+      DATA1F_PATH_CONTRACT_ID,
+      TERRAPC_BINANCE_ACTIVE_RETAIN_RUN_ID,
+    );
+    writePart(liveDir, "2026-09-06T10:16:10Z");
+
+    const candidates = listVenueCaptureRuns(
+      VENUE_CAPTURE_CONTRACTS.binance,
+      artifactRoot,
+      now,
+      180,
+    );
+    expect(pickFreshestLiveRetain(candidates)?.run_id).toBe(TERRAPC_BINANCE_ACTIVE_RETAIN_RUN_ID);
+    expect(
+      candidates.find((candidate) => candidate.run_id === TERRAPC_BINANCE_STOPPED_RETAIN_RUN_ID)
+        ?.live,
+    ).toBe(false);
+
+    const bound = bindVenueCaptureRun(
+      VENUE_CAPTURE_CONTRACTS.binance,
+      { TRADING_MODE: "PAPER", ARTIFACT_ROOT: artifactRoot },
+      repoRoot,
+      {},
+      { now, freshMaxSeconds: 180 },
+    );
+    expect(bound.binding_source).toBe("auto-detect");
+    expect(bound.runId).toBe(TERRAPC_BINANCE_ACTIVE_RETAIN_RUN_ID);
+  });
+
+  it("states overlap from the current TerraPC Binance start against the shared HL/BV/KR retain", () => {
+    const provenance = captureRunProvenance([
+      chip({
+        id: "hl",
+        chip: "HL",
+        series: "DATA-1A",
+        run_id: TERRAPC_SHARED_RETAIN_RUN_ID,
+        binding_source: "auto-detect",
+      }),
+      chip({
+        id: "binance",
+        chip: "BINANCE",
+        series: "DATA-1F",
+        venue: "binance",
+        product: "BTCUSDT",
+        run_id: TERRAPC_BINANCE_ACTIVE_RETAIN_RUN_ID,
+        binding_source: "auto-detect",
+      }),
+      chip({
+        id: "bitvavo",
+        chip: "BITVAVO",
+        series: "DATA-1E",
+        venue: "bitvavo",
+        product: "BTC-EUR",
+        run_id: TERRAPC_SHARED_RETAIN_RUN_ID,
+        binding_source: "auto-detect",
+      }),
+      chip({
+        id: "kraken",
+        chip: "KRAKEN",
+        series: "DATA-1B",
+        venue: "kraken",
+        product: "BTC-USD",
+        run_id: TERRAPC_SHARED_RETAIN_RUN_ID,
+        binding_source: "auto-detect",
+      }),
+    ]);
+    expect(provenance.shared_run_ids).toEqual([TERRAPC_SHARED_RETAIN_RUN_ID]);
+    expect(provenance.distinct_run_ids).toEqual([
+      TERRAPC_SHARED_RETAIN_RUN_ID,
+      TERRAPC_BINANCE_ACTIVE_RETAIN_RUN_ID,
+    ]);
+    expect(provenance.overlap_starts_utc).toBe("2026-09-06T10:15:59Z");
+    expect(provenance.overlap_note).toMatch(/2026-09-06T10:15:59Z/);
+    expect(provenance.overlap_note).toMatch(/BINANCE/);
   });
 });

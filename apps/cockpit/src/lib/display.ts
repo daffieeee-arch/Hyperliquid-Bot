@@ -3,7 +3,8 @@ import {
   STALE_MTIME_REASON,
   isLastPartFresh,
 } from "./capture-freshness";
-import type { CaptureBindingSource, VenueCaptureChipStatus } from "./types";
+import { isTerrapcActiveRetain, type TerrapcVenueId } from "./terrapc-defaults";
+import type { CaptureBindingSource, CaptureRunCandidate, VenueCaptureChipStatus } from "./types";
 
 export type SignedTone = "up" | "down" | "flat" | "unknown";
 export type StatusTone = "ok" | "warn" | "down" | "neutral";
@@ -146,6 +147,44 @@ export function presentCopiedNumber(value: number | undefined): string {
 
 export function presentCopiedText(value: string | undefined): string {
   return value === undefined || value === "" ? "n/a" : value;
+}
+
+/** Gaps/reconnects only when reconstructable health JSON already has them. */
+export function presentGapReconnect(
+  gaps: number | undefined,
+  reconnects: number | undefined,
+): string {
+  if (gaps === undefined && reconnects === undefined) {
+    return "n/a";
+  }
+  return `${presentCopiedNumber(gaps)}/${presentCopiedNumber(reconnects)}`;
+}
+
+/** Compact UTC mtime for the strip. Fail closed if unparseable. */
+export function presentLastPartMtime(mtimeUtc: string | undefined): string {
+  if (mtimeUtc === undefined || mtimeUtc === "") {
+    return "n/a";
+  }
+  if (!Number.isFinite(Date.parse(mtimeUtc))) {
+    return "n/a";
+  }
+  return mtimeUtc.replace("T", " ").replace(/\.000Z$/, "Z");
+}
+
+export function captureRunOptionLabel(
+  venueId: TerrapcVenueId,
+  candidate: CaptureRunCandidate,
+): string {
+  const tags: string[] = [];
+  if (candidate.live) {
+    tags.push("live");
+  } else if (candidate.has_health) {
+    tags.push("stopped");
+  }
+  if (isTerrapcActiveRetain(venueId, candidate.run_id)) {
+    tags.push("TerraPC");
+  }
+  return tags.length === 0 ? candidate.run_id : `${candidate.run_id} · ${tags.join(" · ")}`;
 }
 
 const RUN_ID_UTC_PREFIX = /^(\d{4})(\d{2})(\d{2})t(\d{2})(\d{2})(\d{2})z/;

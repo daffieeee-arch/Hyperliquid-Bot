@@ -53,6 +53,7 @@ describe("COURSE-1 path contract", () => {
 
   it("refuses invalid run ids", () => {
     expect(isRunId("20260905t232635z-live-retained")).toBe(true);
+    expect(isRunId("20260906t101559z-live-retained")).toBe(true);
     expect(isRunId("sample-run")).toBe(true);
     expect(isRunId("SAMPLE")).toBe(false);
     expect(() => requireRunId("SAMPLE")).toThrow(/run_id/);

@@ -77,8 +77,10 @@ Next.js.
 
 TerraPC WSL2 (current 72h retain). Paths are on the Linux filesystem, not
 `/mnt/c`. HL / Bitvavo / Kraken share `20260905t232635z-live-retained`.
-Binance started later as `20260905t235830z-live-retained`. Leaving venue
-run_ids unset auto-detects the freshest live retain per path contract:
+Binance is the post-#58 retain `20260906t101559z-live-retained`. Do not
+prefer the stopped earlier Binance id `20260905t235830z-live-retained`.
+Leaving venue run_ids unset auto-detects the freshest live retain per path
+contract:
 
 ```bash
 export TRADING_MODE=PAPER
@@ -86,7 +88,7 @@ export ARTIFACT_ROOT=/home/dmesdary/hyperliquid-artifacts/reconstructable
 export DATA1A_RUN_ID=20260905t232635z-live-retained
 export DATA1E_RUN_ID=20260905t232635z-live-retained
 export DATA1B_RUN_ID=20260905t232635z-live-retained
-export DATA1F_RUN_ID=20260905t235830z-live-retained
+export DATA1F_RUN_ID=20260906t101559z-live-retained
 pnpm --filter @hyperliquid-bot/cockpit dev
 ```
 
@@ -129,9 +131,11 @@ state; zeros and PnL are not invented.
 ## Point at multi-venue reconstructable captures
 
 The first PAPER screen also shows a dense HL / Binance / Bitvavo / Kraken
-strip. Each chip reuses the DATA-1A claim / health / `raw/part-*.parquet`
-pattern on that venue's documented path contract. Shared artifact root, no
-secrets, do not stop any collector:
+strip (compact table: status, age, parts, last mtime, optional
+gaps/reconnects from `capture-health.json`, bind, run_id). Each row reuses
+the DATA-1A claim / health / `raw/part-*.parquet` pattern on that venue's
+documented path contract. Shared artifact root, no secrets, do not stop any
+collector:
 
 ```text
 <artifact-root>/data-1a/hyperliquid/BTC-PERP/<run_id>/
@@ -145,7 +149,7 @@ export TRADING_MODE=PAPER
 export ARTIFACT_ROOT=/home/dmesdary/hyperliquid-artifacts/reconstructable
 # Optional; omit to auto-detect the freshest live retain per venue:
 export DATA1A_RUN_ID=20260905t232635z-live-retained
-export DATA1F_RUN_ID=20260905t235830z-live-retained
+export DATA1F_RUN_ID=20260906t101559z-live-retained
 export DATA1E_RUN_ID=20260905t232635z-live-retained
 export DATA1B_RUN_ID=20260905t232635z-live-retained
 pnpm --filter @hyperliquid-bot/cockpit dev

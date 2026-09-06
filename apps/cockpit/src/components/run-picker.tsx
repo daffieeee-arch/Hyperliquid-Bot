@@ -2,6 +2,7 @@
 
 import { usePathname, useRouter } from "next/navigation";
 
+import { captureRunOptionLabel } from "../lib/display";
 import type { VenueCaptureQuery } from "../lib/paths";
 import type { VenueCaptureCatalog, VenueCaptureChip } from "../lib/types";
 import { venueCapturePickerHref } from "../lib/venue-capture-poll";
@@ -57,8 +58,7 @@ export function RunPicker({
               </option>
               {entry.candidates.map((candidate) => (
                 <option key={candidate.run_id} value={candidate.run_id}>
-                  {candidate.run_id}
-                  {candidate.live ? " · live" : candidate.has_health ? " · stopped" : ""}
+                  {captureRunOptionLabel(entry.id, candidate)}
                 </option>
               ))}
             </select>

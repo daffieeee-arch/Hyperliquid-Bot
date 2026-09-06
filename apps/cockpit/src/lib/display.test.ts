@@ -6,6 +6,7 @@ import {
   DATA1A_STALE_MTIME_LABEL,
   data1aCaptureHealthPresentation,
   captureBindingSourceLabel,
+  captureRunOptionLabel,
   elapsedSecondsSinceRunId,
   formatGroupedNumber,
   healthTone,
@@ -13,12 +14,19 @@ import {
   presentCopiedNumber,
   presentCopiedText,
   presentData1ADuration,
+  presentGapReconnect,
   presentLastPartAge,
+  presentLastPartMtime,
   signedTone,
   uniqueStrings,
   venueCaptureChipStatus,
   yesNo,
 } from "./display";
+import {
+  TERRAPC_BINANCE_ACTIVE_RETAIN_RUN_ID,
+  TERRAPC_BINANCE_STOPPED_RETAIN_RUN_ID,
+  TERRAPC_SHARED_RETAIN_RUN_ID,
+} from "./terrapc-defaults";
 
 describe("cockpit display helpers", () => {
   it("groups integer digits without changing the copied decimal string", () => {
@@ -55,8 +63,9 @@ describe("cockpit display helpers", () => {
   });
 
   it("reconstructs UTC start from a YYYYMMDDtHHMMSSz run_id and fails closed otherwise", () => {
-    expect(parseRunIdStartedAt("20260905t232635z-live-retained")).toBe("2026-09-05T23:26:35Z");
-    expect(parseRunIdStartedAt("20260905t235830z-live-retained")).toBe("2026-09-05T23:58:30Z");
+    expect(parseRunIdStartedAt(TERRAPC_SHARED_RETAIN_RUN_ID)).toBe("2026-09-05T23:26:35Z");
+    expect(parseRunIdStartedAt(TERRAPC_BINANCE_STOPPED_RETAIN_RUN_ID)).toBe("2026-09-05T23:58:30Z");
+    expect(parseRunIdStartedAt(TERRAPC_BINANCE_ACTIVE_RETAIN_RUN_ID)).toBe("2026-09-06T10:15:59Z");
     expect(parseRunIdStartedAt("sample-run")).toBeUndefined();
     expect(captureBindingSourceLabel("auto-detect")).toBe("auto-detect");
     expect(captureBindingSourceLabel("query")).toBe("query");
@@ -145,6 +154,31 @@ describe("cockpit display helpers", () => {
         claim: { duration_seconds: 86400 },
       }),
     ).toBe("86400s claimed");
+  });
+
+  it("copies gaps/reconnects only when health JSON supplied them", () => {
+    expect(presentGapReconnect(undefined, undefined)).toBe("n/a");
+    expect(presentGapReconnect(0, 0)).toBe("0/0");
+    expect(presentGapReconnect(2, undefined)).toBe("2/n/a");
+    expect(presentLastPartMtime(undefined)).toBe("n/a");
+    expect(presentLastPartMtime("2026-09-06T10:15:59.000Z")).toBe("2026-09-06 10:15:59Z");
+    expect(presentLastPartMtime("not-a-time")).toBe("n/a");
+    expect(
+      captureRunOptionLabel("binance", {
+        run_id: TERRAPC_BINANCE_ACTIVE_RETAIN_RUN_ID,
+        has_claim: true,
+        has_health: false,
+        live: true,
+      }),
+    ).toBe(`${TERRAPC_BINANCE_ACTIVE_RETAIN_RUN_ID} · live · TerraPC`);
+    expect(
+      captureRunOptionLabel("binance", {
+        run_id: TERRAPC_BINANCE_STOPPED_RETAIN_RUN_ID,
+        has_claim: true,
+        has_health: true,
+        live: false,
+      }),
+    ).toBe(`${TERRAPC_BINANCE_STOPPED_RETAIN_RUN_ID} · stopped`);
   });
 
   it("formats last part age from mtime without inventing a zero age", () => {

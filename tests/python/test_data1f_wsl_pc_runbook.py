@@ -404,7 +404,7 @@ def test_status_uses_health_transport_profiles_when_present(tmp_path: Path) -> N
             ]
         },
     )
-    completed = _run("data1f_status.sh", tmp_path)
+    completed = _run("data1f_status.sh", tmp_path, run_id=run_id)
     assert completed.returncode == 0, completed.stderr
     assert "transport_hints_source=health" in completed.stdout
     assert "transport_reconnects=spot:0,usdm_public:3" in completed.stdout

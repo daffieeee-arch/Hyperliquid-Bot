@@ -1,0 +1,8 @@
+TradingView Lightweight Charts
+Copyright 2023 TradingView, Inc.
+License: Apache License, Version 2.0
+https://www.apache.org/licenses/LICENSE-2.0
+https://github.com/tradingview/lightweight-charts
+
+This cockpit uses the official Lightweight Charts package for public HL
+BTC-PERP candle rendering only. The browser never signs orders.

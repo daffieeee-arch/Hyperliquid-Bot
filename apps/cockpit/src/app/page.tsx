@@ -3,7 +3,7 @@ import { DeskBanner } from "../components/desk-banner";
 import { DataRetainIdentityCardPanel, SoakIdentityCardPanel } from "../components/identity-cards";
 import { MarketsPanel } from "../components/markets-panel";
 import { PaperBotPanel } from "../components/paper-bot-panel";
-import { ResearchStub } from "../components/research-stub";
+import { ResearchP0Panel } from "../components/research-p0-panel";
 import { RiskPanel } from "../components/risk-panel";
 import { SecondRowPanels } from "../components/second-row";
 import { VenueCaptureStrip } from "../components/venue-capture-strip";
@@ -12,6 +12,7 @@ import { buildSeparateIdentityCards } from "../lib/identity-cards";
 import { buildPaperBotView } from "../lib/paper-bot";
 import { loadPaperRunSnapshot } from "../lib/paper-run";
 import { firstQueryValue, findRepoRoot, type VenueCaptureQuery } from "../lib/paths";
+import { buildResearchP0View } from "../lib/research-p0";
 import { buildSecondRowView } from "../lib/second-row";
 import type {
   Data1ACaptureResponse,
@@ -80,6 +81,7 @@ export default async function FirstPaperScreen({
   const identities = buildSeparateIdentityCards(snapshot, snapshotError, venueStrip);
   const secondRow = buildSecondRowView(snapshot, venueStrip);
   const paperBot = buildPaperBotView(snapshot, snapshotError);
+  const research = buildResearchP0View(venueStrip, process.env, findRepoRoot(), venueQuery);
 
   return (
     <div className="terminal">
@@ -93,33 +95,43 @@ export default async function FirstPaperScreen({
         initial={venueStrip}
       />
       <main>
-        <section className="zone" aria-label="Run identity">
-          <h2 className="zone-label">Run identity</h2>
+        <section id="health" className="zone" aria-label="Health">
+          <h2 className="zone-label">Health</h2>
           <p className="zone-kicker">
-            COURSE-1 soak and DATA retain stay separate cards. They are never one blended identity
-            and never one blended PnL.
+            Read-only capture strip + picker + DATA-1A. Start/stop is vetoed. D01 bind and BN
+            usdm_public stay on this zone so DESK must-haves 1–6 are not diluted.
           </p>
+          <SecondRowPanels view={secondRow} />
+          <VenueCaptureStrip query={venueQuery} initial={venueStrip} />
+          <Data1ACapturePanel queryRunId={data1aRunId} initial={data1a} />
+        </section>
+        <div id="markets">
+          <MarketsPanel query={venueQuery} initial={venueStrip} soakPnl={snapshot?.pnl} />
+        </div>
+        <div id="research">
+          <ResearchP0Panel view={research} />
+        </div>
+        <section id="paper" className="zone" aria-label="PAPER">
+          <h2 className="zone-label">PAPER</h2>
+          <p className="zone-kicker">
+            COURSE-1 soak and DATA retain stay separate cards. Position and assumed PnL are labeled
+            not venue-reconciled. They are never one blended identity and never one blended PnL.
+          </p>
+          {snapshotError !== undefined ? <p className="error">{snapshotError}</p> : null}
           <div className="zone-grid zone-grid-2">
             <SoakIdentityCardPanel card={identities.soak} />
             <DataRetainIdentityCardPanel card={identities.retain} />
           </div>
+          <PaperBotPanel view={paperBot} snapshot={snapshot} />
         </section>
-        <section className="zone" aria-label="Second row">
-          <h2 className="zone-label">Bind / capture / Binance</h2>
-          <SecondRowPanels view={secondRow} />
-        </section>
-        <MarketsPanel query={venueQuery} initial={venueStrip} soakPnl={snapshot?.pnl} />
-        <ResearchStub />
-        {snapshotError !== undefined ? <p className="error">{snapshotError}</p> : null}
-        <PaperBotPanel view={paperBot} snapshot={snapshot} />
-        <RiskPanel
-          snapshot={snapshot}
-          snapshotError={snapshotError}
-          query={venueQuery}
-          initial={venueStrip}
-        />
-        <VenueCaptureStrip query={venueQuery} initial={venueStrip} />
-        <Data1ACapturePanel queryRunId={data1aRunId} initial={data1a} />
+        <div id="risk">
+          <RiskPanel
+            snapshot={snapshot}
+            snapshotError={snapshotError}
+            query={venueQuery}
+            initial={venueStrip}
+          />
+        </div>
       </main>
       <footer className="statusbar">
         <span>PAPER ONLY</span>
@@ -129,9 +141,9 @@ export default async function FirstPaperScreen({
         <span>SOAK != RETAIN</span>
         <span>ASSUMED != VENUE RECONCILED</span>
         <span>RISK != INVENTED</span>
-        <span>RESEARCH UNAVAILABLE</span>
+        <span>RESEARCH P0 · FAIL-CLOSED</span>
         <span>PUBLIC MID != PAPER PNL</span>
-        <span>DEFAULT C HYBRID</span>
+        <span>DEFAULT C AMBER</span>
       </footer>
     </div>
   );

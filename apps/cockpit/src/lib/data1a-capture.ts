@@ -19,6 +19,7 @@ import type {
   Data1ACaptureHealth,
   Data1ACaptureSnapshot,
   JsonObject,
+  TransportProfileRow,
 } from "./types";
 
 function isRecord(value: unknown): value is JsonObject {
@@ -97,6 +98,34 @@ function optionalStringList(source: JsonObject, field: string, path: string): st
     throw new Error(`${path}.${field} must be a list of strings.`);
   }
   return value;
+}
+
+function optionalTransportProfiles(
+  source: JsonObject,
+  path: string,
+): TransportProfileRow[] | undefined {
+  if (!("transport_profiles" in source)) {
+    return undefined;
+  }
+  const value = source.transport_profiles;
+  if (!Array.isArray(value)) {
+    throw new Error(`${path}.transport_profiles must be a list when present.`);
+  }
+  return value.map((item, index) => {
+    const itemPath = `${path}.transport_profiles[${String(index)}]`;
+    if (!isRecord(item)) {
+      throw new Error(`${itemPath} must be an object.`);
+    }
+    const name = item.transport_profile;
+    if (typeof name !== "string" || name === "") {
+      throw new Error(`${itemPath} is missing transport_profile.`);
+    }
+    return {
+      transport_profile: name,
+      gaps: optionalInt(item, "gaps", itemPath),
+      reconnects: optionalInt(item, "reconnects", itemPath),
+    };
+  });
 }
 
 function refuseTwentyFourSeven(source: JsonObject, path: string, refuseLabel: string): false {
@@ -181,6 +210,7 @@ function loadHealth(
         events: optionalInt(raw, "events", path),
         parquet_files: optionalInt(raw, "parquet_files", path),
         parquet_bytes: optionalInt(raw, "parquet_bytes", path),
+        transport_profiles: optionalTransportProfiles(raw, path),
         limitations: optionalStringList(raw, "limitations", path),
       },
       health_missing: false,

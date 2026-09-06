@@ -1,17 +1,21 @@
 # First PAPER cockpit screen
 
-One local Next.js screen. PAPER Operator Cockpit workstation: **DESK** banner,
-separate COURSE-1 soak vs DATA retain identity cards, **MARKETS** (public HL
-mid + public candle chart), RESEARCH stub, PAPER bot what/why/results,
-**RISK**, and the existing four-venue strip / picker / DATA-1A panel.
+One local Next.js screen. PAPER Operator Cockpit workstation: sticky **DESK**
+chrome (PAPER badge, freshness, compact venue chips, hash nav), then **Health
+→ Markets → Research → PAPER → Risk**. Health keeps the existing four-venue
+strip / picker / DATA-1A plus D01 bind and BN `usdm_public`. MARKETS shows
+public HL mid + public candle chart. RESEARCH is Quant P0 only. PAPER keeps
+separate soak vs retain cards and bot what/why/results. RISK stays
+reconstructable vs UNAVAILABLE.
 
-Stack is €0 OSS: Next.js 15, Tailwind CSS v4, shadcn/ui (Radix), Lucide,
-TradingView Lightweight Charts. Visual variants: **A terminal**, **B shadcn
-workstation**, **C hybrid** (default). Not a clone of any commercial terminal
-and not a wholesale exchange-UI fork. PAPER is badged and watermarked.
-Missing fields stay **UNAVAILABLE**. Position and assumed overlay PnL are
-labeled **not venue-reconciled**. Collectors are never started or stopped
-from this UI.
+Stack is €0 OSS: Next.js 15, Tailwind CSS v4, official free shadcn/ui (Radix;
+sidebar/dashboard-01 ideas only), Lucide, TanStack Table, recharts (real KPI
+series only), TradingView Lightweight Charts (Apache-2.0; `NOTICE`). Visual
+default **C Fail-Closed Amber** with optional **A Desk Dark**; **B critique**
+is demoted. Not a clone of any commercial terminal and not a wholesale
+exchange-UI fork. PAPER is badged and watermarked. Missing fields stay
+**UNAVAILABLE**. Position and assumed overlay PnL are labeled **not
+venue-reconciled**. Collectors are never started or stopped from this UI.
 
 The browser never signs orders and never holds keys. `TRADING_MODE` must be
 unset or `PAPER`; `LIVE`, `TESTNET`, and `SHADOW` fail closed.
@@ -195,8 +199,10 @@ run_id is unset. Stale or stopped retains are listed in the picker but are
 never auto-bound as RUNNING.
 
 The DATA-1A panel polls `/api/data1a-capture` every 5 seconds. The venue strip
-polls `/api/venue-capture-health` on the same interval. Leave the tab open; do
-not stop any collector to "refresh" numbers. Both routes send
+polls `/api/venue-capture-health` on the same interval. RESEARCH reads
+`GET /api/research-summaries` for `panel-summary.json` under
+`COCKPIT_RESEARCH_OUT` or `ARTIFACT_ROOT/research-out`. Leave the tab open; do
+not stop any collector to "refresh" numbers. Routes send
 `Cache-Control: no-store`. Optional: `COCKPIT_CAPTURE_FRESH_MAX_S=180` (seconds;
 tunable). Host clock must be sane.
 

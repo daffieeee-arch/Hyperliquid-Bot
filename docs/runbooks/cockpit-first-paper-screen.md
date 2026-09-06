@@ -1,9 +1,10 @@
 # Runbook — first PAPER cockpit screen
 
 Status: local fixture-backed PAPER Operator Cockpit workstation (Tailwind v4 +
-shadcn/ui + Lucide + Lightweight Charts; variants A/B/C, default C hybrid).
-First DESK banner, separate soak vs retain identity cards, MARKETS panel,
-RESEARCH stub, PAPER bot what/why/results, and RISK slice. PAPER only.
+official free shadcn/ui + Lucide + TanStack Table + recharts KPI sparklines +
+Lightweight Charts; default C Fail-Closed Amber, optional A Desk Dark).
+Sticky DESK chrome, then Health → Markets → Research (Quant P0) → PAPER →
+Risk. PAPER only.
 Not D22-B, not LIVE, not a risk engine, and not a 24/7 cockpit service. The
 browser never signs orders and never starts/stops collectors. The visual
 chrome is not a clone of a commercial terminal.
@@ -58,10 +59,13 @@ The browser never talks to a signing endpoint.
 
 ## Open DESK / MARKETS / RISK locally
 
-Same first PAPER screen. DESK is the sticky run/mode banner; MARKETS is the
-quote table under it; RISK is the dense reconstructable overlay / fail-closed
-bounds panel. Collectors stay running; the cockpit only reads files. Missing
-RISK fields stay **UNAVAILABLE**.
+Same first PAPER screen. DESK is the sticky run/mode banner with hash nav
+Health → Markets → Research → PAPER → Risk. Health holds the strip/picker.
+MARKETS is the quote table. RESEARCH copies Quant P0 claims/health and optional
+`research-out/**/panel-summary.json` (`GET /api/research-summaries`); missing
+files stay **UNAVAILABLE**. RISK is the dense reconstructable overlay /
+fail-closed bounds panel. Collectors stay running; the cockpit only reads
+files. Missing RISK fields stay **UNAVAILABLE**.
 
 ```bash
 export TRADING_MODE=PAPER

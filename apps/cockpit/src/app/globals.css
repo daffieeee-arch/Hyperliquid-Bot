@@ -39,6 +39,7 @@
   --radius: 2px;
   --ui-pad: 0.55rem;
   --font-size: 13px;
+  --font-meta: 11px;
   --background: #07080a;
   --foreground: #e6edf3;
   --card: #101318;
@@ -57,6 +58,7 @@
   --radius: 0;
   --ui-pad: 0.4rem;
   --font-size: 12px;
+  --font-meta: 11px;
   --bg: #050608;
   --bg-mast: #08090c;
   --panel: #0c0e12;
@@ -64,9 +66,10 @@
 }
 
 [data-theme="workstation"] {
-  --radius: 0.45rem;
-  --ui-pad: 0.85rem;
-  --font-size: 14px;
+  --radius: 0.2rem;
+  --ui-pad: 0.55rem;
+  --font-size: 13px;
+  --font-meta: 11px;
   --bg: #09090b;
   --bg-mast: #18181b;
   --panel: #18181b;
@@ -88,6 +91,11 @@
 
 * {
   box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+  scroll-padding-top: 9.5rem;
 }
 
 html,
@@ -153,7 +161,7 @@ main,
   padding: 0;
   background: var(--bg-mast);
   border-bottom: 1px solid var(--line);
-  box-shadow: inset 0 2px 0 var(--paper);
+  box-shadow: inset 0 3px 0 var(--paper);
 }
 
 .masthead-row {
@@ -224,6 +232,7 @@ main,
   background: var(--paper);
   color: var(--paper-ink);
   min-width: 11.5rem;
+  box-shadow: 0 0 0 1px #8a7028;
 }
 
 .paper-badge-mode {
@@ -962,13 +971,61 @@ main {
   gap: 0.35rem;
 }
 
+.zone-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem 0.15rem;
+  padding: 0.16rem 0.75rem;
+  border-top: 1px solid var(--line);
+  background: var(--bg-mast);
+}
+
+.zone-nav a {
+  color: var(--paper);
+  font-size: var(--font-meta);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-decoration: none;
+  text-transform: uppercase;
+  padding: 0.12rem 0.45rem;
+  border: 1px solid transparent;
+}
+
+.zone-nav a:hover,
+.zone-nav a:focus-visible {
+  border-color: var(--paper);
+}
+
 .zone-label {
   margin: 0;
-  color: var(--muted);
-  font-size: 0.64rem;
+  color: var(--paper);
+  font-size: var(--font-meta);
   font-weight: 600;
   letter-spacing: 0.12em;
   text-transform: uppercase;
+}
+
+.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.mono-id {
+  font-family: var(--font-mono), ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 0.72em;
+}
+
+.kpi-sparkline {
+  margin: 0.2rem 0 0.1rem;
+  max-width: 16rem;
+}
+
+#health,
+#markets,
+#research,
+#paper,
+#risk {
+  scroll-margin-top: 9.5rem;
 }
 
 .zone-kicker {

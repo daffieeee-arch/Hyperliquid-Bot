@@ -17,13 +17,13 @@ function TapeTable({ rows }: { rows: IntentFillRow[] }) {
           <tr>
             <th>Intent</th>
             <th>Side</th>
-            <th>Qty</th>
+            <th className="num">Qty</th>
             <th>Why</th>
             <th>RO</th>
             <th>Risk codes</th>
-            <th>Fill</th>
-            <th>Price</th>
-            <th>Pos after</th>
+            <th className="num">Fill</th>
+            <th className="num">Price</th>
+            <th className="num">Pos after</th>
           </tr>
         </thead>
         <tbody>
@@ -31,15 +31,19 @@ function TapeTable({ rows }: { rows: IntentFillRow[] }) {
             <tr key={row.clientOrderId}>
               <td>{row.clientOrderId}</td>
               <td className={row.side === "BUY" ? "tone-up" : "tone-down"}>{row.side}</td>
-              <td>{formatGroupedNumber(row.quantity)}</td>
+              <td className="num">{formatGroupedNumber(row.quantity)}</td>
               <td>{row.intentReason}</td>
               <td>{yesNo(row.reduceOnly)}</td>
               <td className={row.riskReasons === "UNAVAILABLE" ? "tone-warn" : undefined}>
                 {row.riskReasons}
               </td>
-              <td>{row.matched ? row.fillOrdinal : "UNAVAILABLE"}</td>
-              <td>{row.matched ? formatGroupedNumber(row.fillPrice) : "UNAVAILABLE"}</td>
-              <td>{row.matched ? formatGroupedNumber(row.positionAfter) : "UNAVAILABLE"}</td>
+              <td className="num">{row.matched ? row.fillOrdinal : "UNAVAILABLE"}</td>
+              <td className="num">
+                {row.matched ? formatGroupedNumber(row.fillPrice) : "UNAVAILABLE"}
+              </td>
+              <td className="num">
+                {row.matched ? formatGroupedNumber(row.positionAfter) : "UNAVAILABLE"}
+              </td>
             </tr>
           ))}
         </tbody>

@@ -1,6 +1,7 @@
 "use client";
 
 import { ThemeToggle } from "./theme-toggle";
+import { ZoneNav } from "./zone-nav";
 import { DEFAULT_CAPTURE_FRESH_MAX_S } from "../lib/capture-freshness";
 import { deskCaptureGlance, deskPaperIdentity } from "../lib/desk";
 import type { VenueCaptureQuery } from "../lib/paths";
@@ -47,6 +48,7 @@ export function DeskBanner({
         </p>
         <ThemeToggle />
       </div>
+      <ZoneNav />
       <dl className="identity">
         <div>
           <dt>Mode</dt>

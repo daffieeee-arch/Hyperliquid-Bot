@@ -2,7 +2,7 @@
 
 ## Decision
 
-Primary software development happens on the Windows 11 workstation through **WSL2 Ubuntu** with Codex/ChatGPT desktop. The independent Linux/OCI runtime is not an interactive source-development machine; it receives tested container images for continuous paper, shadow and later live operation. A supported Ubuntu LTS VPS is the intended primary deployment profile, while TrueNAS remains optional.
+Primary software development happens on the Windows 11 workstation through **WSL2 Ubuntu** with Codex/ChatGPT desktop. The independent Linux/OCI runtime is not an interactive source-development machine; it receives tested container images for continuous paper, shadow and later live operation. A supported Ubuntu LTS VPS is the intended primary deployment profile (PAPER capture target: [linux-vps-reference-profile.md](runbooks/linux-vps-reference-profile.md)). TrueNAS SCALE is out of runtime/capture scope.
 
 This separation provides faster iteration, better debugging, safer experimentation and a cleaner 24/7 runtime.
 

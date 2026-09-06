@@ -133,11 +133,19 @@ configuration on a supported Ubuntu LTS VPS. Exact sizing, networking, storage, 
 recovery choices are deliberately deferred until the local vertical slice provides evidence and
 the definitive runtime ADR is accepted.
 
+A PAPER-only **reference** size for later multi-day market-data capture (not a cutover
+order; current retains stay on TerraPC WSL) is
+[linux-vps-reference-profile.md](runbooks/linux-vps-reference-profile.md).
+
 ## Optional existing TrueNAS profile
 
-If retained, deploy through TrueNAS Custom Apps / Compose YAML using images pulled from GHCR.
+TrueNAS SCALE is **out of runtime and capture scope** (share or optional Ubuntu VM only;
+not the capture host). The notes below are historical inventory, not a deploy path.
 
-Runtime configuration lives under version control without secret values. TrueNAS supplies:
+If that hardware is reused only as a share or Ubuntu VM, do not treat Custom Apps as the
+PAPER capture host. Historical Custom Apps notes (not current runtime) recorded that
+runtime configuration lived under version control without secret values, and that
+TrueNAS supplied:
 
 - image digest;
 - resource limits;

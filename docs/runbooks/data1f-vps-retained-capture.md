@@ -11,7 +11,8 @@ For the Windows 11 + WSL2 Ubuntu operator PC (TerraPC), including tmux
 `bn-capture` start/status/stop, the wait-for-DATA-1A rule, and Quant handoff,
 see [data1f-wsl-pc-retained-capture.md](data1f-wsl-pc-retained-capture.md).
 Cloud Agents are unsuitable for a multi-day retain and must not SSH to or stop
-`hl-capture` or `bn-capture`.
+`hl-capture` or `bn-capture`. The later host profile (not a cutover order) is
+[linux-vps-reference-profile.md](linux-vps-reference-profile.md).
 
 **Do not start a multi-day DATA-1F retain now.** Wait for the TerraPC
 DATA-1A 72h series to finish and for CoS to assign this window.

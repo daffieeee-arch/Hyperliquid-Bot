@@ -35,7 +35,7 @@ The selected durable runtime store is the system of record for:
 - portfolio/equity history;
 - operational data-quality records.
 
-Windows development must not directly mutate a runtime database. Read-only remote analysis may be permitted, while large experiments run through a controlled research worker or bounded export. Existing TrueNAS/ClickHouse data remains protected until retention or migration is explicitly approved.
+Windows development must not directly mutate a runtime database. Read-only remote analysis may be permitted, while large experiments run through a controlled research worker or bounded export. Existing TrueNAS/ClickHouse data remains protected until retention or migration is explicitly approved. TrueNAS SCALE is out of capture/runtime scope; the later multi-day PAPER capture host is a Linux VPS (migration target, not a cutover order) recorded in [linux-vps-reference-profile.md](runbooks/linux-vps-reference-profile.md). Current retains stay on TerraPC WSL.
 
 ### Fixture policy
 
@@ -286,7 +286,9 @@ treat that soak cap as the DATA-1A capture contract.
 Operator commands, retain/stop/continue rules, and the git-safe sample exporter are
 in [DATA-1A VPS retained-capture runbook](runbooks/data1a-vps-retained-capture.md)
 and the [DATA-1A operator PC/WSL retained-capture runbook](runbooks/data1a-wsl-pc-retained-capture.md).
-Cloud Agents are unsuitable for a multi-day retain.
+Cloud Agents are unsuitable for a multi-day retain. The later always-on host
+profile (not a migrate-today order) is
+[linux-vps-reference-profile.md](runbooks/linux-vps-reference-profile.md).
 
 Preferred reconstructable layout (the path contract the Operator Cockpit reads):
 

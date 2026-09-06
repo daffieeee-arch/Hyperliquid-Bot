@@ -10,7 +10,8 @@ For the Windows 11 + WSL2 Ubuntu operator PC (TerraPC), including tmux
 `hl-capture` start/status/stop and Quant handoff, see
 [data1a-wsl-pc-retained-capture.md](data1a-wsl-pc-retained-capture.md). Cloud
 Agents are unsuitable for a multi-day retain and must not SSH to or stop a
-capture that is already running.
+capture that is already running. The later host profile (not a cutover order)
+is [linux-vps-reference-profile.md](linux-vps-reference-profile.md).
 
 ## Duration contract
 

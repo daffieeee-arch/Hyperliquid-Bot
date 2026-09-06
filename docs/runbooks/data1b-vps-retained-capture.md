@@ -19,7 +19,9 @@ For the Windows 11 + WSL2 Ubuntu operator PC (TerraPC), including tmux
 `kr-capture` start/status/stop, see
 [data1b-wsl-pc-retained-capture.md](data1b-wsl-pc-retained-capture.md).
 Cloud Agents are unsuitable for a multi-day retain and must not SSH to or stop
-`hl-capture`, `bn-capture`, `bv-capture`, or `kr-capture`.
+`hl-capture`, `bn-capture`, `bv-capture`, or `kr-capture`. The later host
+profile (not a cutover order) is
+[linux-vps-reference-profile.md](linux-vps-reference-profile.md).
 
 **Do not start a multi-day DATA-1B retain now.** Wait for CoS to assign this
 window.

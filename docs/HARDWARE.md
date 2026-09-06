@@ -95,9 +95,18 @@ as the intended primary profile. VPS sizing and storage topology must be derived
 local slice. Provisioning, factual migration and the definitive runtime ADR therefore wait until
 that slice passes.
 
+The PAPER capture/ops **migration-target** size (four concurrent collectors, EU/Amsterdam
+or nearby, TrueNAS out of runtime scope) is recorded in
+[linux-vps-reference-profile.md](runbooks/linux-vps-reference-profile.md). That runbook is
+not an order to provision or leave TerraPC WSL today.
+
 ## Optional existing TrueNAS profile
 
-The existing TrueNAS SCALE system may remain an optional runtime/data profile with:
+TrueNAS SCALE is **out of runtime and capture scope**. It may remain a file share or host an
+optional Ubuntu VM; it is not the capture host and not the PAPER runtime. Historical
+hardware notes below are inventory only.
+
+The existing TrueNAS SCALE system may remain an optional share/VM host with:
 
 - TrueNAS SCALE 26.0.0-BETA.3 at the current planning point;
 - AMD Ryzen 7 PRO 8845HS, 8 cores / 16 threads;

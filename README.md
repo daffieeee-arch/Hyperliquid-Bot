@@ -204,6 +204,7 @@ These are planning ranges, not promises of profitability.
 - [Grafana & Observability](docs/GRAFANA.md)
 - [Security](docs/SECURITY.md)
 - [Hardware & Runtime Hosts](docs/HARDWARE.md)
+- [Linux VPS reference profile (PAPER capture target)](docs/runbooks/linux-vps-reference-profile.md)
 - [Architecture Decision Records](docs/DECISIONS/README.md)
 
 ## Important

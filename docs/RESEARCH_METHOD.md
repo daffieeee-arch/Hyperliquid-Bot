@@ -80,7 +80,9 @@ clocks, `capture-claim.json` with `retained: true`) outside git before Quant can
 gate. Trading may retain that series on the operator WSL PC
 ([DATA-1A operator PC/WSL runbook](runbooks/data1a-wsl-pc-retained-capture.md)) or on a VPS
 ([DATA-1A VPS runbook](runbooks/data1a-vps-retained-capture.md)). Cloud Agents are unsuitable
-for a multi-day retain. A writer duration above 600 seconds is still not 24/7 service and is
+for a multi-day retain. The later Linux VPS host profile (migration target, not a
+cutover order) is
+[linux-vps-reference-profile.md](runbooks/linux-vps-reference-profile.md). A writer duration above 600 seconds is still not 24/7 service and is
 not by itself an edge.
 
 A passing sanity report is not evidence of edge. The current momentum slot is a fixed-lookback

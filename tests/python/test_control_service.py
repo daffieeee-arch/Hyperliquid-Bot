@@ -1,5 +1,10 @@
 """Tests for the PAPER-only FastAPI control-service baseline."""
 
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -9,6 +14,9 @@ from hyperliquid_bot.control_service.app import (
     create_control_service,
 )
 from hyperliquid_bot.local_mode import UnsafeTradingModeError
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+RUNBOOK = REPO_ROOT / "docs" / "runbooks" / "control-service-local.md"
 
 PAPER_HEALTH = {"status": "ok", "mode": "PAPER", "stance": "PAPER-only"}
 PAPER_READY = {"status": "ready", "mode": "PAPER", "stance": "PAPER-only"}
@@ -82,3 +90,49 @@ def test_ready_error_does_not_include_rejected_raw_mode() -> None:
 
     assert response.status_code == 503
     assert rejected_mode not in response.text
+
+
+def _documented_import_env(*, trading_mode: str | None) -> dict[str, str]:
+    env = os.environ.copy()
+    env.pop("TRADING_MODE", None)
+    env["PYTHONPATH"] = "src"
+    if trading_mode is not None:
+        env["TRADING_MODE"] = trading_mode
+    return env
+
+
+def test_runbook_documents_pythonpath_and_paper_only_scope() -> None:
+    text = RUNBOOK.read_text(encoding="utf-8")
+
+    assert "PAPER only" in text
+    assert "PYTHONPATH=src" in text
+    assert "uv run uvicorn hyperliquid_bot.control_service.app:app" in text
+    assert "LIVE, SHADOW, TESTNET" in text
+
+
+def test_documented_pythonpath_import_constructs_paper_app() -> None:
+    result = subprocess.run(
+        [sys.executable, "-c", "from hyperliquid_bot.control_service.app import app"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+        env=_documented_import_env(trading_mode="PAPER"),
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_documented_pythonpath_import_fails_closed_for_live() -> None:
+    result = subprocess.run(
+        [sys.executable, "-c", "from hyperliquid_bot.control_service.app import app"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+        env=_documented_import_env(trading_mode="LIVE"),
+    )
+
+    assert result.returncode != 0
+    assert "UnsafeTradingModeError" in result.stderr
+    assert "LIVE" not in result.stderr

@@ -36,12 +36,20 @@ From the repository root, with the pinned `uv` toolchain:
 
 ```bash
 export TRADING_MODE=PAPER
+export PYTHONPATH=src
 uv sync --frozen --all-groups
 uv run uvicorn hyperliquid_bot.control_service.app:app --host 127.0.0.1 --port 8000
 ```
 
-This repo pins `uvicorn` and records the official FastAPI entrypoint
-`hyperliquid_bot.control_service.app:app` in `pyproject.toml`.
+`PYTHONPATH=src` is required because this repo uses an uninstalled `src/`
+layout (`package = false`). The same import string is recorded as the
+official FastAPI entrypoint in `pyproject.toml`. Equivalent module form:
+
+```bash
+export TRADING_MODE=PAPER
+export PYTHONPATH=src
+uv run python -m hyperliquid_bot.control_service
+```
 
 Check the probes:
 
@@ -55,7 +63,7 @@ Interactive docs (local only): `http://127.0.0.1:8000/docs`.
 Fail-closed construction:
 
 ```bash
-TRADING_MODE=LIVE uv run uvicorn hyperliquid_bot.control_service.app:app
+PYTHONPATH=src TRADING_MODE=LIVE uv run uvicorn hyperliquid_bot.control_service.app:app
 ```
 
 That must exit before serving. Do not use this as a way to enable LIVE.

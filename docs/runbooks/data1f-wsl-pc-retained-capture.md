@@ -258,12 +258,24 @@ When the assigned goal is a 72-hour reconstructable tape (`DURATION_SECONDS=2592
 - Required streams (`spot` trade/bookTicker/depth@100ms, `usdm_market`
   aggTrade/markPrice@1s, `usdm_public` bookTicker) are watched mid-run. Official
   Spot JSON/SBE docs: server ping ~20s, pong within 1 minute, connection ~24h,
-  `serverShutdown`. Official required-stream update speeds are real-time or
-  100ms–1s. DATA-1F does **not** invent a client keepalive. Application silence
-  past `required_stream_starvation_seconds` (60s) fails closed with
+  `serverShutdown`. Official USD-M Connect: server ping every 3 minutes, pong
+  within 10 minutes. Official required-stream update speeds are real-time or
+  100ms–1s. DATA-1F sets `ping_interval=None` so only Binance server pings drive
+  keepalive; the library still auto-pongs. The previous `websockets` default
+  client Ping timed out as **close_code=1011** on high-frequency `/public`
+  bookTicker and caused `usdm_public` reconnect churn. Spot and `usdm_public`
+  use `max_queue=1024` so HF frames do not stall the default 16-frame buffer.
+  Gaps remain recorded.
+  Mild reconnect backoff (cap 24s) stays under the 300 connections / 5 minutes /
+  IP limit and under the 60s starve bound. Application silence past
+  `required_stream_starvation_seconds` (60s) fails closed with
   `liveness_error` and health status `FAILED`. `forceOrder` is optional;
   liquidation silence is not starvation. An empty required stream must not pass
   as a healthy retain on `OPERATOR_STOP`.
+- **Apply path:** this keepalive fix needs a BN process restart. Prefer after the
+  current 72h retain unless Chupa explicitly OKs a BN-only restart (CoS gates).
+  Do not stop `hl-capture` / `bv-capture` / `kr-capture`. Until restart, the
+  live tape is not silent but Quant `bn_gap_fraction` may stay high.
 
 Collector INFO log: `<run_dir>/capture-<run_id>.log` (must be non-empty; no
 payloads or secrets). Optional tmux copy:

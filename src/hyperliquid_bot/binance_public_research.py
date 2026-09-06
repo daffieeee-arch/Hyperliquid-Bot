@@ -67,8 +67,23 @@ DATA1F_CLAIM_SCHEMA: Final = "data-1f-retained-capture-claim-v1"
 DATA1F_HEALTH_SCHEMA: Final = "data-1f-retained-capture-health-v1"
 # Application-silence bound, not a client keepalive. Official Spot JSON/SBE
 # streams require a pong within one minute of the server ping (every ~20s).
+# Official USD-M Connect: server ping every 3 minutes, pong within 10 minutes.
 # Required DATA-1F streams update much faster (100ms-1s or real-time).
 REQUIRED_STREAM_STARVATION_SECONDS: Final = 60.0
+# Disable websockets client keepalive Pings. The library default
+# (ping_interval=20, ping_timeout=20) closes with code 1011 when a client
+# Ping is not answered; that is not Binance's documented keepalive. The
+# library still auto-replies to server Pings when these are None.
+BINANCE_WEBSOCKET_CLIENT_PING_INTERVAL: Final[float | None] = None
+BINANCE_WEBSOCKET_CLIENT_PING_TIMEOUT: Final[float | None] = None
+# websockets default incoming queue is 16. Spot depth@100ms and USD-M
+# /public bookTicker can fill that under load (live 1011 asymmetry:
+# usdm_public >> spot >> usdm_market). Match the HL/OKX raw collectors.
+BINANCE_WEBSOCKET_HIGH_FREQUENCY_MAX_QUEUE: Final = 1024
+BINANCE_WEBSOCKET_MARKET_MAX_QUEUE: Final = 16
+# Cap below required_stream_starvation_seconds so backoff cannot starve
+# the mid-run liveness gate. Official Spot limit: 300 connections / 5 min / IP.
+BINANCE_RECONNECT_BACKOFF_CAP_SECONDS: Final = 24.0
 
 BINANCE_SPOT_WEBSOCKET_URL: Final = (
     "wss://data-stream.binance.vision:443/stream?streams="
@@ -612,7 +627,13 @@ class BinancePublicResearchCollector:
                         "transport_profile": profile.name,
                     },
                 )
-                await _wait_or_stop(self._config.reconnect_delay_seconds, stop_event)
+                await _wait_or_stop(
+                    _reconnect_wait_seconds(
+                        self._config.reconnect_delay_seconds,
+                        reconnects,
+                    ),
+                    stop_event,
+                )
                 await self._raise_if_required_stream_starved(profile, session_id)
             except PayloadTooBig:
                 await self._quality(
@@ -679,7 +700,13 @@ class BinancePublicResearchCollector:
                         "transport_profile": profile.name,
                     },
                 )
-                await _wait_or_stop(self._config.reconnect_delay_seconds, stop_event)
+                await _wait_or_stop(
+                    _reconnect_wait_seconds(
+                        self._config.reconnect_delay_seconds,
+                        reconnects,
+                    ),
+                    stop_event,
+                )
                 await self._raise_if_required_stream_starved(profile, session_id)
             except BaseException:
                 stop_event.set()
@@ -1716,6 +1743,51 @@ async def _wait_or_stop(delay_seconds: float, stop_event: asyncio.Event) -> None
         return
 
 
+def _reconnect_wait_seconds(base_seconds: float, attempt: int) -> float:
+    """Mild exponential backoff, capped below the 60s starve bound.
+
+    Three profiles at a flat 3s would be 300 connection attempts / 5 minutes
+    if every socket stormed — the official Spot IP connection limit.
+    """
+
+    if base_seconds <= 0:
+        return 0.0
+    if type(attempt) is not int or attempt < 1:
+        raise ValueError("reconnect attempt must be a positive integer.")
+    exponent = min(attempt - 1, 3)
+    delay = float(base_seconds) * float(2**exponent)
+    cap = float(BINANCE_RECONNECT_BACKOFF_CAP_SECONDS)
+    return delay if delay < cap else cap
+
+
+def _websocket_incoming_max_queue(websocket_url: str) -> int:
+    """Larger incoming queue only for high-frequency Spot and USD-M /public."""
+
+    if websocket_url == BINANCE_USDM_MARKET_WEBSOCKET_URL:
+        return BINANCE_WEBSOCKET_MARKET_MAX_QUEUE
+    if websocket_url in {BINANCE_SPOT_WEBSOCKET_URL, BINANCE_USDM_PUBLIC_WEBSOCKET_URL}:
+        return BINANCE_WEBSOCKET_HIGH_FREQUENCY_MAX_QUEUE
+    raise ValueError("unknown Binance public research WebSocket URL.")
+
+
+def _websocket_connect_kwargs(
+    config: BinancePublicResearchConfig,
+    websocket_url: str,
+) -> dict[str, object]:
+    """Shared connect options; max_queue is higher for Spot and /public."""
+
+    return {
+        "max_size": config.max_application_payload_bytes,
+        "proxy": None,
+        "logger": _TRANSPORT_PRIVACY_LOGGER,
+        "open_timeout": 10,
+        "close_timeout": 5,
+        "ping_interval": BINANCE_WEBSOCKET_CLIENT_PING_INTERVAL,
+        "ping_timeout": BINANCE_WEBSOCKET_CLIENT_PING_TIMEOUT,
+        "max_queue": _websocket_incoming_max_queue(websocket_url),
+    }
+
+
 def _connection_factory(
     websocket_url: str,
     config: BinancePublicResearchConfig,
@@ -1730,6 +1802,9 @@ def _connection_factory(
                 logger=_TRANSPORT_PRIVACY_LOGGER,
                 open_timeout=10,
                 close_timeout=5,
+                ping_interval=BINANCE_WEBSOCKET_CLIENT_PING_INTERVAL,
+                ping_timeout=BINANCE_WEBSOCKET_CLIENT_PING_TIMEOUT,
+                max_queue=_websocket_incoming_max_queue(websocket_url),
             ),
         )
 

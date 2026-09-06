@@ -29,12 +29,7 @@ function writeJson(path: string, payload: unknown): void {
   writeFileSync(path, `${JSON.stringify(payload, null, 2)}\n`, { encoding: "utf8" });
 }
 
-function writeClaim(
-  runDir: string,
-  schema: string,
-  pathContract: string,
-  runId: string,
-): void {
+function writeClaim(runDir: string, schema: string, pathContract: string, runId: string): void {
   mkdirSync(runDir, { recursive: true });
   writeJson(join(runDir, "capture-claim.json"), {
     schema,
@@ -56,7 +51,9 @@ function writePart(runDir: string, mtimeIso: string): void {
   utimesSync(part, new Date(mtimeIso), new Date(mtimeIso));
 }
 
-function chip(partial: Partial<VenueCaptureChip> & Pick<VenueCaptureChip, "id" | "chip" | "series">): VenueCaptureChip {
+function chip(
+  partial: Partial<VenueCaptureChip> & Pick<VenueCaptureChip, "id" | "chip" | "series">,
+): VenueCaptureChip {
   return {
     venue: "hyperliquid",
     product: "BTC-PERP",

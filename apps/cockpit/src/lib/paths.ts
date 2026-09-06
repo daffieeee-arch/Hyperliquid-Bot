@@ -49,11 +49,7 @@ export type VenueCaptureId = "hl" | "binance" | "bitvavo" | "kraken";
 export type VenueCaptureChipLabel = "HL" | "BINANCE" | "BITVAVO" | "KRAKEN";
 export type VenueCaptureSeries = "DATA-1A" | "DATA-1B" | "DATA-1E" | "DATA-1F";
 export type CaptureRunSource =
-  | "data1a-run-dir"
-  | "venue-run-dir"
-  | "path-contract"
-  | "auto-detect"
-  | "default-fixture";
+  "data1a-run-dir" | "venue-run-dir" | "path-contract" | "auto-detect" | "default-fixture";
 
 export type VenueCaptureQuery = {
   data1a_run_id?: string;

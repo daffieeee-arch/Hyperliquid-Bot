@@ -1,11 +1,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
-import {
-  bindVenueCaptureRun,
-  captureRunProvenance,
-  venueCaptureCatalog,
-} from "./capture-runs";
+import { bindVenueCaptureRun, captureRunProvenance, venueCaptureCatalog } from "./capture-runs";
 import { DEFAULT_CAPTURE_FRESH_MAX_S, resolveCaptureFreshMaxSeconds } from "./capture-freshness";
 import { loadCaptureSnapshotForContract } from "./data1a-capture";
 import {

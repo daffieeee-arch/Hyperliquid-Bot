@@ -41,7 +41,9 @@ export function RunPicker({
               {entry.chip} · {entry.series}
             </span>
             <select
-              value={entry.candidates.some((candidate) => candidate.run_id === selected) ? selected : ""}
+              value={
+                entry.candidates.some((candidate) => candidate.run_id === selected) ? selected : ""
+              }
               onChange={(event) => {
                 router.replace(
                   venueCapturePickerHref(pathname, query, entry.query_key, event.target.value),

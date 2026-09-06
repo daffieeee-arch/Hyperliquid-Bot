@@ -44,7 +44,10 @@ function firstEnvRunId(
   return undefined;
 }
 
-function compareCaptureRunCandidates(left: CaptureRunCandidate, right: CaptureRunCandidate): number {
+function compareCaptureRunCandidates(
+  left: CaptureRunCandidate,
+  right: CaptureRunCandidate,
+): number {
   if (left.live !== right.live) {
     return left.live ? -1 : 1;
   }

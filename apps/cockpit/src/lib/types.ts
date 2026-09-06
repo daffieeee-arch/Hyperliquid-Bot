@@ -167,12 +167,7 @@ export type Data1APartListing = {
 };
 
 export type CaptureBindingSource =
-  | "query"
-  | "env"
-  | "explicit-dir"
-  | "auto-detect"
-  | "default-fixture"
-  | "unbound";
+  "query" | "env" | "explicit-dir" | "auto-detect" | "default-fixture" | "unbound";
 
 export type CaptureRunCandidate = {
   run_id: string;

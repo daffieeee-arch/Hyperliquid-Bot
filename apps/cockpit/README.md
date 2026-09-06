@@ -20,15 +20,21 @@ unset or `PAPER`; `LIVE`, `TESTNET`, and `SHADOW` fail closed.
    not a 24/7 heartbeat.
 5. Multi-venue capture-health strip for **HL / Binance / Bitvavo / Kraken**.
    Each chip copies status, last part age (from last `raw/part-*.parquet`
-   mtime), and part count from that venue's reconstructable layout. Missing
-   artifact root, run id, venue directory, or `capture-claim.json` is
-   **MISSING** — zeros and PnL are not invented. The browser polls
-   `/api/venue-capture-health` every **5 seconds**.
+   mtime), and part count from that venue's reconstructable layout. A chip is
+   **RUNNING** only when the claim is PAPER / fail-closed (signing off) **and**
+   `now - last_part_mtime <= COCKPIT_CAPTURE_FRESH_MAX_S` (default **180**s,
+   tunable). A present claim with a stale mtime is **STALE** (`stale_mtime`),
+   not RUNNING. Missing artifact root, run id, venue directory, or
+   `capture-claim.json` is **MISSING** — zeros and PnL are not invented. The
+   browser polls `/api/venue-capture-health` every **5 seconds**.
 6. DATA-1A capture health from `capture-claim.json` plus optional
    `capture-health.json` and a cheap `raw/part-*.parquet` listing. While a live
-   run has a claim, growing `raw/part-*.parquet` files, and no health file, the
-   panel shows **RUNNING (health JSON pending until stop)** instead of inventing
-   zeros. The browser polls `/api/data1a-capture` every **5 seconds**
+   run has a claim, fresh `raw/part-*.parquet` files
+   (`now - last_part_mtime <= COCKPIT_CAPTURE_FRESH_MAX_S=180`), and no health
+   file, the panel shows **RUNNING (health JSON pending until stop)** instead of
+   inventing zeros. A stale last part mtime is **STALE (stale_mtime)**, not
+   RUNNING. Host clock must be sane (wall-clock compare). The browser polls
+   `/api/data1a-capture` every **5 seconds**
    (`cache: no-store`) so duration, published parts, bytes on disk, last part
    mtime, and `observed_at` update without a full page reload. Parquet payloads
    are not read. Missing artifact root or `run_id` fails closed with an
@@ -142,7 +148,8 @@ are equivalent. Unset run ids stay **MISSING**.
 The DATA-1A panel polls `/api/data1a-capture` every 5 seconds. The venue strip
 polls `/api/venue-capture-health` on the same interval. Leave the tab open; do
 not stop any collector to "refresh" numbers. Both routes send
-`Cache-Control: no-store`.
+`Cache-Control: no-store`. Optional: `COCKPIT_CAPTURE_FRESH_MAX_S=180` (seconds;
+tunable). Host clock must be sane.
 
 Later VPS path-contract root (same file names):
 

@@ -49,9 +49,12 @@ store:
 `paper-pnl.json` is assumed PAPER overlay economics, not venue PnL. COURSE-1
 `capture-health.json` is a bounded-run summary, not a 24/7 heartbeat. DATA-1A
 `capture-claim.json` / `capture-health.json` are a reconstructable public capture
-claim and an end-of-run health file. While a live retain has a claim, growing
-`raw/part-*.parquet` files, and no health file, the panel shows
-**RUNNING (health JSON pending until stop)** rather than invented zeros.
+claim and an end-of-run health file. While a live retain has a claim, fresh
+`raw/part-*.parquet` files (`now - last_part_mtime <=
+COCKPIT_CAPTURE_FRESH_MAX_S=180`), and no health file, the panel shows
+**RUNNING (health JSON pending until stop)** rather than invented zeros. A
+stale last part mtime is **STALE (stale_mtime)**, not RUNNING. Host clock must
+be sane.
 The DATA-1A panel polls `/api/data1a-capture` every 5 seconds with
 `Cache-Control: no-store`. The four-venue strip polls
 `/api/venue-capture-health` on the same interval and fail-closes each missing

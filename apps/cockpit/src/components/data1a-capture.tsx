@@ -2,6 +2,7 @@
 
 import { KvTable } from "./kv-table";
 import { MetricTile } from "./metric-tile";
+import { STALE_MTIME_REASON } from "../lib/capture-freshness";
 import {
   data1aCaptureHealthPresentation,
   formatGroupedNumber,
@@ -48,7 +49,9 @@ function CaptureDesk({ snapshot }: { snapshot: Data1ACaptureSnapshot }) {
           meta={
             healthView.live
               ? `health JSON pending until stop · poll ${pollSeconds}s · ${snapshot.runId}`
-              : `${snapshot.runId} · ${snapshot.claim.retained ? "retained" : "smoke"}`
+              : healthView.reason === STALE_MTIME_REASON
+                ? `${STALE_MTIME_REASON} · fresh max ${String(snapshot.fresh_max_s)}s · ${snapshot.runId}`
+                : `${snapshot.runId} · ${snapshot.claim.retained ? "retained" : "smoke"}`
           }
           note={
             snapshot.health === undefined
@@ -159,6 +162,15 @@ function CaptureDesk({ snapshot }: { snapshot: Data1ACaptureSnapshot }) {
             {
               label: "Last part mtime",
               value: presentCopiedText(snapshot.parts.last_part_mtime_utc),
+            },
+            {
+              label: "Fresh max",
+              value: `${String(snapshot.fresh_max_s)}s`,
+            },
+            {
+              label: "Freshness",
+              value: healthView.reason ?? (healthView.live ? "fresh" : "n/a"),
+              tone: healthView.reason === STALE_MTIME_REASON ? "warn" : "neutral",
             },
             {
               label: "DuckDB catalog",

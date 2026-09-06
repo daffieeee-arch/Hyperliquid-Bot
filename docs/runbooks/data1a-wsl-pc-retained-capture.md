@@ -224,13 +224,15 @@ With `ARTIFACT_ROOT` already set you can also use
 `http://127.0.0.1:3000/?data1a_run_id=20260904t134940z-live-retained`.
 
 While `capture-health.json` is absent (normal until stop), claim present plus
-growing `raw/part-*.parquet` files and last mtime are the liveness signal. The
-panel labels that **RUNNING (health JSON pending until stop)** and polls
+fresh `raw/part-*.parquet` files (`now - last_part_mtime <=
+COCKPIT_CAPTURE_FRESH_MAX_S=180`, tunable) are the liveness signal. The panel
+labels that **RUNNING (health JSON pending until stop)** and polls
 `/api/data1a-capture` every **5 seconds** (`Cache-Control: no-store`) so
 duration, part count, bytes on disk, and last mtime move without a full page
-reload. Missing root or `run_id` fails closed; the cockpit does not invent PnL
-or part counts. The same first PAPER screen also shows a four-venue strip
-(HL / Binance / Bitvavo / Kraken) via `/api/venue-capture-health`; sibling
+reload. A stale last part mtime is **STALE (stale_mtime)**, not RUNNING. Host
+clock must be sane. Missing root or `run_id` fails closed; the cockpit does not
+invent PnL or part counts. The same first PAPER screen also shows a four-venue
+strip (HL / Binance / Bitvavo / Kraken) via `/api/venue-capture-health`; sibling
 venues stay MISSING unless `DATA1F_RUN_ID` / `DATA1E_RUN_ID` / `DATA1B_RUN_ID`
 are set on the same `ARTIFACT_ROOT`. Do not stop `hl-capture` to refresh the
 cockpit.

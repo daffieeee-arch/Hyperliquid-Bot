@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 
+import { STALE_MTIME_REASON } from "./capture-freshness";
 import {
   DATA1A_RUNNING_PENDING_HEALTH,
+  DATA1A_STALE_MTIME_LABEL,
   data1aCaptureHealthPresentation,
   elapsedSecondsSinceRunId,
   formatGroupedNumber,
@@ -56,11 +58,13 @@ describe("cockpit display helpers", () => {
     expect(uniqueStrings(["a", "a", "b"])).toEqual(["a", "b"]);
   });
 
-  it("labels a live-looking DATA-1A run as RUNNING when claim parts exist and health is pending", () => {
+  it("labels a live-looking DATA-1A run as RUNNING when claim parts are fresh and health is pending", () => {
     const presentation = data1aCaptureHealthPresentation({
       health: undefined,
       health_missing: true,
       health_error: "capture-health.json is not written yet",
+      observed_at: "2026-09-04T13:49:40.000Z",
+      fresh_max_s: 180,
       parts: {
         raw_dir_present: true,
         count: 2,
@@ -71,7 +75,29 @@ describe("cockpit display helpers", () => {
     expect(presentation.tileLabel).toBe("RUNNING");
     expect(presentation.tone).toBe("ok");
     expect(presentation.live).toBe(true);
+    expect(presentation.reason).toBeUndefined();
     expect(presentation.note).toMatch(/written at stop/);
+  });
+
+  it("labels a claim with stale last_part_mtime as STALE (stale_mtime), not RUNNING", () => {
+    const presentation = data1aCaptureHealthPresentation({
+      health: undefined,
+      health_missing: true,
+      health_error: "capture-health.json is not written yet",
+      observed_at: "2026-09-04T13:49:40.000Z",
+      fresh_max_s: 180,
+      parts: {
+        raw_dir_present: true,
+        count: 2,
+        last_part_mtime_utc: "2026-09-04T13:40:00.000Z",
+      },
+    });
+    expect(presentation.statusLabel).toBe(DATA1A_STALE_MTIME_LABEL);
+    expect(presentation.tileLabel).toBe("STALE");
+    expect(presentation.tone).toBe("warn");
+    expect(presentation.live).toBe(false);
+    expect(presentation.reason).toBe(STALE_MTIME_REASON);
+    expect(presentation.note).toMatch(/COCKPIT_CAPTURE_FRESH_MAX_S=180/);
   });
 
   it("does not invent RUNNING when health is missing and no parquet parts exist", () => {
@@ -125,6 +151,8 @@ describe("cockpit display helpers", () => {
         data1aCaptureHealthPresentation({
           health: undefined,
           health_missing: true,
+          observed_at: "2026-09-04T13:49:40.000Z",
+          fresh_max_s: 180,
           parts: {
             raw_dir_present: true,
             count: 2,
@@ -133,6 +161,21 @@ describe("cockpit display helpers", () => {
         }),
       ),
     ).toBe("RUNNING");
+    expect(
+      venueCaptureChipStatus(
+        data1aCaptureHealthPresentation({
+          health: undefined,
+          health_missing: true,
+          observed_at: "2026-09-04T13:49:40.000Z",
+          fresh_max_s: 180,
+          parts: {
+            raw_dir_present: true,
+            count: 2,
+            last_part_mtime_utc: "2026-09-04T13:40:00.000Z",
+          },
+        }),
+      ),
+    ).toBe("STALE");
     expect(
       venueCaptureChipStatus(
         data1aCaptureHealthPresentation({

@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
+import { DEFAULT_CAPTURE_FRESH_MAX_S, resolveCaptureFreshMaxSeconds } from "./capture-freshness";
 import { loadCaptureSnapshotForContract } from "./data1a-capture";
 import {
   data1aCaptureHealthPresentation,
@@ -37,6 +38,7 @@ function missingChip(
     status_detail: error,
     tone: "warn",
     live: false,
+    reason: undefined,
     part_count: undefined,
     last_part_age: "n/a",
     last_part_mtime_utc: undefined,
@@ -63,6 +65,7 @@ function degradedChip(
     status_detail: error,
     tone: "down",
     live: false,
+    reason: undefined,
     part_count: undefined,
     last_part_age: "n/a",
     last_part_mtime_utc: undefined,
@@ -88,12 +91,35 @@ function classifyLoadError(
   return degradedChip(contract, observedAt, message, runId);
 }
 
+function chipTone(
+  status: VenueCaptureChip["status"],
+  presentationTone: VenueCaptureChip["tone"],
+): VenueCaptureChip["tone"] {
+  switch (status) {
+    case "RUNNING":
+      return "ok";
+    case "STALE":
+      return "warn";
+    case "DEGRADED":
+      return "down";
+    case "STOPPED":
+      return presentationTone;
+    case "MISSING":
+      return "warn";
+    default: {
+      const exhaustive: never = status;
+      throw new Error(`Unhandled venue capture status: ${String(exhaustive)}`);
+    }
+  }
+}
+
 export function loadVenueCaptureChip(
   contract: VenueCaptureContract,
   env: NodeJS.Dict<string>,
   repoRoot: string,
   query: VenueCaptureQuery,
   observedAt: string,
+  freshMaxSeconds: number = DEFAULT_CAPTURE_FRESH_MAX_S,
 ): VenueCaptureChip {
   let resolvedRunId: string | undefined;
   try {
@@ -114,7 +140,12 @@ export function loadVenueCaptureChip(
         `${contract.refuseLabel} capture-claim.json is missing under ${resolved.runDir}. Counts are not invented.`,
       );
     }
-    const snapshot = loadCaptureSnapshotForContract(resolved, contract, () => observedAt);
+    const snapshot = loadCaptureSnapshotForContract(
+      resolved,
+      contract,
+      () => observedAt,
+      freshMaxSeconds,
+    );
     const presentation = data1aCaptureHealthPresentation(snapshot);
     const status = venueCaptureChipStatus(presentation);
     return {
@@ -126,8 +157,9 @@ export function loadVenueCaptureChip(
       path_contract: contract.pathContractId,
       status,
       status_detail: presentation.statusLabel,
-      tone: status === "RUNNING" ? "ok" : status === "DEGRADED" ? "down" : presentation.tone,
+      tone: chipTone(status, presentation.tone),
       live: presentation.live,
+      reason: presentation.reason,
       part_count: snapshot.parts.raw_dir_present ? snapshot.parts.count : undefined,
       last_part_age: presentLastPartAge(snapshot.parts.last_part_mtime_utc, observedAt),
       last_part_mtime_utc: snapshot.parts.last_part_mtime_utc,
@@ -148,10 +180,19 @@ export function loadVenueCaptureStrip(
 ): VenueCaptureStrip {
   requirePaperTradingMode(env.TRADING_MODE);
   const observedAt = now();
+  const freshMaxSeconds = resolveCaptureFreshMaxSeconds(env);
   return {
     observed_at: observedAt,
+    fresh_max_s: freshMaxSeconds,
     venues: VENUE_CAPTURE_STRIP_ORDER.map((id) =>
-      loadVenueCaptureChip(VENUE_CAPTURE_CONTRACTS[id], env, repoRoot, query, observedAt),
+      loadVenueCaptureChip(
+        VENUE_CAPTURE_CONTRACTS[id],
+        env,
+        repoRoot,
+        query,
+        observedAt,
+        freshMaxSeconds,
+      ),
     ),
   };
 }

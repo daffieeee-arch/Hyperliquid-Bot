@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
+import { DEFAULT_CAPTURE_FRESH_MAX_S, resolveCaptureFreshMaxSeconds } from "./capture-freshness";
 import {
   DATA1A_PARQUET_GLOB_PREFIX,
   DATA1A_PARQUET_SUFFIX,
@@ -251,6 +252,7 @@ export function loadCaptureSnapshotForContract(
   resolved: VenueRunResolution,
   contract: VenueCaptureContract,
   now: () => string = () => new Date().toISOString(),
+  freshMaxSeconds: number = DEFAULT_CAPTURE_FRESH_MAX_S,
 ): Data1ACaptureSnapshot {
   if (!existsSync(resolved.runDir)) {
     throw new Error(
@@ -278,6 +280,7 @@ export function loadCaptureSnapshotForContract(
     runId: claim.run_id,
     source: resolved.source,
     observed_at: now(),
+    fresh_max_s: freshMaxSeconds,
     path_contract: contract.pathContractId,
     claim,
     health: healthState.health,
@@ -296,7 +299,12 @@ export function loadData1ACaptureSnapshot(
 ): Data1ACaptureSnapshot {
   const resolved = resolveData1ARunDir(env, repoRoot, query);
   try {
-    return loadCaptureSnapshotForContract(resolved, VENUE_CAPTURE_CONTRACTS.hl, now);
+    return loadCaptureSnapshotForContract(
+      resolved,
+      VENUE_CAPTURE_CONTRACTS.hl,
+      now,
+      resolveCaptureFreshMaxSeconds(env),
+    );
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "";
     if (message.includes("DATA-1A run directory is missing:")) {

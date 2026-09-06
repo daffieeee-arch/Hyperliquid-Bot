@@ -37,6 +37,7 @@ describe("DATA-1A capture loader", () => {
     expect(snapshot.parts.last_part_mtime_utc).toBeUndefined();
     expect(snapshot.duckdb_present).toBe(false);
     expect(snapshot.observed_at).toBe(observedAt);
+    expect(snapshot.fresh_max_s).toBe(180);
   });
 
   it("copies live-evidence OPERATOR_STOP health and does not invent parquet payloads", () => {
@@ -103,6 +104,34 @@ describe("DATA-1A capture loader", () => {
     expect(snapshot.parts.last_part_mtime_utc).toBe("2026-09-04T13:49:00.000Z");
     expect(snapshot.parts.bytes).toBe("alpha".length + "bravo-charlie".length);
     expect(snapshot.duckdb_present).toBe(false);
+    expect(snapshot.fresh_max_s).toBe(180);
+  });
+
+  it("copies a custom COCKPIT_CAPTURE_FRESH_MAX_S onto the snapshot without inventing parts", () => {
+    const runDir = mkdtempSync(join(tmpdir(), "data1a-fresh-"));
+    mkdirSync(join(runDir, "raw"));
+    writeJson(join(runDir, "capture-claim.json"), {
+      schema: "data-1a-retained-capture-claim-v1",
+      path_contract: "data-1a-hyperliquid-btc-perp-v1",
+      run_id: "fresh-max-run",
+      state: "STARTED_FAIL_CLOSED",
+      retained: true,
+      twenty_four_seven: false,
+      signing: false,
+    });
+    const snapshot = loadData1ACaptureSnapshot(
+      {
+        TRADING_MODE: "PAPER",
+        COCKPIT_DATA1A_RUN_DIR: runDir,
+        COCKPIT_DATA1A_RUN_ID: "fresh-max-run",
+        COCKPIT_CAPTURE_FRESH_MAX_S: "60",
+      },
+      repoRoot,
+      {},
+      () => observedAt,
+    );
+    expect(snapshot.fresh_max_s).toBe(60);
+    expect(snapshot.parts.count).toBe(0);
   });
 
   it("does not invent part counts when the run directory is missing", () => {
@@ -126,6 +155,15 @@ describe("DATA-1A capture loader", () => {
         repoRoot,
       ),
     ).toThrow(/DATA1A_RUN_ID/);
+  });
+
+  it("refuses a non-positive COCKPIT_CAPTURE_FRESH_MAX_S before inventing RUNNING", () => {
+    expect(() =>
+      loadData1ACaptureSnapshot(
+        { TRADING_MODE: "PAPER", COCKPIT_CAPTURE_FRESH_MAX_S: "0" },
+        repoRoot,
+      ),
+    ).toThrow(/COCKPIT_CAPTURE_FRESH_MAX_S/);
   });
 
   it("refuses LIVE trading mode before reading capture files", () => {

@@ -13,7 +13,7 @@ strip. RISK stays reconstructable vs UNAVAILABLE.
 Stack is €0 OSS: Next.js 15, Tailwind CSS v4, official free shadcn/ui (Radix;
 sidebar/dashboard-01 ideas only), Lucide, TanStack Table, recharts (real KPI
 series only), TradingView Lightweight Charts (Apache-2.0; `NOTICE`). Visual
-default **Fail-Closed Amber** with optional **Desk Dark**. Critique variants
+default **C Fail-Closed Amber** with optional **Desk Dark**. Critique variants
 stay in `docs/design-previews/` only. Not a clone of any commercial terminal and not a wholesale
 exchange-UI fork. PAPER is badged and watermarked. Missing fields stay
 **UNAVAILABLE**. Position and assumed overlay PnL are labeled **not

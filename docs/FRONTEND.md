@@ -10,7 +10,7 @@ Build a professional trading workstation, not a decorative dashboard. The operat
 - React;
 - Next.js 15 App Router;
 - Tailwind CSS v4 + official free shadcn/ui (Radix, New York; sidebar/dashboard-01 layout ideas only) + Lucide + TanStack Table + recharts (KPI sparklines from real public candle closes only) + TradingView Lightweight Charts (Apache-2.0; see `apps/cockpit/NOTICE`);
-- visual default **Fail-Closed Amber** (status-first) with optional **Desk Dark** density. Critique variants stay in `docs/design-previews/` only — not prod chrome. Research Lab sparse theme is later, not this screen;
+- visual default **C Fail-Closed Amber** (status-first) with optional **Desk Dark** density. Critique variants stay in `docs/design-previews/` only — not prod chrome. Research Lab sparse theme is later, not this screen;
 - WebSocket for realtime state (planned; first screen polls HTTP);
 - REST/HTTP for control/query operations;
 - strict typing and component tests;

@@ -14,6 +14,7 @@ import { loadPaperRunSnapshot } from "../lib/paper-run";
 import { firstQueryValue, findRepoRoot, type VenueCaptureQuery } from "../lib/paths";
 import { buildResearchP0View } from "../lib/research-p0";
 import { buildSecondRowView } from "../lib/second-row";
+import { DEFAULT_THEME_COPY } from "../lib/theme";
 import type {
   Data1ACaptureResponse,
   PaperRunSnapshot,
@@ -136,7 +137,7 @@ export default async function FirstPaperScreen({
       <footer className="statusbar">
         <div className="statusbar-scan">
           <span>PAPER ONLY</span>
-          <span>Fail-Closed Amber</span>
+          <span>{DEFAULT_THEME_COPY}</span>
         </div>
         <details className="statusbar-constraints">
           <summary>Fail-closed constraints</summary>

@@ -2,12 +2,14 @@ export const COCKPIT_THEMES = ["terminal", "workstation", "hybrid"] as const;
 
 export type CockpitTheme = (typeof COCKPIT_THEMES)[number];
 
-/** Shipping default. CSS id stays `hybrid`; operator copy is Fail-Closed Amber. */
+/** Shipping default. CSS id stays `hybrid`; operator copy is C Fail-Closed Amber. */
 export const DEFAULT_COCKPIT_THEME: CockpitTheme = "hybrid";
+
+export const DEFAULT_THEME_COPY = "C Fail-Closed Amber";
 
 export const COCKPIT_THEME_STORAGE_KEY = "hlq-cockpit-theme";
 
-/** Operator chrome: Fail-Closed Amber ↔ Desk Dark. Critique stays in docs. */
+/** Operator chrome: C Fail-Closed Amber ↔ Desk Dark. Critique stays in docs. */
 export const OPERATOR_COCKPIT_THEMES = ["hybrid", "terminal"] as const;
 
 export type CockpitThemeIntent = {
@@ -31,7 +33,7 @@ export const COCKPIT_THEME_INTENTS: Record<CockpitTheme, CockpitThemeIntent> = {
     mobile: "stack; chrome unchanged",
   },
   hybrid: {
-    label: "Fail-Closed Amber",
+    label: DEFAULT_THEME_COPY,
     density: "13px body / 11px meta · dense workstation",
     ia: "status-first chrome + Health→Markets→Research→PAPER→Risk",
     mobile: "fewer columns; PAPER+freshness+strip stay visible",

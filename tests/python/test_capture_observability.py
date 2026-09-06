@@ -62,7 +62,9 @@ def test_transport_counts_exclude_integrity_events(tmp_path: Path) -> None:
                 VALUES
                     ('gap', '{"event":"gap","transport_profile":"spot"}'),
                     ('gap', '{"event":"gap","transport_profile":"usdm_market"}'),
-                    ('sequence_gap', '{"event":"sequence_gap","transport_profile":"spot"}')
+                    ('sequence_gap', '{"event":"sequence_gap","transport_profile":"spot"}'),
+                    ('liveness_error',
+                     '{"event":"liveness_error","reason":"required_stream_starved"}')
             ) AS t(event, marker_json)
             """
         )
@@ -79,7 +81,7 @@ def test_transport_counts_exclude_integrity_events(tmp_path: Path) -> None:
         add_transport_counts(connection, report, gap_event="gap", reconnect_event="reconnect")
         assert report["gaps"] == 2
         assert report["reconnects"] == 1
-        assert report["integrity_events"] == 1
+        assert report["integrity_events"] == 2
         raw_profiles = report["transport_profiles"]
         assert isinstance(raw_profiles, list)
         profiles = {item["transport_profile"]: item for item in raw_profiles}

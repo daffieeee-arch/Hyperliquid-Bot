@@ -6,10 +6,6 @@ import { loadCaptureSnapshotForContract } from "./data1a-capture";
 import { presentCopiedText, presentGapReconnect } from "./display";
 import { captureArtifactRoot, VENUE_CAPTURE_CONTRACTS, type VenueCaptureQuery } from "./paths";
 import {
-  TERRAPC_BINANCE_ACTIVE_RETAIN_RUN_ID,
-  TERRAPC_SHARED_RETAIN_RUN_ID,
-} from "./terrapc-defaults";
-import {
   BINANCE_IDENTITY_WARNING,
   BINANCE_IMPULSE_DEFAULT,
   RESEARCH_RUN_BINDING_NOTE,
@@ -21,6 +17,7 @@ import {
   type ResearchRegistryRow,
   type ResearchRunBinding,
   type ResearchSufficiency,
+  type ResearchVenueRun,
 } from "./research-p0-view";
 import type {
   Data1ACaptureSnapshot,
@@ -53,6 +50,7 @@ export type {
   ResearchRegistryRow,
   ResearchRunBinding,
   ResearchSufficiency,
+  ResearchVenueRun,
   ResearchVerdictTone,
 } from "./research-p0-view";
 
@@ -136,10 +134,8 @@ export function buildOverlapClock(strip: VenueCaptureStrip | undefined): Researc
         : shared.join(" · ");
   const overlapStart = strip?.provenance.overlap_starts_utc ?? RESEARCH_UNAVAILABLE;
   const note = strip?.provenance.overlap_note ?? RESEARCH_UNAVAILABLE;
+  // Derived only from the bound runs; no historical run_id is special-cased.
   let badge: ResearchOverlapClock["badge"] = "gate_pending";
-  if (bn === TERRAPC_BINANCE_ACTIVE_RETAIN_RUN_ID && hl === TERRAPC_SHARED_RETAIN_RUN_ID) {
-    badge = "partial";
-  }
   if (overlapStart !== RESEARCH_UNAVAILABLE && bn !== undefined && hl !== undefined && bn !== hl) {
     badge = "partial";
   }
@@ -156,68 +152,172 @@ export function buildOverlapClock(strip: VenueCaptureStrip | undefined): Researc
   };
 }
 
-const RUN_ID_FIELDS = [
-  "run_id",
-  "hl_run_id",
-  "bn_run_id",
-  "bv_run_id",
-  "kr_run_id",
-  "binance_run_id",
-  "hyperliquid_run_id",
-] as const;
+type SummaryVenue = ResearchVenueRun["venue"];
+
+/** Summary field → venue. `run_id` alone does not say which venue it describes. */
+const RUN_ID_FIELDS: Record<string, SummaryVenue> = {
+  run_id: "any",
+  hl_run_id: "hl",
+  hyperliquid_run_id: "hl",
+  bn_run_id: "binance",
+  binance_run_id: "binance",
+  bv_run_id: "bitvavo",
+  bitvavo_run_id: "bitvavo",
+  kr_run_id: "kraken",
+  kraken_run_id: "kraken",
+};
+
+/** Keys accepted inside a `run_ids` / `products` object. */
+const VENUE_KEYS: Record<string, SummaryVenue> = {
+  hl: "hl",
+  hyperliquid: "hl",
+  bn: "binance",
+  binance: "binance",
+  bv: "bitvavo",
+  bitvavo: "bitvavo",
+  kr: "kraken",
+  kraken: "kraken",
+};
+
+const PRODUCT_FIELDS: Record<string, SummaryVenue> = {
+  hl_product: "hl",
+  hyperliquid_product: "hl",
+  bn_product: "binance",
+  binance_product: "binance",
+  bv_product: "bitvavo",
+  bitvavo_product: "bitvavo",
+  kr_product: "kraken",
+  kraken_product: "kraken",
+};
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
+}
+
+function declaredProducts(payload: Record<string, unknown>): Map<SummaryVenue, string> {
+  const products = new Map<SummaryVenue, string>();
+  for (const [field, venue] of Object.entries(PRODUCT_FIELDS)) {
+    const value = nonEmptyString(payload[field]);
+    if (value !== undefined) {
+      products.set(venue, value);
+    }
+  }
+  if (isRecord(payload.products)) {
+    for (const [key, value] of Object.entries(payload.products)) {
+      const venue = VENUE_KEYS[key.toLowerCase()];
+      const product = nonEmptyString(value);
+      if (venue !== undefined && product !== undefined) {
+        products.set(venue, product);
+      }
+    }
+  }
+  return products;
+}
 
 /**
- * Copy every run_id the summary declares.
+ * Copy every run the summary declares, keeping the venue it was declared for.
  *
- * Accepts both scalar fields and a `run_ids` list/object so a summary produced
- * by a multi-venue panel can still be attributed. Nothing is inferred from the
- * file path: an anonymous summary stays anonymous.
+ * Accepts the `hl_run_id` / `bn_run_id` scalars the WP-Q1 panel writes, the
+ * other venue-prefixed scalars, and a `run_ids` list/object. Nothing is
+ * inferred from the file path: an anonymous summary stays anonymous.
  */
-export function panelSummaryRunIds(payload: unknown): string[] {
+export function panelSummaryRunRefs(payload: unknown): ResearchVenueRun[] {
   if (!isRecord(payload)) {
     return [];
   }
-  const found: string[] = [];
-  for (const field of RUN_ID_FIELDS) {
-    const value = payload[field];
-    if (typeof value === "string" && value.trim() !== "") {
-      found.push(value.trim());
+  const products = declaredProducts(payload);
+  const found: ResearchVenueRun[] = [];
+  const push = (venue: SummaryVenue, runId: string | undefined): void => {
+    if (runId === undefined) {
+      return;
     }
+    if (found.some((ref) => ref.venue === venue && ref.runId === runId)) {
+      return;
+    }
+    const product = products.get(venue);
+    found.push(product === undefined ? { venue, runId } : { venue, runId, product });
+  };
+  for (const [field, venue] of Object.entries(RUN_ID_FIELDS)) {
+    push(venue, nonEmptyString(payload[field]));
   }
   const list = payload.run_ids;
   if (Array.isArray(list)) {
     for (const item of list) {
-      if (typeof item === "string" && item.trim() !== "") {
-        found.push(item.trim());
-      }
+      push("any", nonEmptyString(item));
     }
   } else if (isRecord(list)) {
-    for (const item of Object.values(list)) {
-      if (typeof item === "string" && item.trim() !== "") {
-        found.push(item.trim());
-      }
+    for (const [key, item] of Object.entries(list)) {
+      push(VENUE_KEYS[key.toLowerCase()] ?? "any", nonEmptyString(item));
     }
   }
-  return [...new Set(found)];
+  return found;
 }
 
+export function panelSummaryRunIds(payload: unknown): string[] {
+  return [...new Set(panelSummaryRunRefs(payload).map((ref) => ref.runId))];
+}
+
+function runRefMatches(declared: ResearchVenueRun, bound: ResearchVenueRun): boolean {
+  if (declared.runId !== bound.runId) {
+    return false;
+  }
+  if (declared.venue !== "any" && declared.venue !== bound.venue) {
+    return false;
+  }
+  return declared.product === undefined || declared.product === bound.product;
+}
+
+/**
+ * Compare a summary with the full bound combination, venue by venue.
+ *
+ * A venue-tagged run is only checked against the run bound for that same
+ * venue, so `bn_run_id` can never be satisfied by a Hyperliquid run that
+ * happens to share the id. One matching venue is not enough: a summary about
+ * the current HL run and a restarted (older) BN run is `mismatched`.
+ */
 export function classifyRunBinding(
-  summaryRunIds: readonly string[],
-  boundRunIds: readonly string[],
+  summaryRuns: readonly ResearchVenueRun[],
+  boundRuns: readonly ResearchVenueRun[],
 ): ResearchRunBinding {
-  if (summaryRunIds.length === 0) {
+  if (summaryRuns.length === 0 || boundRuns.length === 0) {
     return "unknown";
   }
-  if (boundRunIds.length === 0) {
-    return "unknown";
+  let unbound = 0;
+  for (const declared of summaryRuns) {
+    if (declared.venue === "any") {
+      if (!boundRuns.some((bound) => runRefMatches(declared, bound))) {
+        return "mismatched";
+      }
+      continue;
+    }
+    const boundForVenue = boundRuns.filter((bound) => bound.venue === declared.venue);
+    if (boundForVenue.length === 0) {
+      unbound += 1;
+      continue;
+    }
+    if (!boundForVenue.some((bound) => runRefMatches(declared, bound))) {
+      return "mismatched";
+    }
   }
-  return summaryRunIds.some((id) => boundRunIds.includes(id)) ? "matched" : "mismatched";
+  return unbound === 0 ? "matched" : "partial";
+}
+
+/** Bound runs as the capture strip reports them; MISSING chips are not bound. */
+export function boundRunsFromChips(venues: readonly VenueCaptureChip[]): ResearchVenueRun[] {
+  const refs: ResearchVenueRun[] = [];
+  for (const venue of venues) {
+    if (venue.run_id === undefined || venue.run_id === "" || venue.status === "MISSING") {
+      continue;
+    }
+    refs.push({ venue: venue.id, runId: venue.run_id, product: venue.product });
+  }
+  return refs;
 }
 
 export function parsePanelSummary(
   payload: unknown,
   source: string,
-  boundRunIds: readonly string[] = [],
+  boundRuns: readonly ResearchVenueRun[] = [],
 ): ResearchSufficiency {
   if (!isRecord(payload)) {
     return unavailableSufficiency("panel-summary.json is not an object");
@@ -233,10 +333,11 @@ export function parsePanelSummary(
   const reasons = Array.isArray(sufficiency?.reasons)
     ? sufficiency.reasons.filter((item): item is string => typeof item === "string")
     : [];
-  const runIds = panelSummaryRunIds(payload);
+  const runRefs = panelSummaryRunRefs(payload);
   return {
-    runIds,
-    runBinding: classifyRunBinding(runIds, boundRunIds),
+    runIds: [...new Set(runRefs.map((ref) => ref.runId))],
+    runRefs,
+    runBinding: classifyRunBinding(runRefs, boundRuns),
     verdict: typeof payload.verdict === "string" ? payload.verdict : RESEARCH_UNAVAILABLE,
     reasons,
     hlGapFraction:
@@ -267,6 +368,7 @@ export function unavailableSufficiency(reason: string): ResearchSufficiency {
     panelVersion: RESEARCH_UNAVAILABLE,
     source: reason,
     runIds: [],
+    runRefs: [],
     runBinding: "unavailable",
   };
 }
@@ -302,19 +404,27 @@ export function listResearchOutSummaries(root: string, maxFiles = 16): string[] 
   return found;
 }
 
+const BINDING_RANK: Record<ResearchRunBinding, number> = {
+  matched: 4,
+  partial: 3,
+  mismatched: 2,
+  unknown: 1,
+  unavailable: 0,
+};
+
 /**
- * Pick the panel summary that belongs to the bound capture runs.
+ * Pick the panel summary that belongs to the full bound combination.
  *
  * Reading the first file on disk silently attributes an unrelated verdict to
  * whatever the operator happens to have selected. Instead every summary is
- * parsed, the ones whose run_id intersects the selection win, and if none
- * match the newest readable summary is returned already flagged as
- * `mismatched` / `unknown` so the UI can refuse to present it as a verdict
- * about the current runs.
+ * parsed and classified per venue; a `matched` summary wins. If none matches,
+ * the best-classified readable summary is returned already flagged
+ * (`partial` / `mismatched` / `unknown`) so the UI can refuse to present it as
+ * a verdict about the current runs.
  */
 export function loadPanelSummaryFromRoot(
   root: string | undefined,
-  boundRunIds: readonly string[] = [],
+  boundRuns: readonly ResearchVenueRun[] = [],
 ): ResearchSufficiency {
   if (root === undefined || root === "" || !existsSync(root)) {
     return unavailableSufficiency(
@@ -332,7 +442,7 @@ export function loadPanelSummaryFromRoot(
   for (const file of files) {
     try {
       const payload: unknown = JSON.parse(readFileSync(file, "utf8"));
-      parsed.push(parsePanelSummary(payload, relative(root, file), boundRunIds));
+      parsed.push(parsePanelSummary(payload, relative(root, file), boundRuns));
     } catch (error: unknown) {
       if (error instanceof Error && error.message.includes("fails closed")) {
         throw error;
@@ -344,7 +454,13 @@ export function loadPanelSummaryFromRoot(
   if (matched !== undefined) {
     return matched;
   }
-  const fallback = parsed[0];
+  const fallback = parsed.reduce<ResearchSufficiency | undefined>(
+    (best, summary) =>
+      best === undefined || BINDING_RANK[summary.runBinding] > BINDING_RANK[best.runBinding]
+        ? summary
+        : best,
+    undefined,
+  );
   if (fallback === undefined) {
     return unavailableSufficiency(
       `panel-summary.json is unreadable (${String(unreadable)} file(s)); values are not invented`,
@@ -412,21 +528,17 @@ export function buildResearchP0View(
       healthPending: snapshot?.health_missing === true,
     };
   });
-  const boundRunIds = [
-    ...new Set(
-      venues
-        .map((venue) => venue.run_id)
-        .filter((runId): runId is string => runId !== undefined && runId !== ""),
-    ),
-  ];
+  const boundRuns = boundRunsFromChips(venues);
+  const boundRunIds = [...new Set(boundRuns.map((ref) => ref.runId))];
   return {
     registry,
     health,
     identity: buildResearchIdentity(),
     identityWarning: BINANCE_IDENTITY_WARNING,
     overlap: buildOverlapClock(strip.ok ? strip.strip : undefined),
-    sufficiency: loadPanelSummaryFromRoot(researchOutRoot(env), boundRunIds),
+    sufficiency: loadPanelSummaryFromRoot(researchOutRoot(env), boundRuns),
     boundRunIds,
+    boundRuns,
     // elapsed vs 72h stays UNAVAILABLE; observed_at only timestamps the read.
     observedAt: strip.ok ? strip.strip.observed_at : nowIso,
     error: strip.ok ? undefined : strip.error,

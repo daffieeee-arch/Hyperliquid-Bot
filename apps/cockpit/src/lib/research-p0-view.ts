@@ -54,17 +54,36 @@ export type ResearchOverlapClock = {
 };
 
 /**
+ * A run reference that keeps its venue identity.
+ *
+ * `venue` is `"any"` only for a bare `run_id` field whose summary does not say
+ * which venue it describes. `product` is present when the summary or the
+ * capture contract names the instrument so spot and perpetual runs cannot be
+ * confused even when a run_id happens to be shared.
+ */
+export type ResearchVenueRun = {
+  venue: VenueCaptureChip["id"] | "any";
+  runId: string;
+  product?: string;
+};
+
+/**
  * How a panel summary relates to the runs the operator currently has selected.
  *
- * `unknown` and `mismatched` are not decoration: a verdict that cannot be
- * attributed to the bound runs must never read as a verdict about them.
+ * The comparison is made per venue: every run the summary names must equal the
+ * run bound for that venue. A summary about the current Hyperliquid run and a
+ * previous Binance run is `mismatched`, not "one of them matched". `partial`
+ * means nothing contradicts the selection, but a venue the summary names is
+ * not bound right now, so the verdict still cannot be counted.
  */
-export type ResearchRunBinding = "matched" | "mismatched" | "unknown" | "unavailable";
+export type ResearchRunBinding = "matched" | "mismatched" | "partial" | "unknown" | "unavailable";
 
 export const RESEARCH_RUN_BINDING_NOTE: Record<ResearchRunBinding, string> = {
-  matched: "Summary run_id matches the bound capture run(s).",
+  matched: "Every venue run the summary names equals the bound capture run for that venue.",
   mismatched:
-    "Summary belongs to different run_id(s) than the current selection; it is not a verdict about the bound runs.",
+    "At least one venue in the summary points at a different run_id than the current selection; it is not a verdict about the bound runs.",
+  partial:
+    "The summary names a venue run that is not bound in the current selection, so it cannot be attributed to the full combination.",
   unknown:
     "Summary carries no run_id; it cannot be attributed to the current selection and stays advisory.",
   unavailable: "No panel summary is pointed, so there is nothing to attribute.",
@@ -80,6 +99,8 @@ export type ResearchSufficiency = {
   source: string;
   /** run_id values copied from the summary. Empty when the summary is anonymous. */
   runIds: string[];
+  /** The same run_ids with the venue each one was declared for. */
+  runRefs: ResearchVenueRun[];
   runBinding: ResearchRunBinding;
 };
 
@@ -135,6 +156,8 @@ export type ResearchP0View = {
   sufficiency: ResearchSufficiency;
   /** run_id values currently bound by the capture strip, used for attribution. */
   boundRunIds: string[];
+  /** Bound runs with venue and product so attribution keeps venue identity. */
+  boundRuns: ResearchVenueRun[];
   /** Read timestamp so the research zone can show its own freshness. */
   observedAt: string;
   error: string | undefined;

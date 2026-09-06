@@ -314,19 +314,23 @@ seconds. Treat ~3h closes as venue/proxy max-session or half-open sockets; persi
 / `exception_class` on disconnect markers and reconnect. This is not a LIVE or signing change.
 
 To point local `next dev` at a live TerraPC retain without stopping the
-collector, export `ARTIFACT_ROOT=/home/dmesdary/hyperliquid-artifacts/reconstructable`
-and `DATA1A_RUN_ID=20260904t134940z-live-retained` (or copy
-`apps/cockpit/.env.example` to `apps/cockpit/.env.local`).
-`COCKPIT_DATA1A_RUN_ID` and `/?data1a_run_id=` are equivalent. The Operator
-Cockpit polls `/api/data1a-capture` every 5 seconds while the tab is open.
-`COCKPIT_CAPTURE_FRESH_MAX_S=180` (tunable) is the fail-closed RUNNING window
-(`now - last_part_mtime`); host clock must be sane.
+collector, export `ARTIFACT_ROOT=/home/dmesdary/hyperliquid-artifacts/reconstructable`.
+Current 72h retain ids: HL / Bitvavo / Kraken
+`20260905t232635z-live-retained`, Binance `20260905t235830z-live-retained`.
+Unset venue run_ids auto-detect the freshest live retain (claim + fresh
+`raw/part-*.parquet`, no health JSON). Explicit `DATA1A_RUN_ID` /
+`DATA1F_RUN_ID` / `DATA1E_RUN_ID` / `DATA1B_RUN_ID` (or
+`COCKPIT_*` aliases / `/?data1a_run_id=`) still win. Copy
+`apps/cockpit/.env.example` to `apps/cockpit/.env.local` if preferred.
+The Operator Cockpit polls `/api/data1a-capture` every 5 seconds while the tab
+is open. `COCKPIT_CAPTURE_FRESH_MAX_S=180` (tunable) is the fail-closed RUNNING
+window (`now - last_part_mtime`); host clock must be sane.
 The first PAPER screen also shows a four-venue strip (HL / Binance / Bitvavo /
 Kraken) that reuses this claim / health / `raw/part-*.parquet` pattern on the
 DATA-1F / DATA-1E / DATA-1B path contracts and polls
-`/api/venue-capture-health` every 5 seconds. Point optional sibling run ids
-with `DATA1F_RUN_ID`, `DATA1E_RUN_ID`, and `DATA1B_RUN_ID` on the same
-`ARTIFACT_ROOT`. Missing venues fail closed as MISSING. See
+`/api/venue-capture-health` every 5 seconds. The strip picker and provenance
+row show which `run_id` is bound per venue and when a later start (Binance)
+shortens comparable overlap. Missing venues fail closed as MISSING. See
 [cockpit-first-paper-screen.md](runbooks/cockpit-first-paper-screen.md)
 and [data1a-wsl-pc-retained-capture.md](runbooks/data1a-wsl-pc-retained-capture.md).
 

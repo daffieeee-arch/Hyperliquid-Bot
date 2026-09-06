@@ -55,6 +55,7 @@ describe("multi-venue capture-health strip", () => {
     expect(hl?.chip).toBe("HL");
     expect(hl?.status).toBe("STOPPED");
     expect(hl?.run_id).toBe(CANONICAL_DATA1A_FIXTURE_RUN_ID);
+    expect(hl?.binding_source).toBe("default-fixture");
     expect(hl?.part_count).toBeUndefined();
     expect(hl?.last_part_age).toBe("n/a");
     expect(hl?.status_detail).toBe("COMPLETED");
@@ -301,6 +302,48 @@ describe("multi-venue capture-health strip", () => {
 
   it("refuses LIVE trading mode before reading any venue files", () => {
     expect(() => loadVenueCaptureStrip({ TRADING_MODE: "LIVE" }, repoRoot)).toThrow(/PAPER-only/);
+  });
+
+  it("auto-detects the freshest live retain under ARTIFACT_ROOT without inventing a run_id", () => {
+    const artifactRoot = mkdtempSync(join(tmpdir(), "venue-auto-"));
+    const hlId = "20260905t232635z-live-retained";
+    const bnId = "20260905t235830z-live-retained";
+    const hlDir = join(artifactRoot, "data-1a", "hyperliquid", "BTC-PERP", hlId);
+    const bnDir = join(artifactRoot, "data-1f", "binance", "BTCUSDT", bnId);
+    writeClaim(hlDir, "data-1a-retained-capture-claim-v1", "data-1a-hyperliquid-btc-perp-v1", hlId);
+    mkdirSync(join(hlDir, "raw"));
+    const hlPart = join(hlDir, "raw", "part-000001-000000000001-000000000010-abc.parquet");
+    writeFileSync(hlPart, "hl-part", { encoding: "utf8" });
+    utimesSync(hlPart, new Date("2026-09-04T13:49:33Z"), new Date("2026-09-04T13:49:33Z"));
+    writeClaim(bnDir, DATA1F_CLAIM_SCHEMA, DATA1F_PATH_CONTRACT_ID, bnId, {
+      venue: "binance",
+      product: "BTCUSDT",
+    });
+    mkdirSync(join(bnDir, "raw"));
+    const bnPart = join(bnDir, "raw", "part-000001-000000000001-000000000010-abc.parquet");
+    writeFileSync(bnPart, "bn-part", { encoding: "utf8" });
+    utimesSync(bnPart, new Date("2026-09-04T13:49:40Z"), new Date("2026-09-04T13:49:40Z"));
+
+    const strip = loadVenueCaptureStrip(
+      { TRADING_MODE: "PAPER", ARTIFACT_ROOT: artifactRoot },
+      repoRoot,
+      {},
+      () => observedAt,
+    );
+    const hl = strip.venues.find((venue) => venue.id === "hl");
+    const binance = strip.venues.find((venue) => venue.id === "binance");
+    expect(hl?.status).toBe("RUNNING");
+    expect(hl?.run_id).toBe(hlId);
+    expect(hl?.binding_source).toBe("auto-detect");
+    expect(binance?.status).toBe("RUNNING");
+    expect(binance?.run_id).toBe(bnId);
+    expect(binance?.binding_source).toBe("auto-detect");
+    expect(strip.venues.find((venue) => venue.id === "bitvavo")?.status).toBe("MISSING");
+    expect(strip.venues.find((venue) => venue.id === "kraken")?.status).toBe("MISSING");
+    expect(strip.catalog.find((entry) => entry.id === "hl")?.candidates[0]?.run_id).toBe(hlId);
+    expect(strip.provenance.overlap_starts_utc).toBe("2026-09-05T23:58:30Z");
+    expect(strip.provenance.overlap_note).toMatch(/BINANCE/);
+    expect(strip.provenance.overlap_note).toMatch(/MISSING venues/);
   });
 
   it("refuses a non-positive COCKPIT_CAPTURE_FRESH_MAX_S before inventing RUNNING", () => {

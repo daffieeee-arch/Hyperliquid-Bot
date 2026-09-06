@@ -5,9 +5,11 @@ import {
   DATA1A_RUNNING_PENDING_HEALTH,
   DATA1A_STALE_MTIME_LABEL,
   data1aCaptureHealthPresentation,
+  captureBindingSourceLabel,
   elapsedSecondsSinceRunId,
   formatGroupedNumber,
   healthTone,
+  parseRunIdStartedAt,
   presentCopiedNumber,
   presentCopiedText,
   presentData1ADuration,
@@ -50,6 +52,15 @@ describe("cockpit display helpers", () => {
     expect(presentCopiedNumber(0)).toBe("0");
     expect(presentCopiedText(undefined)).toBe("n/a");
     expect(presentCopiedText("STARTED_FAIL_CLOSED")).toBe("STARTED_FAIL_CLOSED");
+  });
+
+  it("reconstructs UTC start from a YYYYMMDDtHHMMSSz run_id and fails closed otherwise", () => {
+    expect(parseRunIdStartedAt("20260905t232635z-live-retained")).toBe("2026-09-05T23:26:35Z");
+    expect(parseRunIdStartedAt("20260905t235830z-live-retained")).toBe("2026-09-05T23:58:30Z");
+    expect(parseRunIdStartedAt("sample-run")).toBeUndefined();
+    expect(captureBindingSourceLabel("auto-detect")).toBe("auto-detect");
+    expect(captureBindingSourceLabel("query")).toBe("query");
+    expect(captureBindingSourceLabel("unbound")).toBe("unbound");
   });
 
   it("keeps boolean flags as yes/no labels", () => {

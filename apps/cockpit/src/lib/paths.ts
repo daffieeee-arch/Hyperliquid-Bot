@@ -49,7 +49,11 @@ export type VenueCaptureId = "hl" | "binance" | "bitvavo" | "kraken";
 export type VenueCaptureChipLabel = "HL" | "BINANCE" | "BITVAVO" | "KRAKEN";
 export type VenueCaptureSeries = "DATA-1A" | "DATA-1B" | "DATA-1E" | "DATA-1F";
 export type CaptureRunSource =
-  "data1a-run-dir" | "venue-run-dir" | "path-contract" | "default-fixture";
+  | "data1a-run-dir"
+  | "venue-run-dir"
+  | "path-contract"
+  | "auto-detect"
+  | "default-fixture";
 
 export type VenueCaptureQuery = {
   data1a_run_id?: string;
@@ -200,8 +204,12 @@ export function findRepoRoot(startDirectory: string = process.cwd()): string {
   );
 }
 
+export function isRunId(runId: string): boolean {
+  return RUN_ID_PATTERN.test(runId);
+}
+
 export function requireRunId(runId: string): string {
-  if (!RUN_ID_PATTERN.test(runId)) {
+  if (!isRunId(runId)) {
     throw new Error(
       "run_id must be 1-64 lowercase ASCII letters, digits, dot, dash or underscore.",
     );

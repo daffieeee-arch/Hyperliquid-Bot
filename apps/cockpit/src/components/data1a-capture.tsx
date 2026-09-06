@@ -4,6 +4,7 @@ import { KvTable } from "./kv-table";
 import { MetricTile } from "./metric-tile";
 import { STALE_MTIME_REASON } from "../lib/capture-freshness";
 import {
+  captureRunSourceLabel,
   data1aCaptureHealthPresentation,
   formatGroupedNumber,
   presentCopiedNumber,
@@ -16,13 +17,7 @@ import { useData1ACapturePoll } from "../lib/use-data1a-capture";
 import type { Data1ACaptureResponse, Data1ACaptureSnapshot } from "../lib/types";
 
 function sourceLabel(source: Data1ACaptureSnapshot["source"]): string {
-  if (source === "default-fixture") {
-    return "default-fixture";
-  }
-  if (source === "path-contract") {
-    return "path-contract";
-  }
-  return "data1a-run-dir";
+  return captureRunSourceLabel(source);
 }
 
 function partsValue(snapshot: Data1ACaptureSnapshot): string {

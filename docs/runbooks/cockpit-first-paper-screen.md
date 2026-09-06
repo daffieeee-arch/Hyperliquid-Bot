@@ -75,19 +75,35 @@ Do not stop a running collector. The cockpit only reads files. Next.js loads
 WSL shell also works. The repository-root `.env.example` is not loaded by
 Next.js.
 
-TerraPC WSL2 (current live retain). Paths are on the Linux filesystem, not
-`/mnt/c`:
+TerraPC WSL2 (current 72h retain). Paths are on the Linux filesystem, not
+`/mnt/c`. HL / Bitvavo / Kraken share `20260905t232635z-live-retained`.
+Binance started later as `20260905t235830z-live-retained`. Leaving venue
+run_ids unset auto-detects the freshest live retain per path contract:
 
 ```bash
 export TRADING_MODE=PAPER
 export ARTIFACT_ROOT=/home/dmesdary/hyperliquid-artifacts/reconstructable
-export DATA1A_RUN_ID=20260904t134940z-live-retained
+export DATA1A_RUN_ID=20260905t232635z-live-retained
+export DATA1E_RUN_ID=20260905t232635z-live-retained
+export DATA1B_RUN_ID=20260905t232635z-live-retained
+export DATA1F_RUN_ID=20260905t235830z-live-retained
 pnpm --filter @hyperliquid-bot/cockpit dev
 ```
 
 `COCKPIT_DATA1A_RUN_ID` is an equivalent alias for `DATA1A_RUN_ID`. Or keep
 `ARTIFACT_ROOT` and open
-`http://127.0.0.1:3000/?data1a_run_id=20260904t134940z-live-retained`.
+`http://127.0.0.1:3000/?data1a_run_id=20260905t232635z-live-retained`.
+
+LAN phone on the same Wi-Fi (not 4G). Official Next.js `next dev --hostname 0.0.0.0`
+listens on all interfaces (`pnpm --filter @hyperliquid-bot/cockpit dev:lan`).
+Set `PORT` in the shell — Next.js does not read `PORT` from `.env`:
+
+```bash
+PORT=3001 pnpm --filter @hyperliquid-bot/cockpit dev:lan
+```
+
+Open `http://192.168.1.2:3001` from the phone. Allow inbound TCP on that port
+on the Windows / WSL firewall. `127.0.0.1` is loopback-only.
 
 Later VPS path-contract root (same file names):
 
@@ -127,16 +143,19 @@ secrets, do not stop any collector:
 ```bash
 export TRADING_MODE=PAPER
 export ARTIFACT_ROOT=/home/dmesdary/hyperliquid-artifacts/reconstructable
-export DATA1A_RUN_ID=20260904t134940z-live-retained
-# Optional; omit to keep the chip MISSING:
-# export DATA1F_RUN_ID=20260904t000000z-live-retained
-# export DATA1E_RUN_ID=20260904t000000z-live-retained
-# export DATA1B_RUN_ID=20260904t000000z-live-retained
+# Optional; omit to auto-detect the freshest live retain per venue:
+export DATA1A_RUN_ID=20260905t232635z-live-retained
+export DATA1F_RUN_ID=20260905t235830z-live-retained
+export DATA1E_RUN_ID=20260905t232635z-live-retained
+export DATA1B_RUN_ID=20260905t232635z-live-retained
 pnpm --filter @hyperliquid-bot/cockpit dev
 ```
 
 Query aliases: `?data1a_run_id=`, `?data1f_run_id=`, `?data1e_run_id=`,
 `?data1b_run_id=`. The strip polls `/api/venue-capture-health` every 5 seconds.
+The run picker writes those query params. Auto-detect never binds a stale or
+stopped retain as RUNNING. Provenance shows the bound `run_id` per venue and
+the comparable overlap start when one venue started later.
 A chip is **RUNNING** only when that venue has a PAPER / fail-closed claim
 (signing off), a last `raw/part-*.parquet` mtime within
 `COCKPIT_CAPTURE_FRESH_MAX_S=180` (tunable), and no health file yet. A present
@@ -155,8 +174,10 @@ stays byte-identical.
 - `TRADING_MODE` unset or `PAPER` only
 - COURSE-1 JSON `mode` must be `PAPER`
 - missing JSON fails the matching panel; zeros are not invented
-- missing DATA-1A artifact root or `run_id` is an explicit empty capture panel
-- missing Binance / Bitvavo / Kraken root, run id, directory, or claim is a
+- missing DATA-1A artifact root is an explicit empty capture panel
+- `ARTIFACT_ROOT` without a venue run_id auto-detects a live retain or stays
+  empty / **MISSING**; stale files are not auto-bound as RUNNING
+- missing Binance / Bitvavo / Kraken root, directory, or claim is a
   **MISSING** strip chip; zeros are not invented
 - DATA-1A `twenty_four_seven: true` or `signing: true` is refused
 - `LIVE` / `TESTNET` / `SHADOW` refuse to start the paper reader, DATA-1A view,

@@ -6,7 +6,7 @@ const NO_STORE: RequestInit = {
   headers: { "cache-control": "no-store" },
 };
 
-const QUERY_KEYS: readonly (keyof VenueCaptureQuery)[] = [
+export const VENUE_CAPTURE_QUERY_KEYS: readonly (keyof VenueCaptureQuery)[] = [
   "data1a_run_id",
   "data1b_run_id",
   "data1e_run_id",
@@ -15,7 +15,7 @@ const QUERY_KEYS: readonly (keyof VenueCaptureQuery)[] = [
 
 export function venueCaptureRequestUrl(query: VenueCaptureQuery = {}): string {
   const params = new URLSearchParams();
-  for (const key of QUERY_KEYS) {
+  for (const key of VENUE_CAPTURE_QUERY_KEYS) {
     const value = query[key]?.trim();
     if (value) {
       params.set(key, value);
@@ -43,6 +43,27 @@ export async function fetchVenueCaptureStrip(
   const response = await fetch(venueCaptureRequestUrl(query), NO_STORE);
   const payload: unknown = await response.json();
   return parseVenueCaptureStripResponse(payload);
+}
+
+export function venueCapturePickerHref(
+  pathname: string,
+  query: VenueCaptureQuery,
+  key: keyof VenueCaptureQuery,
+  value: string,
+): string {
+  const next: VenueCaptureQuery = {
+    ...query,
+    [key]: value.trim() === "" ? undefined : value.trim(),
+  };
+  const params = new URLSearchParams();
+  for (const queryKey of VENUE_CAPTURE_QUERY_KEYS) {
+    const item = next[queryKey]?.trim();
+    if (item) {
+      params.set(queryKey, item);
+    }
+  }
+  const encoded = params.toString();
+  return encoded === "" ? pathname : `${pathname}?${encoded}`;
 }
 
 export function venueCapturePollError(error: unknown): VenueCaptureStripResponse {

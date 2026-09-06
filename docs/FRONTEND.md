@@ -58,21 +58,29 @@ be sane.
 The DATA-1A panel polls `/api/data1a-capture` every 5 seconds with
 `Cache-Control: no-store`. The four-venue strip polls
 `/api/venue-capture-health` on the same interval and fail-closes each missing
-venue as **MISSING** (no invented zeros or PnL). Missing artifact root or
-`run_id` is an explicit empty state. DATA-1A capture duration is 1–604800
+venue as **MISSING** (no invented zeros or PnL). When `ARTIFACT_ROOT` is set
+and a venue run_id is unset, the strip / DATA-1A panel auto-detects the
+freshest live retain on that path contract (claim + fresh parts, no health
+JSON). Stale or stopped directories are listed in the run picker but are not
+auto-bound as RUNNING. Missing artifact root remains an explicit empty state.
+The strip shows the bound `run_id` and binding source (query / env /
+auto-detect) per venue, plus overlap start when one venue (often Binance)
+started later. DATA-1A capture duration is 1–604800
 seconds; the COURSE-1 soak remains 1–600 seconds. Locally
 the first screen defaults to
 `tests/fixtures/course1_cockpit/live-public-soak/` (`run_id`
 `20260904t001800z-live-paper`) and `tests/fixtures/data_1a_retained/sample-run/`
 (`run_id` `sample-run`). Set `COCKPIT_ARTIFACT_ROOT` + `COCKPIT_RUN_ID` for PAPER
-JSON, and `ARTIFACT_ROOT` + `DATA1A_RUN_ID` (or `COCKPIT_DATA1A_RUN_ID` /
+JSON, and `ARTIFACT_ROOT` plus optional `DATA1A_RUN_ID` (or `COCKPIT_DATA1A_RUN_ID` /
 `?data1a_run_id=`) for a live DATA-1A directory. Optional sibling run ids on the
 same root: `DATA1F_RUN_ID` (Binance), `DATA1E_RUN_ID` (Bitvavo),
 `DATA1B_RUN_ID` (Kraken). TerraPC WSL example:
-`ARTIFACT_ROOT=/home/dmesdary/hyperliquid-artifacts/reconstructable` and
-`DATA1A_RUN_ID=20260904t134940z-live-retained` (copy `apps/cockpit/.env.example`
+`ARTIFACT_ROOT=/home/dmesdary/hyperliquid-artifacts/reconstructable` with
+HL/Bitvavo/Kraken `20260905t232635z-live-retained` and Binance
+`20260905t235830z-live-retained` (copy `apps/cockpit/.env.example`
 to `apps/cockpit/.env.local`, or export in the WSL shell before `next dev`).
-See `docs/DATA.md`,
+For a phone on the same Wi-Fi, bind `next dev --hostname 0.0.0.0` (`dev:lan`)
+and open `http://192.168.1.2:PORT` — not cellular. See `docs/DATA.md`,
 `docs/runbooks/data1a-vps-retained-capture.md`,
 `docs/runbooks/data1a-wsl-pc-retained-capture.md`,
 `docs/runbooks/cockpit-first-paper-screen.md`, `apps/cockpit/README.md`, and

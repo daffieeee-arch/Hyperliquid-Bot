@@ -1,6 +1,11 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
+import {
+  bindVenueCaptureRun,
+  captureRunProvenance,
+  venueCaptureCatalog,
+} from "./capture-runs";
 import { DEFAULT_CAPTURE_FRESH_MAX_S, resolveCaptureFreshMaxSeconds } from "./capture-freshness";
 import { loadCaptureSnapshotForContract } from "./data1a-capture";
 import {
@@ -13,19 +18,20 @@ import {
   VENUE_CAPTURE_STRIP_ORDER,
   findRepoRoot,
   requirePaperTradingMode,
-  resolveVenueCaptureRunDir,
   type VenueCaptureContract,
   type VenueCaptureQuery,
 } from "./paths";
-import type { VenueCaptureChip, VenueCaptureStrip } from "./types";
+import type { CaptureBindingSource, VenueCaptureChip, VenueCaptureStrip } from "./types";
 
 const MISSING_ERROR_PATTERN =
-  /missing|not pointed|needs ARTIFACT_ROOT|needs a run_id|fail closed|Counts are not invented/i;
+  /missing|not pointed|needs ARTIFACT_ROOT|needs a run_id|fail closed|Counts are not invented|no live retain/i;
 
 function missingChip(
   contract: VenueCaptureContract,
   observedAt: string,
   error: string,
+  bindingSource: CaptureBindingSource = "unbound",
+  runId?: string,
 ): VenueCaptureChip {
   return {
     id: contract.id,
@@ -42,7 +48,8 @@ function missingChip(
     part_count: undefined,
     last_part_age: "n/a",
     last_part_mtime_utc: undefined,
-    run_id: undefined,
+    run_id: runId,
+    binding_source: bindingSource,
     observed_at: observedAt,
     error,
   };
@@ -53,6 +60,7 @@ function degradedChip(
   observedAt: string,
   error: string,
   runId?: string,
+  bindingSource: CaptureBindingSource = "unbound",
 ): VenueCaptureChip {
   return {
     id: contract.id,
@@ -70,6 +78,7 @@ function degradedChip(
     last_part_age: "n/a",
     last_part_mtime_utc: undefined,
     run_id: runId,
+    binding_source: bindingSource,
     observed_at: observedAt,
     error,
   };
@@ -80,15 +89,16 @@ function classifyLoadError(
   observedAt: string,
   error: unknown,
   runId?: string,
+  bindingSource: CaptureBindingSource = "unbound",
 ): VenueCaptureChip {
   const message =
     error instanceof Error
       ? error.message
       : `${contract.refuseLabel} capture health is unavailable.`;
   if (MISSING_ERROR_PATTERN.test(message)) {
-    return missingChip(contract, observedAt, message);
+    return missingChip(contract, observedAt, message, bindingSource, runId);
   }
-  return degradedChip(contract, observedAt, message, runId);
+  return degradedChip(contract, observedAt, message, runId, bindingSource);
 }
 
 function chipTone(
@@ -122,14 +132,21 @@ export function loadVenueCaptureChip(
   freshMaxSeconds: number = DEFAULT_CAPTURE_FRESH_MAX_S,
 ): VenueCaptureChip {
   let resolvedRunId: string | undefined;
+  let bindingSource: CaptureBindingSource = "unbound";
   try {
-    const resolved = resolveVenueCaptureRunDir(contract, env, repoRoot, query);
+    const resolved = bindVenueCaptureRun(contract, env, repoRoot, query, {
+      now: observedAt,
+      freshMaxSeconds,
+    });
     resolvedRunId = resolved.runId;
+    bindingSource = resolved.binding_source;
     if (!existsSync(resolved.runDir)) {
       return missingChip(
         contract,
         observedAt,
         `${contract.refuseLabel} run directory is missing: ${resolved.runDir}. Counts are not invented.`,
+        bindingSource,
+        resolvedRunId,
       );
     }
     const claimPath = join(resolved.runDir, "capture-claim.json");
@@ -138,6 +155,8 @@ export function loadVenueCaptureChip(
         contract,
         observedAt,
         `${contract.refuseLabel} capture-claim.json is missing under ${resolved.runDir}. Counts are not invented.`,
+        bindingSource,
+        resolvedRunId,
       );
     }
     const snapshot = loadCaptureSnapshotForContract(
@@ -164,11 +183,12 @@ export function loadVenueCaptureChip(
       last_part_age: presentLastPartAge(snapshot.parts.last_part_mtime_utc, observedAt),
       last_part_mtime_utc: snapshot.parts.last_part_mtime_utc,
       run_id: snapshot.runId,
+      binding_source: bindingSource,
       observed_at: observedAt,
       error: snapshot.health_error,
     };
   } catch (error: unknown) {
-    return classifyLoadError(contract, observedAt, error, resolvedRunId);
+    return classifyLoadError(contract, observedAt, error, resolvedRunId, bindingSource);
   }
 }
 
@@ -181,18 +201,24 @@ export function loadVenueCaptureStrip(
   requirePaperTradingMode(env.TRADING_MODE);
   const observedAt = now();
   const freshMaxSeconds = resolveCaptureFreshMaxSeconds(env);
+  const clock = { now: observedAt, freshMaxSeconds };
+  const venues = VENUE_CAPTURE_STRIP_ORDER.map((id) =>
+    loadVenueCaptureChip(
+      VENUE_CAPTURE_CONTRACTS[id],
+      env,
+      repoRoot,
+      query,
+      observedAt,
+      freshMaxSeconds,
+    ),
+  );
   return {
     observed_at: observedAt,
     fresh_max_s: freshMaxSeconds,
-    venues: VENUE_CAPTURE_STRIP_ORDER.map((id) =>
-      loadVenueCaptureChip(
-        VENUE_CAPTURE_CONTRACTS[id],
-        env,
-        repoRoot,
-        query,
-        observedAt,
-        freshMaxSeconds,
-      ),
+    venues,
+    catalog: VENUE_CAPTURE_STRIP_ORDER.map((id) =>
+      venueCaptureCatalog(VENUE_CAPTURE_CONTRACTS[id], env, clock),
     ),
+    provenance: captureRunProvenance(venues),
   };
 }

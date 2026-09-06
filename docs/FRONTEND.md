@@ -20,13 +20,19 @@ The first cockpit screen now reads COURSE-1 PAPER JSON, a four-venue
 capture-health strip, and a thin DATA-1A capture-health panel. It shows a
 compact PAPER **DESK** banner (mode, bound run provenance, live vs stale), a
 first **MARKETS** panel (public HL BTC-PERP mid plus fail-closed sibling
-quotes), paper position, assumed overlay PnL, COURSE-1 soak health, HL /
+quotes), a first **RISK** panel (reconstructable PAPER overlay and fail-closed
+bounds; missing leverage/margin/liquidation/VaR stay **UNAVAILABLE**), paper
+position, assumed overlay PnL, COURSE-1 soak health, HL /
 Binance / Bitvavo / Kraken reconstructable capture rows, DATA-1A capture
 health, and the copied PAPER intent/fill blotter. The layout is a dense dark
 terminal so those values are readable at a glance; PAPER is badged and
 watermarked. It is inspired by professional market workstations, not a clone of
-a commercial UI. RISK is not built. MARKETS never invents a last/BBO; sibling
-venues stay **UNAVAILABLE** unless a cockpit API already has that quote.
+a commercial UI. RISK is a first PAPER slice: it copies reconstructable
+position, assumed overlay PnL, fail-closed preflight bounds, and capture
+live/stale summary. Missing risk fields stay **UNAVAILABLE**; it never invents
+leverage, margin, liquidation, VaR, or venue risk. MARKETS never invents a
+last/BBO; sibling venues stay **UNAVAILABLE** unless a cockpit API already has
+that quote.
 Later screens must keep using the create-only reconstructable contracts rather
 than inventing a second store:
 
@@ -190,6 +196,14 @@ Professional OMS/TCA-style blotter:
 - venue and quote-currency allocation.
 
 ### RISK
+
+First PAPER slice (now on the first screen): reconstructable PAPER position,
+assumed overlay PnL labeled as assumed, fail-closed preflight bounds from
+`run-claim.json`, COURSE-1 risk-rejection / 24/7 flags, and the same capture
+live-vs-stale summary as DESK. Anything not in those contracts stays
+**UNAVAILABLE**. Not a risk engine and not venue margin/liquidation.
+
+Later professional risk workspace:
 
 - gross/net exposure;
 - leverage;

@@ -178,7 +178,7 @@ No stage may be skipped merely because an in-sample backtest looks attractive or
 The aim is to get useful output early rather than disappear into a months-long build:
 
 - Initial days: WSL2/Codex workspace, repository bootstrap, CI and local disposable services.
-- Current: time-boxed core-engine fit gate, then one local BTC-PERP replay-to-PAPER slice. A first PAPER cockpit screen now reads reconstructable COURSE-1 JSON plus public BTC-PERP mid, with a compact DESK banner and fail-closed MARKETS panel; RISK is not built.
+- Current: time-boxed core-engine fit gate, then one local BTC-PERP replay-to-PAPER slice. A first PAPER cockpit screen now reads reconstructable COURSE-1 JSON plus public BTC-PERP mid, with a compact DESK banner, fail-closed MARKETS panel, and a first RISK slice that copies only existing PAPER fields and leaves missing leverage/margin/liquidation/VaR **UNAVAILABLE**.
 - After the local vertical slice: record the runtime ADR, migrate to the approved Ubuntu LTS VPS profile and begin 24/7 public-data collection and paper trading; retain TrueNAS only where explicitly chosen.
 - Week 3-6: robust research, validation, execution simulation and paper-vs-backtest comparison.
 - Week 6-12: production-grade recovery, reconciliation, security and live-readiness work while paper evidence accumulates.

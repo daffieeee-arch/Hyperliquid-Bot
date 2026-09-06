@@ -319,6 +319,127 @@ main,
   white-space: normal;
 }
 
+.risk-panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  padding: 0.28rem 0.5rem 0.32rem;
+}
+
+.risk-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.15rem 0.85rem;
+  margin-bottom: 0.22rem;
+  padding-bottom: 0.18rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.risk-head h2 {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.64rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.risk-glance {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.28rem 0.85rem;
+  margin: 0 0 0.28rem;
+}
+
+.risk-glance div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.04rem;
+  min-width: 0;
+}
+
+.risk-glance span {
+  color: var(--dim);
+  font-size: 0.56rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.risk-glance strong {
+  font-family: var(--font-mono), ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 0.72rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.risk-board {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.45rem;
+}
+
+.risk-scroll {
+  overflow-x: auto;
+}
+
+.risk-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono), ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.risk-table caption {
+  caption-side: top;
+  text-align: left;
+  color: var(--dim);
+  font-size: 0.56rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 0 0 0.12rem;
+}
+
+.risk-table th,
+.risk-table td {
+  padding: 0.14rem 0.45rem 0.14rem 0;
+  text-align: left;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.risk-table th {
+  color: var(--dim);
+  font-size: 0.56rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.risk-table td:last-child {
+  white-space: normal;
+}
+
+@media (min-width: 720px) {
+  .risk-glance {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (min-width: 1100px) {
+  .risk-glance {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .risk-board {
+    grid-template-columns: 1.2fr 0.8fr;
+  }
+}
+
 main {
   flex: 1 1 auto;
   display: flex;

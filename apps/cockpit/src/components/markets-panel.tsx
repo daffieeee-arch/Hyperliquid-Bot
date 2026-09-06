@@ -1,5 +1,6 @@
 "use client";
 
+import { MidChart } from "./mid-chart";
 import { formatGroupedNumber } from "../lib/display";
 import {
   MARKET_QUOTE_UNAVAILABLE,
@@ -50,7 +51,8 @@ export function MarketsPanel({
       <div className="markets-head">
         <h2>MARKETS</h2>
         <p className="panel-kicker">
-          Bound HL BTC-PERP public mid · sibling last/BBO fail closed · not Paper PnL
+          Bound HL BTC-PERP public mid + public candleSnapshot · sibling last/BBO fail closed · not
+          Paper PnL
         </p>
       </div>
       {strip.ok ? (
@@ -101,6 +103,7 @@ export function MarketsPanel({
       ) : (
         <p className="error">{strip.error}</p>
       )}
+      <MidChart />
     </section>
   );
 }

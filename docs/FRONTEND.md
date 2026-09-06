@@ -8,31 +8,65 @@ Build a professional trading workstation, not a decorative dashboard. The operat
 
 - TypeScript;
 - React;
-- Next.js;
-- WebSocket for realtime state;
+- Next.js 15 App Router;
+- Tailwind CSS v4 + shadcn/ui (Radix, New York) + Lucide + TradingView Lightweight Charts (€0 OSS);
+- three CSS theme variants on the first screen: **A terminal**, **B shadcn workstation**, **C hybrid** (default; densest operator-ready workstation);
+- WebSocket for realtime state (planned; first screen polls HTTP);
 - REST/HTTP for control/query operations;
 - strict typing and component tests;
 - production build packaged as a Linux container image.
 
 The browser never receives trading secrets.
 
-The first cockpit screen now reads COURSE-1 PAPER JSON, a four-venue
-capture-health strip, and a thin DATA-1A capture-health panel. It shows a
-compact PAPER **DESK** banner (mode, bound run provenance, live vs stale), a
-first **MARKETS** panel (public HL BTC-PERP mid plus fail-closed sibling
-quotes), a first **RISK** panel (reconstructable PAPER overlay and fail-closed
-bounds; missing leverage/margin/liquidation/VaR stay **UNAVAILABLE**), paper
-position, assumed overlay PnL, COURSE-1 soak health, HL /
-Binance / Bitvavo / Kraken reconstructable capture rows, DATA-1A capture
-health, and the copied PAPER intent/fill blotter. The layout is a dense dark
-terminal so those values are readable at a glance; PAPER is badged and
-watermarked. It is inspired by professional market workstations, not a clone of
-a commercial UI. RISK is a first PAPER slice: it copies reconstructable
-position, assumed overlay PnL, fail-closed preflight bounds, and capture
-live/stale summary. Missing risk fields stay **UNAVAILABLE**; it never invents
-leverage, margin, liquidation, VaR, or venue risk. MARKETS never invents a
-last/BBO; sibling venues stay **UNAVAILABLE** unless a cockpit API already has
-that quote.
+### Real project data vs fixtures / gaps
+
+| Surface | Real / copied | Fixture default | Fail-closed gap |
+|---|---|---|---|
+| PAPER mode banner | Fail-closed `TRADING_MODE` | n/a | LIVE / TESTNET / SHADOW refuse |
+| COURSE-1 soak identity | `run-claim.json` + position | `tests/fixtures/course1_cockpit/live-public-soak` | **UNAVAILABLE** if JSON missing |
+| DATA retain identity | four-venue strip binds | DATA-1A sample-run; BN/BV/KR **MISSING** unless `ARTIFACT_ROOT` | never blended with soak PnL |
+| Public HL mid / candles | credentialless `/info` `allMids` + `candleSnapshot` | n/a | **UNAVAILABLE** if the public route fails |
+| Position / assumed PnL | `paper-position.json` / `paper-pnl.json` | soak fixture | labeled **not venue-reconciled**; never D22-B |
+| Intents → fills | `orders.json` / `fills.json` | soak fixture (entry/exit) | `paper_risk` reason codes **UNAVAILABLE** unless present |
+| `#65` gate catalog | documented `paper_risk` defaults | n/a | per-run halt state **UNAVAILABLE** |
+| Preflight caps | `run-claim.json` preflight | soak fixture | **not recorded** / **UNAVAILABLE** if omitted |
+| D01 bind | `same_d01_smoke_risk` | soak fixture | **UNAVAILABLE** if preflight omitted |
+| BN `usdm_public` | documented DATA-1F profile + copied BN chip | n/a | G/R stay n/a without health JSON |
+| RESEARCH | none | none | **UNAVAILABLE** until Quant fields exist |
+| TerraPC retain ids | operator docs / picker hint only | HL/BV/KR `20260905t232635z-live-retained`; BN `20260906t101559z-live-retained` | auto-detect still prefers a live retain |
+
+LAN phone: `PORT=3001 pnpm --filter @hyperliquid-bot/cockpit dev:lan` then
+`http://192.168.1.2:3001` on the same Wi-Fi. Collectors are never started or
+stopped from the cockpit.
+
+The first cockpit screen is a PAPER Operator Cockpit workstation (incremental
+upgrade of `apps/cockpit`, not a template replace). It reads COURSE-1 PAPER
+JSON, a four-venue capture-health strip, and a thin DATA-1A capture-health
+panel. IA zones:
+
+1. Fail-closed **PAPER** banner (no keys, no orders, no LIVE knobs).
+2. **Run identity as two cards:** COURSE-1 soak vs DATA retain. Never one
+   blended identity and never one blended PnL.
+3. Second row: D01 / `paper_risk` bind health (preflight copy only), read-only
+   capture-health (start/stop vetoed), and a Binance `usdm_public` callout
+   (`btcusdt@bookTicker`; not mixed with soak PnL).
+4. **MARKETS:** public HL BTC-PERP mid plus public `candleSnapshot` chart when
+   the credentialless `/info` route answers; sibling last/BBO stay
+   **UNAVAILABLE**.
+5. **RESEARCH / hypotheses:** **UNAVAILABLE** until Quant fields exist.
+6. **PAPER bot** what / why / results from existing orders, fills, position,
+   and assumed overlay PnL. Position and assumed PnL are labeled
+   **not venue-reconciled**. Intents→fills copy intent reasons; `paper_risk`
+   reason codes stay **UNAVAILABLE** unless present on `orders.json`.
+7. **RISK** copied vs **UNAVAILABLE**, plus the documented #65 `paper_risk`
+   gate catalog and reduce-only-after-halt rule. Per-run halt state is
+   **UNAVAILABLE** (COURSE-1 JSON has no daily/weekly/drawdown snapshot).
+8. Existing four-venue strip + run picker + DATA-1A panel (behavior unchanged).
+
+PAPER is badged and watermarked. The layout is dense and mobile-friendly.
+Inspiration is professional workstation IA, not a fork of a commercial
+exchange UI. Missing values stay **UNAVAILABLE**; the cockpit never invents
+prices, PnL, leverage, margin, liquidation, VaR, wallets, or L2 ladders.
 Later screens must keep using the create-only reconstructable contracts rather
 than inventing a second store:
 

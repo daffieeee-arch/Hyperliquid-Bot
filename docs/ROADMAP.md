@@ -446,6 +446,12 @@ These workstreams can progress simultaneously after shared contracts are agreed:
 ### D. Cockpit and Grafana
 
 - UI shell;
+- first PAPER Operator Cockpit workstation preview (`apps/cockpit`): Tailwind
+  v4 + shadcn/ui + Lucide + Lightweight Charts; variants A terminal / B shadcn
+  workstation / C hybrid (default); Trading must-have IA (separate soak vs
+  retain cards, assumed-not-venue-reconciled labels, intents→fills, #65
+  `paper_risk` gates, preflight caps, D01 bind, read-only capture, BN
+  `usdm_public` callout). Collectors untouched. CoS Pass before merge;
 - dashboard provisioning;
 - venue/strategy/risk views;
 - observability.

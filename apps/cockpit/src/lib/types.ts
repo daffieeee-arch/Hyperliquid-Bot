@@ -81,6 +81,7 @@ export type PaperOrderIntent = {
   order_type: string;
   reason: string;
   reduce_only: boolean;
+  risk_reasons?: string[];
 };
 
 export type PaperFillRow = {

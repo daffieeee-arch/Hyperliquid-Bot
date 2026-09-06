@@ -1,4 +1,26 @@
-:root {
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-muted: var(--muted-shad);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-border: var(--border);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) * 1.4);
+}
+
+:root,
+[data-theme="hybrid"] {
   color-scheme: dark;
   --bg: #07080a;
   --bg-mast: #0b0d10;
@@ -14,6 +36,54 @@
   --down: #ef6b73;
   --ok: #3dcc8c;
   --warn: #e2b15a;
+  --radius: 2px;
+  --ui-pad: 0.55rem;
+  --font-size: 13px;
+  --background: #07080a;
+  --foreground: #e6edf3;
+  --card: #101318;
+  --card-foreground: #e6edf3;
+  --primary: #d4b45a;
+  --primary-foreground: #1a1406;
+  --muted-shad: #14181e;
+  --muted-foreground: #8b98a5;
+  --accent: #14181e;
+  --accent-foreground: #e6edf3;
+  --border: #222830;
+  --ring: #d4b45a;
+}
+
+[data-theme="terminal"] {
+  --radius: 0;
+  --ui-pad: 0.4rem;
+  --font-size: 12px;
+  --bg: #050608;
+  --bg-mast: #08090c;
+  --panel: #0c0e12;
+  --panel-2: #101318;
+}
+
+[data-theme="workstation"] {
+  --radius: 0.45rem;
+  --ui-pad: 0.85rem;
+  --font-size: 14px;
+  --bg: #09090b;
+  --bg-mast: #18181b;
+  --panel: #18181b;
+  --panel-2: #27272a;
+  --line: #3f3f46;
+  --text: #fafafa;
+  --muted: #a1a1aa;
+  --dim: #71717a;
+  --background: #09090b;
+  --foreground: #fafafa;
+  --card: #18181b;
+  --card-foreground: #fafafa;
+  --muted-shad: #27272a;
+  --muted-foreground: #a1a1aa;
+  --accent: #27272a;
+  --accent-foreground: #fafafa;
+  --border: #3f3f46;
 }
 
 * {
@@ -27,7 +97,7 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--font-sans), "Segoe UI", system-ui, sans-serif;
-  font-size: 13px;
+  font-size: var(--font-size);
   line-height: 1.35;
 }
 
@@ -257,6 +327,7 @@ main,
 .markets-panel {
   background: var(--panel);
   border: 1px solid var(--line);
+  border-radius: var(--radius);
   padding: 0.28rem 0.5rem 0.32rem;
 }
 
@@ -322,6 +393,7 @@ main,
 .risk-panel {
   background: var(--panel);
   border: 1px solid var(--line);
+  border-radius: var(--radius);
   padding: 0.28rem 0.5rem 0.32rem;
 }
 
@@ -444,8 +516,8 @@ main {
   flex: 1 1 auto;
   display: flex;
   flex-direction: column;
-  gap: 0.55rem;
-  padding: 0.55rem 0.65rem 0.75rem;
+  gap: var(--ui-pad);
+  padding: var(--ui-pad) 0.65rem 0.75rem;
   max-width: 92rem;
   width: 100%;
   margin: 0 auto;
@@ -460,6 +532,7 @@ main {
 .venue-strip {
   background: var(--panel);
   border: 1px solid var(--line);
+  border-radius: var(--radius);
   padding: 0.28rem 0.5rem 0.32rem;
 }
 
@@ -630,9 +703,11 @@ main {
 
 .metric,
 .panel,
-.limitations-panel {
+.limitations-panel,
+.zone-card {
   background: var(--panel);
   border: 1px solid var(--line);
+  border-radius: var(--radius);
 }
 
 .metric {
@@ -863,4 +938,93 @@ main {
 .tone-flat,
 .tone-neutral {
   color: var(--text);
+}
+
+.desk-row,
+.masthead-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.65rem 0.9rem;
+  padding: 0.38rem 0.75rem 0.32rem;
+}
+
+.theme-toggle {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.28rem;
+  margin-left: auto;
+}
+
+.zone {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.zone-label {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.64rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.zone-kicker {
+  margin: 0;
+  color: var(--dim);
+  font-size: 0.72rem;
+}
+
+.zone-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--ui-pad);
+}
+
+.paper-bot {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ui-pad);
+}
+
+.mid-chart {
+  margin-top: 0.35rem;
+}
+
+.mid-chart-canvas {
+  width: 100%;
+  height: 14rem;
+}
+
+.mid-chart-empty {
+  height: 0;
+}
+
+@media (min-width: 720px) {
+  .zone-grid-2 {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (min-width: 1100px) {
+  .zone-grid-3 {
+    grid-template-columns: 1fr 1fr 1fr;
+  }
+}
+
+@media (max-width: 719px) {
+  .theme-toggle {
+    margin-left: 0;
+    width: 100%;
+  }
+
+  .mid-chart-canvas {
+    height: 11rem;
+  }
+
+  .paper-badge {
+    min-width: 0;
+  }
 }

@@ -1,10 +1,12 @@
 # Runbook — first PAPER cockpit screen
 
-Status: local fixture-backed first screen with a dense dark PAPER terminal
-layout, plus the first DESK banner, MARKETS panel, and RISK slice. PAPER only.
+Status: local fixture-backed PAPER Operator Cockpit workstation (Tailwind v4 +
+shadcn/ui + Lucide + Lightweight Charts; variants A/B/C, default C hybrid).
+First DESK banner, separate soak vs retain identity cards, MARKETS panel,
+RESEARCH stub, PAPER bot what/why/results, and RISK slice. PAPER only.
 Not D22-B, not LIVE, not a risk engine, and not a 24/7 cockpit service. The
-browser never signs orders. The visual chrome is not a clone of a commercial
-terminal.
+browser never signs orders and never starts/stops collectors. The visual
+chrome is not a clone of a commercial terminal.
 
 ## What the screen reads
 

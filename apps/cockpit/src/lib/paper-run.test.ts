@@ -33,6 +33,7 @@ describe("PAPER run loader", () => {
       "O-20260904-002014-001-D01-2",
     ]);
     expect(snapshot.fills.fills.map((fill) => fill.price)).toEqual(["81143.0", "81143.0"]);
+    expect(snapshot.orders.intents.every((intent) => intent.risk_reasons === undefined)).toBe(true);
   });
 
   it("surfaces run provenance and preflight risk caps from the claim", () => {

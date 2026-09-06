@@ -1,12 +1,17 @@
 # First PAPER cockpit screen
 
-One local Next.js screen. First PAPER **DESK** + **MARKETS** + **RISK** slice.
-Not a clone of any commercial terminal. The first screen uses a dense
-dark workstation layout so the PAPER run/mode banner, public HL mid, live vs
-stale capture chips, reconstructable RISK overlay, position, assumed overlay
-PnL, COURSE-1 soak health, a four-venue capture-health strip, and DATA-1A
-capture health are readable at a glance. PAPER is badged on DESK and
-watermarked on the page. Missing RISK fields stay **UNAVAILABLE**.
+One local Next.js screen. PAPER Operator Cockpit workstation: **DESK** banner,
+separate COURSE-1 soak vs DATA retain identity cards, **MARKETS** (public HL
+mid + public candle chart), RESEARCH stub, PAPER bot what/why/results,
+**RISK**, and the existing four-venue strip / picker / DATA-1A panel.
+
+Stack is €0 OSS: Next.js 15, Tailwind CSS v4, shadcn/ui (Radix), Lucide,
+TradingView Lightweight Charts. Visual variants: **A terminal**, **B shadcn
+workstation**, **C hybrid** (default). Not a clone of any commercial terminal
+and not a wholesale exchange-UI fork. PAPER is badged and watermarked.
+Missing fields stay **UNAVAILABLE**. Position and assumed overlay PnL are
+labeled **not venue-reconciled**. Collectors are never started or stopped
+from this UI.
 
 The browser never signs orders and never holds keys. `TRADING_MODE` must be
 unset or `PAPER`; `LIVE`, `TESTNET`, and `SHADOW` fail closed.
@@ -22,11 +27,14 @@ unset or `PAPER`; `LIVE`, `TESTNET`, and `SHADOW` fail closed.
    **UNAVAILABLE** because those quotes are not in cockpit APIs. Copied
    COURSE-1 `paper-pnl.json` `mark_price` is a soak mark, not a live last.
 3. **RISK** first reconstructable overlay: PAPER position, assumed overlay PnL
-   labeled as assumed, fail-closed preflight bounds, COURSE-1 risk-rejection /
-   24/7 flags, and the DESK capture live-vs-stale summary. Leverage, margin,
-   liquidation, VaR, and venue risk stay **UNAVAILABLE**.
-4. Public Hyperliquid BTC-PERP mid from credentialless `POST /info` `allMids`.
-   This price is not used to invent Paper PnL.
+   labeled as assumed and **not venue-reconciled**, fail-closed preflight
+   bounds, COURSE-1 risk-rejection / 24/7 flags, the documented #65
+   `paper_risk` gates (reduce-only-after-halt is the rule; per-run halt state
+   stays **UNAVAILABLE**), and the DESK capture live-vs-stale summary.
+   Leverage, margin, liquidation, VaR, and venue risk stay **UNAVAILABLE**.
+4. Public Hyperliquid BTC-PERP mid from credentialless `POST /info` `allMids`,
+   plus public `candleSnapshot` candles when that route answers. Neither is
+   used to invent Paper PnL. Missing candles render **UNAVAILABLE**.
 5. Paper position from reconstructable COURSE-1 JSON.
 6. Assumed overlay Paper PnL from that same JSON. If the field is assumed /
    overlay, the screen says so. It never fabricates a second number.

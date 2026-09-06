@@ -65,13 +65,15 @@ code {
 }
 
 .masthead,
+.desk-banner,
 main,
 .statusbar {
   position: relative;
   z-index: 1;
 }
 
-.masthead {
+.masthead,
+.desk-banner {
   position: sticky;
   top: 0;
   z-index: 3;
@@ -195,6 +197,126 @@ main,
   font-family: var(--font-mono), ui-monospace, "SFMono-Regular", Consolas, monospace;
   font-size: 0.75rem;
   font-variant-numeric: tabular-nums;
+}
+
+.desk-glance {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.75rem;
+  padding: 0.22rem 0.75rem 0.2rem;
+  border-top: 1px solid var(--line);
+  background: #080a0d;
+}
+
+.desk-label {
+  color: var(--dim);
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+}
+
+.desk-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.65rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.desk-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  font-family: var(--font-mono), ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+
+.desk-chip-age {
+  color: var(--dim);
+  font-weight: 500;
+}
+
+.desk-glance-line,
+.desk-provenance {
+  margin: 0;
+  color: var(--dim);
+  font-family: var(--font-mono), ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 0.64rem;
+}
+
+.desk-provenance {
+  padding: 0.16rem 0.75rem 0.22rem;
+  border-top: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+
+.markets-panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  padding: 0.28rem 0.5rem 0.32rem;
+}
+
+.markets-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.15rem 0.85rem;
+  margin-bottom: 0.22rem;
+  padding-bottom: 0.18rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.markets-head h2 {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.64rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.markets-scroll {
+  overflow-x: auto;
+}
+
+.markets-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono), ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.markets-table th,
+.markets-table td {
+  padding: 0.14rem 0.45rem 0.14rem 0;
+  text-align: left;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.markets-table th {
+  color: var(--dim);
+  font-size: 0.56rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.markets-quote {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-weight: 600;
+}
+
+.markets-soak td {
+  white-space: normal;
 }
 
 main {

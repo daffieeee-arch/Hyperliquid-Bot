@@ -325,3 +325,20 @@ export function captureRunSourceLabel(
     }
   }
 }
+
+export function paperRunSourceLabel(
+  source: "paper-run-dir" | "path-contract" | "default-fixture",
+): string {
+  switch (source) {
+    case "paper-run-dir":
+      return "paper-run-dir";
+    case "path-contract":
+      return "path-contract";
+    case "default-fixture":
+      return "default-fixture";
+    default: {
+      const exhaustive: never = source;
+      throw new Error(`Unhandled PAPER run source: ${String(exhaustive)}`);
+    }
+  }
+}

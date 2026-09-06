@@ -7,6 +7,7 @@ import {
   data1aCaptureHealthPresentation,
   captureBindingSourceLabel,
   captureRunOptionLabel,
+  paperRunSourceLabel,
   elapsedSecondsSinceRunId,
   formatGroupedNumber,
   healthTone,
@@ -70,6 +71,9 @@ describe("cockpit display helpers", () => {
     expect(captureBindingSourceLabel("auto-detect")).toBe("auto-detect");
     expect(captureBindingSourceLabel("query")).toBe("query");
     expect(captureBindingSourceLabel("unbound")).toBe("unbound");
+    expect(paperRunSourceLabel("default-fixture")).toBe("default-fixture");
+    expect(paperRunSourceLabel("path-contract")).toBe("path-contract");
+    expect(paperRunSourceLabel("paper-run-dir")).toBe("paper-run-dir");
   });
 
   it("keeps boolean flags as yes/no labels", () => {

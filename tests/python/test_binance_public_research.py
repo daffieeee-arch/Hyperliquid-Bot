@@ -14,10 +14,12 @@ from typing import cast
 
 import duckdb
 import pytest
-from websockets.exceptions import PayloadTooBig
+from websockets.exceptions import ConnectionClosedError, PayloadTooBig
+from websockets.frames import Close
 
 from hyperliquid_bot.binance_public_research import (
     BINANCE_NATIVE_SYMBOL,
+    BINANCE_RECONNECT_BACKOFF_CAP_SECONDS,
     BINANCE_SPOT_DEPTH_URL,
     BINANCE_SPOT_PRODUCT,
     BINANCE_SPOT_WEBSOCKET_URL,
@@ -25,6 +27,8 @@ from hyperliquid_bot.binance_public_research import (
     BINANCE_USDM_OPEN_INTEREST_URL,
     BINANCE_USDM_PRODUCT,
     BINANCE_USDM_PUBLIC_WEBSOCKET_URL,
+    BINANCE_WEBSOCKET_CLIENT_PING_INTERVAL,
+    BINANCE_WEBSOCKET_CLIENT_PING_TIMEOUT,
     MAX_CAPTURE_SECONDS,
     REQUIRED_STREAM_STARVATION_SECONDS,
     RETAINED_MAX_RECONNECTS,
@@ -37,15 +41,18 @@ from hyperliquid_bot.binance_public_research import (
     _argument_parser,
     _combined_stream,
     _config_for_duration,
+    _connection_factory,
     _decode_json_object,
     _normalize_open_interest,
     _normalize_spot_bbo,
     _normalize_spot_trade,
     _normalize_usdm,
     _receive_or_stop,
+    _reconnect_wait_seconds,
     _require_bounded_duration,
     _resolve_cli_mode,
     _SpotBookState,
+    _websocket_connect_kwargs,
     data1f_capture_claim,
     data1f_capture_health,
     run_reconstructable_capture,
@@ -272,6 +279,57 @@ def test_usdm_combined_streams_follow_binance_2026_category_split() -> None:
     source = inspect.getsource(BinancePublicResearchCollector)
     for forbidden in ("api-key", "x-mbx-apikey", "listenkey", "place_order", "withdraw"):
         assert forbidden not in source.lower()
+
+
+def test_websocket_connect_disables_client_keepalive_pings() -> None:
+    options = _websocket_connect_kwargs(BinancePublicResearchConfig())
+    assert BINANCE_WEBSOCKET_CLIENT_PING_INTERVAL is None
+    assert BINANCE_WEBSOCKET_CLIENT_PING_TIMEOUT is None
+    assert options["ping_interval"] is None
+    assert options["ping_timeout"] is None
+    assert options["proxy"] is None
+    assert options["max_size"] == BinancePublicResearchConfig().max_application_payload_bytes
+
+
+def test_reconnect_backoff_is_mild_and_stays_under_starve_bound() -> None:
+    assert _reconnect_wait_seconds(0, 1) == 0.0
+    assert _reconnect_wait_seconds(3.0, 1) == 3.0
+    assert _reconnect_wait_seconds(3.0, 2) == 6.0
+    assert _reconnect_wait_seconds(3.0, 3) == 12.0
+    assert _reconnect_wait_seconds(3.0, 4) == BINANCE_RECONNECT_BACKOFF_CAP_SECONDS
+    assert _reconnect_wait_seconds(3.0, 8) == BINANCE_RECONNECT_BACKOFF_CAP_SECONDS
+    assert BINANCE_RECONNECT_BACKOFF_CAP_SECONDS < REQUIRED_STREAM_STARVATION_SECONDS
+    with pytest.raises(ValueError, match="positive integer"):
+        _reconnect_wait_seconds(3.0, 0)
+
+
+@pytest.mark.asyncio
+async def test_connection_factory_passes_disabled_client_keepalive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_connect(uri: str, **options: object) -> AbstractAsyncContextManager[WebSocketConnection]:
+        captured["uri"] = uri
+        captured["options"] = options
+        return _fake_context(FakeConnection(()))
+
+    monkeypatch.setattr(
+        "hyperliquid_bot.binance_public_research.connect",
+        fake_connect,
+    )
+    factory = _connection_factory(
+        BINANCE_USDM_PUBLIC_WEBSOCKET_URL,
+        BinancePublicResearchConfig(),
+    )
+    async with factory():
+        pass
+    assert captured["uri"] == BINANCE_USDM_PUBLIC_WEBSOCKET_URL
+    options = captured["options"]
+    assert isinstance(options, dict)
+    assert options["ping_interval"] is None
+    assert options["ping_timeout"] is None
+    assert options["proxy"] is None
 
 
 def test_spot_trade_and_bbo_preserve_decimal_lexemes_and_time_contract() -> None:
@@ -941,6 +999,51 @@ async def test_transport_reconnect_uses_fresh_session_and_gap_marker() -> None:
         if record.channel == "spot_depth_snapshot" and record.direction is MessageDirection.INBOUND
     ]
     assert len(snapshot_sources) == 1
+
+
+@pytest.mark.asyncio
+async def test_client_keepalive_1011_is_recorded_as_transport_gap() -> None:
+    sink = MemorySink()
+    stop_event = asyncio.Event()
+    stop_after = StopAfterConnections(stop_event, 3)
+    keepalive_timeout = ConnectionClosedError(
+        None,
+        Close(1011, "keepalive ping timeout"),
+    )
+    first = FakeConnection((keepalive_timeout,))
+    second = FakeConnection(
+        (_fixture_text("public_usdm_book_ticker_frame.json"),),
+        on_last=stop_after,
+    )
+    collector, _spot_factory = _collector(sink, stop_event, max_reconnects=1)
+    collector._usdm_public_connection_factory = ScriptedConnectionFactory((first, second))
+    collector._usdm_market_connection_factory = ScriptedConnectionFactory(
+        (
+            FakeConnection(
+                (
+                    _fixture_text("public_usdm_agg_trade_frame.json"),
+                    _fixture_text("public_usdm_mark_price_frame.json"),
+                ),
+                on_last=stop_after,
+            ),
+        )
+    )
+    await collector.capture_for(1, stop_event=stop_event)
+    quality = _local_documents(sink.records, "data_quality")
+    assert any(
+        marker["event"] == "gap"
+        and marker.get("transport_profile") == "usdm_public"
+        and marker.get("exception_class") == "ConnectionClosedError"
+        and marker.get("close_code") == 1011
+        for marker in quality
+    )
+    sessions = _local_documents(sink.records, "session")
+    assert any(
+        marker["event"] == "disconnect"
+        and marker.get("transport_profile") == "usdm_public"
+        and marker.get("close_code") == 1011
+        for marker in sessions
+    )
 
 
 @pytest.mark.asyncio

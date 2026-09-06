@@ -113,10 +113,16 @@ Expected health statuses: `COMPLETED`, `OPERATOR_STOP`, or `FAILED`.
 Required-stream application silence past 60s (`required_stream_starvation_seconds`)
 fails closed mid-run with `liveness_error` and status `FAILED`; that is not a
 transport `gap`. Official Spot JSON/SBE: server ping ~20s, pong within 1 minute,
-connection ~24h, `serverShutdown`. Required update speeds are real-time or
-100ms–1s. Do not invent a client keepalive. `forceOrder` silence is optional and
+connection ~24h, `serverShutdown`. Official USD-M Connect: server ping every 3
+minutes, pong within 10 minutes. Required update speeds are real-time or
+100ms–1s. Set `ping_interval=None` (Binance server ping only; library auto-pong).
+A leftover client keepalive Ping times out as **close_code=1011** on `/public`
+bookTicker. Gaps stay recorded. Mild reconnect backoff (cap 24s) stays under the
+300 connections / 5 minutes / IP limit. `forceOrder` silence is optional and
 is not starvation. An empty required stream must not be accepted as a healthy
-retain on `OPERATOR_STOP`.
+retain on `OPERATOR_STOP`. Apply path: BN process restart; prefer after the
+current 72h retain unless Chupa explicitly OKs a BN-only restart. Live HL/BV/KR
+untouched.
 
 ## How to continue later (there is no resume)
 

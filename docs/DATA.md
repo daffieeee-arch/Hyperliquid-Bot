@@ -1060,15 +1060,32 @@ Official update speeds for the required channels are real-time (`trade`, both `b
 streams, USD-M `aggTrade`) or periodic (`depth@100ms` at 100 ms, `markPrice@1s` at 1 s). Official
 Spot JSON and SBE market streams send a server `ping` frame every 20 seconds and disconnect if no
 `pong` arrives within one minute; a connection is valid for about 24 hours and may emit
-`serverShutdown`. Those ping/pong rules are **transport keepalive**, not an application-data SLA,
-and unsolicited client pongs do not prevent disconnection. DATA-1F therefore does not invent a
-client ping interval. It uses **60 seconds** of required-stream **application** silence
-(`required_stream_starvation_seconds`) as the integrity bound: the official one-minute pong window,
-and 60× the slowest required periodic stream (`markPrice@1s`). Mid-run silence past that bound
-emits a `liveness_error` quality marker and fails the run (`FAILED`). Transport `gaps` /
-`reconnects` stay honest and separate; they are not this abort. `forceOrder` silence is never
-treated as starvation. An empty required stream cannot be accepted as a healthy retain on
-`OPERATOR_STOP` or duration end.
+`serverShutdown`. Official USD-M Connect sends a server `ping` every 3 minutes and disconnects if
+no `pong` arrives within 10 minutes. Those ping/pong rules are **transport keepalive**, not an
+application-data SLA. Unsolicited client pongs are allowed; they do not replace answering the
+server ping. DATA-1F therefore sets `ping_interval=None` / `ping_timeout=None` so the Python
+`websockets` client does not send its own keepalive Pings. The library still auto-replies to
+Binance server Pings. A leftover library default (`ping_interval=20`, `ping_timeout=20`) closed
+with **code 1011** (`ConnectionClosedError`, keepalive ping timeout) when `/public` bookTicker
+did not answer client Pings — the TerraPC `usdm_public` reconnect churn after #52. Spot and
+`usdm_market` share the same kwargs but see far fewer 1011s because those sockets are quieter
+and their clusters more often answer client Pings; the documented keepalive is still
+server-driven on every profile. Gaps stay honest: a 1011 still writes `gap` /
+`transport_disconnect` and a reconnect marker. Reconnect wait uses mild exponential backoff
+(3s, 6s, 12s, cap 24s) so a three-profile storm stays under the official **300 connections /
+5 minutes / IP** Spot limit. The cap is below the 60s starve bound. It uses **60 seconds** of
+required-stream **application** silence (`required_stream_starvation_seconds`) as the integrity
+bound: the official one-minute pong window, and 60× the slowest required periodic stream
+(`markPrice@1s`). Mid-run silence past that bound emits a `liveness_error` quality marker and
+fails the run (`FAILED`). Transport `gaps` / `reconnects` stay honest and separate; they are
+not this abort. `forceOrder` silence is never treated as starvation. An empty required stream
+cannot be accepted as a healthy retain on `OPERATOR_STOP` or duration end.
+
+**Apply path:** `ping_interval=None` is process-start state. The live TerraPC BN collector must
+be restarted to pick it up. Prefer waiting until the current 72h retain finishes unless Chupa
+explicitly approves a BN-only restart (CoS gates). Do not stop HL / BV / KR. Until restart,
+the current run can still finish a useful tape — it is not silent — but Quant
+`bn_gap_fraction` may stay high and H1 remain fail-closed.
 
 The four source-linked, string-preserving research views are:
 

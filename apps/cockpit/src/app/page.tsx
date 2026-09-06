@@ -5,6 +5,7 @@ import { LiveBtcPrice } from "../components/live-btc-price";
 import { MarketsPanel } from "../components/markets-panel";
 import { MetricTile } from "../components/metric-tile";
 import { PaperBlotter } from "../components/paper-blotter";
+import { RiskPanel } from "../components/risk-panel";
 import { VenueCaptureStrip } from "../components/venue-capture-strip";
 import { loadData1ACaptureSnapshot } from "../lib/data1a-capture";
 import {
@@ -326,6 +327,12 @@ export default async function FirstPaperScreen({
       />
       <main>
         <MarketsPanel query={venueQuery} initial={venueStrip} soakPnl={snapshot?.pnl} />
+        <RiskPanel
+          snapshot={snapshot}
+          snapshotError={snapshotError}
+          query={venueQuery}
+          initial={venueStrip}
+        />
         <VenueCaptureStrip query={venueQuery} initial={venueStrip} />
         <Data1ACapturePanel queryRunId={data1aRunId} initial={data1a} />
         {snapshotError !== undefined || snapshot === undefined ? (
@@ -370,6 +377,7 @@ export default async function FirstPaperScreen({
         <span>NO LIVE CAPITAL</span>
         <span>DESK != LIVE</span>
         <span>MARKETS != INVENTED LAST</span>
+        <span>RISK != INVENTED</span>
         <span>PUBLIC MID != PAPER PNL</span>
         <span>DATA-1A HEALTH != PNL</span>
         <span>VENUE STRIP != PNL</span>

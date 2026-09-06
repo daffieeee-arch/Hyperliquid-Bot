@@ -1,9 +1,10 @@
 # Runbook — first PAPER cockpit screen
 
 Status: local fixture-backed first screen with a dense dark PAPER terminal
-layout, plus the first DESK banner and MARKETS panel. PAPER only. Not D22-B,
-not LIVE, not RISK, and not a 24/7 cockpit service. The browser never signs
-orders. The visual chrome is not a clone of a commercial terminal.
+layout, plus the first DESK banner, MARKETS panel, and RISK slice. PAPER only.
+Not D22-B, not LIVE, not a risk engine, and not a 24/7 cockpit service. The
+browser never signs orders. The visual chrome is not a clone of a commercial
+terminal.
 
 ## What the screen reads
 
@@ -14,9 +15,12 @@ strip (HL / Binance / Bitvavo / Kraken). **DESK** shows PAPER mode, the bound
 paper run, and live vs stale capture chips from that strip
 (`COCKPIT_CAPTURE_FRESH_MAX_S=180`). **MARKETS** shows the public Hyperliquid
 BTC-PERP mid already used by the cockpit and fail-closes sibling last/BBO as
-**UNAVAILABLE** (those quotes are not in cockpit APIs). It does not invent PnL,
-position, prices, or capture counts. Missing venue roots, run ids, directories,
-or claims are explicit **MISSING** chips.
+**UNAVAILABLE** (those quotes are not in cockpit APIs). **RISK** copies
+reconstructable PAPER position, assumed overlay PnL, fail-closed preflight
+bounds, and the capture live/stale summary; leverage, margin, liquidation, VaR,
+and venue risk stay **UNAVAILABLE**. It does not invent PnL, position, prices,
+or capture counts. Missing venue roots, run ids, directories, or claims are
+explicit **MISSING** chips.
 
 Canonical local fixture, `run_id` `20260904t001800z-live-paper`:
 
@@ -50,10 +54,12 @@ Public BTC-PERP mid is fetched separately from Hyperliquid
 `https://api.hyperliquid.xyz/info` with `{"type":"allMids"}`. No credentials.
 The browser never talks to a signing endpoint.
 
-## Open DESK / MARKETS locally
+## Open DESK / MARKETS / RISK locally
 
 Same first PAPER screen. DESK is the sticky run/mode banner; MARKETS is the
-quote table under it. Collectors stay running; the cockpit only reads files.
+quote table under it; RISK is the dense reconstructable overlay / fail-closed
+bounds panel. Collectors stay running; the cockpit only reads files. Missing
+RISK fields stay **UNAVAILABLE**.
 
 ```bash
 export TRADING_MODE=PAPER
@@ -62,7 +68,8 @@ pnpm --filter @hyperliquid-bot/cockpit dev
 ```
 
 Open `http://127.0.0.1:3000`. Fixture PAPER JSON and the DATA-1A sample run
-are enough to render DESK + MARKETS; sibling venue quotes stay UNAVAILABLE.
+are enough to render DESK + MARKETS + RISK; sibling venue quotes and
+leverage/margin/liquidation/VaR stay UNAVAILABLE.
 
 ## Point at VPS / reconstructable artifacts later
 
@@ -197,4 +204,5 @@ stays byte-identical.
 - `LIVE` / `TESTNET` / `SHADOW` refuse to start the paper reader, DATA-1A view,
   venue strip, DESK glance, and MARKETS public mid
 - MARKETS never invents a last/BBO; sibling venues stay **UNAVAILABLE**
-- RISK is not built and must not be filled with fake data
+- RISK copies only reconstructable PAPER / COURSE-1 / strip fields; missing
+  leverage, margin, liquidation, VaR, and venue risk stay **UNAVAILABLE**

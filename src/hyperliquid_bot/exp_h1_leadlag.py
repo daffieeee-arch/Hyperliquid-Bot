@@ -8,6 +8,12 @@ It consumes a WP-Q1 ``panel_hl_binance`` panel (or builds one via that module),
 masks gap/incomplete buckets, and scores one predeclared signal at three fixed
 Δ horizons under 1x / 1.5x / 2x Hyperliquid cost stress.
 
+The Binance impulse instrument is explicit. Default is USD-M mark
+(perp-to-perp vs Hyperliquid BTC-PERP). Spot last/BBO is opt-in and never
+falls through to USD-M agg or mark. Missing required-family prices skip that
+observation. Issue #52 fixed USD-M bookTicker WebSocket routing only; it did
+not fix this Quant instrument identity.
+
 Verdicts are ``noise`` or ``not_enough_data`` only. This module refuses to
 assign ``edge``. Positive-looking after-cost metrics are still ``noise``.
 """
@@ -21,7 +27,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from pathlib import Path
-from typing import Final, Literal, cast
+from typing import Final, Literal, assert_never, cast
 
 import duckdb
 
@@ -30,6 +36,7 @@ from .panel_hl_binance import (
     NS_PER_MS,
     PANEL_PARQUET_NAME,
     PANEL_SUMMARY_NAME,
+    PANEL_VERSION,
     PanelVerdictName,
     build_hl_binance_panel,
     require_bucket_ms,
@@ -37,9 +44,8 @@ from .panel_hl_binance import (
 
 TRADING_MODE: Final = "PAPER"
 EXPERIMENT_ID: Final = "exp_h1_leadlag"
-PANEL_VERSION: Final = "panel_hl_binance/wp-q1"
-STRATEGY_MODEL_VERSION: Final = "h1-leadlag-scaffold-v1"
-FEATURE_SET: Final = "bn_prior_bucket_return_sign_to_hl_forward_return"
+STRATEGY_MODEL_VERSION: Final = "h1-leadlag-scaffold-v2"
+FEATURE_SET_PREFIX: Final = "bn_prior_bucket_return_sign_to_hl_forward_return"
 COMMIT_SHA_UNSET: Final = "UNSET"
 PROMOTION_DECISION: Final = "forbidden"
 SUMMARY_JSON_NAME: Final = "h1-leadlag-summary.json"
@@ -60,6 +66,11 @@ _NO_EDGE_NOTE: Final = (
     "PAPER research only. Descriptive H1 scaffold; never a trading result "
     "and never a promotion signal."
 )
+_IDENTITY_NOTE: Final = (
+    "Binance impulse identity is explicit and fail-closed. Spot last/BBO, "
+    "USD-M aggTrade, and USD-M mark are distinct series and are never mixed. "
+    "Issue #52 was USD-M bookTicker transport routing only."
+)
 _SCAFFOLD_NOTE: Final = (
     "WP-Q2 H1 may only emit noise or not_enough_data. Positive after-cost "
     "metrics do not change the verdict."
@@ -72,11 +83,47 @@ _OOS_NOTE: Final = (
 H1InputMode = Literal["panel_files", "reconstructable_build"]
 
 
+class BinanceImpulseInstrument(StrEnum):
+    """Explicit Binance impulse identity. Families are never mixed."""
+
+    SPOT = "binance_spot"
+    USDM_AGG = "binance_usdm_agg"
+    USDM_MARK = "binance_usdm_mark"
+
+
+DEFAULT_BINANCE_IMPULSE_INSTRUMENT: Final = BinanceImpulseInstrument.USDM_MARK
+FEATURE_SET: Final = f"{FEATURE_SET_PREFIX}/{DEFAULT_BINANCE_IMPULSE_INSTRUMENT.value}"
+
+
 class H1VerdictName(StrEnum):
     """Closed H1 verdict set. Reserved promotion tokens are not members."""
 
     NOISE = "noise"
     NOT_ENOUGH_DATA = "not_enough_data"
+
+
+def feature_set_for(instrument: BinanceImpulseInstrument) -> str:
+    """Registry feature-set token including the chosen Binance impulse identity."""
+
+    return f"{FEATURE_SET_PREFIX}/{instrument.value}"
+
+
+def require_binance_impulse_instrument(value: object) -> BinanceImpulseInstrument:
+    """Accept a closed Binance impulse identity. Cross-family tokens are rejected."""
+
+    if type(value) is BinanceImpulseInstrument:
+        return value
+    if type(value) is not str:
+        raise TypeError(
+            "binance_impulse_instrument must be a BinanceImpulseInstrument or its value."
+        )
+    try:
+        return BinanceImpulseInstrument(value)
+    except ValueError as error:
+        raise ValueError(
+            "binance_impulse_instrument must be binance_spot, binance_usdm_agg, "
+            "or binance_usdm_mark."
+        ) from error
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +167,7 @@ class PanelBucket:
     bn_spot_last_price: Decimal | None
     bn_spot_bbo_mid_proxy: Decimal | None
     bn_usdm_last_agg_price: Decimal | None
+    bn_usdm_mark_price: Decimal | None
     bn_incomplete: bool
     bn_gap_detected: bool
     overlap_ok: bool
@@ -313,10 +361,15 @@ def evaluate_h1_leadlag(
     commit_sha: str | None = None,
     source_environment: str = "DEV",
     thresholds: H1SampleThresholds | None = None,
+    binance_impulse_instrument: BinanceImpulseInstrument | str = (
+        DEFAULT_BINANCE_IMPULSE_INSTRUMENT
+    ),
 ) -> H1RunResult:
     """Load or build a WP-Q1 panel and return a fail-closed H1 verdict."""
 
     oos_start, oos_end = require_utc_ns_range(oos_start_utc_ns, oos_end_utc_ns)
+    resolved_instrument = require_binance_impulse_instrument(binance_impulse_instrument)
+    resolved_feature_set = feature_set_for(resolved_instrument)
     resolved_thresholds = thresholds if thresholds is not None else H1_SAMPLE_THRESHOLDS
     if type(resolved_thresholds) is not H1SampleThresholds:
         raise TypeError("thresholds must be an H1SampleThresholds instance.")
@@ -342,6 +395,7 @@ def evaluate_h1_leadlag(
         ("delta_buckets", list(deltas)),
         ("signal_lookback_buckets", SIGNAL_LOOKBACK_BUCKETS),
         ("cost_multipliers", [_decimal_text(item) for item in COST_MULTIPLIERS]),
+        ("binance_impulse_instrument", resolved_instrument.value),
     )
     cost_assumptions = (
         ("hl_taker_fee", _decimal_text(HL_TAKER_FEE)),
@@ -369,6 +423,7 @@ def evaluate_h1_leadlag(
             commit_sha=resolved_commit,
             source_environment=source_environment.strip(),
             output_dir=output_dir,
+            feature_set=resolved_feature_set,
         )
 
     summary_payload, summary_reasons = _load_panel_summary(summary_path)
@@ -403,6 +458,7 @@ def evaluate_h1_leadlag(
             commit_sha=resolved_commit,
             source_environment=source_environment.strip(),
             output_dir=output_dir,
+            feature_set=resolved_feature_set,
         )
 
     rows, load_reasons = _load_panel_buckets(parquet_path)
@@ -425,6 +481,7 @@ def evaluate_h1_leadlag(
             commit_sha=resolved_commit,
             source_environment=source_environment.strip(),
             output_dir=output_dir,
+            feature_set=resolved_feature_set,
         )
 
     bucket_ns = resolved_bucket_ms * NS_PER_MS
@@ -443,7 +500,12 @@ def evaluate_h1_leadlag(
     oos_cells: list[HorizonCostMetrics] = []
     in_sample_cells: list[HorizonCostMetrics] = []
     for delta in deltas:
-        trades = _signal_trades(by_ns, bucket_ns=bucket_ns, delta_buckets=delta)
+        trades = _signal_trades(
+            by_ns,
+            bucket_ns=bucket_ns,
+            delta_buckets=delta,
+            instrument=resolved_instrument,
+        )
         oos_trades = tuple(
             trade
             for trade in trades
@@ -499,6 +561,7 @@ def evaluate_h1_leadlag(
             commit_sha=resolved_commit,
             source_environment=source_environment.strip(),
             output_dir=output_dir,
+            feature_set=resolved_feature_set,
         )
 
     return _finish_result(
@@ -520,6 +583,7 @@ def evaluate_h1_leadlag(
         commit_sha=resolved_commit,
         source_environment=source_environment.strip(),
         output_dir=output_dir,
+        feature_set=resolved_feature_set,
     )
 
 
@@ -545,14 +609,29 @@ def hl_response_price(bucket: PanelBucket) -> Decimal | None:
     )
 
 
-def bn_impulse_price(bucket: PanelBucket) -> Decimal | None:
-    """Primary BN price: spot trade, else spot BBO mid, else USDM agg."""
+def bn_impulse_price(
+    bucket: PanelBucket,
+    instrument: BinanceImpulseInstrument,
+) -> Decimal | None:
+    """Same-family Binance impulse only. Missing family price fails closed.
 
-    return _first_positive(
-        bucket.bn_spot_last_price,
-        bucket.bn_spot_bbo_mid_proxy,
-        bucket.bn_usdm_last_agg_price,
-    )
+    ``binance_spot`` uses ``bn_spot_last_price``, then same-family
+    ``bn_spot_bbo_mid_proxy``. USD-M modes use only their named column.
+    Spot and USD-M are never mixed.
+    """
+
+    match instrument:
+        case BinanceImpulseInstrument.SPOT:
+            return _first_positive(
+                bucket.bn_spot_last_price,
+                bucket.bn_spot_bbo_mid_proxy,
+            )
+        case BinanceImpulseInstrument.USDM_AGG:
+            return _first_positive(bucket.bn_usdm_last_agg_price)
+        case BinanceImpulseInstrument.USDM_MARK:
+            return _first_positive(bucket.bn_usdm_mark_price)
+        case _:
+            assert_never(instrument)
 
 
 def hl_half_spread(bucket: PanelBucket) -> Decimal:
@@ -669,6 +748,7 @@ def _load_panel_buckets(path: Path | None) -> tuple[tuple[PanelBucket, ...], tup
                 bn_spot_last_price,
                 bn_spot_bbo_mid_proxy,
                 bn_usdm_last_agg_price,
+                bn_usdm_mark_price,
                 bn_incomplete,
                 bn_gap_detected,
                 overlap_ok
@@ -698,9 +778,10 @@ def _load_panel_buckets(path: Path | None) -> tuple[tuple[PanelBucket, ...], tup
                 bn_spot_last_price=_decimal_or_none(row[8]),
                 bn_spot_bbo_mid_proxy=_decimal_or_none(row[9]),
                 bn_usdm_last_agg_price=_decimal_or_none(row[10]),
-                bn_incomplete=bool(row[11]),
-                bn_gap_detected=bool(row[12]),
-                overlap_ok=bool(row[13]),
+                bn_usdm_mark_price=_decimal_or_none(row[11]),
+                bn_incomplete=bool(row[12]),
+                bn_gap_detected=bool(row[13]),
+                overlap_ok=bool(row[14]),
             )
         )
     if not buckets:
@@ -713,6 +794,7 @@ def _signal_trades(
     *,
     bucket_ns: int,
     delta_buckets: int,
+    instrument: BinanceImpulseInstrument,
 ) -> tuple[H1Trade, ...]:
     lookback_ns = SIGNAL_LOOKBACK_BUCKETS * bucket_ns
     horizon_ns = delta_buckets * bucket_ns
@@ -725,8 +807,8 @@ def _signal_trades(
             continue
         if not (bucket_is_usable(bucket) and bucket_is_usable(prior) and bucket_is_usable(later)):
             continue
-        bn_now = bn_impulse_price(bucket)
-        bn_prev = bn_impulse_price(prior)
+        bn_now = bn_impulse_price(bucket, instrument)
+        bn_prev = bn_impulse_price(prior, instrument)
         hl_now = hl_response_price(bucket)
         hl_later = hl_response_price(later)
         if bn_now is None or bn_prev is None or hl_now is None or hl_later is None:
@@ -836,6 +918,7 @@ def _finish_insufficient(
     commit_sha: str,
     source_environment: str,
     output_dir: Path | None,
+    feature_set: str,
 ) -> H1RunResult:
     return _finish_result(
         verdict=assign_h1_verdict(H1VerdictName.NOT_ENOUGH_DATA),
@@ -857,6 +940,7 @@ def _finish_insufficient(
         source_environment=source_environment,
         output_dir=output_dir,
         reason_tuple=reasons,
+        feature_set=feature_set,
     )
 
 
@@ -880,6 +964,7 @@ def _finish_result(
     commit_sha: str,
     source_environment: str,
     output_dir: Path | None,
+    feature_set: str,
     reason_tuple: tuple[str, ...] | None = None,
 ) -> H1RunResult:
     summary_path_out: str | None = None
@@ -894,7 +979,7 @@ def _finish_result(
         commit_sha=commit_sha,
         container_image_digest=None,
         source_environment=source_environment,
-        feature_set=FEATURE_SET,
+        feature_set=feature_set,
         strategy_model_version=STRATEGY_MODEL_VERSION,
         parameters=parameters,
         random_seed=None,
@@ -917,7 +1002,7 @@ def _finish_result(
             ("h1_summary", SUMMARY_JSON_NAME),
         ),
         promotion_decision=PROMOTION_DECISION,
-        notes=(_NO_EDGE_NOTE, _SCAFFOLD_NOTE, _OOS_NOTE),
+        notes=(_NO_EDGE_NOTE, _SCAFFOLD_NOTE, _OOS_NOTE, _IDENTITY_NOTE),
         input_mode=input_mode,
         summary_json=summary_path_out,
     )
@@ -1046,6 +1131,16 @@ def _argument_parser() -> argparse.ArgumentParser:
         default="DEV",
         help="Registry source environment. Default: DEV.",
     )
+    parser.add_argument(
+        "--binance-impulse-instrument",
+        choices=tuple(item.value for item in BinanceImpulseInstrument),
+        default=DEFAULT_BINANCE_IMPULSE_INSTRUMENT.value,
+        help=(
+            "Explicit Binance impulse identity. Default binance_usdm_mark "
+            "(perp-to-perp vs HL BTC-PERP). binance_spot is opt-in and never "
+            "falls back to USD-M. Missing family price skips the observation."
+        ),
+    )
     return parser
 
 
@@ -1063,6 +1158,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         output_dir=cast(Path | None, args.output_dir),
         commit_sha=cast(str | None, args.commit_sha),
         source_environment=cast(str, args.source_environment),
+        binance_impulse_instrument=cast(str, args.binance_impulse_instrument),
     )
     print(json.dumps(result.to_json_dict(), indent=2, sort_keys=True))
     return 0

@@ -10,6 +10,9 @@ import duckdb
 import pytest
 
 from hyperliquid_bot.panel_hl_binance import (
+    BINANCE_IDENTITY_WARNING,
+    BINANCE_SPOT_FAMILY_COLUMNS,
+    BINANCE_USDM_FAMILY_COLUMNS,
     DEFAULT_BUCKET_MS,
     NS_PER_MS,
     PANEL_MAX_GAP_FRACTION,
@@ -17,6 +20,7 @@ from hyperliquid_bot.panel_hl_binance import (
     PANEL_PARQUET_NAME,
     PANEL_SUFFICIENCY_THRESHOLDS,
     PANEL_SUMMARY_NAME,
+    PANEL_VERSION,
     PanelSufficiencyThresholds,
     PanelVerdictName,
     build_hl_binance_panel,
@@ -270,7 +274,7 @@ def _bn_bucket_records(
             marker={
                 "context_type": "mark_price",
                 "symbol": "BTCUSDT",
-                "mark_price": "100000.880000000000000001",
+                "mark_price": f"100000.88000000000000000{price_suffix}",
                 "index_price": "100000.700000000000000001",
                 "funding_rate": "0.000100000000000001",
             },
@@ -368,8 +372,20 @@ async def test_synthetic_overlap_writes_panel_ready_parquet(tmp_path: Path) -> N
     assert panel_path.name == PANEL_PARQUET_NAME
     assert panel_path.is_file()
     assert Path(result.summary_json or "").is_file()
-    _assert_no_edge(result.to_json_dict())
-    _assert_no_edge(json.loads(Path(result.summary_json or "").read_text(encoding="utf-8")))
+    payload = result.to_json_dict()
+    _assert_no_edge(payload)
+    written = json.loads(Path(result.summary_json or "").read_text(encoding="utf-8"))
+    _assert_no_edge(written)
+    assert payload["panel_version"] == PANEL_VERSION
+    assert written["panel_version"] == PANEL_VERSION
+    families = payload["binance_column_families"]
+    assert isinstance(families, dict)
+    assert families["spot"] == list(BINANCE_SPOT_FAMILY_COLUMNS)
+    assert families["usdm"] == list(BINANCE_USDM_FAMILY_COLUMNS)
+    warning = payload["binance_identity_warning"]
+    assert warning == BINANCE_IDENTITY_WARNING
+    assert isinstance(warning, str)
+    assert "must not blend" in warning
 
     types = _price_column_types(panel_path)
     for column in _PRICE_COLUMNS:
@@ -397,6 +413,10 @@ async def test_synthetic_overlap_writes_panel_ready_parquet(tmp_path: Path) -> N
     assert row[19] == "100000.880000000000000001"
     assert row[21] == "0.000100000000000001"
     assert row[27] is True
+    assert types["bn_spot_complete"] == "BOOLEAN"
+    assert types["bn_usdm_complete"] == "BOOLEAN"
+    assert row[28] is True
+    assert row[29] is True
 
 
 @pytest.mark.asyncio

@@ -31,6 +31,13 @@ reads the existing views:
 Prices, mids, marks and funding stay text. The series clock is receipt UTC
 (``received_utc_ns``). Venue event times are not used as the join clock.
 
+Binance column families are **not interchangeable**. Spot last/BBO are
+spot-market prices. USD-M ``aggTrade`` is the futures tape. USD-M mark is a
+calculated fair-value / liquidation series. Consumers (including H1) must
+select one family explicitly and must never blend Spot with USD-M. Issue #52
+fixed USD-M bookTicker WebSocket ``/public`` vs ``/market`` routing only; it
+did not fix Quant instrument identity.
+
 Bucket join
 -----------
 Default bucket is **1000 ms** (1 second), configurable via ``--bucket-ms``
@@ -45,12 +52,17 @@ Panel columns (Parquet, ZSTD):
 - BN last spot trade / spot bid / ask / BBO mid proxy (text), USDM last
   aggregate-trade price, mark, index and funding (text), spot/USDM counts,
   ``bn_incomplete``, ``bn_gap_detected`` (+ count)
+- ``bn_spot_complete`` / ``bn_usdm_complete`` — per-family presence flags
+  (additive; do not replace ``bn_incomplete``)
 - ``overlap_ok`` — both sides have at least one market observation in the
   bucket
 
 A Hyperliquid bucket is complete when it has at least one trade, BBO, or
-non-empty mid. A Binance bucket is complete when it has at least one spot
-trade, spot BBO, USDM aggregate trade, or USDM mark.
+non-empty mid. A Binance bucket is complete (``bn_incomplete`` is false)
+when it has at least one spot trade, spot BBO, USDM aggregate trade, or
+USDM mark. That storage gate is **not** an invitation to mix families:
+``bn_spot_complete`` is true only when a spot trade or spot BBO is present;
+``bn_usdm_complete`` is true only when a USD-M agg or mark is present.
 
 Fail-closed gates
 -----------------
@@ -109,6 +121,33 @@ PANEL_MAX_GAP_FRACTION: Final = 0.05
 PANEL_MIN_OVERLAP_BUCKETS: Final = 1
 PANEL_PARQUET_NAME: Final = "panel.parquet"
 PANEL_SUMMARY_NAME: Final = "panel-summary.json"
+PANEL_VERSION: Final = "panel_hl_binance/wp-q1.1"
+
+BINANCE_SPOT_FAMILY_COLUMNS: Final = (
+    "bn_spot_last_price",
+    "bn_spot_bid_price",
+    "bn_spot_ask_price",
+    "bn_spot_bbo_mid_proxy",
+    "bn_spot_trade_count",
+    "bn_spot_bbo_count",
+    "bn_spot_complete",
+)
+BINANCE_USDM_FAMILY_COLUMNS: Final = (
+    "bn_usdm_last_agg_price",
+    "bn_usdm_mark_price",
+    "bn_usdm_index_price",
+    "bn_usdm_funding_rate",
+    "bn_usdm_agg_count",
+    "bn_usdm_mark_count",
+    "bn_usdm_complete",
+)
+BINANCE_IDENTITY_WARNING: Final = (
+    "Consumers must not blend Binance Spot and USD-M columns. Spot last/BBO "
+    "are spot-market prices; USD-M aggTrade is the futures tape; USD-M mark "
+    "is a calculated fair-value / liquidation series. They are not "
+    "interchangeable. Issue #52 fixed USD-M bookTicker WebSocket routing "
+    "only; it did not fix Quant instrument identity."
+)
 
 REQUIRED_HL_VIEWS: Final = (
     "raw_records",
@@ -170,6 +209,8 @@ _PANEL_COLUMNS: Final = (
     ("bn_incomplete", "BOOLEAN NOT NULL"),
     ("bn_gap_detected", "BOOLEAN NOT NULL"),
     ("overlap_ok", "BOOLEAN NOT NULL"),
+    ("bn_spot_complete", "BOOLEAN NOT NULL"),
+    ("bn_usdm_complete", "BOOLEAN NOT NULL"),
 )
 _HL_INCOMPLETE_INDEX: Final = 10
 _BN_INCOMPLETE_INDEX: Final = 25
@@ -309,6 +350,12 @@ class PanelRunResult:
         return {
             "trading_mode": self.trading_mode,
             "verdict": self.verdict.value,
+            "panel_version": PANEL_VERSION,
+            "binance_column_families": {
+                "spot": list(BINANCE_SPOT_FAMILY_COLUMNS),
+                "usdm": list(BINANCE_USDM_FAMILY_COLUMNS),
+            },
+            "binance_identity_warning": BINANCE_IDENTITY_WARNING,
             "sufficiency": self.sufficiency.to_json_dict(),
             "thresholds": self.thresholds.to_json_dict(),
             "bucket_ms": self.bucket_ms,
@@ -850,12 +897,9 @@ def _build_panel_rows(
         bn_agg_count = 0 if usdm_agg is None else int(cast(int, usdm_agg[1]))
         bn_mark_count = 0 if usdm_mark is None else int(cast(int, usdm_mark[3]))
         bn_gap_count = bn_gaps.get(bucket_id, 0)
-        bn_incomplete = (
-            bn_spot_trade_count == 0
-            and bn_spot_bbo_count == 0
-            and bn_agg_count == 0
-            and bn_mark_count == 0
-        )
+        bn_spot_complete = bn_spot_trade_count > 0 or bn_spot_bbo_count > 0
+        bn_usdm_complete = bn_agg_count > 0 or bn_mark_count > 0
+        bn_incomplete = not bn_spot_complete and not bn_usdm_complete
         rows.append(
             (
                 bucket_id * bucket_ns,
@@ -886,6 +930,8 @@ def _build_panel_rows(
                 bn_incomplete,
                 bn_gap_count > 0,
                 (not hl_incomplete) and (not bn_incomplete),
+                bn_spot_complete,
+                bn_usdm_complete,
             )
         )
     return tuple(rows)

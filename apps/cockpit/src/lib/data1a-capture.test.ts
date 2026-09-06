@@ -172,6 +172,36 @@ describe("DATA-1A capture loader", () => {
     );
   });
 
+  it("auto-detects a live DATA-1A retain when ARTIFACT_ROOT has no run_id", () => {
+    const artifactRoot = mkdtempSync(join(tmpdir(), "data1a-auto-"));
+    const runId = "20260905t232635z-live-retained";
+    const runDir = join(artifactRoot, "data-1a", "hyperliquid", "BTC-PERP", runId);
+    mkdirSync(join(runDir, "raw"), { recursive: true });
+    writeJson(join(runDir, "capture-claim.json"), {
+      schema: "data-1a-retained-capture-claim-v1",
+      path_contract: "data-1a-hyperliquid-btc-perp-v1",
+      run_id: runId,
+      state: "STARTED_FAIL_CLOSED",
+      retained: true,
+      twenty_four_seven: false,
+      signing: false,
+    });
+    const part = join(runDir, "raw", "part-000001-000000000001-000000000010-abc.parquet");
+    writeFileSync(part, "hl-part", { encoding: "utf8" });
+    utimesSync(part, new Date("2026-09-04T13:49:20Z"), new Date("2026-09-04T13:49:20Z"));
+
+    const snapshot = loadData1ACaptureSnapshot(
+      { TRADING_MODE: "PAPER", ARTIFACT_ROOT: artifactRoot },
+      repoRoot,
+      {},
+      () => observedAt,
+    );
+    expect(snapshot.source).toBe("auto-detect");
+    expect(snapshot.runId).toBe(runId);
+    expect(snapshot.parts.count).toBe(1);
+    expect(snapshot.health_missing).toBe(true);
+  });
+
   it("uses query run_id with ARTIFACT_ROOT for the reconstructable path contract", () => {
     const artifactRoot = mkdtempSync(join(tmpdir(), "data1a-root-"));
     const runDir = join(artifactRoot, "data-1a", "hyperliquid", "BTC-PERP", "query-run");

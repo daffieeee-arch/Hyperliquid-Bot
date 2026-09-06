@@ -1,13 +1,15 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { bindVenueCaptureRun } from "./capture-runs";
 import { DEFAULT_CAPTURE_FRESH_MAX_S, resolveCaptureFreshMaxSeconds } from "./capture-freshness";
+import { listPublishedParquetParts } from "./parquet-parts";
+
+export { listPublishedParquetParts };
 import {
-  DATA1A_PARQUET_GLOB_PREFIX,
-  DATA1A_PARQUET_SUFFIX,
   VENUE_CAPTURE_CONTRACTS,
   findRepoRoot,
-  resolveData1ARunDir,
+  requirePaperTradingMode,
   type Data1AQuery,
   type VenueCaptureContract,
   type VenueRunResolution,
@@ -16,7 +18,6 @@ import type {
   Data1ACaptureClaim,
   Data1ACaptureHealth,
   Data1ACaptureSnapshot,
-  Data1APartListing,
   JsonObject,
 } from "./types";
 
@@ -104,56 +105,6 @@ function refuseTwentyFourSeven(source: JsonObject, path: string, refuseLabel: st
     throw new Error(`${path} claims 24/7 service; the ${refuseLabel} cockpit view refuses that.`);
   }
   return false;
-}
-
-function isPublishedParquetPart(name: string): boolean {
-  return (
-    name.startsWith(DATA1A_PARQUET_GLOB_PREFIX) &&
-    name.endsWith(DATA1A_PARQUET_SUFFIX) &&
-    !name.startsWith(".")
-  );
-}
-
-export function listPublishedParquetParts(rawDir: string): Data1APartListing {
-  if (!existsSync(rawDir)) {
-    return {
-      raw_dir_present: false,
-      count: undefined,
-      last_part_name: undefined,
-      last_part_mtime_utc: undefined,
-      bytes: undefined,
-    };
-  }
-
-  const names = readdirSync(rawDir).filter((name) => isPublishedParquetPart(name));
-  if (names.length === 0) {
-    return {
-      raw_dir_present: true,
-      count: 0,
-      last_part_name: undefined,
-      last_part_mtime_utc: undefined,
-      bytes: 0,
-    };
-  }
-
-  let lastName = names[0] ?? "";
-  let lastMtimeMs = Number.NEGATIVE_INFINITY;
-  let bytes = 0;
-  for (const name of names) {
-    const stats = statSync(join(rawDir, name));
-    bytes += stats.size;
-    if (stats.mtimeMs >= lastMtimeMs) {
-      lastMtimeMs = stats.mtimeMs;
-      lastName = name;
-    }
-  }
-  return {
-    raw_dir_present: true,
-    count: names.length,
-    last_part_name: lastName,
-    last_part_mtime_utc: new Date(lastMtimeMs).toISOString(),
-    bytes,
-  };
 }
 
 function loadClaim(runDir: string, contract: VenueCaptureContract): Data1ACaptureClaim {
@@ -297,13 +248,22 @@ export function loadData1ACaptureSnapshot(
   query: Data1AQuery = {},
   now: () => string = () => new Date().toISOString(),
 ): Data1ACaptureSnapshot {
-  const resolved = resolveData1ARunDir(env, repoRoot, query);
+  requirePaperTradingMode(env.TRADING_MODE);
+  const observedAt = now();
+  const freshMaxSeconds = resolveCaptureFreshMaxSeconds(env);
+  const resolved = bindVenueCaptureRun(
+    VENUE_CAPTURE_CONTRACTS.hl,
+    env,
+    repoRoot,
+    { data1a_run_id: query.data1a_run_id },
+    { now: observedAt, freshMaxSeconds },
+  );
   try {
     return loadCaptureSnapshotForContract(
       resolved,
       VENUE_CAPTURE_CONTRACTS.hl,
-      now,
-      resolveCaptureFreshMaxSeconds(env),
+      () => observedAt,
+      freshMaxSeconds,
     );
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "";

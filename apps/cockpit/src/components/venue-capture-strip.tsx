@@ -1,8 +1,10 @@
 "use client";
 
+import { RunPicker } from "./run-picker";
+import { RunProvenance } from "./run-provenance";
 import { DEFAULT_CAPTURE_FRESH_MAX_S, STALE_MTIME_REASON } from "../lib/capture-freshness";
 import { DATA1A_CAPTURE_POLL_MS } from "../lib/data1a-capture-poll";
-import { presentCopiedNumber, presentCopiedText } from "../lib/display";
+import { captureBindingSourceLabel, presentCopiedNumber, presentCopiedText } from "../lib/display";
 import type { VenueCaptureQuery } from "../lib/paths";
 import type { VenueCaptureChip, VenueCaptureStripResponse } from "../lib/types";
 import { useVenueCapturePoll } from "../lib/use-venue-capture";
@@ -30,6 +32,10 @@ function Chip({ venue }: { venue: VenueCaptureChip }) {
           <dd>{presentCopiedNumber(venue.part_count)}</dd>
         </div>
       </dl>
+      <p className="venue-chip-run">
+        <span>{presentCopiedText(venue.run_id)}</span>
+        <span>{captureBindingSourceLabel(venue.binding_source)}</span>
+      </p>
       <p className="venue-chip-note">
         {venue.status === "MISSING"
           ? "Fail closed · not invented"
@@ -62,11 +68,15 @@ export function VenueCaptureStrip({
         </p>
       </div>
       {result.ok ? (
-        <ul className="venue-strip-chips">
-          {result.strip.venues.map((venue) => (
-            <Chip key={venue.id} venue={venue} />
-          ))}
-        </ul>
+        <>
+          <RunPicker query={query} catalog={result.strip.catalog} venues={result.strip.venues} />
+          <ul className="venue-strip-chips">
+            {result.strip.venues.map((venue) => (
+              <Chip key={venue.id} venue={venue} />
+            ))}
+          </ul>
+          <RunProvenance provenance={result.strip.provenance} />
+        </>
       ) : (
         <p className="error">{result.error}</p>
       )}

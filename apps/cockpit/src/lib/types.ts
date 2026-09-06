@@ -166,10 +166,47 @@ export type Data1APartListing = {
   bytes: number | undefined;
 };
 
+export type CaptureBindingSource =
+  "query" | "env" | "explicit-dir" | "auto-detect" | "default-fixture" | "unbound";
+
+export type CaptureRunCandidate = {
+  run_id: string;
+  has_claim: boolean;
+  has_health: boolean;
+  live: boolean;
+  last_part_mtime_utc?: string;
+  part_count?: number;
+};
+
+export type VenueCaptureCatalog = {
+  id: "hl" | "binance" | "bitvavo" | "kraken";
+  chip: "HL" | "BINANCE" | "BITVAVO" | "KRAKEN";
+  series: "DATA-1A" | "DATA-1B" | "DATA-1E" | "DATA-1F";
+  query_key: "data1a_run_id" | "data1b_run_id" | "data1e_run_id" | "data1f_run_id";
+  candidates: CaptureRunCandidate[];
+};
+
+export type CaptureRunProvenanceRow = {
+  id: "hl" | "binance" | "bitvavo" | "kraken";
+  chip: "HL" | "BINANCE" | "BITVAVO" | "KRAKEN";
+  series: "DATA-1A" | "DATA-1B" | "DATA-1E" | "DATA-1F";
+  run_id: string;
+  binding_source: CaptureBindingSource;
+  started_at_utc?: string;
+};
+
+export type CaptureRunProvenance = {
+  rows: CaptureRunProvenanceRow[];
+  distinct_run_ids: string[];
+  shared_run_ids: string[];
+  overlap_starts_utc?: string;
+  overlap_note: string;
+};
+
 export type Data1ACaptureSnapshot = {
   runDir: string;
   runId: string;
-  source: "data1a-run-dir" | "venue-run-dir" | "path-contract" | "default-fixture";
+  source: "data1a-run-dir" | "venue-run-dir" | "path-contract" | "auto-detect" | "default-fixture";
   observed_at: string;
   fresh_max_s: number;
   path_contract: string;
@@ -202,6 +239,7 @@ export type VenueCaptureChip = {
   last_part_age: string;
   last_part_mtime_utc: string | undefined;
   run_id: string | undefined;
+  binding_source: CaptureBindingSource;
   observed_at: string;
   error: string | undefined;
 };
@@ -210,6 +248,8 @@ export type VenueCaptureStrip = {
   observed_at: string;
   fresh_max_s: number;
   venues: VenueCaptureChip[];
+  catalog: VenueCaptureCatalog[];
+  provenance: CaptureRunProvenance;
 };
 
 export type VenueCaptureStripResponse =

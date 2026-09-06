@@ -4,6 +4,7 @@ import { DATA1A_CAPTURE_POLL_MS } from "./data1a-capture-poll";
 import {
   fetchVenueCaptureStrip,
   parseVenueCaptureStripResponse,
+  venueCapturePickerHref,
   venueCapturePollError,
   venueCaptureRequestUrl,
 } from "./venue-capture-poll";
@@ -12,6 +13,21 @@ describe("multi-venue capture poll helpers", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+  });
+
+  it("builds picker hrefs without inventing missing venue query params", () => {
+    expect(venueCapturePickerHref("/", {}, "data1f_run_id", "20260905t235830z-live-retained")).toBe(
+      "/?data1f_run_id=20260905t235830z-live-retained",
+    );
+    expect(
+      venueCapturePickerHref(
+        "/",
+        { data1a_run_id: "hl-run", data1f_run_id: "bn-run" },
+        "data1f_run_id",
+        "",
+      ),
+    ).toBe("/?data1a_run_id=hl-run");
+    expect(venueCapturePickerHref("/", { data1a_run_id: "hl-run" }, "data1a_run_id", "")).toBe("/");
   });
 
   it("reuses the DATA-1A 5s poll and encodes only present run ids", () => {

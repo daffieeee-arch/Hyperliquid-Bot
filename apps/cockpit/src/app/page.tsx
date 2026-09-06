@@ -425,6 +425,7 @@ export default async function FirstPaperScreen({
         <span>PUBLIC MID != PAPER PNL</span>
         <span>DATA-1A HEALTH != PNL</span>
         <span>VENUE STRIP != PNL</span>
+        <span>RUN PICKER != INVENTED DATA</span>
       </footer>
     </div>
   );

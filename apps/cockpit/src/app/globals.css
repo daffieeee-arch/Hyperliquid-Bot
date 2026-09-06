@@ -254,6 +254,7 @@ main {
   grid-template-columns: minmax(6.5rem, 28%) minmax(6rem, 22%) 1fr;
   grid-template-areas:
     "id status metrics"
+    "run run run"
     "note note note";
   gap: 0.2rem 0.55rem;
   align-items: center;
@@ -329,6 +330,125 @@ main {
 .venue-chip-note {
   grid-area: note;
   margin: 0;
+}
+
+.venue-chip-run {
+  grid-area: run;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.35rem 0.75rem;
+  margin: 0;
+  color: var(--text);
+  font-family: var(--font-mono), ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 0.68rem;
+  letter-spacing: 0.03em;
+  overflow-wrap: anywhere;
+}
+
+.venue-chip-run span:last-child {
+  color: var(--dim);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.run-picker {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.4rem;
+  margin: 0 0 0.45rem;
+}
+
+.run-picker-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.run-picker-field span {
+  color: var(--dim);
+  font-size: 0.58rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.run-picker-field select {
+  width: 100%;
+  padding: 0.22rem 0.35rem;
+  border: 1px solid var(--line);
+  background: #090b0e;
+  color: var(--text);
+  font-family: var(--font-mono), ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 0.68rem;
+}
+
+.run-provenance {
+  margin-top: 0.45rem;
+  padding-top: 0.4rem;
+  border-top: 1px solid var(--line);
+}
+
+.run-provenance-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.25rem 1rem;
+  margin-bottom: 0.3rem;
+}
+
+.run-provenance-head h3 {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.run-provenance-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono), ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.run-provenance-table th,
+.run-provenance-table td {
+  padding: 0.16rem 0.35rem 0.16rem 0;
+  text-align: left;
+  border-bottom: 1px dotted var(--line);
+  overflow-wrap: anywhere;
+}
+
+.run-provenance-table th {
+  color: var(--dim);
+  font-size: 0.58rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.run-provenance-note,
+.run-provenance-empty {
+  margin: 0.3rem 0 0;
+  color: var(--dim);
+  font-size: 0.72rem;
+}
+
+@media (min-width: 720px) {
+  .run-picker {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (min-width: 1100px) {
+  .run-picker {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
 }
 
 .capture-section {

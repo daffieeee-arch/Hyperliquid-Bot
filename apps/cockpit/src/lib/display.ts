@@ -3,7 +3,7 @@ import {
   STALE_MTIME_REASON,
   isLastPartFresh,
 } from "./capture-freshness";
-import type { VenueCaptureChipStatus } from "./types";
+import type { CaptureBindingSource, VenueCaptureChipStatus } from "./types";
 
 export type SignedTone = "up" | "down" | "flat" | "unknown";
 export type StatusTone = "ok" | "warn" | "down" | "neutral";
@@ -150,6 +150,16 @@ export function presentCopiedText(value: string | undefined): string {
 
 const RUN_ID_UTC_PREFIX = /^(\d{4})(\d{2})(\d{2})t(\d{2})(\d{2})(\d{2})z/;
 
+/** Reconstruct UTC start from a `YYYYMMDDtHHMMSSz…` run_id. Fail closed if unparseable. */
+export function parseRunIdStartedAt(runId: string): string | undefined {
+  const match = RUN_ID_UTC_PREFIX.exec(runId);
+  if (match === null) {
+    return undefined;
+  }
+  const started = `${match[1]}-${match[2]}-${match[3]}T${match[4]}:${match[5]}:${match[6]}Z`;
+  return Number.isFinite(Date.parse(started)) ? started : undefined;
+}
+
 /** Elapsed seconds from a `YYYYMMDDtHHMMSSz…` run_id to `observed_at`. Fail closed if unparseable. */
 export function elapsedSecondsSinceRunId(runId: string, observedAt: string): number | undefined {
   const match = RUN_ID_UTC_PREFIX.exec(runId);
@@ -233,4 +243,46 @@ export function presentData1ADuration(snapshot: {
 
 export function uniqueStrings(items: string[]): string[] {
   return [...new Set(items)];
+}
+
+export function captureBindingSourceLabel(source: CaptureBindingSource): string {
+  switch (source) {
+    case "query":
+      return "query";
+    case "env":
+      return "env";
+    case "explicit-dir":
+      return "explicit-dir";
+    case "auto-detect":
+      return "auto-detect";
+    case "default-fixture":
+      return "default-fixture";
+    case "unbound":
+      return "unbound";
+    default: {
+      const exhaustive: never = source;
+      throw new Error(`Unhandled capture binding source: ${String(exhaustive)}`);
+    }
+  }
+}
+
+export function captureRunSourceLabel(
+  source: "data1a-run-dir" | "venue-run-dir" | "path-contract" | "auto-detect" | "default-fixture",
+): string {
+  switch (source) {
+    case "data1a-run-dir":
+      return "data1a-run-dir";
+    case "venue-run-dir":
+      return "venue-run-dir";
+    case "path-contract":
+      return "path-contract";
+    case "auto-detect":
+      return "auto-detect";
+    case "default-fixture":
+      return "default-fixture";
+    default: {
+      const exhaustive: never = source;
+      throw new Error(`Unhandled capture run source: ${String(exhaustive)}`);
+    }
+  }
 }

@@ -14,6 +14,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "cockpit:dev": "pnpm --filter @hyperliquid-bot/cockpit dev",
+    "cockpit:dev:lan": "pnpm --filter @hyperliquid-bot/cockpit dev:lan",
     "cockpit:test": "pnpm --filter @hyperliquid-bot/cockpit test",
     "cockpit:build": "pnpm --filter @hyperliquid-bot/cockpit build"
   },

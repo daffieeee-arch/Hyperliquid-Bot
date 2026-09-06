@@ -143,8 +143,8 @@
       "sha256": "d58ed2c701bff47d57503e554439df97c7a97e165e12c0842bc065792de372a3"
     },
     "pyproject.toml": {
-      "bytes": 823,
-      "sha256": "84e2aab3bf01962e88fdb1257d0966252631b3bd9994479a29b97ebb2a5269b8"
+      "bytes": 962,
+      "sha256": "216fc30cdd558e6e555369a2a8db438565c5add3b0aa38f813565e04582b3f3e"
     },
     "src/hyperliquid_bot/__init__.py": {
       "bytes": 182,
@@ -159,8 +159,8 @@
       "sha256": "a7cc753fd5141ea915ed016562914f14dfcfabb149b19dba98449828ff320899"
     },
     "uv.lock": {
-      "bytes": 44265,
-      "sha256": "697a7f8286a2db6d50fd1bb35c4cc52f3290e8535a796ffc087e0d5d1a65359c"
+      "bytes": 60380,
+      "sha256": "cfe5f8044b6925a8dfaa94b329973bb6fa7d01be74fff4b32560432eb1271ddf"
     }
   },
   "run_binding": {

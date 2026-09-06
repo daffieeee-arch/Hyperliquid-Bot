@@ -5,11 +5,14 @@ description = "PAPER-first multi-venue quantitative crypto trading platform foun
 requires-python = ">=3.13,<3.14"
 dependencies = [
     "duckdb==1.5.5",
+    "fastapi==0.141.1",
+    "uvicorn==0.52.4",
     "websockets==17.0.1",
 ]
 
 [dependency-groups]
 dev = [
+    "httpx==0.28.1",
     "mypy==2.3.1",
     "pytest==9.1.1",
     "pytest-asyncio==1.4.0",
@@ -19,6 +22,9 @@ dev = [
 [tool.uv]
 package = false
 required-version = "==0.12.5"
+
+[tool.fastapi]
+entrypoint = "hyperliquid_bot.control_service.app:app"
 
 [tool.ruff]
 required-version = "==0.16.4"

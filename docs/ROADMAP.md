@@ -245,7 +245,8 @@ Deliverables:
 - disposable local ClickHouse;
 - paper broker interface and append-only ledger baseline;
 - risk-based position-sizing baseline;
-- FastAPI health/read endpoints;
+- FastAPI health/read endpoints (PAPER-only `/health` and `/ready` baseline
+  now exists; not wired to cockpit, collectors or LIVE);
 - Grafana provisioning as code;
 - basic Next.js cockpit shell;
 - Python/TypeScript tests and container build smoke tests.

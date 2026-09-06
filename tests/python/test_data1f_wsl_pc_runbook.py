@@ -6,8 +6,10 @@ import json
 import os
 import stat
 import subprocess
+import time
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = REPO_ROOT / "scripts"
@@ -86,7 +88,17 @@ def _run(
     )
 
 
-def _write_run_tree(tmp_path: Path, run_id: str, *, parts: int = 2, health: bool = False) -> Path:
+def _write_run_tree(
+    tmp_path: Path,
+    run_id: str,
+    *,
+    parts: int = 2,
+    health: bool = False,
+    health_status: str = "OPERATOR_STOP",
+    health_extra: dict[str, Any] | None = None,
+    stale_seconds: float | None = None,
+    log_text: str | None = None,
+) -> Path:
     run_dir = tmp_path / "reconstructable" / "data-1f" / "binance" / "BTCUSDT" / run_id
     raw_dir = run_dir / "raw"
     raw_dir.mkdir(parents=True)
@@ -95,13 +107,22 @@ def _write_run_tree(tmp_path: Path, run_id: str, *, parts: int = 2, health: bool
         encoding="utf-8",
     )
     if health:
+        payload: dict[str, Any] = {"status": health_status, "run_id": run_id}
+        if health_extra:
+            payload.update(health_extra)
         (run_dir / "capture-health.json").write_text(
-            json.dumps({"status": "OPERATOR_STOP", "run_id": run_id}),
+            json.dumps(payload),
             encoding="utf-8",
         )
     for index in range(parts):
         (raw_dir / f"part-{index:05d}.parquet").write_bytes(b"not-a-real-parquet")
     (raw_dir / ".partial-ignored.parquet").write_bytes(b"hidden")
+    if stale_seconds is not None:
+        stamp = time.time() - stale_seconds
+        for part in raw_dir.glob("part-*.parquet"):
+            os.utime(part, (stamp, stamp))
+    if log_text is not None:
+        (run_dir / f"capture-{run_id}.log").write_text(log_text, encoding="utf-8")
     return run_dir
 
 
@@ -141,6 +162,9 @@ def test_wsl_runbook_documents_known_good_operator_paths() -> None:
     assert "1011" in vps_text
     assert "Do **not** send `C-c`" in text
     assert "CoS assigns" in text or "CoS assign" in text
+    assert "freshest live retain" in text
+    assert "20260906t101559z-live-retained" in text
+    assert "20260905t235830z-live-retained" in text
     assert "LIVE" in text
     assert "No keys" in text
     assert "standby-timeout-ac 0" in text
@@ -197,7 +221,9 @@ def test_status_reports_tmux_and_parquet_part_count(tmp_path: Path) -> None:
     assert "tmux_alive=" in stdout
     assert "hl_capture_tmux_alive=" in stdout
     assert "run_id=20260904t000000z-live-retained" in stdout
+    assert "run_id_source=explicit" in stdout
     assert "claim_present=yes" in stdout
+    assert "transport_reconnects=n/a" in stdout
     assert "health_present=no" in stdout
     assert "parquet_parts=3" in stdout
     assert "never_touch=hl-capture" in stdout
@@ -300,3 +326,86 @@ def test_stop_does_not_resume_and_refuses_hl_capture(tmp_path: Path) -> None:
     forbidden_text = forbidden.stdout + forbidden.stderr
     assert "hl-capture" in forbidden_text
     assert "must not use" in forbidden_text or "Refuse" in forbidden_text
+
+
+def test_status_prefers_live_binance_retain_over_stopped_older_run(tmp_path: Path) -> None:
+    stopped_id = "20260905t235830z-live-retained"
+    live_id = "20260906t101559z-live-retained"
+    stopped = _write_run_tree(
+        tmp_path,
+        stopped_id,
+        parts=4,
+        health=True,
+        health_status="OPERATOR_STOP",
+    )
+    _write_run_tree(tmp_path, live_id, parts=2)
+    later = time.time() + 30
+    for part in (stopped / "raw").glob("part-*.parquet"):
+        os.utime(part, (later, later))
+    completed = _run("data1f_status.sh", tmp_path, extra={"RUN_ID": ""})
+    assert completed.returncode == 0, completed.stderr
+    assert f"run_id={live_id}" in completed.stdout
+    assert "run_id_source=auto-detect" in completed.stdout
+    chosen = completed.stdout.split("run_id=", 1)[1].split("\n", 1)[0]
+    assert chosen == live_id
+
+
+def test_status_keeps_explicit_run_id_when_another_live_retain_exists(tmp_path: Path) -> None:
+    stopped_id = "20260905t235830z-live-retained"
+    live_id = "20260906t101559z-live-retained"
+    _write_run_tree(tmp_path, stopped_id, parts=1, health=True, health_status="COMPLETED")
+    _write_run_tree(tmp_path, live_id, parts=1)
+    completed = _run("data1f_status.sh", tmp_path, extra={"RUN_ID": stopped_id})
+    assert completed.returncode == 0, completed.stderr
+    assert f"run_id={stopped_id}" in completed.stdout
+    assert "run_id_source=explicit" in completed.stdout
+    assert "health_status=COMPLETED" in completed.stdout
+
+
+def test_status_prints_usdm_public_reconnect_hints_from_log(tmp_path: Path) -> None:
+    live_id = "20260906t101559z-live-retained"
+    _write_run_tree(
+        tmp_path,
+        live_id,
+        parts=1,
+        log_text=(
+            "2026-09-06 10:16:00 INFO binance session_start transport_profile=spot\n"
+            "2026-09-06 10:16:00 INFO binance session_start transport_profile=usdm_market\n"
+            "2026-09-06 10:16:00 INFO binance session_start transport_profile=usdm_public\n"
+            "2026-09-06 10:20:00 INFO binance reconnect transport_profile=usdm_public "
+            "attempt=1\n"
+            "2026-09-06 10:21:00 INFO binance reconnect transport_profile=usdm_public "
+            "attempt=2\n"
+        ),
+    )
+    completed = _run("data1f_status.sh", tmp_path, extra={"RUN_ID": ""})
+    assert completed.returncode == 0, completed.stderr
+    assert f"run_id={live_id}" in completed.stdout
+    assert "transport_hints_source=capture-log" in completed.stdout
+    assert "transport_reconnects=" in completed.stdout
+    assert "usdm_public:2" in completed.stdout
+    assert "spot:0" in completed.stdout
+    assert "usdm_market:0" in completed.stdout
+    assert "transport_gaps=n/a" in completed.stdout
+
+
+def test_status_uses_health_transport_profiles_when_present(tmp_path: Path) -> None:
+    run_id = "20260905t235830z-live-retained"
+    _write_run_tree(
+        tmp_path,
+        run_id,
+        parts=1,
+        health=True,
+        health_status="OPERATOR_STOP",
+        health_extra={
+            "transport_profiles": [
+                {"transport_profile": "usdm_public", "reconnects": 3, "gaps": 3},
+                {"transport_profile": "spot", "reconnects": 0, "gaps": 0},
+            ]
+        },
+    )
+    completed = _run("data1f_status.sh", tmp_path, run_id=run_id)
+    assert completed.returncode == 0, completed.stderr
+    assert "transport_hints_source=health" in completed.stdout
+    assert "transport_reconnects=spot:0,usdm_public:3" in completed.stdout
+    assert "transport_gaps=spot:0,usdm_public:3" in completed.stdout

@@ -208,7 +208,8 @@ tmux session or a run directory. It does **not** start capture.
 ```bash
 cd ~/code/Hyperliquid-Bot-main
 export ARTIFACT_ROOT="${HOME}/hyperliquid-artifacts/reconstructable"
-export RUN_ID=20260904t000000z-live-retained   # replace with the assigned run
+# Optional; omit RUN_ID to auto-detect the freshest live retain.
+export RUN_ID=20260904t000000z-live-retained
 export TMUX_SESSION=bn-capture
 
 tmux has-session -t "${TMUX_SESSION}" && echo "tmux_alive=yes" || echo "tmux_alive=no"
@@ -228,13 +229,22 @@ Optional helper:
 
 ```bash
 cd ~/code/Hyperliquid-Bot-main
+# Omit RUN_ID to auto-detect the freshest live retain.
 RUN_ID=20260904t000000z-live-retained ./scripts/data1f_status.sh
 ```
 
-The status helper prints tmux liveness for `bn-capture`, observational
-`hl-capture` liveness, claim/health presence, and published part count. It
-never prints payload bytes or secret values and never sends keys to
-`hl-capture`.
+When `RUN_ID` is unset, status defaults to the freshest live retain under
+the Binance path contract (claim present, fresh `raw/part-*.parquet` mtime;
+health JSON may be absent mid-run). It never prefers a stopped
+`20260905t235830z-live-retained` over a live
+`20260906t101559z-live-retained` (or any newer live run). Stopped
+`COMPLETED` / `FAILED` / `OPERATOR_STOP` dirs are not preferred when a live
+candidate exists. The chosen `run_id` is printed. The helper also prints
+tmux liveness for `bn-capture`, observational `hl-capture` liveness,
+claim/health presence, published part count, and reconnect/gap hints per
+`transport_profile` (especially `usdm_public`) when those counts are already
+in health or labeled in `capture-*.log` (`n/a` if unknown). It never prints
+payload bytes or secret values and never sends keys to `hl-capture`.
 
 ## Protect a 72h evidence window
 

@@ -71,7 +71,9 @@ describe("GET /api/market-tape", () => {
     vi.stubEnv("COCKPIT_DATA1B_RUN_ID", "20260905t180300z-live-retained");
     // Binance restarted: the query names a run that does not exist on disk.
     const response = await GET(
-      new Request("http://cockpit.local/api/market-tape?data1f_run_id=20260906t101559z-live-retained"),
+      new Request(
+        "http://cockpit.local/api/market-tape?data1f_run_id=20260906t101559z-live-retained",
+      ),
     );
     expect(response.status).toBe(200);
     const parsed = parseMarketTapeResponse(await response.json());

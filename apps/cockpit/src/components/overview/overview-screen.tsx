@@ -131,8 +131,8 @@ export function OverviewScreen({
           }
         >
           {dataOriginMeta(origin.origin).meaning} {describeOriginSummary(origin)}. Point{" "}
-          <span className="mono">ARTIFACT_ROOT</span> at the retain root (and leave the venue run ids
-          unset to auto-detect the live runs) to see real captures.
+          <span className="mono">ARTIFACT_ROOT</span> at the retain root (and leave the venue run
+          ids unset to auto-detect the live runs) to see real captures.
         </Notice>
       ) : null}
 

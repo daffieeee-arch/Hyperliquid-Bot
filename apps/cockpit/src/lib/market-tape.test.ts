@@ -5,7 +5,13 @@ import { fileURLToPath } from "node:url";
 
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { applyTapeRow, classifyProduct, computeSpread, createVenueTapeState, snapshotInstruments } from "./market-tape-decode";
+import {
+  applyTapeRow,
+  classifyProduct,
+  computeSpread,
+  createVenueTapeState,
+  snapshotInstruments,
+} from "./market-tape-decode";
 import {
   loadMarketTapeStrip,
   loadVenueMarketTape,
@@ -72,8 +78,16 @@ describe("market tape decoding", () => {
       base: "BTC",
       quote: "USDT",
     });
-    expect(classifyProduct("bitvavo", "BTC-EUR")).toEqual({ kind: "spot", base: "BTC", quote: "EUR" });
-    expect(classifyProduct("kraken", "BTC/USD")).toEqual({ kind: "spot", base: "BTC", quote: "USD" });
+    expect(classifyProduct("bitvavo", "BTC-EUR")).toEqual({
+      kind: "spot",
+      base: "BTC",
+      quote: "EUR",
+    });
+    expect(classifyProduct("kraken", "BTC/USD")).toEqual({
+      kind: "spot",
+      base: "BTC",
+      quote: "USD",
+    });
   });
 
   it("computes spread in quote units and basis points without float drift", () => {
@@ -105,7 +119,15 @@ describe("market tape decoding", () => {
         "hyperliquid",
         "BTC-PERP",
         "bbo",
-        { data: { time: 1_788_631_202_000, bbo: [{ px: "99.0", sz: "2" }, { px: "101.0", sz: "1" }] } },
+        {
+          data: {
+            time: 1_788_631_202_000,
+            bbo: [
+              { px: "99.0", sz: "2" },
+              { px: "101.0", sz: "1" },
+            ],
+          },
+        },
         2,
       ),
     );
@@ -126,7 +148,13 @@ describe("market tape decoding", () => {
         "binance",
         "BTCUSDT-SPOT",
         "normalized_spot_trade",
-        { price: "100", quantity: "1", trade_time: "1788688801000", timestamp_unit: "ms", aggressor_side: "buy" },
+        {
+          price: "100",
+          quantity: "1",
+          trade_time: "1788688801000",
+          timestamp_unit: "ms",
+          aggressor_side: "buy",
+        },
         1,
         true,
       ),
@@ -156,8 +184,14 @@ describe("market tape decoding", () => {
   it("ignores inbound frames for marker-based venues and unknown channels without failing", () => {
     const state = createVenueTapeState();
     applyTapeRow(state, row("binance", "BTCUSDT-SPOT", "btcusdt@trade", { p: "1" }, 1));
-    applyTapeRow(state, row("binance", "BTCUSDT-SPOT", "normalized_future_thing", { x: 1 }, 2, true));
-    applyTapeRow(state, { ...row("kraken", "BTC/USD", "normalized_trade", {}, 3, true), payload: "{not json" });
+    applyTapeRow(
+      state,
+      row("binance", "BTCUSDT-SPOT", "normalized_future_thing", { x: 1 }, 2, true),
+    );
+    applyTapeRow(state, {
+      ...row("kraken", "BTC/USD", "normalized_trade", {}, 3, true),
+      payload: "{not json",
+    });
     const instruments = snapshotInstruments(state);
     const spot = instruments.find((item) => item.product === "BTCUSDT-SPOT");
     const kraken = instruments.find((item) => item.product === "BTC/USD");
@@ -179,7 +213,13 @@ describe("market tape reader", () => {
     expect(hl?.runId).toBe(HL_RUN);
     expect(hl?.parts).toMatchObject({ published: 2, processed: 2, skippedOnColdStart: 0 });
     const perp = hl?.instruments[0];
-    expect(perp).toMatchObject({ product: "BTC-PERP", kind: "perpetual", quote: "USDC", tradeCount: 3, bboCount: 2 });
+    expect(perp).toMatchObject({
+      product: "BTC-PERP",
+      kind: "perpetual",
+      quote: "USDC",
+      tradeCount: 3,
+      bboCount: 2,
+    });
     expect(perp?.lastTrade).toMatchObject({ price: "109510.0", size: "0.0050", side: "buy" });
     expect(perp?.lastBbo).toMatchObject({ bid: "109509.0", ask: "109511.0", spread: "2.0" });
     expect(perp?.lastContext?.fundingRate).toBe("0.0000125");
@@ -191,21 +231,40 @@ describe("market tape reader", () => {
       "BTCUSDT-SPOT",
       "BTCUSDT-USDS-M-PERPETUAL",
     ]);
-    expect(bn?.instruments[0]?.lastBbo).toMatchObject({ bid: "109479.90", ask: "109480.20", spread: "0.30" });
+    expect(bn?.instruments[0]?.lastBbo).toMatchObject({
+      bid: "109479.90",
+      ask: "109480.20",
+      spread: "0.30",
+    });
     expect(bn?.instruments[0]?.lastTrade).toMatchObject({ price: "109480.10", side: "buy" });
-    expect(bn?.instruments[1]?.lastContext).toMatchObject({ markPrice: "109520.00", fundingRate: "0.00010000" });
+    expect(bn?.instruments[1]?.lastContext).toMatchObject({
+      markPrice: "109520.00",
+      fundingRate: "0.00010000",
+    });
 
     const bv = strip.venues[2];
     expect(bv?.instruments[0]).toMatchObject({ product: "BTC-EUR", quote: "EUR", kind: "spot" });
     // Partial ticker update replaced only the ask; the bid carried over.
-    expect(bv?.instruments[0]?.lastBbo).toMatchObject({ bid: "93800.1", ask: "93811.0", askSize: "0.30" });
+    expect(bv?.instruments[0]?.lastBbo).toMatchObject({
+      bid: "93800.1",
+      ask: "93811.0",
+      askSize: "0.30",
+    });
     expect(bv?.instruments[0]?.lastTrade).toMatchObject({ price: "93810.5", side: "sell" });
 
     const kr = strip.venues[3];
     expect(kr?.instruments[0]).toMatchObject({ product: "BTC/USD", quote: "USD", kind: "spot" });
     // Snapshot best ask 109452 was deleted by the update; next best is 109453; bid 109451 arrived.
-    expect(kr?.instruments[0]?.lastBbo).toMatchObject({ bid: "109451.0", ask: "109453.0", spread: "2.0" });
-    expect(kr?.instruments[0]?.lastTrade).toMatchObject({ price: "109452.0", size: "0.02", side: "buy" });
+    expect(kr?.instruments[0]?.lastBbo).toMatchObject({
+      bid: "109451.0",
+      ask: "109453.0",
+      spread: "2.0",
+    });
+    expect(kr?.instruments[0]?.lastTrade).toMatchObject({
+      price: "109452.0",
+      size: "0.02",
+      side: "buy",
+    });
     expect(kr?.instruments[0]?.lastTrade?.at).toBe("2026-09-05T18:00:03.000Z");
   });
 

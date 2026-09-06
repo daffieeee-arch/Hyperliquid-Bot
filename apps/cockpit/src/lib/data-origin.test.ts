@@ -12,7 +12,12 @@ import {
   summariseOrigins,
 } from "./data-origin";
 import { loadMarketTapeStrip, resetMarketTapeCache } from "./market-tape";
-import { formatBytes, instrumentRows, summariseVenueTape, venueTapeSummaries } from "./market-tape-rows";
+import {
+  formatBytes,
+  instrumentRows,
+  summariseVenueTape,
+  venueTapeSummaries,
+} from "./market-tape-rows";
 import { buildOverviewView, storedDataAttention } from "./overview";
 import { buildPaperBotView, buildPaperRunLifecycle } from "./paper-bot";
 import { loadPaperRunSnapshot } from "./paper-run";
@@ -95,7 +100,9 @@ describe("data origin", () => {
   });
 
   it("labels PAPER artifacts by source and lifecycle", () => {
-    const fixture = buildPaperRunLifecycle(loadPaperRunSnapshot({ TRADING_MODE: "PAPER" }, repoRoot));
+    const fixture = buildPaperRunLifecycle(
+      loadPaperRunSnapshot({ TRADING_MODE: "PAPER" }, repoRoot),
+    );
     expect(paperOrigin(fixture)).toBe("demo");
     expect(paperOrigin(buildPaperRunLifecycle(undefined))).toBe("unbound");
     expect(paperOrigin({ ...fixture, artifactSource: "paper-run-dir", state: "historical" })).toBe(
@@ -164,7 +171,12 @@ describe("market tape rows", () => {
       strip: {
         ...liveStrip.strip,
         venues: [
-          chip({ id: "hl", chip: "HL", series: "DATA-1A", run_id: "20260901t000000z-live-retained" }),
+          chip({
+            id: "hl",
+            chip: "HL",
+            series: "DATA-1A",
+            run_id: "20260901t000000z-live-retained",
+          }),
         ],
       },
     };
@@ -201,7 +213,10 @@ describe("overview stored-data attention", () => {
     resetMarketTapeCache();
     const read = await loadMarketTapeStrip(tapeEnv, repoRoot, {}, () => observedAt);
     // Part mtimes are checkout times in CI, so pin the lag to a healthy value first.
-    const tape = { ...read, venues: read.venues.map((venue) => ({ ...venue, publicationLagS: 12 })) };
+    const tape = {
+      ...read,
+      venues: read.venues.map((venue) => ({ ...venue, publicationLagS: 12 })),
+    };
     expect(storedDataAttention({ ok: true, tape })).toEqual([]);
     expect(storedDataAttention(undefined)).toEqual([]);
 

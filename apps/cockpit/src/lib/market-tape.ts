@@ -174,7 +174,8 @@ export async function ingestPart(
   }
   return {
     rows: ingested,
-    lastEventUtc: lastNs === undefined ? undefined : new Date(Number(lastNs / 1_000_000n)).toISOString(),
+    lastEventUtc:
+      lastNs === undefined ? undefined : new Date(Number(lastNs / 1_000_000n)).toISOString(),
   };
 }
 
@@ -327,7 +328,9 @@ export async function loadVenueMarketTape(
     };
   } catch (error: unknown) {
     const message =
-      error instanceof Error ? error.message : `${contract.refuseLabel} market tape is unavailable.`;
+      error instanceof Error
+        ? error.message
+        : `${contract.refuseLabel} market tape is unavailable.`;
     return {
       tape: emptyTape(
         contract,

@@ -181,7 +181,11 @@ function setBbo(
   entry.tape.lastBbo = bbo;
 }
 
-function side(value: unknown, buyTokens: readonly string[], sellTokens: readonly string[]): TapeSide {
+function side(
+  value: unknown,
+  buyTokens: readonly string[],
+  sellTokens: readonly string[],
+): TapeSide {
   const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
   if (buyTokens.includes(normalized)) {
     return "buy";
@@ -192,7 +196,12 @@ function side(value: unknown, buyTokens: readonly string[], sellTokens: readonly
   return "unknown";
 }
 
-function applyHyperliquid(entry: InstrumentState, row: RawTapeRow, payload: unknown, at: string): void {
+function applyHyperliquid(
+  entry: InstrumentState,
+  row: RawTapeRow,
+  payload: unknown,
+  at: string,
+): void {
   if (!isRecord(payload) || row.direction !== "inbound") {
     return;
   }

@@ -6,7 +6,11 @@ import { Notice } from "../ui/notice";
 import { OriginBadge } from "../ui/origin-badge";
 import { captureChipDataState, dataStateTone } from "../../lib/data-state";
 import { presentCopiedText } from "../../lib/display";
-import { runIdDisagrees, venueTapeSummaries, type VenueTapeSummary } from "../../lib/market-tape-rows";
+import {
+  runIdDisagrees,
+  venueTapeSummaries,
+  type VenueTapeSummary,
+} from "../../lib/market-tape-rows";
 import type { MarketTapeResponse } from "../../lib/market-tape-types";
 import type { VenueCaptureStripResponse } from "../../lib/types";
 

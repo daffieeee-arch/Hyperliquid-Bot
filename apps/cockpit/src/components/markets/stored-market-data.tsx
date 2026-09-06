@@ -160,7 +160,8 @@ function VenueTapeCard({ summary, degraded }: { summary: VenueTapeSummary; degra
     {
       label: "Last data",
       value: `${summary.lastData} · ${summary.lastDataAge} ago`,
-      tone: dataStateTone(summary.dataState) === "muted" ? "unknown" : dataStateTone(summary.dataState),
+      tone:
+        dataStateTone(summary.dataState) === "muted" ? "unknown" : dataStateTone(summary.dataState),
       detail: "newest receive time inside the processed parts",
       title: tape.lastEventUtc,
     },
@@ -200,9 +201,9 @@ function VenueTapeCard({ summary, degraded }: { summary: VenueTapeSummary; degra
             <div className="stack-sm">
               {disagrees ? (
                 <Notice state="error" title="Run ids disagree">
-                  Capture health is bound to <span className="mono">{chip?.run_id}</span> but
-                  stored data was read from <span className="mono">{tape.runId}</span>. Re-check
-                  the run picker before trusting either.
+                  Capture health is bound to <span className="mono">{chip?.run_id}</span> but stored
+                  data was read from <span className="mono">{tape.runId}</span>. Re-check the run
+                  picker before trusting either.
                 </Notice>
               ) : null}
               {summary.dataState === "stale" ? (
@@ -279,8 +280,8 @@ export function StoredMarketData({
           <p>
             Last trade, best bid/offer, spread and recent trades decoded from the published{" "}
             <span className="mono">raw/part-*.parquet</span> files of each bound run. Spot,
-            perpetual and quote currency stay separate rows. Only parts published since the
-            previous read are parsed.
+            perpetual and quote currency stay separate rows. Only parts published since the previous
+            read are parsed.
           </p>
         </div>
         <div className="page-head-actions">
@@ -290,7 +291,8 @@ export function StoredMarketData({
               tone="muted"
               title="Runs held in the backend cache and parts parsed by the most recent read"
             >
-              cache {String(tape.tape.cache.runsCached)} runs · parsed {String(tape.tape.cache.partsParsedThisCall)}
+              cache {String(tape.tape.cache.runsCached)} runs · parsed{" "}
+              {String(tape.tape.cache.partsParsedThisCall)}
             </Badge>
           ) : null}
         </div>

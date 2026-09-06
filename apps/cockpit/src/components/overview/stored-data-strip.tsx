@@ -25,7 +25,10 @@ function InstrumentLine({ instrument }: { instrument: InstrumentTape }) {
       >
         {last === undefined ? "—" : formatGroupedNumber(last.price)}
       </span>
-      <span className="eyebrow spacer" title={bbo === undefined ? "No BBO decoded" : `BBO ${bbo.at}`}>
+      <span
+        className="eyebrow spacer"
+        title={bbo === undefined ? "No BBO decoded" : `BBO ${bbo.at}`}
+      >
         {bbo === undefined
           ? "no BBO"
           : `${formatGroupedNumber(bbo.bid)} / ${formatGroupedNumber(bbo.ask)} · ${bbo.spreadBps} bps`}
@@ -62,14 +65,19 @@ export function StoredDataStrip({
           key={summary.tape.id}
           className="stat"
           style={{ gap: "0.4rem", padding: "0.6rem 0.7rem", opacity: degraded ? 0.72 : undefined }}
-          title={degraded ? "Last read failed; values are from an earlier successful read." : undefined}
+          title={
+            degraded ? "Last read failed; values are from an earlier successful read." : undefined
+          }
         >
           <div className="stat-top">
             <span className="stat-label">
               {summary.tape.chip} · {summary.tape.series}
             </span>
             <span className="stat-icon">
-              <OriginBadge origin={summary.origin} live={summary.chip?.live === true && !degraded} />
+              <OriginBadge
+                origin={summary.origin}
+                live={summary.chip?.live === true && !degraded}
+              />
             </span>
           </div>
           {summary.tape.status === "ok" ? (

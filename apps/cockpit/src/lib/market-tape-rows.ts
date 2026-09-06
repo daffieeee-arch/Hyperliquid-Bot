@@ -96,7 +96,8 @@ export function summariseVenueTape(
   const chip = strip.ok ? strip.strip.venues.find((venue) => venue.id === tape.id) : undefined;
   const origin = marketTapeOrigin(tape, chip);
   const lagExceeded =
-    tape.publicationLagS !== undefined && tape.publicationLagS > MARKET_TAPE_EXPECTED_PUBLICATION_LAG_S;
+    tape.publicationLagS !== undefined &&
+    tape.publicationLagS > MARKET_TAPE_EXPECTED_PUBLICATION_LAG_S;
   let dataState: DataState;
   if (tape.status === "error") {
     dataState = "error";

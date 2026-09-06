@@ -206,15 +206,19 @@ export function SystemScreen({
           title="Published data per venue"
           description="What each bound run has actually published: part count, volume, newest part and how far the newest part lagged its own events."
           actions={
-            <ReadStatus state={tapePoll} sourceLabel="last event" sourceIso={newestTapeEvent(tape)} />
+            <ReadStatus
+              state={tapePoll}
+              sourceLabel="last event"
+              sourceIso={newestTapeEvent(tape)}
+            />
           }
         />
         <CardBody flush>
           <PublishedDataTable tape={tape} strip={strip} />
         </CardBody>
         <div className="card-foot">
-          Publish lag is the writer holding data in memory before rotating a part (bound ≤60s or
-          5 000 records). Age is measured from the newest event inside the published parts, so it
+          Publish lag is the writer holding data in memory before rotating a part (bound ≤60s or 5
+          000 records). Age is measured from the newest event inside the published parts, so it
           includes that lag.
         </div>
       </Card>

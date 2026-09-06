@@ -85,6 +85,17 @@ function requireStringList(source: JsonObject, field: string, path: string): str
   return value;
 }
 
+function optionalStringList(source: JsonObject, field: string, path: string): string[] | undefined {
+  const value = source[field];
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || item === "")) {
+    throw new Error(`${path}.${field} must be a list of non-empty strings when present.`);
+  }
+  return value;
+}
+
 function requireObjectList(source: JsonObject, field: string, path: string): JsonObject[] {
   const value = source[field];
   if (!Array.isArray(value) || value.some((item) => !isRecord(item))) {
@@ -261,7 +272,7 @@ function loadHealth(runDir: string): CaptureHealth {
 function loadOrderIntents(raw: JsonObject, path: string): PaperOrderIntent[] {
   return requireObjectList(raw, "orders", path).map((item, index) => {
     const rowPath = `${path}.orders[${String(index)}]`;
-    return {
+    const intent = {
       client_order_id: requireText(item, "client_order_id", rowPath),
       side: requireText(item, "side", rowPath),
       quantity: requireText(item, "quantity", rowPath),
@@ -269,6 +280,11 @@ function loadOrderIntents(raw: JsonObject, path: string): PaperOrderIntent[] {
       reason: requireText(item, "reason", rowPath),
       reduce_only: requireBoolean(item, "reduce_only", rowPath),
     };
+    const riskReasons = optionalStringList(item, "risk_reasons", rowPath);
+    if (riskReasons === undefined) {
+      return intent;
+    }
+    return { ...intent, risk_reasons: riskReasons };
   });
 }
 

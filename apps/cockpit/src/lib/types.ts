@@ -81,6 +81,7 @@ export type PaperOrderIntent = {
   order_type: string;
   reason: string;
   reduce_only: boolean;
+  risk_reasons?: string[];
 };
 
 export type PaperFillRow = {
@@ -141,6 +142,12 @@ export type Data1ACaptureClaim = {
   resume_policy?: string;
 };
 
+export type TransportProfileRow = {
+  transport_profile: string;
+  gaps?: number;
+  reconnects?: number;
+};
+
 export type Data1ACaptureHealth = {
   schema: string;
   kind: "capture-health";
@@ -155,6 +162,7 @@ export type Data1ACaptureHealth = {
   events?: number;
   parquet_files?: number;
   parquet_bytes?: number;
+  transport_profiles?: TransportProfileRow[];
   limitations: string[];
 };
 

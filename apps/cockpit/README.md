@@ -1,12 +1,23 @@
 # First PAPER cockpit screen
 
-One local Next.js screen. First PAPER **DESK** + **MARKETS** + **RISK** slice.
-Not a clone of any commercial terminal. The first screen uses a dense
-dark workstation layout so the PAPER run/mode banner, public HL mid, live vs
-stale capture chips, reconstructable RISK overlay, position, assumed overlay
-PnL, COURSE-1 soak health, a four-venue capture-health strip, and DATA-1A
-capture health are readable at a glance. PAPER is badged on DESK and
-watermarked on the page. Missing RISK fields stay **UNAVAILABLE**.
+One local Next.js screen. PAPER Operator Cockpit workstation: sticky **DESK**
+chrome (PAPER badge, freshness, compact venue chips, hash nav), then **Health
+→ Markets → Research → PAPER → Risk**. Health keeps the existing four-venue
+strip / picker / DATA-1A plus D01 bind and BN `usdm_public`. MARKETS shows
+public HL mid + public candle chart. RESEARCH is Quant P0 only. PAPER keeps
+separate soak vs retain cards. The DESK bot card is COURSE-1 soak only:
+What (run_id + claim path), last-decision Why (ACCEPT or #65 gate),
+assumed_pnl Results, last-N intent tape, and a read-only preflight caps
+strip. RISK stays reconstructable vs UNAVAILABLE.
+
+Stack is €0 OSS: Next.js 15, Tailwind CSS v4, official free shadcn/ui (Radix;
+sidebar/dashboard-01 ideas only), Lucide, TanStack Table, recharts (real KPI
+series only), TradingView Lightweight Charts (Apache-2.0; `NOTICE`). Visual
+default **C Fail-Closed Amber** with optional **Desk Dark**. Critique variants
+stay in `docs/design-previews/` only. Not a clone of any commercial terminal and not a wholesale
+exchange-UI fork. PAPER is badged and watermarked. Missing fields stay
+**UNAVAILABLE**. Position and assumed overlay PnL are labeled **not
+venue-reconciled**. Collectors are never started or stopped from this UI.
 
 The browser never signs orders and never holds keys. `TRADING_MODE` must be
 unset or `PAPER`; `LIVE`, `TESTNET`, and `SHADOW` fail closed.
@@ -22,11 +33,14 @@ unset or `PAPER`; `LIVE`, `TESTNET`, and `SHADOW` fail closed.
    **UNAVAILABLE** because those quotes are not in cockpit APIs. Copied
    COURSE-1 `paper-pnl.json` `mark_price` is a soak mark, not a live last.
 3. **RISK** first reconstructable overlay: PAPER position, assumed overlay PnL
-   labeled as assumed, fail-closed preflight bounds, COURSE-1 risk-rejection /
-   24/7 flags, and the DESK capture live-vs-stale summary. Leverage, margin,
-   liquidation, VaR, and venue risk stay **UNAVAILABLE**.
-4. Public Hyperliquid BTC-PERP mid from credentialless `POST /info` `allMids`.
-   This price is not used to invent Paper PnL.
+   labeled as assumed and **not venue-reconciled**, fail-closed preflight
+   bounds, COURSE-1 risk-rejection / 24/7 flags, the documented #65
+   `paper_risk` gates (reduce-only-after-halt is the rule; per-run halt state
+   stays **UNAVAILABLE**), and the DESK capture live-vs-stale summary.
+   Leverage, margin, liquidation, VaR, and venue risk stay **UNAVAILABLE**.
+4. Public Hyperliquid BTC-PERP mid from credentialless `POST /info` `allMids`,
+   plus public `candleSnapshot` candles when that route answers. Neither is
+   used to invent Paper PnL. Missing candles render **UNAVAILABLE**.
 5. Paper position from reconstructable COURSE-1 JSON.
 6. Assumed overlay Paper PnL from that same JSON. If the field is assumed /
    overlay, the screen says so. It never fabricates a second number.
@@ -187,8 +201,10 @@ run_id is unset. Stale or stopped retains are listed in the picker but are
 never auto-bound as RUNNING.
 
 The DATA-1A panel polls `/api/data1a-capture` every 5 seconds. The venue strip
-polls `/api/venue-capture-health` on the same interval. Leave the tab open; do
-not stop any collector to "refresh" numbers. Both routes send
+polls `/api/venue-capture-health` on the same interval. RESEARCH reads
+`GET /api/research-summaries` for `panel-summary.json` under
+`COCKPIT_RESEARCH_OUT` or `ARTIFACT_ROOT/research-out`. Leave the tab open; do
+not stop any collector to "refresh" numbers. Routes send
 `Cache-Control: no-store`. Optional: `COCKPIT_CAPTURE_FRESH_MAX_S=180` (seconds;
 tunable). Host clock must be sane.
 

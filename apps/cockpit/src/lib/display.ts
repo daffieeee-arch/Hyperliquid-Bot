@@ -29,6 +29,19 @@ export function signedTone(raw: string): SignedTone {
   return "flat";
 }
 
+/** Operator scan: 4 dp when |USDC| < 1, else 2 dp. Unparseable stays copied. */
+export function formatAssumedUsdcDisplay(raw: string): string {
+  const trimmed = raw.trim();
+  if (trimmed === "" || !NUMERIC.test(trimmed)) {
+    return raw;
+  }
+  const value = Number(trimmed);
+  if (!Number.isFinite(value)) {
+    return raw;
+  }
+  return value.toFixed(Math.abs(value) < 1 ? 4 : 2);
+}
+
 export function formatGroupedNumber(raw: string): string {
   const trimmed = raw.trim();
   const match = /^([+-]?)(\d+)(?:\.(\d+))?$/.exec(trimmed);

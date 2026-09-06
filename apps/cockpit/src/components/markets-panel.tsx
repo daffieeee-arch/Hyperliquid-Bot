@@ -1,5 +1,7 @@
 "use client";
 
+import { PublicCloseSparkline } from "./kpi-sparkline";
+import { MidChart } from "./mid-chart";
 import { formatGroupedNumber } from "../lib/display";
 import {
   MARKET_QUOTE_UNAVAILABLE,
@@ -50,7 +52,8 @@ export function MarketsPanel({
       <div className="markets-head">
         <h2>MARKETS</h2>
         <p className="panel-kicker">
-          Bound HL BTC-PERP public mid · sibling last/BBO fail closed · not Paper PnL
+          Bound HL BTC-PERP public mid + public candleSnapshot · public mid ≠ research truth ·
+          sibling last/BBO fail closed · not Paper PnL
         </p>
       </div>
       {strip.ok ? (
@@ -60,10 +63,10 @@ export function MarketsPanel({
               <tr>
                 <th>Venue</th>
                 <th>Product</th>
-                <th>Last / mid</th>
+                <th className="num">Last / mid</th>
                 <th>Source</th>
                 <th>Capture</th>
-                <th>Age</th>
+                <th className="num">Age</th>
                 <th>Run</th>
               </tr>
             </thead>
@@ -72,7 +75,7 @@ export function MarketsPanel({
                 <tr key={row.id} className={`tone-${row.tone}`}>
                   <td className="venue-strip-chip">{row.venue}</td>
                   <td>{row.product}</td>
-                  <td className="markets-quote">
+                  <td className="markets-quote num">
                     <MarketQuote row={row} />
                   </td>
                   <td>{row.quoteSource}</td>
@@ -80,18 +83,18 @@ export function MarketsPanel({
                     {row.live ? <span className="live-dot" aria-hidden="true" /> : null}
                     {row.captureStatus ?? "n/a"}
                   </td>
-                  <td>{row.lastPartAge}</td>
-                  <td className="venue-strip-run">{row.runId}</td>
+                  <td className="num">{row.lastPartAge}</td>
+                  <td className="venue-strip-run mono-id">{row.runId}</td>
                 </tr>
               ))}
               {soak !== undefined ? (
                 <tr className="markets-soak tone-warn">
                   <td className="venue-strip-chip">{soak.venue}</td>
                   <td>{soak.product}</td>
-                  <td className="markets-quote">{quoteDisplay(soak)}</td>
+                  <td className="markets-quote num">{quoteDisplay(soak)}</td>
                   <td>{soak.quoteSource}</td>
                   <td>n/a</td>
-                  <td>n/a</td>
+                  <td className="num">n/a</td>
                   <td>n/a</td>
                 </tr>
               ) : null}
@@ -101,6 +104,8 @@ export function MarketsPanel({
       ) : (
         <p className="error">{strip.error}</p>
       )}
+      <PublicCloseSparkline />
+      <MidChart />
     </section>
   );
 }

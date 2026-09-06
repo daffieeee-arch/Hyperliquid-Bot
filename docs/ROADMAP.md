@@ -446,6 +446,13 @@ These workstreams can progress simultaneously after shared contracts are agreed:
 ### D. Cockpit and Grafana
 
 - UI shell;
+- first PAPER Operator Cockpit workstation preview (`apps/cockpit`): Tailwind
+  v4 + official free shadcn + Lucide + TanStack Table + recharts KPI
+  sparklines + Lightweight Charts (Apache-2.0 NOTICE); default **C
+  Fail-Closed Amber** with optional Desk Dark; IA Health → Markets →
+  Research → PAPER → Risk; Trading DESK must-haves plus Quant P0 (registry,
+  capture health, sufficiency, identity, overlap clock; UNAVAILABLE if
+  missing). Collectors untouched. CoS Pass before merge;
 - dashboard provisioning;
 - venue/strategy/risk views;
 - observability.

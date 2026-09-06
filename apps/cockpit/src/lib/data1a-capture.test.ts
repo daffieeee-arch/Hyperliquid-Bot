@@ -31,6 +31,7 @@ describe("DATA-1A capture loader", () => {
     expect(snapshot.health?.status).toBe("COMPLETED");
     expect(snapshot.health?.gaps).toBe(0);
     expect(snapshot.health?.reconnects).toBe(0);
+    expect(snapshot.health?.transport_profiles).toBeUndefined();
     expect(snapshot.health_missing).toBe(false);
     expect(snapshot.parts.raw_dir_present).toBe(false);
     expect(snapshot.parts.count).toBeUndefined();
@@ -132,6 +133,49 @@ describe("DATA-1A capture loader", () => {
     );
     expect(snapshot.fresh_max_s).toBe(60);
     expect(snapshot.parts.count).toBe(0);
+  });
+
+  it("copies transport_profiles when health JSON already has them", () => {
+    const runDir = mkdtempSync(join(tmpdir(), "data1a-profiles-"));
+    writeJson(join(runDir, "capture-claim.json"), {
+      schema: "data-1a-retained-capture-claim-v1",
+      path_contract: "data-1a-hyperliquid-btc-perp-v1",
+      run_id: "profile-run",
+      state: "STARTED_FAIL_CLOSED",
+      retained: true,
+      twenty_four_seven: false,
+      signing: false,
+    });
+    writeJson(join(runDir, "capture-health.json"), {
+      schema: "data-1a-retained-capture-health-v1",
+      kind: "capture-health",
+      path_contract: "data-1a-hyperliquid-btc-perp-v1",
+      run_id: "profile-run",
+      status: "COMPLETED",
+      retained: true,
+      twenty_four_seven: false,
+      gaps: 1,
+      reconnects: 2,
+      limitations: [],
+      transport_profiles: [
+        { transport_profile: "spot", gaps: 0, reconnects: 0 },
+        { transport_profile: "usdm_public", gaps: 1, reconnects: 2 },
+      ],
+    });
+    const snapshot = loadData1ACaptureSnapshot(
+      {
+        TRADING_MODE: "PAPER",
+        COCKPIT_DATA1A_RUN_DIR: runDir,
+        COCKPIT_DATA1A_RUN_ID: "profile-run",
+      },
+      repoRoot,
+      {},
+      () => observedAt,
+    );
+    expect(snapshot.health?.transport_profiles).toEqual([
+      { transport_profile: "spot", gaps: 0, reconnects: 0 },
+      { transport_profile: "usdm_public", gaps: 1, reconnects: 2 },
+    ]);
   });
 
   it("does not invent part counts when the run directory is missing", () => {

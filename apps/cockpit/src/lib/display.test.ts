@@ -9,6 +9,7 @@ import {
   captureRunOptionLabel,
   paperRunSourceLabel,
   elapsedSecondsSinceRunId,
+  formatAssumedUsdcDisplay,
   formatGroupedNumber,
   healthTone,
   parseRunIdStartedAt,
@@ -36,6 +37,13 @@ describe("cockpit display helpers", () => {
     expect(formatGroupedNumber("-0.0126583080")).toBe("-0.0126583080");
     expect(formatGroupedNumber("0.00000")).toBe("0.00000");
     expect(formatGroupedNumber("not-a-mid")).toBe("not-a-mid");
+  });
+
+  it("scans assumed USDC at 2–4 decimals and keeps unparseable copied text", () => {
+    expect(formatAssumedUsdcDisplay("-0.0126583080")).toBe("-0.0127");
+    expect(formatAssumedUsdcDisplay("12.34567")).toBe("12.35");
+    expect(formatAssumedUsdcDisplay("UNAVAILABLE")).toBe("UNAVAILABLE");
+    expect(formatAssumedUsdcDisplay("not-a-pnl")).toBe("not-a-pnl");
   });
 
   it("colors assumed PnL from the copied string and does not invent a number", () => {

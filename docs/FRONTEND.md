@@ -8,31 +8,76 @@ Build a professional trading workstation, not a decorative dashboard. The operat
 
 - TypeScript;
 - React;
-- Next.js;
-- WebSocket for realtime state;
+- Next.js 15 App Router;
+- Tailwind CSS v4 + official free shadcn/ui (Radix, New York; sidebar/dashboard-01 layout ideas only) + Lucide + TanStack Table + recharts (KPI sparklines from real public candle closes only) + TradingView Lightweight Charts (Apache-2.0; see `apps/cockpit/NOTICE`);
+- visual default **C Fail-Closed Amber** (status-first) with optional **Desk Dark** density. Critique variants stay in `docs/design-previews/` only — not prod chrome. Research Lab sparse theme is later, not this screen;
+- WebSocket for realtime state (planned; first screen polls HTTP);
 - REST/HTTP for control/query operations;
 - strict typing and component tests;
 - production build packaged as a Linux container image.
 
 The browser never receives trading secrets.
 
-The first cockpit screen now reads COURSE-1 PAPER JSON, a four-venue
-capture-health strip, and a thin DATA-1A capture-health panel. It shows a
-compact PAPER **DESK** banner (mode, bound run provenance, live vs stale), a
-first **MARKETS** panel (public HL BTC-PERP mid plus fail-closed sibling
-quotes), a first **RISK** panel (reconstructable PAPER overlay and fail-closed
-bounds; missing leverage/margin/liquidation/VaR stay **UNAVAILABLE**), paper
-position, assumed overlay PnL, COURSE-1 soak health, HL /
-Binance / Bitvavo / Kraken reconstructable capture rows, DATA-1A capture
-health, and the copied PAPER intent/fill blotter. The layout is a dense dark
-terminal so those values are readable at a glance; PAPER is badged and
-watermarked. It is inspired by professional market workstations, not a clone of
-a commercial UI. RISK is a first PAPER slice: it copies reconstructable
-position, assumed overlay PnL, fail-closed preflight bounds, and capture
-live/stale summary. Missing risk fields stay **UNAVAILABLE**; it never invents
-leverage, margin, liquidation, VaR, or venue risk. MARKETS never invents a
-last/BBO; sibling venues stay **UNAVAILABLE** unless a cockpit API already has
-that quote.
+### Real project data vs fixtures / gaps
+
+| Surface | Real / copied | Fixture default | Fail-closed gap |
+|---|---|---|---|
+| PAPER mode banner | Fail-closed `TRADING_MODE` | n/a | LIVE / TESTNET / SHADOW refuse |
+| COURSE-1 soak identity | `run-claim.json` + position | `tests/fixtures/course1_cockpit/live-public-soak` | **UNAVAILABLE** if JSON missing |
+| DATA retain identity | four-venue strip binds | DATA-1A sample-run; BN/BV/KR **MISSING** unless `ARTIFACT_ROOT` | never blended with soak PnL |
+| Public HL mid / candles | credentialless `/info` `allMids` + `candleSnapshot` | n/a | **UNAVAILABLE** if the public route fails |
+| Position / assumed PnL | `paper-position.json` / `paper-pnl.json` | soak fixture | labeled **not venue-reconciled**; never D22-B |
+| Intents → fills | `orders.json` / `fills.json` | soak fixture (entry/exit) | REJECT rows always show a #65/`paper_risk` gate; soak is ACCEPT-only so the tape inserts a documented catalog demo reject (not LIVE, not a soak fill) |
+| `#65` gate catalog | documented `paper_risk` defaults | n/a | per-run halt state **UNAVAILABLE** |
+| Preflight caps | `run-claim.json` preflight | soak fixture | **not recorded** / **UNAVAILABLE** if omitted |
+| D01 bind | `same_d01_smoke_risk` | soak fixture | **UNAVAILABLE** if preflight omitted |
+| BN `usdm_public` | documented DATA-1F profile + copied BN chip | n/a | G/R stay n/a without health JSON |
+| RESEARCH P0 | strip claims/health + optional `research-out/**/panel-summary.json` | none in-repo | **UNAVAILABLE** if missing; no edge / no strategy PnL |
+| TerraPC retain ids | operator docs / picker hint only | HL/BV/KR `20260905t232635z-live-retained`; BN `20260906t101559z-live-retained` | auto-detect still prefers a live retain |
+
+LAN phone: `PORT=3001 pnpm --filter @hyperliquid-bot/cockpit dev:lan` then
+`http://192.168.1.2:3001` on the same Wi-Fi. Collectors are never started or
+stopped from the cockpit.
+
+The first cockpit screen is a PAPER Operator Cockpit workstation (incremental
+upgrade of `apps/cockpit`, not a template replace). It reads COURSE-1 PAPER
+JSON, a four-venue capture-health strip, and a thin DATA-1A capture-health
+panel. Sticky chrome keeps the PAPER badge, freshness/age, compact venue
+chips, and hash nav. IA order:
+
+1. Fail-closed **PAPER** banner (no keys, no orders, no LIVE knobs).
+2. **Health:** existing four-venue strip + run picker + DATA-1A (behavior
+   unchanged) plus the second-row D01 / `paper_risk` bind, read-only capture
+   health (start/stop vetoed), and Binance `usdm_public` callout
+   (`btcusdt@bookTicker`; not mixed with soak PnL).
+3. **MARKETS:** public HL BTC-PERP mid plus public `candleSnapshot` chart when
+   the credentialless `/info` route answers; sibling last/BBO stay
+   **UNAVAILABLE**. A recharts KPI sparkline renders only from those public
+   closes. Public mid is labeled **not research truth**.
+4. **RESEARCH (Quant P0):** artifact / summary cards only (run registry from
+   claims, capture health, WP-Q1 sufficiency from
+   `research-out/**/panel-summary.json` via `GET /api/research-summaries`,
+   instrument identity, overlap clock). No live public mid chart. Missing
+   files stay **UNAVAILABLE**. No edge, no strategy PnL, no 72h claim
+   mid-run. H1 lead-lag stays an UNAVAILABLE stub
+   (`promotion_decision=forbidden`). Public mid ≠ research truth.
+5. **PAPER / DESK bot (COURSE-1 soak only):** What is PAPER + `run_id` + soak
+   claim path, labeled **COURSE-1 soak** (not DATA retain). Why is the last
+   risk outcome ACCEPT or a #65/D01 reject **gate name** plus short reason.
+   Results copy paper side/size/entry/mark and label **assumed_pnl** (not
+   venue-reconciled; D22-B blocked). Tape is last N intents/fills with
+   rejected rows and gate codes. Preflight strip is read-only: assumed
+   equity, documented 0.25% risk/trade, max lev/gross/net 1.0×, max 3
+   positions, plus copied soak notional/loss when present. DATA retain stays
+   a separate card. Capture-health / `usdm_public` stay on Health/MARKETS.
+6. **RISK** copied vs **UNAVAILABLE**, plus the documented #65 `paper_risk`
+   gate catalog and reduce-only-after-halt rule. Per-run halt state is
+   **UNAVAILABLE** (COURSE-1 JSON has no daily/weekly/drawdown snapshot).
+
+PAPER is badged and watermarked. The layout is dense and mobile-friendly.
+Inspiration is professional workstation IA, not a fork of a commercial
+exchange UI. Missing values stay **UNAVAILABLE**; the cockpit never invents
+prices, PnL, leverage, margin, liquidation, VaR, wallets, or L2 ladders.
 Later screens must keep using the create-only reconstructable contracts rather
 than inventing a second store:
 
@@ -53,7 +98,13 @@ than inventing a second store:
   capture-health.json
   raw/part-*.parquet
   research.duckdb
+
+<artifact-root>/research-out/**/panel-summary.json
 ```
+
+Optional `COCKPIT_RESEARCH_OUT` overrides the research-out root. `GET
+/api/research-summaries` lists or reads `panel-summary.json` only. No
+collectors. Missing files stay **UNAVAILABLE**.
 
 `paper-pnl.json` is assumed PAPER overlay economics, not venue PnL. COURSE-1
 `capture-health.json` is a bounded-run summary, not a 24/7 heartbeat. DATA-1A
@@ -233,7 +284,13 @@ Mean Reversion     QUARANTINE  0%          ...      ...      DEGRADED
 
 ### RESEARCH
 
-Experiment registry, backtest comparison, promotion gates, parameter stability and paper-vs-backtest decay.
+First PAPER slice (now on the first screen): Quant P0 only. Run registry,
+capture health, WP-Q1 sufficiency, instrument identity, and overlap clock.
+Hypothesis / OOS / H1 stay **UNAVAILABLE**. No edge, no mixed Spot+USDM
+price, no promotion.
+
+Later: experiment registry, backtest comparison, promotion gates, parameter
+stability and paper-vs-backtest decay.
 
 ### SYSTEM
 

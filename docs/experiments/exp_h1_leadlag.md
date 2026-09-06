@@ -65,8 +65,22 @@ One primary definition (boring on purpose):
 2. All three buckets must pass the WP-Q1 usable mask:
    `overlap_ok` and not `hl_incomplete` / `bn_incomplete` /
    `hl_gap_detected` / `bn_gap_detected`.
-3. Binance impulse price at a bucket, first available of:
-   `bn_spot_last_price`, `bn_spot_bbo_mid_proxy`, `bn_usdm_last_agg_price`.
+3. Binance impulse price at a bucket uses **one explicit instrument**.
+   Families are never mixed. Missing required-family price skips the
+   observation (fail closed). Default for HL BTC-PERP is
+   `binance_usdm_mark` (perp-to-perp). `binance_spot` is opt-in.
+
+   | `--binance-impulse-instrument` | Columns used (same family only) |
+   | --- | --- |
+   | `binance_usdm_mark` (default) | `bn_usdm_mark_price` only |
+   | `binance_usdm_agg` | `bn_usdm_last_agg_price` only |
+   | `binance_spot` | `bn_spot_last_price`, else same-family `bn_spot_bbo_mid_proxy` |
+
+   Official Binance sources treat these as distinct series: Spot last/BBO
+   are spot-market prices; USD-M mark is a calculated fair-value /
+   liquidation series, not last/aggTrade; USD-M aggTrade is the futures
+   tape. Issue #52 fixed USD-M bookTicker WebSocket `/public` vs
+   `/market` routing only. It did **not** fix this Quant identity rule.
 4. Hyperliquid response price at a bucket, first available of:
    `hl_last_mid_price`, `hl_bbo_mid_proxy`, `hl_last_trade_price`.
 5. BN return over the prior bucket:
@@ -77,9 +91,31 @@ One primary definition (boring on purpose):
 8. Signed HL return: `signal * hl_gross_return` (long HL if BN printed up,
    short HL if BN printed down).
 
-No secondary definition is scored in this work package. Do not swap in
-signed BN trade size, USDM mark, or multi-bucket BN lookbacks without a new
-pre-registration.
+No secondary definition is scored in this work package. Do not swap
+instruments mid-run, do not cascade Spot into USD-M, and do not add
+multi-bucket BN lookbacks without a new pre-registration. The chosen
+instrument is recorded on `feature_set`, `parameters.binance_impulse_instrument`,
+the summary JSON, and the registry template.
+
+Official Binance sources (do not treat these series as interchangeable):
+
+- Spot last / 24h ticker / bookTicker (spot-market last and BBO):
+  [Spot REST API](https://developers.binance.com/docs/binance-spot-api-docs/rest-api),
+  [Spot REST source](https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md)
+  (`GET /api/v3/ticker/24hr` `lastPrice`, `GET /api/v3/ticker/bookTicker`),
+  [Spot WebSocket streams](https://github.com/binance/binance-spot-api-docs/blob/master/web-socket-streams.md)
+  (`<symbol>@trade`, `<symbol>@bookTicker`).
+- USD-M mark ≠ last / aggTrade; mark is fair value and drives liquidation /
+  unrealized PnL:
+  [Mark Price REST](https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Mark-Price)
+  (`GET /fapi/v1/premiumIndex`),
+  [Futures liquidation / mark vs last FAQ](https://www.binance.com/en/support/faq/detail/360033525271),
+  [USD-M mark and price index FAQ](https://www.binance.com/en-AU/support/faq/detail/360033525071).
+- USD-M aggTrade is the futures tape (often aggregated), not spot:
+  [Compressed aggregate trades](https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Compressed-Aggregate-Trades-List)
+  (`GET /fapi/v1/aggTrades`),
+  [Binance public data README](https://github.com/binance/binance-public-data/blob/master/README.md)
+  (spot `/api/v3/aggTrades` vs USD-M `/fapi/v1/aggTrades`).
 
 ## Cost model
 
@@ -108,6 +144,8 @@ The caller **must** pass an explicit UTC-nanosecond range:
 
 - `--oos-start-utc-ns`
 - `--oos-end-utc-ns`
+- `--binance-impulse-instrument` (`binance_usdm_mark` default;
+  `binance_usdm_agg` or opt-in `binance_spot`)
 
 A fractional split with a seed is not offered. The OOS slice is the only
 slice that can decide `noise` versus `not_enough_data`.
@@ -177,6 +215,7 @@ PYTHONPATH=src uv run --frozen python -m hyperliquid_bot.exp_h1_leadlag \
   --panel-summary /path/to/panel-out/panel-summary.json \
   --oos-start-utc-ns 1788105600000000000 \
   --oos-end-utc-ns 1788192000000000000 \
+  --binance-impulse-instrument binance_usdm_mark \
   --output-dir /path/to/h1-out
 ```
 
@@ -190,6 +229,7 @@ PYTHONPATH=src uv run --frozen python -m hyperliquid_bot.exp_h1_leadlag \
   --bn-run-id <data-1f-run-id> \
   --oos-start-utc-ns 1788105600000000000 \
   --oos-end-utc-ns 1788192000000000000 \
+  --binance-impulse-instrument binance_usdm_mark \
   --output-dir /path/to/h1-out
 ```
 

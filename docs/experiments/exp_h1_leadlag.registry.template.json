@@ -5,17 +5,18 @@
   "dataset": {
     "panel_parquet": null,
     "panel_summary": null,
-    "panel_version": "panel_hl_binance/wp-q1",
+    "panel_version": "panel_hl_binance/wp-q1.1",
     "bucket_ms": 1000,
     "dataset_range": null
   },
   "source_environment": "DEV",
-  "feature_set": "bn_prior_bucket_return_sign_to_hl_forward_return",
-  "strategy_model_version": "h1-leadlag-scaffold-v1",
+  "feature_set": "bn_prior_bucket_return_sign_to_hl_forward_return/binance_usdm_mark",
+  "strategy_model_version": "h1-leadlag-scaffold-v2",
   "parameters": {
     "delta_buckets": [1, 5, 30],
     "signal_lookback_buckets": 1,
-    "cost_multipliers": ["1.0", "1.5", "2.0"]
+    "cost_multipliers": ["1.0", "1.5", "2.0"],
+    "binance_impulse_instrument": "binance_usdm_mark"
   },
   "random_seed": null,
   "cost_assumptions": {
@@ -35,6 +36,7 @@
   "notes": [
     "Template only. Copy this file for a citable rerun. Do not invent metrics.",
     "PAPER research scaffold. Allowed verdicts are noise or not_enough_data.",
-    "Promotion is forbidden. This file must not be filled with a winning claim."
+    "Promotion is forbidden. This file must not be filled with a winning claim.",
+    "Binance impulse identity is explicit. Do not blend Spot last/BBO with USD-M mark or aggTrade."
   ]
 }

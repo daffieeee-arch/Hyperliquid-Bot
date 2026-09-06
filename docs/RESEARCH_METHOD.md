@@ -99,11 +99,15 @@ A written panel is still only a descriptive join: it is not evidence of a tradin
 
 WP-Q2 H1 (`python -m hyperliquid_bot.exp_h1_leadlag`) consumes that WP-Q1 panel (or builds
 it via the same module) and evaluates three predeclared Δ horizons with 1× / 1.5× / 2×
-cost stress on a caller-supplied OOS UTC-ns range. It is fail-closed when the panel is
-missing, the panel summary is `not_enough_data`, usable overlap after the gap mask is too
-small, or any predeclared horizon has too few trades. It may only emit `noise` or
-`not_enough_data`. It never assigns `edge`. Pre-registration, falsification rules and the
-registry template live in [experiments/exp_h1_leadlag.md](experiments/exp_h1_leadlag.md).
+cost stress on a caller-supplied OOS UTC-ns range. The Binance impulse series is an
+explicit instrument (`binance_usdm_mark` default). Spot last/BBO, USD-M aggTrade, and
+USD-M mark are not interchangeable; missing family prices skip the observation. Issue
+#52 was transport-only (USD-M bookTicker routing) and did not fix this identity rule.
+It is fail-closed when the panel is missing, the panel summary is `not_enough_data`, usable
+overlap after the gap mask is too small, or any predeclared horizon has too few trades.
+It may only emit `noise` or `not_enough_data`. It never assigns `edge`. Pre-registration,
+falsification rules and the registry template live in
+[experiments/exp_h1_leadlag.md](experiments/exp_h1_leadlag.md).
 H2 basis remains out of scope. Operator reconstructable roots later live on TerraPC
 outside git; unit tests use synthetic panels only.
 

@@ -456,7 +456,12 @@ written:
 
 A bucket is incomplete on Hyperliquid when it has no trade, BBO, or non-empty mid, and
 incomplete on Binance when it has no spot trade, spot BBO, USDM aggregate trade, or USDM
-mark. `overlap_ok` is both sides complete. The summary never uses a promotion token; verdicts
+mark. `overlap_ok` is both sides complete. That storage gate is not an invitation to mix
+Binance families: Spot last/BBO, USD-M aggTrade, and USD-M mark stay in separate columns,
+with additive `bn_spot_complete` / `bn_usdm_complete` flags. Consumers must not blend
+them. Issue #52 fixed USD-M bookTicker WebSocket routing only; it did not fix Quant
+instrument identity. Panel version `panel_hl_binance/wp-q1.1` records the families and
+this warning on the summary. The summary never uses a promotion token; verdicts
 are only `panel_ready` or `not_enough_data`.
 
 ```bash
@@ -478,7 +483,10 @@ DATA-1A / DATA-1F run ids and let it call `panel_hl_binance` first.
 The runner masks gap / incomplete / non-overlap buckets, scores one predeclared signal
 (Binance prior-bucket return sign → Hyperliquid forward return) at Δ = 1 / 5 / 30
 buckets, and applies Hyperliquid taker + half-spread cost at 1.0× / 1.5× / 2.0×. The
-caller must pass `--oos-start-utc-ns` and `--oos-end-utc-ns`. Verdicts are only `noise`
+Binance impulse instrument is explicit (`binance_usdm_mark` default for perp-to-perp;
+`binance_usdm_agg`; opt-in `binance_spot`). Missing required-family price skips that
+observation. There is no Spot↔USD-M fallback. The caller must pass
+`--oos-start-utc-ns` and `--oos-end-utc-ns`. Verdicts are only `noise`
 or `not_enough_data`. The module refuses verdict `edge` even when after-cost metrics look
 positive. Fail closed when the panel is missing, the WP-Q1 summary is `not_enough_data`,
 usable overlap after the mask is too small, or any predeclared Δ has too few OOS trades.

@@ -11,11 +11,13 @@ export function OriginBadge({
   origin,
   detail,
   live = false,
+  className,
 }: {
   origin: DataOrigin;
   /** Extra context appended to the hover text, e.g. per-venue counts. */
   detail?: string;
   live?: boolean;
+  className?: string;
 }) {
   const meta = dataOriginMeta(origin);
   return (
@@ -23,6 +25,7 @@ export function OriginBadge({
       tone={meta.tone}
       dot={origin === "live"}
       live={origin === "live" && live}
+      className={className}
       title={detail === undefined ? meta.meaning : `${meta.meaning} ${detail}`}
     >
       {meta.label}

@@ -49,37 +49,57 @@ function sideTone(side: InstrumentRow["lastSide"]): "up" | "down" | "muted" {
   }
 }
 
+function Detail({ children }: { children: string }) {
+  return (
+    <span className="eyebrow" style={{ display: "block", marginTop: "0.15rem" }}>
+      {children}
+    </span>
+  );
+}
+
 const columns: DataTableColumns<InstrumentRow> = helper.columns([
-  helper.accessor("product", { header: "Instrument" }),
-  helper.accessor("kind", {
-    header: "Kind",
+  helper.accessor("product", {
+    header: "Instrument",
     cell: ({ row }) => (
-      <Badge tone={row.original.kind === "perpetual" ? "info" : "muted"}>
-        {KIND_LABEL[row.original.kind]}
-      </Badge>
+      <span className="row" style={{ gap: "0.4rem" }}>
+        <span className="mono">{row.original.product}</span>
+        <Badge tone={row.original.kind === "perpetual" ? "info" : "muted"}>
+          {KIND_LABEL[row.original.kind]}
+        </Badge>
+      </span>
     ),
   }),
   helper.accessor("quote", { header: "Quote" }),
   helper.accessor("lastPrice", {
     header: "Last trade",
     cell: ({ row }) => (
-      <span className={`tone-${sideTone(row.original.lastSide)}`}>
-        {formatGroupedNumber(row.original.lastPrice)}
-      </span>
+      <>
+        <span className={`tone-${sideTone(row.original.lastSide)}`}>
+          {formatGroupedNumber(row.original.lastPrice)}
+        </span>
+        {row.original.lastPrice === "—" ? null : (
+          <Detail>{`${row.original.lastSide} ${row.original.lastSize} · ${row.original.lastTradeAt}`}</Detail>
+        )}
+      </>
     ),
   }),
-  helper.accessor("lastSize", { header: "Size" }),
-  helper.accessor("lastTradeAt", { header: "Trade at", enableSorting: false }),
   helper.accessor("bid", {
-    header: "Bid",
-    cell: ({ row }) => formatGroupedNumber(row.original.bid),
+    header: "Bid / ask",
+    cell: ({ row }) => (
+      <>
+        {row.original.bid === "—" ? (
+          <span className="tone-muted">—</span>
+        ) : (
+          <span>
+            {formatGroupedNumber(row.original.bid)} / {formatGroupedNumber(row.original.ask)}
+          </span>
+        )}
+        {row.original.bid === "—" ? null : (
+          <Detail>{`spread ${row.original.spread} · ${row.original.spreadBps} bps`}</Detail>
+        )}
+      </>
+    ),
   }),
-  helper.accessor("ask", {
-    header: "Ask",
-    cell: ({ row }) => formatGroupedNumber(row.original.ask),
-  }),
-  helper.accessor("spread", { header: "Spread" }),
-  helper.accessor("spreadBps", { header: "bps" }),
   helper.accessor("trades", { header: "Trades" }),
   helper.accessor("lastEventAge", { header: "Data age" }),
 ]) as DataTableColumns<InstrumentRow>;
@@ -126,8 +146,11 @@ function VenueTapeCard({ summary, degraded }: { summary: VenueTapeSummary; degra
       detail: `bound via ${tape.bindingSource}`,
       title: tape.runId,
     },
-    { label: "Published", value: summary.published, detail: summary.processed },
-    { label: "Volume", value: summary.volume, detail: "bytes of published parts" },
+    {
+      label: "Published",
+      value: `${summary.published} · ${summary.volume}`,
+      detail: summary.processed,
+    },
     {
       label: "Newest part",
       value: summary.newestPart,
@@ -172,43 +195,35 @@ function VenueTapeCard({ summary, degraded }: { summary: VenueTapeSummary; degra
       />
       <CardBody>
         {tape.status === "ok" ? (
-          <div className="stack-sm">
+          <div className="grid grid-lg-facts">
             <KvList rows={kv} />
-            {disagrees ? (
-              <Notice state="error" title="Run ids disagree">
-                Capture health is bound to <span className="mono">{chip?.run_id}</span> but stored
-                data was read from <span className="mono">{tape.runId}</span>. Re-check the run
-                picker before trusting either.
-              </Notice>
-            ) : null}
-            {summary.dataState === "stale" ? (
-              <Notice state="stale" title={stateMeta.label}>
-                Newest stored event is {summary.lastDataAge} old while the capture reports live.
-                Either the writer has not rotated a part yet or the feed is quiet.
-              </Notice>
-            ) : null}
-            {rows.length === 0 ? (
-              <Notice state="pending" title="No instrument decoded yet">
-                {tape.note}
-              </Notice>
-            ) : (
-              <DataTable
-                columns={columns}
-                data={rows}
-                numericColumns={[
-                  "lastPrice",
-                  "lastSize",
-                  "bid",
-                  "ask",
-                  "spread",
-                  "spreadBps",
-                  "trades",
-                  "lastEventAge",
-                ]}
-                monoColumns={["product", "lastTradeAt"]}
-                emptyLabel="No instrument decoded."
-              />
-            )}
+            <div className="stack-sm">
+              {disagrees ? (
+                <Notice state="error" title="Run ids disagree">
+                  Capture health is bound to <span className="mono">{chip?.run_id}</span> but
+                  stored data was read from <span className="mono">{tape.runId}</span>. Re-check
+                  the run picker before trusting either.
+                </Notice>
+              ) : null}
+              {summary.dataState === "stale" ? (
+                <Notice state="stale" title={stateMeta.label}>
+                  Newest stored event is {summary.lastDataAge} old while the capture reports live.
+                  Either the writer has not rotated a part yet or the feed is quiet.
+                </Notice>
+              ) : null}
+              {rows.length === 0 ? (
+                <Notice state="pending" title="No instrument decoded yet">
+                  {tape.note}
+                </Notice>
+              ) : (
+                <DataTable
+                  columns={columns}
+                  data={rows}
+                  numericColumns={["lastPrice", "bid", "trades", "lastEventAge"]}
+                  emptyLabel="No instrument decoded."
+                />
+              )}
+            </div>
           </div>
         ) : (
           <Notice
@@ -282,7 +297,7 @@ export function StoredMarketData({
       </div>
 
       {tape.ok ? (
-        <div className="grid grid-lg-2">
+        <div className="stack">
           {summaries.map((summary) => (
             <VenueTapeCard key={summary.tape.id} summary={summary} degraded={tapePoll.degraded} />
           ))}

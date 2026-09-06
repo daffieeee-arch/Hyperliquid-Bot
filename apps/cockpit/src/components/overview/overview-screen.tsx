@@ -23,7 +23,12 @@ import { OriginBadge } from "../ui/origin-badge";
 import { ReadStatus } from "../ui/read-status";
 import { Stat } from "../ui/stat";
 import { useCockpitRefresh } from "../providers/cockpit-refresh";
-import { dataOriginMeta, describeOriginSummary, stripOrigin } from "../../lib/data-origin";
+import {
+  dataOriginMeta,
+  describeOriginSummary,
+  paperOrigin,
+  stripOrigin,
+} from "../../lib/data-origin";
 import { dataStateTone } from "../../lib/data-state";
 import { formatGroupedNumber } from "../../lib/display";
 import { newestTapeEvent } from "../../lib/market-tape-rows";
@@ -249,6 +254,10 @@ export function OverviewScreen({
               description="COURSE-1 soak only. DATA retain stays a separate identity."
               actions={
                 <>
+                  <OriginBadge
+                    origin={paperOrigin(view.paper.lifecycle)}
+                    live={!paperPoll.degraded}
+                  />
                   <Badge
                     tone={
                       view.paper.lifecycle.state === "historical"

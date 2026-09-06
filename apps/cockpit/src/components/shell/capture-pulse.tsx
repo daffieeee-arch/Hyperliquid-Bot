@@ -70,6 +70,7 @@ export function CapturePulse({ query }: { query: VenueCaptureQuery }) {
             origin={origin.origin}
             detail={describeOriginSummary(origin)}
             live={!poll.degraded}
+            className="topbar-wide"
           />
           <Badge tone={summary.tone} dot live={summary.live} title={summary.title}>
             {summary.label}

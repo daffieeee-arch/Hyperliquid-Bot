@@ -434,6 +434,11 @@ body {
   .topbar-crumb .crumb-root {
     display: none;
   }
+  /* The origin chip repeats in each page head; the live count, read pulse and
+     refresh button must stay reachable on a phone. */
+  .topbar-actions .topbar-wide {
+    display: none;
+  }
 }
 
 .topbar-actions {
@@ -614,6 +619,10 @@ body {
   }
   .grid-lg-sidebar {
     grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  }
+  .grid-lg-facts {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+    align-items: start;
   }
 }
 

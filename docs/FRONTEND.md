@@ -61,11 +61,15 @@ chips, and hash nav. IA order:
    and overlap clock. Missing files stay **UNAVAILABLE**. No edge, no
    strategy PnL, no 72h claim mid-run. H1 lead-lag stays an UNAVAILABLE stub
    (`promotion_decision=forbidden`).
-5. **PAPER:** COURSE-1 soak vs DATA retain as **separate cards**; bot what /
-   why / results. Position and assumed PnL are labeled
-   **not venue-reconciled**. Intents→fills copy intent reasons; `paper_risk`
-   reason codes stay **UNAVAILABLE** unless present on `orders.json`.
-   Preflight caps come from `run-claim.json`.
+5. **PAPER / DESK bot (COURSE-1 soak only):** What is PAPER + `run_id` + soak
+   claim path, labeled **COURSE-1 soak** (not DATA retain). Why is the last
+   risk outcome ACCEPT or a #65/D01 reject **gate name** plus short reason.
+   Results copy paper side/size/entry/mark and label **assumed_pnl** (not
+   venue-reconciled; D22-B blocked). Tape is last N intents/fills with
+   rejected rows and gate codes. Preflight strip is read-only: assumed
+   equity, documented 0.25% risk/trade, max lev/gross/net 1.0×, max 3
+   positions, plus copied soak notional/loss when present. DATA retain stays
+   a separate card. Capture-health / `usdm_public` stay on Health/MARKETS.
 6. **RISK** copied vs **UNAVAILABLE**, plus the documented #65 `paper_risk`
    gate catalog and reduce-only-after-halt rule. Per-run halt state is
    **UNAVAILABLE** (COURSE-1 JSON has no daily/weekly/drawdown snapshot).

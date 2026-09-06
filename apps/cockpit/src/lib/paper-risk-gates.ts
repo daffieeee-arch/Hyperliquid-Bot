@@ -149,3 +149,21 @@ export function paperRiskRejectionView(
 export function paperRiskGateIds(): readonly string[] {
   return PAPER_HARD_LIMIT_GATES.map((gate) => gate.id);
 }
+
+export function resolvePaperRiskGate(token: string): PaperRiskGate | undefined {
+  const trimmed = token.trim();
+  if (trimmed === "") {
+    return undefined;
+  }
+  return PAPER_HARD_LIMIT_GATES.find(
+    (gate) => gate.id === trimmed || gate.reason === trimmed || gate.label === trimmed,
+  );
+}
+
+export const DOCUMENTED_RISK_PER_TRADE = "0.25% equity / trade";
+export const DOCUMENTED_MAX_LEVERAGE = "1.0×";
+export const DOCUMENTED_MAX_GROSS = "1.0×";
+export const DOCUMENTED_MAX_NET = "1.0×";
+export const DOCUMENTED_MAX_POSITIONS = "3";
+export const DOCUMENTED_CAPS_SOURCE =
+  "documented #65 / D01 paper_risk defaults · read-only · not a live portfolio snapshot";

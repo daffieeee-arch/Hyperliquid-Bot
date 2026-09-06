@@ -1,44 +1,75 @@
 import { joinIntentsToFills, type IntentFillRow } from "./intent-fill";
-import { paperRiskRejectionView, type PaperRiskRejectionView } from "./paper-risk-gates";
-import type { PaperRunSnapshot } from "./types";
+import { COURSE1_PATH_CONTRACT_ID, COURSE1_RELATIVE_PREFIX } from "./paths";
+import {
+  DOCUMENTED_CAPS_SOURCE,
+  DOCUMENTED_MAX_GROSS,
+  DOCUMENTED_MAX_LEVERAGE,
+  DOCUMENTED_MAX_NET,
+  DOCUMENTED_MAX_POSITIONS,
+  DOCUMENTED_RISK_PER_TRADE,
+  paperRiskRejectionView,
+  resolvePaperRiskGate,
+  type PaperRiskRejectionView,
+} from "./paper-risk-gates";
+import type { PaperFillRow, PaperRunSnapshot } from "./types";
 
 export const PAPER_BOT_UNAVAILABLE = "UNAVAILABLE";
 export const NOT_VENUE_RECONCILED = "not venue-reconciled";
-export const ASSUMED_OVERLAY_NOT_VENUE_PNL =
-  "assumed overlay · not venue-reconciled · not venue PnL";
+export const ASSUMED_PNL_LABEL = "assumed_pnl · not venue-reconciled · D22-B blocked";
+export const ASSUMED_OVERLAY_NOT_VENUE_PNL = ASSUMED_PNL_LABEL;
+export const COURSE1_SOAK_KIND = "COURSE-1 soak";
+export const TAPE_LAST_N = 8;
+export const D22B_BLOCKED = "blocked";
 
 export type PaperBotWhat = {
-  strategyClass: string;
+  kind: typeof COURSE1_SOAK_KIND;
+  mode: "PAPER";
+  runId: string;
+  claimPath: string;
+  pathContract: string;
   instrument: string;
-  positionBtc: string;
-  positionLabel: string;
-  intentCount: string;
-  fillCount: string;
+  strategyClass: string;
   venueOrdersSubmitted: string;
 };
 
+export type LastDecisionOutcome = "ACCEPT" | "REJECT" | "UNAVAILABLE";
+
 export type PaperBotWhy = {
-  intentReasons: string[];
-  preflightStrategy: string;
-  sameD01SmokeRisk: string;
-  limitations: string[];
+  outcome: LastDecisionOutcome;
+  gateName: string;
+  reason: string;
+  intentId: string;
+  source: string;
 };
 
 export type PaperBotResults = {
-  assumedNetPnl: string;
+  side: string;
+  size: string;
+  entry: string;
+  mark: string;
+  assumedPnl: string;
   assumedPnlLabel: string;
+  assumedNetPnl: string;
   endingEquity: string;
-  soakMark: string;
+  d22b: string;
+  venueReconciled: typeof NOT_VENUE_RECONCILED;
   venuePnl: string;
 };
 
 export type PreflightCapsView = {
   available: boolean;
+  equity: string;
+  riskPerTrade: string;
+  maxLeverage: string;
+  maxGross: string;
+  maxNet: string;
+  maxPositions: string;
   strategyClass: string;
   orderQuantityBtc: string;
   maxEntryNotionalUsdc: string;
   maxAssumedLossUsdc: string;
   sameD01SmokeRisk: string;
+  documentedSource: string;
   source: string;
 };
 
@@ -50,38 +81,74 @@ export type PaperBotView = {
   results: PaperBotResults;
   preflight: PreflightCapsView;
   tape: IntentFillRow[];
+  tapeLimit: number;
   riskRejections: PaperRiskRejectionView;
 };
 
 const MISSING_PREFLIGHT = "run-claim.json preflight omitted";
+const LAST_DECISION_MISSING =
+  "orders.json has no last paper_risk outcome; ACCEPT/REJECT is not invented";
+
+export function course1SoakClaimPath(runId: string): string {
+  return `${COURSE1_RELATIVE_PREFIX.join("/")}/${runId}`;
+}
+
+function isFlatPosition(quantity: string): boolean {
+  const value = Number(quantity);
+  return !Number.isFinite(value) || value === 0;
+}
+
+function paperSide(quantity: string): string {
+  const value = Number(quantity);
+  if (!Number.isFinite(value) || value === 0) {
+    return "FLAT";
+  }
+  return value > 0 ? "LONG" : "SHORT";
+}
+
+function copiedEntryPrice(size: string, fills: readonly PaperFillRow[]): string {
+  if (isFlatPosition(size)) {
+    return PAPER_BOT_UNAVAILABLE;
+  }
+  const match = [...fills].reverse().find((fill) => fill.position_after === size);
+  return match?.price ?? PAPER_BOT_UNAVAILABLE;
+}
 
 function unavailableWhat(): PaperBotWhat {
   return {
-    strategyClass: PAPER_BOT_UNAVAILABLE,
+    kind: COURSE1_SOAK_KIND,
+    mode: "PAPER",
+    runId: PAPER_BOT_UNAVAILABLE,
+    claimPath: PAPER_BOT_UNAVAILABLE,
+    pathContract: COURSE1_PATH_CONTRACT_ID,
     instrument: PAPER_BOT_UNAVAILABLE,
-    positionBtc: PAPER_BOT_UNAVAILABLE,
-    positionLabel: NOT_VENUE_RECONCILED,
-    intentCount: PAPER_BOT_UNAVAILABLE,
-    fillCount: PAPER_BOT_UNAVAILABLE,
+    strategyClass: PAPER_BOT_UNAVAILABLE,
     venueOrdersSubmitted: PAPER_BOT_UNAVAILABLE,
   };
 }
 
 function unavailableWhy(error: string): PaperBotWhy {
   return {
-    intentReasons: [],
-    preflightStrategy: PAPER_BOT_UNAVAILABLE,
-    sameD01SmokeRisk: PAPER_BOT_UNAVAILABLE,
-    limitations: [error],
+    outcome: "UNAVAILABLE",
+    gateName: PAPER_BOT_UNAVAILABLE,
+    reason: error,
+    intentId: PAPER_BOT_UNAVAILABLE,
+    source: LAST_DECISION_MISSING,
   };
 }
 
 function unavailableResults(): PaperBotResults {
   return {
+    side: PAPER_BOT_UNAVAILABLE,
+    size: PAPER_BOT_UNAVAILABLE,
+    entry: PAPER_BOT_UNAVAILABLE,
+    mark: PAPER_BOT_UNAVAILABLE,
+    assumedPnl: PAPER_BOT_UNAVAILABLE,
+    assumedPnlLabel: ASSUMED_PNL_LABEL,
     assumedNetPnl: PAPER_BOT_UNAVAILABLE,
-    assumedPnlLabel: ASSUMED_OVERLAY_NOT_VENUE_PNL,
     endingEquity: PAPER_BOT_UNAVAILABLE,
-    soakMark: PAPER_BOT_UNAVAILABLE,
+    d22b: D22B_BLOCKED,
+    venueReconciled: NOT_VENUE_RECONCILED,
     venuePnl: "no",
   };
 }
@@ -89,22 +156,89 @@ function unavailableResults(): PaperBotResults {
 function unavailablePreflight(): PreflightCapsView {
   return {
     available: false,
+    equity: PAPER_BOT_UNAVAILABLE,
+    riskPerTrade: DOCUMENTED_RISK_PER_TRADE,
+    maxLeverage: DOCUMENTED_MAX_LEVERAGE,
+    maxGross: DOCUMENTED_MAX_GROSS,
+    maxNet: DOCUMENTED_MAX_NET,
+    maxPositions: DOCUMENTED_MAX_POSITIONS,
     strategyClass: PAPER_BOT_UNAVAILABLE,
     orderQuantityBtc: PAPER_BOT_UNAVAILABLE,
     maxEntryNotionalUsdc: PAPER_BOT_UNAVAILABLE,
     maxAssumedLossUsdc: PAPER_BOT_UNAVAILABLE,
     sameD01SmokeRisk: PAPER_BOT_UNAVAILABLE,
+    documentedSource: DOCUMENTED_CAPS_SOURCE,
     source: MISSING_PREFLIGHT,
   };
 }
 
+export function lastTapeRows(
+  rows: readonly IntentFillRow[],
+  limit: number = TAPE_LAST_N,
+): IntentFillRow[] {
+  if (rows.length <= limit) {
+    return [...rows];
+  }
+  return rows.slice(rows.length - limit);
+}
+
+export function buildLastDecision(tape: readonly IntentFillRow[]): PaperBotWhy {
+  const last = tape[tape.length - 1];
+  if (last === undefined) {
+    return unavailableWhy(LAST_DECISION_MISSING);
+  }
+  if (last.outcome === "REJECT") {
+    const gate = resolvePaperRiskGate(last.gateCode) ?? resolvePaperRiskGate(last.riskReasons);
+    return {
+      outcome: "REJECT",
+      gateName: gate?.id ?? last.gateCode,
+      reason: gate?.reason ?? last.riskReasons,
+      intentId: last.clientOrderId,
+      source: last.riskReasonSource,
+    };
+  }
+  if (last.outcome === "ACCEPT") {
+    return {
+      outcome: "ACCEPT",
+      gateName: PAPER_BOT_UNAVAILABLE,
+      reason: last.intentReason,
+      intentId: last.clientOrderId,
+      source: "orders.json + fills.json · last PAPER intent filled",
+    };
+  }
+  return {
+    outcome: "UNAVAILABLE",
+    gateName: PAPER_BOT_UNAVAILABLE,
+    reason: LAST_DECISION_MISSING,
+    intentId: last.clientOrderId,
+    source: last.riskReasonSource,
+  };
+}
+
 export function buildPreflightCaps(snapshot: PaperRunSnapshot | undefined): PreflightCapsView {
-  const preflight = snapshot?.claim.preflight;
-  if (preflight === undefined) {
+  const documented = {
+    riskPerTrade: DOCUMENTED_RISK_PER_TRADE,
+    maxLeverage: DOCUMENTED_MAX_LEVERAGE,
+    maxGross: DOCUMENTED_MAX_GROSS,
+    maxNet: DOCUMENTED_MAX_NET,
+    maxPositions: DOCUMENTED_MAX_POSITIONS,
+    documentedSource: DOCUMENTED_CAPS_SOURCE,
+  };
+  if (snapshot === undefined) {
     return unavailablePreflight();
+  }
+  const preflight = snapshot.claim.preflight;
+  if (preflight === undefined) {
+    return {
+      ...unavailablePreflight(),
+      equity: `${snapshot.pnl.starting_cash_usdc_assumed} USDC assumed`,
+      ...documented,
+    };
   }
   return {
     available: true,
+    equity: `${snapshot.pnl.starting_cash_usdc_assumed} USDC assumed`,
+    ...documented,
     strategyClass: preflight.strategy_class,
     orderQuantityBtc: `${preflight.order_quantity_btc} BTC`,
     maxEntryNotionalUsdc: `${preflight.max_entry_notional_usdc} USDC`,
@@ -128,41 +262,57 @@ export function buildPaperBotView(
       results: unavailableResults(),
       preflight: unavailablePreflight(),
       tape: [],
+      tapeLimit: TAPE_LAST_N,
       riskRejections: paperRiskRejectionView(undefined),
     };
   }
+  if (snapshot.pnl.venue_pnl || snapshot.claim.d22b_venue_authoritative_reconciliation === true) {
+    const error = "DESK COURSE-1 card refuses venue-reconciled / D22-B PnL.";
+    return {
+      available: false,
+      error,
+      what: unavailableWhat(),
+      why: unavailableWhy(error),
+      results: unavailableResults(),
+      preflight: unavailablePreflight(),
+      tape: [],
+      tapeLimit: TAPE_LAST_N,
+      riskRejections: paperRiskRejectionView(snapshot.health.risk_rejections),
+    };
+  }
+  const tape = lastTapeRows(joinIntentsToFills(snapshot.orders.intents, snapshot.fills.fills));
   const preflight = buildPreflightCaps(snapshot);
+  const size = `${snapshot.position.final_position_btc} BTC`;
   return {
     available: true,
     error: undefined,
     what: {
-      strategyClass: preflight.strategyClass,
+      kind: COURSE1_SOAK_KIND,
+      mode: "PAPER",
+      runId: snapshot.runId,
+      claimPath: course1SoakClaimPath(snapshot.runId),
+      pathContract: snapshot.position.path_contract,
       instrument: snapshot.position.instrument_id,
-      positionBtc: `${snapshot.position.final_position_btc} BTC`,
-      positionLabel: NOT_VENUE_RECONCILED,
-      intentCount: String(snapshot.orders.order_count),
-      fillCount: String(snapshot.fills.fill_count),
+      strategyClass: preflight.strategyClass,
       venueOrdersSubmitted: snapshot.orders.venue_orders_submitted ? "yes" : "no",
     },
-    why: {
-      intentReasons: snapshot.orders.intents.map((intent) => intent.reason),
-      preflightStrategy: preflight.strategyClass,
-      sameD01SmokeRisk: preflight.sameD01SmokeRisk,
-      limitations: [
-        ...snapshot.position.limitations,
-        ...snapshot.orders.limitations,
-        ...snapshot.fills.limitations,
-      ],
-    },
+    why: buildLastDecision(tape),
     results: {
+      side: paperSide(snapshot.position.final_position_btc),
+      size,
+      entry: copiedEntryPrice(snapshot.position.final_position_btc, snapshot.fills.fills),
+      mark: snapshot.pnl.mark_price,
+      assumedPnl: `${snapshot.pnl.net_pnl_usdc_assumed} USDC`,
+      assumedPnlLabel: ASSUMED_PNL_LABEL,
       assumedNetPnl: `${snapshot.pnl.net_pnl_usdc_assumed} USDC`,
-      assumedPnlLabel: ASSUMED_OVERLAY_NOT_VENUE_PNL,
       endingEquity: `${snapshot.pnl.ending_equity_usdc_assumed} USDC`,
-      soakMark: snapshot.pnl.mark_price,
-      venuePnl: snapshot.pnl.venue_pnl ? "yes" : "no",
+      d22b: D22B_BLOCKED,
+      venueReconciled: NOT_VENUE_RECONCILED,
+      venuePnl: "no",
     },
     preflight,
-    tape: joinIntentsToFills(snapshot.orders.intents, snapshot.fills.fills),
+    tape,
+    tapeLimit: TAPE_LAST_N,
     riskRejections: paperRiskRejectionView(snapshot.health.risk_rejections),
   };
 }

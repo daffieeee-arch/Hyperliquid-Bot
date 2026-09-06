@@ -1,8 +1,11 @@
+import { resolvePaperRiskGate } from "./paper-risk-gates";
 import type { PaperFillRow, PaperOrderIntent } from "./types";
 
 export const RISK_REASON_UNAVAILABLE = "UNAVAILABLE";
 export const RISK_REASON_UNAVAILABLE_SOURCE =
   "orders.json has no paper_risk reason codes; codes are not invented";
+
+export type IntentFillOutcome = "ACCEPT" | "REJECT" | "UNAVAILABLE";
 
 export type IntentFillRow = {
   clientOrderId: string;
@@ -13,6 +16,8 @@ export type IntentFillRow = {
   reduceOnly: boolean;
   riskReasons: string;
   riskReasonSource: string;
+  gateCode: string;
+  outcome: IntentFillOutcome;
   fillOrdinal: string;
   fillPrice: string;
   fillLiquidity: string;
@@ -20,13 +25,28 @@ export type IntentFillRow = {
   matched: boolean;
 };
 
-function copiedRiskReasons(intent: PaperOrderIntent): { value: string; source: string } {
+function copiedRiskReasons(intent: PaperOrderIntent): {
+  value: string;
+  source: string;
+  gateCode: string;
+  outcome: IntentFillOutcome;
+} {
   if (intent.risk_reasons === undefined || intent.risk_reasons.length === 0) {
-    return { value: RISK_REASON_UNAVAILABLE, source: RISK_REASON_UNAVAILABLE_SOURCE };
+    return {
+      value: RISK_REASON_UNAVAILABLE,
+      source: RISK_REASON_UNAVAILABLE_SOURCE,
+      gateCode: RISK_REASON_UNAVAILABLE,
+      outcome: "UNAVAILABLE",
+    };
   }
+  const matchedGate = intent.risk_reasons
+    .map((token) => resolvePaperRiskGate(token))
+    .find((gate) => gate !== undefined);
   return {
     value: intent.risk_reasons.join(" · "),
     source: "orders.json paper_risk reason codes",
+    gateCode: matchedGate?.id ?? intent.risk_reasons[0] ?? RISK_REASON_UNAVAILABLE,
+    outcome: "REJECT",
   };
 }
 
@@ -55,6 +75,8 @@ export function joinIntentsToFills(
         reduceOnly: intent.reduce_only,
         riskReasons: reasons.value,
         riskReasonSource: reasons.source,
+        gateCode: reasons.gateCode,
+        outcome: reasons.outcome === "REJECT" ? "REJECT" : "ACCEPT",
         fillOrdinal: String(candidate.fill_ordinal),
         fillPrice: candidate.price,
         fillLiquidity: candidate.liquidity_side,
@@ -71,6 +93,8 @@ export function joinIntentsToFills(
       reduceOnly: intent.reduce_only,
       riskReasons: reasons.value,
       riskReasonSource: reasons.source,
+      gateCode: reasons.gateCode,
+      outcome: reasons.outcome,
       fillOrdinal: RISK_REASON_UNAVAILABLE,
       fillPrice: RISK_REASON_UNAVAILABLE,
       fillLiquidity: RISK_REASON_UNAVAILABLE,

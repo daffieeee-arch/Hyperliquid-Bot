@@ -4,7 +4,8 @@ Status: local fixture-backed PAPER Operator Cockpit workstation (Tailwind v4 +
 official free shadcn/ui + Lucide + TanStack Table + recharts KPI sparklines +
 Lightweight Charts; default C Fail-Closed Amber, optional A Desk Dark).
 Sticky DESK chrome, then Health → Markets → Research (Quant P0) → PAPER →
-Risk. PAPER only.
+Risk. The DESK bot card is COURSE-1 soak / paperbroker only (not DATA
+retain). PAPER only.
 Not D22-B, not LIVE, not a risk engine, and not a 24/7 cockpit service. The
 browser never signs orders and never starts/stops collectors. The visual
 chrome is not a clone of a commercial terminal.

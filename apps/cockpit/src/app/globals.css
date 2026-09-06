@@ -1046,6 +1046,35 @@ main {
   gap: var(--ui-pad);
 }
 
+.preflight-strip {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.35rem 0.75rem;
+  margin: 0;
+}
+
+.preflight-strip dt {
+  margin: 0;
+  color: var(--dim);
+  font-size: var(--font-meta);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.preflight-strip dd {
+  margin: 0.05rem 0 0;
+  font-family: var(--font-mono), ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (min-width: 720px) {
+  .preflight-strip {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
 .mid-chart {
   margin-top: 0.35rem;
 }

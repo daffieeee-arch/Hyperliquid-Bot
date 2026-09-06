@@ -5,6 +5,7 @@ import {
   REDUCE_ONLY_AFTER_HALT_RULE,
   paperRiskGateIds,
   paperRiskRejectionView,
+  resolvePaperRiskGate,
 } from "./paper-risk-gates";
 
 describe("paper_risk gate catalog", () => {
@@ -31,5 +32,11 @@ describe("paper_risk gate catalog", () => {
     expect(view.copiedRejectionCount).toBe("0");
     expect(view.haltState).toBe("UNAVAILABLE");
     expect(view.reduceOnlyAfterHalt).toBe(REDUCE_ONLY_AFTER_HALT_RULE);
+    expect(resolvePaperRiskGate("risk_based_size")?.id).toBe("risk_based_size");
+    expect(resolvePaperRiskGate("drawdown_kill")?.kind).toBe("halt");
+    expect(
+      resolvePaperRiskGate("entry notional exceeds risk-based size (risk budget / stop distance)")
+        ?.id,
+    ).toBe("risk_based_size");
   });
 });

@@ -5,8 +5,10 @@ chrome (PAPER badge, freshness, compact venue chips, hash nav), then **Health
 → Markets → Research → PAPER → Risk**. Health keeps the existing four-venue
 strip / picker / DATA-1A plus D01 bind and BN `usdm_public`. MARKETS shows
 public HL mid + public candle chart. RESEARCH is Quant P0 only. PAPER keeps
-separate soak vs retain cards and bot what/why/results. RISK stays
-reconstructable vs UNAVAILABLE.
+separate soak vs retain cards. The DESK bot card is COURSE-1 soak only:
+What (run_id + claim path), last-decision Why (ACCEPT or #65 gate),
+assumed_pnl Results, last-N intent tape, and a read-only preflight caps
+strip. RISK stays reconstructable vs UNAVAILABLE.
 
 Stack is €0 OSS: Next.js 15, Tailwind CSS v4, official free shadcn/ui (Radix;
 sidebar/dashboard-01 ideas only), Lucide, TanStack Table, recharts (real KPI

@@ -40,14 +40,18 @@ describe("intent to fill tape", () => {
     expect(copied?.riskReasons).toBe(
       "entry notional exceeds risk-based size (risk budget / stop distance)",
     );
+    expect(copied?.outcome).toBe("REJECT");
+    expect(copied?.gateCode).toBe("risk_based_size");
     const [missing] = joinIntentsToFills([entry], []);
     expect(missing?.riskReasons).toBe(RISK_REASON_UNAVAILABLE);
+    expect(missing?.outcome).toBe("UNAVAILABLE");
     expect(missing?.matched).toBe(false);
   });
 
   it("matches same-side same-qty fill without inventing a fill", () => {
     const [row] = joinIntentsToFills([entry, exit], [fill]);
     expect(row?.matched).toBe(true);
+    expect(row?.outcome).toBe("ACCEPT");
     expect(row?.fillPrice).toBe("81143.0");
     const unmatched = joinIntentsToFills([{ ...entry, side: "SELL" }], [fill]);
     expect(unmatched[0]?.matched).toBe(false);

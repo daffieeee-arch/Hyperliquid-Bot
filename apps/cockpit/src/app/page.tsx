@@ -99,7 +99,7 @@ export default async function FirstPaperScreen({
           <h2 className="zone-label">Health</h2>
           <p className="zone-kicker">
             Read-only capture strip + picker + DATA-1A. Start/stop is vetoed. D01 bind and BN
-            usdm_public stay on this zone so DESK must-haves 1–6 are not diluted.
+            usdm_public stay here — not on the COURSE-1 DESK bot card.
           </p>
           <SecondRowPanels view={secondRow} />
           <VenueCaptureStrip query={venueQuery} initial={venueStrip} />
@@ -114,15 +114,15 @@ export default async function FirstPaperScreen({
         <section id="paper" className="zone" aria-label="PAPER">
           <h2 className="zone-label">PAPER</h2>
           <p className="zone-kicker">
-            COURSE-1 soak and DATA retain stay separate cards. Position and assumed PnL are labeled
-            not venue-reconciled. They are never one blended identity and never one blended PnL.
+            DESK bot is COURSE-1 soak / paperbroker only. DATA retain stays a separate card.
+            assumed_pnl is not venue-reconciled. D22-B is blocked.
           </p>
           {snapshotError !== undefined ? <p className="error">{snapshotError}</p> : null}
           <div className="zone-grid zone-grid-2">
             <SoakIdentityCardPanel card={identities.soak} />
             <DataRetainIdentityCardPanel card={identities.retain} />
           </div>
-          <PaperBotPanel view={paperBot} snapshot={snapshot} />
+          <PaperBotPanel view={paperBot} />
         </section>
         <div id="risk">
           <RiskPanel

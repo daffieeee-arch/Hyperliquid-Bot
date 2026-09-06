@@ -31,8 +31,11 @@ unset or `PAPER`; `LIVE`, `TESTNET`, and `SHADOW` fail closed.
    Operators can pick another claimed run from the strip picker
    (`?data1a_run_id=` / `?data1f_run_id=` / `?data1e_run_id=` /
    `?data1b_run_id=`). The browser polls `/api/venue-capture-health` every
-   **5 seconds**. The strip shows the bound `run_id` per venue and overlap
-   start when Binance (or any venue) started later than the others.
+   **5 seconds**. The strip is a compact HL/BN/BV/KR table: status, last
+   part age, part count, last mtime, bind source, and run_id. Gaps/reconnects
+   appear only when `capture-health.json` already has those fields (n/a while
+   health is pending). Overlap start is shown when Binance (or any venue)
+   started later than the others.
 6. DATA-1A capture health from `capture-claim.json` plus optional
    `capture-health.json` and a cheap `raw/part-*.parquet` listing. While a live
    run has a claim, fresh `raw/part-*.parquet` files
@@ -110,7 +113,8 @@ Open `http://127.0.0.1:3000`.
 LAN phone on the same Wi-Fi (not cellular). Official Next.js `next dev`
 `-H` / `--hostname` binds the hostname; `0.0.0.0` listens on all interfaces.
 `PORT` must be set in the shell (Next.js starts the HTTP server before `.env`
-files load). TerraPC example (cockpit previously on **3001**):
+files load; `dev:lan` therefore omits `--port` so `PORT=3001` wins). TerraPC
+example (cockpit on **3001**):
 
 ```bash
 PORT=3001 pnpm --filter @hyperliquid-bot/cockpit dev:lan
@@ -140,8 +144,9 @@ collector). Next.js loads `apps/cockpit/.env.local`; the repository-root
 `.env.example` is documentation only.
 
 TerraPC WSL2 (current 72h retain; Linux filesystem, not `/mnt/c`).
-HL / Bitvavo / Kraken share `20260905t232635z-live-retained`. Binance started
-later as `20260905t235830z-live-retained` after the bookTicker hotfix.
+HL / Bitvavo / Kraken share `20260905t232635z-live-retained`. Binance is the
+post-#58 retain `20260906t101559z-live-retained`. Do not prefer the stopped
+earlier Binance id `20260905t235830z-live-retained`.
 Leaving the venue run_ids unset auto-detects the freshest live retain on each
 path contract. Explicit env / query still wins:
 
@@ -152,7 +157,7 @@ export ARTIFACT_ROOT=/home/dmesdary/hyperliquid-artifacts/reconstructable
 export DATA1A_RUN_ID=20260905t232635z-live-retained
 export DATA1E_RUN_ID=20260905t232635z-live-retained
 export DATA1B_RUN_ID=20260905t232635z-live-retained
-export DATA1F_RUN_ID=20260905t235830z-live-retained
+export DATA1F_RUN_ID=20260906t101559z-live-retained
 pnpm --filter @hyperliquid-bot/cockpit dev
 ```
 

@@ -195,6 +195,61 @@ describe("multi-venue capture-health strip", () => {
     expect(binance?.reason).toBeUndefined();
     expect(binance?.status_detail).toBe("COMPLETED");
     expect(binance?.part_count).toBe(1);
+    expect(binance?.gaps).toBeUndefined();
+    expect(binance?.reconnects).toBeUndefined();
+  });
+
+  it("copies gaps/reconnects from capture-health.json and leaves them n/a while health is pending", () => {
+    const artifactRoot = mkdtempSync(join(tmpdir(), "venue-gap-"));
+    const stoppedId = "20260904t000000z-live-retained";
+    const liveId = "20260904t134900z-live-retained";
+    const stoppedDir = join(artifactRoot, "data-1f", "binance", "BTCUSDT", stoppedId);
+    const liveDir = join(artifactRoot, "data-1a", "hyperliquid", "BTC-PERP", liveId);
+    writeClaim(stoppedDir, DATA1F_CLAIM_SCHEMA, DATA1F_PATH_CONTRACT_ID, stoppedId, {
+      venue: "binance",
+      product: "BTCUSDT",
+    });
+    writeJson(join(stoppedDir, "capture-health.json"), {
+      schema: DATA1F_HEALTH_SCHEMA,
+      kind: "capture-health",
+      path_contract: DATA1F_PATH_CONTRACT_ID,
+      run_id: stoppedId,
+      status: "COMPLETED",
+      retained: true,
+      twenty_four_seven: false,
+      gaps: 2,
+      reconnects: 1,
+    });
+    writeClaim(
+      liveDir,
+      "data-1a-retained-capture-claim-v1",
+      "data-1a-hyperliquid-btc-perp-v1",
+      liveId,
+    );
+    mkdirSync(join(liveDir, "raw"));
+    const part = join(liveDir, "raw", "part-000001-000000000001-000000000010-abc.parquet");
+    writeFileSync(part, "hl-part", { encoding: "utf8" });
+    utimesSync(part, new Date("2026-09-04T13:49:33Z"), new Date("2026-09-04T13:49:33Z"));
+
+    const strip = loadVenueCaptureStrip(
+      {
+        TRADING_MODE: "PAPER",
+        ARTIFACT_ROOT: artifactRoot,
+        DATA1A_RUN_ID: liveId,
+        DATA1F_RUN_ID: stoppedId,
+      },
+      repoRoot,
+      {},
+      () => observedAt,
+    );
+    const binance = strip.venues.find((venue) => venue.id === "binance");
+    const hl = strip.venues.find((venue) => venue.id === "hl");
+    expect(binance?.status).toBe("STOPPED");
+    expect(binance?.gaps).toBe(2);
+    expect(binance?.reconnects).toBe(1);
+    expect(hl?.status).toBe("RUNNING");
+    expect(hl?.gaps).toBeUndefined();
+    expect(hl?.reconnects).toBeUndefined();
   });
 
   it("loads all four path-contract venues without inventing a missing claim", () => {

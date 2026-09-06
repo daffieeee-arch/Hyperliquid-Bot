@@ -309,7 +309,9 @@ async def test_connection_factory_passes_disabled_client_keepalive(
 ) -> None:
     captured: dict[str, object] = {}
 
-    def fake_connect(uri: str, **options: object) -> AbstractAsyncContextManager[WebSocketConnection]:
+    def fake_connect(
+        uri: str, **options: object
+    ) -> AbstractAsyncContextManager[WebSocketConnection]:
         captured["uri"] = uri
         captured["options"] = options
         return _fake_context(FakeConnection(()))

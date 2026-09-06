@@ -1750,7 +1750,9 @@ def _reconnect_wait_seconds(base_seconds: float, attempt: int) -> float:
     if type(attempt) is not int or attempt < 1:
         raise ValueError("reconnect attempt must be a positive integer.")
     exponent = min(attempt - 1, 3)
-    return min(float(base_seconds) * (2**exponent), BINANCE_RECONNECT_BACKOFF_CAP_SECONDS)
+    delay = float(base_seconds) * float(2**exponent)
+    cap = float(BINANCE_RECONNECT_BACKOFF_CAP_SECONDS)
+    return delay if delay < cap else cap
 
 
 def _websocket_connect_kwargs(config: BinancePublicResearchConfig) -> dict[str, object]:
@@ -1774,7 +1776,16 @@ def _connection_factory(
     def factory() -> AbstractAsyncContextManager[WebSocketConnection]:
         return cast(
             AbstractAsyncContextManager[WebSocketConnection],
-            connect(websocket_url, **_websocket_connect_kwargs(config)),
+            connect(
+                websocket_url,
+                max_size=config.max_application_payload_bytes,
+                proxy=None,
+                logger=_TRANSPORT_PRIVACY_LOGGER,
+                open_timeout=10,
+                close_timeout=5,
+                ping_interval=BINANCE_WEBSOCKET_CLIENT_PING_INTERVAL,
+                ping_timeout=BINANCE_WEBSOCKET_CLIENT_PING_TIMEOUT,
+            ),
         )
 
     return factory

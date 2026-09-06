@@ -30,6 +30,13 @@ Other third-party UI dependencies and their licenses:
 - recharts — MIT
 - lucide-react — ISC
 
+Server-side data dependencies (Node.js only, never shipped to the browser):
+
+- hyparquet — MIT (https://github.com/hyparam/hyparquet); reads the
+  collectors' published Parquet parts
+- hyparquet-compressors — MIT (https://github.com/hyparam/hyparquet-compressors);
+  ZSTD page decompression for those parts
+
 Layout and density inspiration was taken from the free, permissively licensed
 shadcn/ui blocks (MIT) and the Tabler admin template (MIT). No paid component
 pack is used: shadcnblocks.com Pro, TailAdmin PRO and paid Tremor blocks are

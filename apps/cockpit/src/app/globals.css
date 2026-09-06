@@ -601,6 +601,12 @@ body {
   grid-template-columns: 1fr;
 }
 
+/* Grid items default to min-width:auto, which lets a wide table push the card
+   open instead of scrolling inside .table-scroll on narrow viewports. */
+.grid > * {
+  min-width: 0;
+}
+
 @media (min-width: 640px) {
   .grid-sm-2 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -905,6 +911,10 @@ table.dt td {
   padding: 0.45rem 0.7rem;
   border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
   vertical-align: top;
+}
+
+table.dt.dt-nowrap td {
+  white-space: nowrap;
 }
 
 table.dt tbody tr:hover {

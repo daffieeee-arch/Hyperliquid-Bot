@@ -127,6 +127,7 @@ export function PublishedDataTable({
       numericColumns={["parts", "volume", "lastDataAge", "publicationLag"]}
       monoColumns={["runId", "newestPart", "lastData"]}
       emptyLabel="No venue bound."
+      nowrap
     />
   );
 }

@@ -44,6 +44,7 @@ export function DataTable<TRow extends RowData>({
   monoColumns = [],
   cellClassName,
   emptyLabel = "No rows.",
+  nowrap = false,
 }: {
   columns: DataTableColumns<TRow>;
   data: TRow[];
@@ -52,6 +53,8 @@ export function DataTable<TRow extends RowData>({
   monoColumns?: readonly string[];
   cellClassName?: (columnId: string, row: TRow) => string | undefined;
   emptyLabel?: string;
+  /** Keep cells on one line and let `.table-scroll` scroll horizontally instead. */
+  nowrap?: boolean;
 }) {
   const table = useTable({
     features: dataTableFeatures,
@@ -66,7 +69,7 @@ export function DataTable<TRow extends RowData>({
 
   return (
     <div className="table-scroll">
-      <table className="dt">
+      <table className={nowrap ? "dt dt-nowrap" : "dt"}>
         {caption === undefined ? null : <caption>{caption}</caption>}
         <thead>
           {table.getHeaderGroups().map((group) => (

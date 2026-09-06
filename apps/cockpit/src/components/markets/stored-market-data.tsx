@@ -222,6 +222,7 @@ function VenueTapeCard({ summary, degraded }: { summary: VenueTapeSummary; degra
                   data={rows}
                   numericColumns={["lastPrice", "bid", "trades", "lastEventAge"]}
                   emptyLabel="No instrument decoded."
+                  nowrap
                 />
               )}
             </div>

@@ -1,24 +1,33 @@
 # First PAPER cockpit screen
 
-One local Next.js screen. It is not DESK, MARKETS, RISK, or a clone of any
-commercial terminal. The first screen uses a dense dark workstation layout so
-price, position, assumed overlay PnL, COURSE-1 soak health, a four-venue
-capture-health strip, and DATA-1A capture health are readable at a glance. PAPER
-is badged in the masthead and watermarked on the page.
+One local Next.js screen. First PAPER **DESK** + **MARKETS** slice; RISK is not
+built. Not a clone of any commercial terminal. The first screen uses a dense
+dark workstation layout so the PAPER run/mode banner, public HL mid, live vs
+stale capture chips, position, assumed overlay PnL, COURSE-1 soak health, a
+four-venue capture-health strip, and DATA-1A capture health are readable at a
+glance. PAPER is badged on DESK and watermarked on the page.
 
 The browser never signs orders and never holds keys. `TRADING_MODE` must be
 unset or `PAPER`; `LIVE`, `TESTNET`, and `SHADOW` fail closed.
 
 ## What it shows
 
-1. Public Hyperliquid BTC-PERP mid from credentialless `POST /info` `allMids`.
+1. **DESK** compact run/mode banner: PAPER only (LIVE / TESTNET / SHADOW fail
+   closed), bound paper-run identity, and live vs stale capture chips reused
+   from `#54` freshness (`COCKPIT_CAPTURE_FRESH_MAX_S=180`). Bound run ids are
+   copied from the strip provenance; they are not invented.
+2. **MARKETS** first quote panel: bound HL BTC-PERP public mid from
+   `/api/public-btc-perp`. Binance / Bitvavo / Kraken last/BBO stay
+   **UNAVAILABLE** because those quotes are not in cockpit APIs. Copied
+   COURSE-1 `paper-pnl.json` `mark_price` is a soak mark, not a live last.
+3. Public Hyperliquid BTC-PERP mid from credentialless `POST /info` `allMids`.
    This price is not used to invent Paper PnL.
-2. Paper position from reconstructable COURSE-1 JSON.
-3. Assumed overlay Paper PnL from that same JSON. If the field is assumed /
+4. Paper position from reconstructable COURSE-1 JSON.
+5. Assumed overlay Paper PnL from that same JSON. If the field is assumed /
    overlay, the screen says so. It never fabricates a second number.
-4. COURSE-1 capture health from that same JSON. This is a bounded soak summary,
+6. COURSE-1 capture health from that same JSON. This is a bounded soak summary,
    not a 24/7 heartbeat.
-5. Multi-venue capture-health strip for **HL / Binance / Bitvavo / Kraken**.
+7. Multi-venue capture-health strip for **HL / Binance / Bitvavo / Kraken**.
    Each chip copies status, last part age (from last `raw/part-*.parquet`
    mtime), and part count from that venue's reconstructable layout. A chip is
    **RUNNING** only when the claim is PAPER / fail-closed (signing off) **and**
@@ -36,7 +45,7 @@ unset or `PAPER`; `LIVE`, `TESTNET`, and `SHADOW` fail closed.
    appear only when `capture-health.json` already has those fields (n/a while
    health is pending). Overlap start is shown when Binance (or any venue)
    started later than the others.
-6. DATA-1A capture health from `capture-claim.json` plus optional
+8. DATA-1A capture health from `capture-claim.json` plus optional
    `capture-health.json` and a cheap `raw/part-*.parquet` listing. While a live
    run has a claim, fresh `raw/part-*.parquet` files
    (`now - last_part_mtime <= COCKPIT_CAPTURE_FRESH_MAX_S=180`), and no health
@@ -48,9 +57,9 @@ unset or `PAPER`; `LIVE`, `TESTNET`, and `SHADOW` fail closed.
    mtime, and `observed_at` update without a full page reload. Parquet payloads
    are not read. Missing artifact root fails closed. A missing run_id with
    `ARTIFACT_ROOT` auto-detects the freshest live DATA-1A retain or stays empty.
-7. PAPER intent/fill blotter copied from `orders.json` / `fills.json`. Empty
+9. PAPER intent/fill blotter copied from `orders.json` / `fills.json`. Empty
    runs stay empty; rows are not invented.
-8. Run provenance &amp; preflight from `run-claim.json`: `run_identity`,
+10. Run provenance &amp; preflight from `run-claim.json`: `run_identity`,
    `config_sha256`, `source_sha256`, `websocket_url`, `resume_policy`, and the
    pre-submit risk caps (`strategy_class`, `order_quantity_btc`,
    `max_entry_notional_usdc`, `max_assumed_loss_usdc`, `same_d01_smoke_risk`).
@@ -189,8 +198,8 @@ pnpm --filter @hyperliquid-bot/cockpit dev
 
 A missing root fails closed. A missing venue run_id with `ARTIFACT_ROOT`
 auto-detects a live retain or stays MISSING. COURSE-1 PAPER JSON stays on the
-fixture unless `COCKPIT_ARTIFACT_ROOT` + `COCKPIT_RUN_ID` are also set. DESK /
-MARKETS / RISK screens are not built.
+fixture unless `COCKPIT_ARTIFACT_ROOT` + `COCKPIT_RUN_ID` are also set. DESK
+and MARKETS reuse those same binds. RISK is not built.
 
 See `docs/runbooks/cockpit-first-paper-screen.md`,
 `docs/runbooks/data1a-wsl-pc-retained-capture.md`, and

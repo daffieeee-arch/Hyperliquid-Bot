@@ -27,6 +27,37 @@ export function extractBtcMid(payload: unknown): string {
   return mid;
 }
 
+export function parsePublicBtcPerpPayload(payload: unknown): PublicBtcPerpPrice {
+  if (!isRecord(payload) || typeof payload.mid !== "string" || payload.mid === "") {
+    throw new Error("Public price response did not include a BTC mid string.");
+  }
+  if (
+    payload.source !== "hyperliquid-public-info-allMids" ||
+    typeof payload.instrument !== "string" ||
+    payload.instrument === "" ||
+    typeof payload.fetched_at !== "string" ||
+    payload.fetched_at === "" ||
+    typeof payload.endpoint !== "string" ||
+    payload.endpoint === "" ||
+    typeof payload.coin !== "string" ||
+    payload.coin === "" ||
+    payload.signing !== false ||
+    payload.credentialless !== true
+  ) {
+    throw new Error("Public price response is not a credentialless unsigned BTC mid.");
+  }
+  return {
+    coin: payload.coin,
+    instrument: payload.instrument,
+    mid: payload.mid,
+    source: "hyperliquid-public-info-allMids",
+    endpoint: payload.endpoint,
+    signing: false,
+    credentialless: true,
+    fetched_at: payload.fetched_at,
+  };
+}
+
 export async function fetchPublicBtcPerpMid(
   fetchImpl: typeof fetch = fetch,
   now: () => string = () => new Date().toISOString(),

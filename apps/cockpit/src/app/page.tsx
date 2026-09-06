@@ -1,11 +1,20 @@
 import { Data1ACapturePanel } from "../components/data1a-capture";
+import { DeskBanner } from "../components/desk-banner";
 import { KvTable } from "../components/kv-table";
 import { LiveBtcPrice } from "../components/live-btc-price";
+import { MarketsPanel } from "../components/markets-panel";
 import { MetricTile } from "../components/metric-tile";
 import { PaperBlotter } from "../components/paper-blotter";
 import { VenueCaptureStrip } from "../components/venue-capture-strip";
 import { loadData1ACaptureSnapshot } from "../lib/data1a-capture";
-import { formatGroupedNumber, healthTone, signedTone, uniqueStrings, yesNo } from "../lib/display";
+import {
+  formatGroupedNumber,
+  healthTone,
+  paperRunSourceLabel,
+  signedTone,
+  uniqueStrings,
+  yesNo,
+} from "../lib/display";
 import { loadPaperRunSnapshot } from "../lib/paper-run";
 import { firstQueryValue, findRepoRoot, type VenueCaptureQuery } from "../lib/paths";
 import type {
@@ -18,79 +27,10 @@ import { loadVenueCaptureStrip } from "../lib/venue-capture";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-function sourceLabel(source: PaperRunSnapshot["source"]): string {
-  if (source === "default-fixture") {
-    return "default-fixture";
-  }
-  if (source === "path-contract") {
-    return "path-contract";
-  }
-  return "paper-run-dir";
-}
-
 // Provenance/preflight fields are optional in the claim contract. When a field
 // is absent the desk shows "not recorded" instead of fabricating an identity.
 function orNotRecorded(value: string | undefined): string {
   return value === undefined || value === "" ? "not recorded" : value;
-}
-
-function Masthead({
-  snapshot,
-  snapshotError,
-}: {
-  snapshot: PaperRunSnapshot | undefined;
-  snapshotError: string | undefined;
-}) {
-  return (
-    <header className="masthead">
-      <div className="masthead-row">
-        <div className="brand">
-          <span className="brand-mark">HLQ</span>
-          <div className="brand-copy">
-            <strong>Cockpit</strong>
-            <span>BTC-PERP · COURSE-1</span>
-          </div>
-        </div>
-        <div className="paper-badge" role="status">
-          <span className="paper-badge-mode">PAPER TRADING</span>
-          <span className="paper-badge-warn">NO REAL CAPITAL</span>
-        </div>
-        <p className="masthead-flags">
-          <span>SIGNING OFF</span>
-          <span>NO KEYS</span>
-          <span>NO LIVE</span>
-        </p>
-      </div>
-      <dl className="identity">
-        <div>
-          <dt>Mode</dt>
-          <dd className="tone-paper">PAPER</dd>
-        </div>
-        <div>
-          <dt>Instrument</dt>
-          <dd>{snapshot?.position.instrument_id ?? "BTC-USD-PERP.HYPERLIQUID"}</dd>
-        </div>
-        <div>
-          <dt>Run</dt>
-          <dd>{snapshot?.runId ?? "unavailable"}</dd>
-        </div>
-        <div>
-          <dt>Source</dt>
-          <dd>{snapshot ? sourceLabel(snapshot.source) : "fail-closed"}</dd>
-        </div>
-        <div>
-          <dt>Signing</dt>
-          <dd>off</dd>
-        </div>
-        {snapshotError !== undefined ? (
-          <div>
-            <dt>JSON</dt>
-            <dd className="tone-warn">missing</dd>
-          </div>
-        ) : null}
-      </dl>
-    </header>
-  );
 }
 
 function SnapshotDesk({ snapshot }: { snapshot: PaperRunSnapshot }) {
@@ -240,7 +180,7 @@ function SnapshotDesk({ snapshot }: { snapshot: PaperRunSnapshot }) {
               { label: "Live mid used for PnL", value: "no" },
               { label: "Schema", value: snapshot.position.schema },
               { label: "Path contract", value: snapshot.position.path_contract },
-              { label: "Source", value: sourceLabel(snapshot.source) },
+              { label: "Source", value: paperRunSourceLabel(snapshot.source) },
             ]}
           />
           <p className="source">
@@ -378,8 +318,14 @@ export default async function FirstPaperScreen({
       <div className="watermark" aria-hidden="true">
         PAPER
       </div>
-      <Masthead snapshot={snapshot} snapshotError={snapshotError} />
+      <DeskBanner
+        snapshot={snapshot}
+        snapshotError={snapshotError}
+        query={venueQuery}
+        initial={venueStrip}
+      />
       <main>
+        <MarketsPanel query={venueQuery} initial={venueStrip} soakPnl={snapshot?.pnl} />
         <VenueCaptureStrip query={venueQuery} initial={venueStrip} />
         <Data1ACapturePanel queryRunId={data1aRunId} initial={data1a} />
         {snapshotError !== undefined || snapshot === undefined ? (
@@ -422,6 +368,8 @@ export default async function FirstPaperScreen({
         <span>PAPER ONLY</span>
         <span>NO WALLET SIGNING</span>
         <span>NO LIVE CAPITAL</span>
+        <span>DESK != LIVE</span>
+        <span>MARKETS != INVENTED LAST</span>
         <span>PUBLIC MID != PAPER PNL</span>
         <span>DATA-1A HEALTH != PNL</span>
         <span>VENUE STRIP != PNL</span>

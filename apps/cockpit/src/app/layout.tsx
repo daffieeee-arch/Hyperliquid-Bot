@@ -19,9 +19,9 @@ const plexMono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "PAPER cockpit — Hyperliquid BTC-PERP",
+  title: "PAPER DESK — Hyperliquid BTC-PERP",
   description:
-    "PAPER-only cockpit: public BTC-PERP mid, reconstructable paper position, assumed overlay PnL, DATA-1A capture health, and a four-venue capture strip. No signing, no real capital.",
+    "PAPER-only Operator Cockpit DESK and MARKETS: public BTC-PERP mid, bound capture live-versus-stale, reconstructable paper position, assumed overlay PnL, and a four-venue capture strip. No signing, no real capital, no invented prices.",
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

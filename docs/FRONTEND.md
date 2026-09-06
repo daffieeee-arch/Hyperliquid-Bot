@@ -17,15 +17,18 @@ Build a professional trading workstation, not a decorative dashboard. The operat
 The browser never receives trading secrets.
 
 The first cockpit screen now reads COURSE-1 PAPER JSON, a four-venue
-capture-health strip, and a thin DATA-1A capture-health panel. It shows public
-BTC-PERP mid, paper position, assumed overlay PnL, COURSE-1 soak health, HL /
+capture-health strip, and a thin DATA-1A capture-health panel. It shows a
+compact PAPER **DESK** banner (mode, bound run provenance, live vs stale), a
+first **MARKETS** panel (public HL BTC-PERP mid plus fail-closed sibling
+quotes), paper position, assumed overlay PnL, COURSE-1 soak health, HL /
 Binance / Bitvavo / Kraken reconstructable capture rows, DATA-1A capture
 health, and the copied PAPER intent/fill blotter. The layout is a dense dark
 terminal so those values are readable at a glance; PAPER is badged and
 watermarked. It is inspired by professional market workstations, not a clone of
-a commercial UI. DESK / MARKETS / RISK are not built. Later screens must keep
-using the create-only reconstructable contracts rather than inventing a second
-store:
+a commercial UI. RISK is not built. MARKETS never invents a last/BBO; sibling
+venues stay **UNAVAILABLE** unless a cockpit API already has that quote.
+Later screens must keep using the create-only reconstructable contracts rather
+than inventing a second store:
 
 ```text
 <artifact-root>/course1/live-public-paper/<run_id>/
@@ -121,7 +124,11 @@ A frontend/backend version incompatibility is visible and may disable mutating c
 
 ### DESK
 
-The command center:
+First PAPER slice (now on the first screen): compact run/mode banner, PAPER-only
+fail-closed, bound capture provenance, and live vs stale chips reused from
+`COCKPIT_CAPTURE_FRESH_MAX_S=180`. Not equity/PnL promotion and not RISK.
+
+Later command center:
 
 - equity / PnL;
 - gross and net exposure;
@@ -135,7 +142,13 @@ The command center:
 
 ### MARKETS
 
-TradingView/Bookmap-inspired market workspace:
+First PAPER slice (now on the first screen): bound HL BTC-PERP public mid from
+existing `/api/public-btc-perp`, capture freshness on the same bound runs, and
+fail-closed **UNAVAILABLE** for Binance / Bitvavo / Kraken last/BBO (those
+quotes are not in cockpit APIs). Copied COURSE-1 soak `mark_price` is labeled
+as a soak mark, not a live last and not venue PnL. No L2/L3 ladders.
+
+Later TradingView/Bookmap-inspired market workspace:
 
 - synchronized charts;
 - watchlists;

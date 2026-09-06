@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 
+import { PublishedDataTable } from "./published-data-table";
 import { RunPicker } from "../run-picker";
 import { VenueStrip } from "../venue-strip";
 import { Badge } from "../ui/badge";
@@ -9,9 +10,11 @@ import { Card, CardBody, CardDisclosure, CardHeader } from "../ui/card";
 import { DataTable, dataTableColumnHelper, type DataTableColumns } from "../ui/data-table";
 import { KvList } from "../ui/kv";
 import { Notice } from "../ui/notice";
+import { OriginBadge } from "../ui/origin-badge";
 import { ReadStatus } from "../ui/read-status";
 import { Stat } from "../ui/stat";
 import { useCockpitRefresh } from "../providers/cockpit-refresh";
+import { describeOriginSummary, stripOrigin } from "../../lib/data-origin";
 import {
   captureChipDataState,
   dataStateMeta,
@@ -19,6 +22,8 @@ import {
   worstDataState,
 } from "../../lib/data-state";
 import { data1aCaptureHealthPresentation, presentCopiedNumber } from "../../lib/display";
+import { newestTapeEvent } from "../../lib/market-tape-rows";
+import type { MarketTapeResponse } from "../../lib/market-tape-types";
 import type { VenueCaptureQuery } from "../../lib/paths";
 import { PAPER_HARD_LIMIT_GATES } from "../../lib/paper-risk-gates";
 import type { PaperRiskGate } from "../../lib/paper-risk-gates";
@@ -26,6 +31,7 @@ import type { RiskField, RiskView } from "../../lib/risk";
 import type { SecondRowView } from "../../lib/second-row";
 import type { Data1ACaptureResponse, VenueCaptureStripResponse } from "../../lib/types";
 import { useData1ACapturePoll } from "../../lib/use-data1a-capture";
+import { useMarketTape } from "../../lib/use-market-tape";
 import { useVenueCapturePoll } from "../../lib/use-venue-capture";
 import { newestPartMtime } from "../../lib/venue-capture-poll";
 
@@ -81,20 +87,25 @@ export function SystemScreen({
   query,
   initialStrip,
   initialData1A,
+  initialTape,
   secondRow,
   risk,
 }: {
   query: VenueCaptureQuery;
   initialStrip: VenueCaptureStripResponse;
   initialData1A: Data1ACaptureResponse;
+  initialTape: MarketTapeResponse;
   secondRow: SecondRowView;
   risk: RiskView;
 }) {
   const { token, paused, setPaused, intervalMs } = useCockpitRefresh();
   const stripPoll = useVenueCapturePoll(query, initialStrip, token);
   const data1aPoll = useData1ACapturePoll(query.data1a_run_id, initialData1A, token);
+  const tapePoll = useMarketTape(query, initialTape, token);
   const strip = stripPoll.data;
   const data1a = data1aPoll.data;
+  const tape = tapePoll.data;
+  const origin = stripOrigin(strip);
   const [riskFilter, setRiskFilter] = useState<"all" | "copied" | "unavailable">("all");
 
   const riskRows = useMemo(() => {
@@ -125,6 +136,11 @@ export function SystemScreen({
           </p>
         </div>
         <div className="page-head-actions">
+          <OriginBadge
+            origin={origin.origin}
+            detail={describeOriginSummary(origin)}
+            live={!stripPoll.degraded}
+          />
           <ReadStatus
             state={stripPoll}
             sourceLabel="newest part"
@@ -143,9 +159,11 @@ export function SystemScreen({
         </div>
       </div>
 
-      {stripPoll.error === undefined && data1aPoll.error === undefined ? null : (
+      {stripPoll.error === undefined &&
+      data1aPoll.error === undefined &&
+      tapePoll.error === undefined ? null : (
         <Notice state="error" title="A refresh failed — values below are from an earlier read">
-          {stripPoll.error ?? data1aPoll.error}
+          {stripPoll.error ?? data1aPoll.error ?? tapePoll.error}
         </Notice>
       )}
 
@@ -181,6 +199,24 @@ export function SystemScreen({
             <p style={{ margin: 0 }}>{strip.error}</p>
           )}
         </CardDisclosure>
+      </Card>
+
+      <Card>
+        <CardHeader
+          title="Published data per venue"
+          description="What each bound run has actually published: part count, volume, newest part and how far the newest part lagged its own events."
+          actions={
+            <ReadStatus state={tapePoll} sourceLabel="last event" sourceIso={newestTapeEvent(tape)} />
+          }
+        />
+        <CardBody flush>
+          <PublishedDataTable tape={tape} strip={strip} />
+        </CardBody>
+        <div className="card-foot">
+          Publish lag is the writer holding data in memory before rotating a part (bound ≤60s or
+          5 000 records). Age is measured from the newest event inside the published parts, so it
+          includes that lag.
+        </div>
       </Card>
 
       <div className="grid grid-sm-2 grid-lg-4">

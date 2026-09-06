@@ -1,5 +1,7 @@
 import { loadData1ACaptureSnapshot } from "./data1a-capture";
 import { buildSeparateIdentityCards, type SeparateIdentityCards } from "./identity-cards";
+import { loadMarketTapeStrip } from "./market-tape";
+import type { MarketTapeResponse } from "./market-tape-types";
 import { buildPaperBotView, type PaperBotView } from "./paper-bot";
 import { loadPaperRunSnapshot } from "./paper-run";
 import { findRepoRoot, firstQueryValue, type VenueCaptureQuery } from "./paths";
@@ -53,6 +55,23 @@ function loadData1A(runId: string | undefined): Data1ACaptureResponse {
     return {
       ok: false,
       error: error instanceof Error ? error.message : "DATA-1A capture health is unavailable.",
+    };
+  }
+}
+
+/**
+ * First-paint stored market data for routes that show it.
+ *
+ * Kept out of `loadCockpitPageData` because it parses Parquet: only Markets,
+ * Overview and System pay for it, and only for parts not already cached.
+ */
+export async function loadInitialMarketTape(query: VenueCaptureQuery): Promise<MarketTapeResponse> {
+  try {
+    return { ok: true, tape: await loadMarketTapeStrip(process.env, findRepoRoot(), query) };
+  } catch (error: unknown) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : "Stored market data is unavailable.",
     };
   }
 }

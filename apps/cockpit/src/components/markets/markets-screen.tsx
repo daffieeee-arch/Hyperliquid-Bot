@@ -2,14 +2,17 @@
 
 import { useState } from "react";
 
+import { StoredMarketData } from "./stored-market-data";
 import { MidChart } from "../mid-chart";
 import { Badge } from "../ui/badge";
+import { OriginBadge } from "../ui/origin-badge";
 import { Card, CardBody, CardDisclosure, CardHeader } from "../ui/card";
 import { DataTable, dataTableColumnHelper, type DataTableColumns } from "../ui/data-table";
 import { Notice } from "../ui/notice";
 import { ReadStatus } from "../ui/read-status";
 import { Stat } from "../ui/stat";
 import { useCockpitRefresh } from "../providers/cockpit-refresh";
+import { describeOriginSummary, stripOrigin } from "../../lib/data-origin";
 import { captureChipDataState, dataStateTone } from "../../lib/data-state";
 import { formatGroupedNumber } from "../../lib/display";
 import {
@@ -18,6 +21,7 @@ import {
   soakMarkRow,
   type MarketRow,
 } from "../../lib/markets";
+import type { MarketTapeResponse } from "../../lib/market-tape-types";
 import type { VenueCaptureQuery } from "../../lib/paths";
 import {
   PUBLIC_CANDLE_INTERVALS,
@@ -25,6 +29,7 @@ import {
   type PublicCandleInterval,
 } from "../../lib/public-candles";
 import type { PaperPnl, VenueCaptureStripResponse } from "../../lib/types";
+import { useMarketTape } from "../../lib/use-market-tape";
 import { usePublicBtcPerp } from "../../lib/use-public-price";
 import { useVenueCapturePoll } from "../../lib/use-venue-capture";
 import { newestPartMtime } from "../../lib/venue-capture-poll";
@@ -66,17 +71,21 @@ const columns: DataTableColumns<MarketRow> = helper.columns([
 export function MarketsScreen({
   query,
   initialStrip,
+  initialTape,
   soakPnl,
 }: {
   query: VenueCaptureQuery;
   initialStrip: VenueCaptureStripResponse;
+  initialTape: MarketTapeResponse;
   soakPnl: PaperPnl | undefined;
 }) {
   const { token } = useCockpitRefresh();
   const [interval, setInterval] = useState<PublicCandleInterval>(PUBLIC_CANDLE_INTERVAL);
   const stripPoll = useVenueCapturePoll(query, initialStrip, token);
+  const tapePoll = useMarketTape(query, initialTape, token);
   const strip = stripPoll.data;
   const mid = usePublicBtcPerp(token);
+  const origin = stripOrigin(strip);
 
   const rows = strip.ok ? marketsRowsFromBoundVenues(strip.strip.venues, mid) : [];
   const soak = soakMarkRow(soakPnl);
@@ -87,13 +96,18 @@ export function MarketsScreen({
         <div>
           <h1>Markets</h1>
           <p>
-            Public Hyperliquid market context from the credentialless{" "}
-            <span className="mono">/info</span> route. Sibling venue last/BBO are not in the cockpit
-            APIs and stay UNAVAILABLE rather than being invented. Public mid is context, never
-            research truth and never PAPER PnL.
+            Two sources, kept apart. The chart and mid are public Hyperliquid context from the
+            credentialless <span className="mono">/info</span> route. The stored market data below
+            is what our own collectors wrote to disk for every bound venue. Neither is research
+            truth or PAPER PnL.
           </p>
         </div>
         <div className="page-head-actions">
+          <OriginBadge
+            origin={origin.origin}
+            detail={describeOriginSummary(origin)}
+            live={!stripPoll.degraded}
+          />
           <ReadStatus
             state={stripPoll}
             sourceLabel="newest part"
@@ -178,8 +192,8 @@ export function MarketsScreen({
 
       <Card>
         <CardHeader
-          title="Bound instruments"
-          description="Sort any column. Quotes only appear where a public cockpit API actually provides them."
+          title="Bound venues · public quote"
+          description="One row per bound capture contract. Only Hyperliquid has a public cockpit quote; the other venues' stored last/BBO live in the section below, never here."
         />
         <CardBody flush>
           {strip.ok ? (
@@ -208,6 +222,8 @@ export function MarketsScreen({
           </CardDisclosure>
         )}
       </Card>
+
+      <StoredMarketData tapePoll={tapePoll} strip={strip} />
     </div>
   );
 }

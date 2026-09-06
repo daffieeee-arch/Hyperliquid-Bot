@@ -4,7 +4,9 @@ import { RefreshCw } from "lucide-react";
 
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { OriginBadge } from "../ui/origin-badge";
 import { useCockpitRefresh } from "../providers/cockpit-refresh";
+import { describeOriginSummary, stripOrigin } from "../../lib/data-origin";
 import { captureChipDataState, dataStateTone, worstDataState } from "../../lib/data-state";
 import type { VenueCaptureQuery } from "../../lib/paths";
 import { clockLabel, describePollRead } from "../../lib/poll-state";
@@ -28,6 +30,7 @@ export function CapturePulse({ query }: { query: VenueCaptureQuery }) {
   const strip = poll.data;
   const pending = !strip.ok && strip.error === PENDING && poll.error === undefined;
   const read = describePollRead(poll);
+  const origin = stripOrigin(strip);
 
   const summary = strip.ok
     ? (() => {
@@ -62,9 +65,16 @@ export function CapturePulse({ query }: { query: VenueCaptureQuery }) {
           Capture error
         </Badge>
       ) : (
-        <Badge tone={summary.tone} dot live={summary.live} title={summary.title}>
-          {summary.label}
-        </Badge>
+        <>
+          <OriginBadge
+            origin={origin.origin}
+            detail={describeOriginSummary(origin)}
+            live={!poll.degraded}
+          />
+          <Badge tone={summary.tone} dot live={summary.live} title={summary.title}>
+            {summary.label}
+          </Badge>
+        </>
       )}
       <Badge
         tone={read.tone}

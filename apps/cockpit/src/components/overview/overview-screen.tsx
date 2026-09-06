@@ -12,22 +12,28 @@ import Link from "next/link";
 import { useMemo } from "react";
 
 import { AttentionList } from "./attention-list";
+import { StoredDataStrip } from "./stored-data-strip";
 import { PublicCloseSparkline } from "../kpi-sparkline";
 import { VenueStrip } from "../venue-strip";
 import { Badge } from "../ui/badge";
 import { Card, CardBody, CardDisclosure, CardHeader } from "../ui/card";
 import { KvList } from "../ui/kv";
 import { Notice } from "../ui/notice";
+import { OriginBadge } from "../ui/origin-badge";
 import { ReadStatus } from "../ui/read-status";
 import { Stat } from "../ui/stat";
 import { useCockpitRefresh } from "../providers/cockpit-refresh";
+import { dataOriginMeta, describeOriginSummary, stripOrigin } from "../../lib/data-origin";
 import { dataStateTone } from "../../lib/data-state";
 import { formatGroupedNumber } from "../../lib/display";
+import { newestTapeEvent } from "../../lib/market-tape-rows";
+import type { MarketTapeResponse } from "../../lib/market-tape-types";
 import { buildOverviewView } from "../../lib/overview";
 import type { PaperBotView } from "../../lib/paper-bot";
 import type { VenueCaptureQuery } from "../../lib/paths";
 import type { ResearchP0View } from "../../lib/research-p0-view";
 import type { VenueCaptureStripResponse } from "../../lib/types";
+import { useMarketTape } from "../../lib/use-market-tape";
 import { usePaperBot } from "../../lib/use-paper-bot";
 import { useResearchP0 } from "../../lib/use-research-p0";
 import { usePublicBtcPerp } from "../../lib/use-public-price";
@@ -39,36 +45,49 @@ export function OverviewScreen({
   query,
   initialStrip,
   initialResearch,
+  initialTape,
   paper,
 }: {
   query: VenueCaptureQuery;
   initialStrip: VenueCaptureStripResponse;
   initialResearch: ResearchP0View;
+  initialTape: MarketTapeResponse;
   paper: PaperBotView;
 }) {
   const { token } = useCockpitRefresh();
   const stripPoll = useVenueCapturePoll(query, initialStrip, token);
   const researchPoll = useResearchP0(query, initialResearch, token);
   const paperPoll = usePaperBot(paper, token);
+  const tapePoll = useMarketTape(query, initialTape, token);
   const strip = stripPoll.data;
   const research = researchPoll.data;
   const paperView = paperPoll.data;
+  const tape = tapePoll.data;
   const mid = usePublicBtcPerp(token);
   const search = searchFromQuery(query);
 
   const view = useMemo(
     () =>
-      buildOverviewView(strip, research, paperView, {
-        strip: stripPoll,
-        research: researchPoll,
-        paper: paperPoll,
-      }),
-    [paperPoll, paperView, research, researchPoll, strip, stripPoll],
+      buildOverviewView(
+        strip,
+        research,
+        paperView,
+        {
+          strip: stripPoll,
+          research: researchPoll,
+          paper: paperPoll,
+          tape: tapePoll,
+        },
+        tape,
+      ),
+    [paperPoll, paperView, research, researchPoll, strip, stripPoll, tape, tapePoll],
   );
   const anyReadFailed =
     stripPoll.error !== undefined ||
     researchPoll.error !== undefined ||
-    paperPoll.error !== undefined;
+    paperPoll.error !== undefined ||
+    tapePoll.error !== undefined;
+  const origin = stripOrigin(strip);
 
   const attentionTone =
     view.attention.length === 0 ? "ok" : dataStateTone(view.attention[0]?.state ?? "ok");
@@ -84,6 +103,11 @@ export function OverviewScreen({
           </p>
         </div>
         <div className="page-head-actions">
+          <OriginBadge
+            origin={origin.origin}
+            detail={describeOriginSummary(origin)}
+            live={!stripPoll.degraded}
+          />
           <ReadStatus
             state={stripPoll}
             sourceLabel="newest part"
@@ -91,6 +115,21 @@ export function OverviewScreen({
           />
         </div>
       </div>
+
+      {origin.origin === "demo" || origin.origin === "mixed" ? (
+        <Notice
+          state="pending"
+          title={
+            origin.origin === "demo"
+              ? "This screen shows the repository demo fixture, not a capture"
+              : "Bound venues come from different origins"
+          }
+        >
+          {dataOriginMeta(origin.origin).meaning} {describeOriginSummary(origin)}. Point{" "}
+          <span className="mono">ARTIFACT_ROOT</span> at the retain root (and leave the venue run ids
+          unset to auto-detect the live runs) to see real captures.
+        </Notice>
+      ) : null}
 
       {anyReadFailed ? (
         <Notice state="error" title="A refresh failed — values below are from an earlier read">
@@ -271,6 +310,29 @@ export function OverviewScreen({
         />
         <CardBody>
           <VenueStrip strip={strip} dense degraded={stripPoll.degraded} />
+        </CardBody>
+      </Card>
+
+      <Card>
+        <CardHeader
+          title="Stored market data"
+          description="Last trade and best bid/offer decoded from each run's published Parquet parts. Spot, perpetual and quote currency stay separate."
+          actions={
+            <>
+              <ReadStatus
+                state={tapePoll}
+                sourceLabel="last event"
+                sourceIso={newestTapeEvent(tape)}
+                compact
+              />
+              <Link href={`/markets${search}`} className="badge badge-outline">
+                Markets <ArrowUpRight size={11} aria-hidden="true" />
+              </Link>
+            </>
+          }
+        />
+        <CardBody>
+          <StoredDataStrip tape={tape} strip={strip} degraded={tapePoll.degraded} />
         </CardBody>
       </Card>
 

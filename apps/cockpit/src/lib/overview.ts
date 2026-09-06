@@ -4,8 +4,12 @@ import {
   worstDataState,
   type DataState,
 } from "./data-state";
+import {
+  MARKET_TAPE_EXPECTED_PUBLICATION_LAG_S,
+  type MarketTapeResponse,
+} from "./market-tape-types";
 import type { PaperBotView, PaperRunLifecycle } from "./paper-bot";
-import { clockLabel, type PollState } from "./poll-state";
+import { clockLabel, formatAgeSeconds, type PollState } from "./poll-state";
 import {
   RESEARCH_RUN_BINDING_NOTE,
   RESEARCH_UNAVAILABLE,
@@ -84,12 +88,14 @@ export type OverviewReads = {
   strip?: OverviewReadMeta;
   research?: OverviewReadMeta;
   paper?: OverviewReadMeta;
+  tape?: OverviewReadMeta;
 };
 
 const READ_TARGETS: Record<keyof OverviewReads, { title: string; href: string; target: string }> = {
   strip: { title: "Capture strip request failed", href: "/system", target: "System" },
   research: { title: "Research request failed", href: "/research", target: "Research" },
   paper: { title: "PAPER run request failed", href: "/paper", target: "PAPER" },
+  tape: { title: "Stored market data request failed", href: "/markets", target: "Markets" },
 };
 
 /**
@@ -121,6 +127,58 @@ export function readFailureAttention(reads: OverviewReads): AttentionItem[] {
       href: target.href,
       target: target.target,
     });
+  }
+  return items;
+}
+
+/**
+ * Stored-data faults worth a human look: unreadable parts are errors, a
+ * writer holding data far beyond its rotation bound is stale. A venue whose
+ * run is simply missing is already reported by the capture strip.
+ */
+export function storedDataAttention(tape: MarketTapeResponse | undefined): AttentionItem[] {
+  if (tape === undefined) {
+    return [];
+  }
+  if (!tape.ok) {
+    return [
+      {
+        id: "tape",
+        state: "error",
+        title: "Stored market data could not be read",
+        detail: tape.error,
+        href: "/markets",
+        target: "Markets",
+      },
+    ];
+  }
+  const items: AttentionItem[] = [];
+  for (const venue of tape.tape.venues) {
+    if (venue.status === "error") {
+      items.push({
+        id: `tape-${venue.id}`,
+        state: "error",
+        title: `${venue.chip} ${venue.series} published parts are unreadable`,
+        detail: venue.error ?? "The reader failed on a published part.",
+        href: "/markets",
+        target: "Markets",
+      });
+      continue;
+    }
+    if (
+      venue.status === "ok" &&
+      venue.publicationLagS !== undefined &&
+      venue.publicationLagS > MARKET_TAPE_EXPECTED_PUBLICATION_LAG_S
+    ) {
+      items.push({
+        id: `tape-lag-${venue.id}`,
+        state: "stale",
+        title: `${venue.chip} ${venue.series} publication lag is ${formatAgeSeconds(venue.publicationLagS)}`,
+        detail: `The newest part was published ${formatAgeSeconds(venue.publicationLagS)} after its last event; the writer's bound is ≤${String(MARKET_TAPE_EXPECTED_PUBLICATION_LAG_S)}s.`,
+        href: "/markets",
+        target: "Markets",
+      });
+    }
   }
   return items;
 }
@@ -203,9 +261,10 @@ export function buildOverviewView(
   research: ResearchP0View,
   paper: PaperBotView,
   reads: OverviewReads = {},
+  tape?: MarketTapeResponse,
 ): OverviewView {
   const capture = captureSummary(strip);
-  const attention: AttentionItem[] = readFailureAttention(reads);
+  const attention: AttentionItem[] = [...readFailureAttention(reads), ...storedDataAttention(tape)];
 
   if (!strip.ok) {
     attention.push({

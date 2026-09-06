@@ -7,9 +7,11 @@ import { Card, CardBody, CardDisclosure, CardHeader } from "../ui/card";
 import { DataTable, dataTableColumnHelper, type DataTableColumns } from "../ui/data-table";
 import { KvList } from "../ui/kv";
 import { Notice } from "../ui/notice";
+import { OriginBadge } from "../ui/origin-badge";
 import { ReadStatus } from "../ui/read-status";
 import { Stat } from "../ui/stat";
 import { useCockpitRefresh } from "../providers/cockpit-refresh";
+import { paperOrigin } from "../../lib/data-origin";
 import { formatGroupedNumber, yesNo } from "../../lib/display";
 import type { SeparateIdentityCards } from "../../lib/identity-cards";
 import type { IntentFillRow } from "../../lib/intent-fill";
@@ -137,6 +139,7 @@ export function PaperScreen({
           </p>
         </div>
         <div className="page-head-actions">
+          <OriginBadge origin={paperOrigin(view.lifecycle)} live={!paperPoll.degraded} />
           <Badge tone={lifecycleTone(view.lifecycle.state)} title={view.lifecycle.note}>
             {view.lifecycle.label}
           </Badge>

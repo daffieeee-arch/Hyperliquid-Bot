@@ -85,6 +85,47 @@ describe("overview view", () => {
     expect(item?.state).toBe("missing");
   });
 
+  it("surfaces a failed research request on the overview while keeping the old view", () => {
+    const { strip, research, paper } = fixtureOverview();
+    const view = buildOverviewView(strip, research, paper, {
+      research: {
+        error: "Research P0 response was not a fail-closed object.",
+        lastSuccessAt: "2026-09-06T12:00:00.000Z",
+        failures: 2,
+        origin: "client",
+      },
+    });
+    const item = view.attention.find((entry) => entry.id === "read-research");
+    expect(item?.state).toBe("error");
+    expect(item?.href).toBe("/research");
+    expect(item?.detail).toMatch(/last successful read at 12:00:00Z/);
+    expect(item?.detail).toMatch(/2 consecutive failure/);
+    // The research summary itself is still the last good one, not blanked.
+    expect(view.research.registryRows).toBe(research.registry.length);
+    // Read failures rank first.
+    expect(view.attention[0]?.id).toBe("read-research");
+  });
+
+  it("says when failed reads are still showing the server render", () => {
+    const { strip, research, paper } = fixtureOverview();
+    const view = buildOverviewView(strip, research, paper, {
+      strip: { error: "fetch failed", lastSuccessAt: undefined, failures: 1, origin: "server" },
+    });
+    const item = view.attention.find((entry) => entry.id === "read-strip");
+    expect(item?.detail).toMatch(/server render/);
+    expect(item?.href).toBe("/system");
+  });
+
+  it("labels the fixture soak as a historical snapshot from the repository fixture", () => {
+    const { view, paper } = fixtureOverview();
+    expect(paper.lifecycle.state).toBe("historical");
+    expect(paper.lifecycle.healthStatus).toBe("COMPLETED_FLAT");
+    expect(paper.lifecycle.artifactSource).toBe("default-fixture");
+    expect(view.paper.lifecycle.label).toBe("Historical snapshot");
+    // A finished run is legitimate history, not an attention item.
+    expect(view.attention.some((item) => item.id.startsWith("paper-lifecycle"))).toBe(false);
+  });
+
   it("fails closed on an unreadable capture strip", () => {
     const research = buildResearchP0View(
       { ok: false, error: "strip broke" },

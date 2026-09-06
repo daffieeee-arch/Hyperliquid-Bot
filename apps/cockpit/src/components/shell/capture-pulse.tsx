@@ -7,28 +7,27 @@ import { Button } from "../ui/button";
 import { useCockpitRefresh } from "../providers/cockpit-refresh";
 import { captureChipDataState, dataStateTone, worstDataState } from "../../lib/data-state";
 import type { VenueCaptureQuery } from "../../lib/paths";
+import { clockLabel, describePollRead } from "../../lib/poll-state";
+import type { VenueCaptureStripResponse } from "../../lib/types";
 import { useVenueCapturePoll } from "../../lib/use-venue-capture";
 
 const PENDING = "__pending__";
-
-function clockLabel(iso: string | null): string {
-  if (iso === null) {
-    return "—";
-  }
-  const parsed = Date.parse(iso);
-  if (!Number.isFinite(parsed)) {
-    return "—";
-  }
-  return new Date(parsed).toISOString().slice(11, 19) + "Z";
-}
+const PENDING_STRIP: VenueCaptureStripResponse = { ok: false, error: PENDING };
 
 /**
- * Topbar freshness pulse: bound run count, worst capture state and last tick.
+ * Topbar freshness pulse.
+ *
+ * Shows the worst capture state and the time of the last *successful* read.
+ * The refresh clock itself is deliberately not displayed as a timestamp: a
+ * tick that failed leaves the previous values on screen and turns the pulse
+ * red instead of advancing the clock.
  */
 export function CapturePulse({ query }: { query: VenueCaptureQuery }) {
-  const { token, lastTickIso, refreshNow, paused, setPaused, intervalMs } = useCockpitRefresh();
-  const strip = useVenueCapturePoll(query, { ok: false, error: PENDING }, token);
-  const pending = !strip.ok && strip.error === PENDING;
+  const { token, refreshNow, paused, setPaused, intervalMs } = useCockpitRefresh();
+  const poll = useVenueCapturePoll(query, PENDING_STRIP, token);
+  const strip = poll.data;
+  const pending = !strip.ok && strip.error === PENDING && poll.error === undefined;
+  const read = describePollRead(poll);
 
   const summary = strip.ok
     ? (() => {
@@ -42,8 +41,14 @@ export function CapturePulse({ query }: { query: VenueCaptureQuery }) {
             live > 0
               ? `${String(live)}/${String(strip.strip.venues.length)} live`
               : `${String(strip.strip.venues.length)} bound`,
-          live: live > 0,
-          title: `Worst capture state: ${worst}. Fresh ≤ ${String(strip.strip.fresh_max_s)}s.`,
+          live: live > 0 && !poll.degraded,
+          title: `Worst capture state: ${worst}. Fresh ≤ ${String(strip.strip.fresh_max_s)}s. Newest part ${clockLabel(
+            strip.strip.venues
+              .map((venue) => venue.last_part_mtime_utc)
+              .filter((value): value is string => value !== undefined)
+              .sort()
+              .at(-1),
+          )}.`,
         };
       })()
     : null;
@@ -53,7 +58,7 @@ export function CapturePulse({ query }: { query: VenueCaptureQuery }) {
       {pending ? (
         <span className="skeleton" style={{ width: "4.5rem", height: "1.25rem" }} aria-hidden />
       ) : summary === null ? (
-        <Badge tone="down" title={strip.ok ? undefined : strip.error}>
+        <Badge tone="down" title={poll.error ?? (strip.ok ? undefined : strip.error)}>
           Capture error
         </Badge>
       ) : (
@@ -61,9 +66,12 @@ export function CapturePulse({ query }: { query: VenueCaptureQuery }) {
           {summary.label}
         </Badge>
       )}
-      <span className="eyebrow" title={`Auto-refresh every ${String(intervalMs / 1000)}s`}>
-        {clockLabel(lastTickIso)}
-      </span>
+      <Badge
+        tone={read.tone}
+        title={`${read.detail} Auto-refresh every ${String(intervalMs / 1000)}s${paused ? " (paused)" : ""}.`}
+      >
+        {paused && read.tone !== "down" ? `paused · ${read.label}` : read.label}
+      </Badge>
       <Button
         type="button"
         variant="outline"

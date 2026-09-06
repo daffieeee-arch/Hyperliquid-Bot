@@ -7,6 +7,7 @@ import { Card, CardBody, CardDisclosure, CardHeader } from "../ui/card";
 import { DataTable, dataTableColumnHelper, type DataTableColumns } from "../ui/data-table";
 import { KvList } from "../ui/kv";
 import { Notice } from "../ui/notice";
+import { ReadStatus } from "../ui/read-status";
 import { Stat } from "../ui/stat";
 import { useCockpitRefresh } from "../providers/cockpit-refresh";
 import type { VenueCaptureQuery } from "../../lib/paths";
@@ -98,7 +99,9 @@ export function ResearchScreen({
   initialResearch: ResearchP0View;
 }) {
   const { token } = useCockpitRefresh();
-  const { view, error } = useResearchP0(query, initialResearch, token);
+  const researchPoll = useResearchP0(query, initialResearch, token);
+  const view = researchPoll.data;
+  const error = researchPoll.error ?? view.error;
   const [venueFilter, setVenueFilter] = useState<string>("all");
   const stub = researchStubView();
 
@@ -135,6 +138,11 @@ export function ResearchScreen({
           </p>
         </div>
         <div className="page-head-actions">
+          <ReadStatus
+            state={researchPoll}
+            sourceLabel="registry read"
+            sourceIso={view.observedAt}
+          />
           <label className="field">
             <span>Venue</span>
             <select
@@ -154,7 +162,14 @@ export function ResearchScreen({
       </div>
 
       {error === undefined ? null : (
-        <Notice state="error" title="Research view could not be rebuilt">
+        <Notice
+          state="error"
+          title={
+            researchPoll.error === undefined
+              ? "Research view could not be rebuilt"
+              : "Research refresh failed — values below are from an earlier read"
+          }
+        >
           {error}
         </Notice>
       )}
@@ -177,16 +192,27 @@ export function ResearchScreen({
           compact
           tone={attributed ? "ok" : sufficiency.runBinding === "unavailable" ? "muted" : "warn"}
           meta={
-            sufficiency.runIds.length === 0
+            sufficiency.runRefs.length === 0
               ? "Summary declares no run_id."
-              : `Summary run_id: ${sufficiency.runIds.join(" · ")}`
+              : `Summary: ${sufficiency.runRefs
+                  .map(
+                    (ref) =>
+                      `${ref.venue === "any" ? "run" : ref.venue.toUpperCase()} ${ref.runId}`,
+                  )
+                  .join(" · ")}`
           }
         />
         <Stat
           label="Bound runs"
-          value={String(view.boundRunIds.length)}
+          value={String(view.boundRuns.length)}
           compact
-          meta={view.boundRunIds.join(" · ") || "No capture run is bound."}
+          meta={
+            view.boundRuns
+              .map((ref) =>
+                `${ref.venue.toUpperCase()} ${ref.product ?? ""} ${ref.runId}`.replace(/\s+/g, " "),
+              )
+              .join(" · ") || "No capture run is bound."
+          }
         />
         <Stat
           label="Overlap vs 72h"
@@ -230,9 +256,23 @@ export function ResearchScreen({
                 tone: verdictTone === "muted" ? "unknown" : verdictTone,
               },
               {
-                label: "Summary run_id",
-                value: sufficiency.runIds.join(" · ") || RESEARCH_UNAVAILABLE,
-                tone: sufficiency.runIds.length === 0 ? "unknown" : "neutral",
+                label: "Summary runs (per venue)",
+                value:
+                  sufficiency.runRefs
+                    .map(
+                      (ref) =>
+                        `${ref.venue === "any" ? "run" : ref.venue.toUpperCase()}${ref.product === undefined ? "" : ` ${ref.product}`}: ${ref.runId}`,
+                    )
+                    .join(" · ") || RESEARCH_UNAVAILABLE,
+                tone: sufficiency.runRefs.length === 0 ? "unknown" : "neutral",
+              },
+              {
+                label: "Bound runs (per venue)",
+                value:
+                  view.boundRuns
+                    .map((ref) => `${ref.venue.toUpperCase()} ${ref.product ?? ""}: ${ref.runId}`)
+                    .join(" · ") || RESEARCH_UNAVAILABLE,
+                tone: view.boundRuns.length === 0 ? "unknown" : "neutral",
               },
               {
                 label: "Reasons",
@@ -251,9 +291,12 @@ export function ResearchScreen({
           <p style={{ margin: 0 }}>
             A <span className="mono">panel-summary.json</span> is only a verdict about the runs it
             names. The cockpit copies every <span className="mono">run_id</span> the summary
-            declares and compares it with the runs currently bound by the capture strip. When they
-            do not intersect, the verdict is still shown for transparency but is marked{" "}
-            <span className="mono">mismatched</span> and never rendered as a pass.
+            declares together with its venue (<span className="mono">hl_run_id</span>,{" "}
+            <span className="mono">bn_run_id</span>, …) and compares each one with the run bound for
+            that same venue. Every named venue must match: a summary about the current HL run and an
+            earlier Binance run is <span className="mono">mismatched</span>, a summary naming a
+            venue that is not bound is <span className="mono">partial</span>, and neither is ever
+            rendered as a pass.
           </p>
         </CardDisclosure>
       </Card>

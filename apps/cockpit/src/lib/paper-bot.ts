@@ -75,9 +75,29 @@ export type PreflightCapsView = {
   source: string;
 };
 
+export type PaperRunLifecycleState = "historical" | "in-flight" | "unavailable";
+
+/**
+ * Whether the PAPER artifacts describe a finished run or one still writing.
+ *
+ * A completed soak is a legitimate historical snapshot: it may stay on screen
+ * indefinitely, but it must be labelled as such so a static assumed PnL is not
+ * mistaken for a live desk. `artifactSource` also says whether the artifacts
+ * are the repository fixture (demo) or a pointed run directory.
+ */
+export type PaperRunLifecycle = {
+  state: PaperRunLifecycleState;
+  claimState: string;
+  healthStatus: string;
+  artifactSource: PaperRunSnapshot["source"] | "unavailable";
+  label: string;
+  note: string;
+};
+
 export type PaperBotView = {
   available: boolean;
   error: string | undefined;
+  lifecycle: PaperRunLifecycle;
   what: PaperBotWhat;
   why: PaperBotWhy;
   results: PaperBotResults;
@@ -159,6 +179,58 @@ export function summariseTapeRejects(rows: readonly IntentFillRow[]): TapeReject
 
 export function course1SoakClaimPath(runId: string): string {
   return `${COURSE1_RELATIVE_PREFIX.join("/")}/${runId}`;
+}
+
+const FINISHED_STATUS_PATTERN = /^(COMPLETED|STOPPED|FINISHED|CLOSED|ABORTED|FAILED)/i;
+
+function artifactSourceNote(source: PaperRunSnapshot["source"]): string {
+  switch (source) {
+    case "default-fixture":
+      return "Artifacts are the repository fixture (demo data), not a pointed run.";
+    case "paper-run-dir":
+      return "Artifacts come from the explicitly pointed run directory.";
+    case "path-contract":
+      return "Artifacts come from the path-contract run under ARTIFACT_ROOT.";
+    default: {
+      const exhaustive: never = source;
+      throw new Error(`Unhandled paper run source: ${String(exhaustive)}`);
+    }
+  }
+}
+
+export function buildPaperRunLifecycle(snapshot: PaperRunSnapshot | undefined): PaperRunLifecycle {
+  if (snapshot === undefined) {
+    return {
+      state: "unavailable",
+      claimState: PAPER_BOT_UNAVAILABLE,
+      healthStatus: PAPER_BOT_UNAVAILABLE,
+      artifactSource: "unavailable",
+      label: "UNAVAILABLE",
+      note: "No PAPER run artifacts are pointed; lifecycle is not invented.",
+    };
+  }
+  const healthStatus = snapshot.health.status;
+  const claimState = snapshot.claim.state ?? PAPER_BOT_UNAVAILABLE;
+  const finished = FINISHED_STATUS_PATTERN.test(healthStatus);
+  const sourceNote = artifactSourceNote(snapshot.source);
+  if (finished) {
+    return {
+      state: "historical",
+      claimState,
+      healthStatus,
+      artifactSource: snapshot.source,
+      label: "Historical snapshot",
+      note: `capture-health.json reports ${healthStatus}; the run is finished and these values will not change. ${sourceNote}`,
+    };
+  }
+  return {
+    state: "in-flight",
+    claimState,
+    healthStatus,
+    artifactSource: snapshot.source,
+    label: "Run in flight",
+    note: `capture-health.json reports ${healthStatus}; artifacts may still be rewritten. ${sourceNote}`,
+  };
 }
 
 function isFlatPosition(quantity: string): boolean {
@@ -326,6 +398,7 @@ export function buildPaperBotView(
     return {
       available: false,
       error,
+      lifecycle: buildPaperRunLifecycle(undefined),
       what: unavailableWhat(),
       why: unavailableWhy(error),
       results: unavailableResults(),
@@ -342,6 +415,7 @@ export function buildPaperBotView(
     return {
       available: false,
       error,
+      lifecycle: buildPaperRunLifecycle(snapshot),
       what: unavailableWhat(),
       why: unavailableWhy(error),
       results: unavailableResults(),
@@ -360,6 +434,7 @@ export function buildPaperBotView(
   return {
     available: true,
     error: undefined,
+    lifecycle: buildPaperRunLifecycle(snapshot),
     what: {
       kind: COURSE1_SOAK_KIND,
       mode: "PAPER",

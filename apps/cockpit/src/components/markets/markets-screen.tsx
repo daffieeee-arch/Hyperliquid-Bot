@@ -7,6 +7,7 @@ import { Badge } from "../ui/badge";
 import { Card, CardBody, CardDisclosure, CardHeader } from "../ui/card";
 import { DataTable, dataTableColumnHelper, type DataTableColumns } from "../ui/data-table";
 import { Notice } from "../ui/notice";
+import { ReadStatus } from "../ui/read-status";
 import { Stat } from "../ui/stat";
 import { useCockpitRefresh } from "../providers/cockpit-refresh";
 import { captureChipDataState, dataStateTone } from "../../lib/data-state";
@@ -26,6 +27,7 @@ import {
 import type { PaperPnl, VenueCaptureStripResponse } from "../../lib/types";
 import { usePublicBtcPerp } from "../../lib/use-public-price";
 import { useVenueCapturePoll } from "../../lib/use-venue-capture";
+import { newestPartMtime } from "../../lib/venue-capture-poll";
 
 const helper = dataTableColumnHelper<MarketRow>();
 
@@ -72,7 +74,8 @@ export function MarketsScreen({
 }) {
   const { token } = useCockpitRefresh();
   const [interval, setInterval] = useState<PublicCandleInterval>(PUBLIC_CANDLE_INTERVAL);
-  const strip = useVenueCapturePoll(query, initialStrip, token);
+  const stripPoll = useVenueCapturePoll(query, initialStrip, token);
+  const strip = stripPoll.data;
   const mid = usePublicBtcPerp(token);
 
   const rows = strip.ok ? marketsRowsFromBoundVenues(strip.strip.venues, mid) : [];
@@ -89,6 +92,13 @@ export function MarketsScreen({
             APIs and stay UNAVAILABLE rather than being invented. Public mid is context, never
             research truth and never PAPER PnL.
           </p>
+        </div>
+        <div className="page-head-actions">
+          <ReadStatus
+            state={stripPoll}
+            sourceLabel="newest part"
+            sourceIso={newestPartMtime(strip)}
+          />
         </div>
       </div>
 

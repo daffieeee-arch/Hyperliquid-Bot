@@ -4,7 +4,8 @@ import {
   worstDataState,
   type DataState,
 } from "./data-state";
-import type { PaperBotView } from "./paper-bot";
+import type { PaperBotView, PaperRunLifecycle } from "./paper-bot";
+import { clockLabel, type PollState } from "./poll-state";
 import {
   RESEARCH_RUN_BINDING_NOTE,
   RESEARCH_UNAVAILABLE,
@@ -54,6 +55,7 @@ export type OverviewPaper = {
   available: boolean;
   runId: string;
   kind: string;
+  lifecycle: PaperRunLifecycle;
   lastOutcome: PaperBotView["why"]["outcome"];
   lastGate: string;
   assumedPnl: string;
@@ -71,6 +73,57 @@ export type OverviewView = {
   paper: OverviewPaper;
   attention: AttentionItem[];
 };
+
+/** Client read state of the polled sources the overview is built from. */
+export type OverviewReadMeta = Pick<
+  PollState<unknown>,
+  "error" | "lastSuccessAt" | "failures" | "origin"
+>;
+
+export type OverviewReads = {
+  strip?: OverviewReadMeta;
+  research?: OverviewReadMeta;
+  paper?: OverviewReadMeta;
+};
+
+const READ_TARGETS: Record<keyof OverviewReads, { title: string; href: string; target: string }> = {
+  strip: { title: "Capture strip request failed", href: "/system", target: "System" },
+  research: { title: "Research request failed", href: "/research", target: "Research" },
+  paper: { title: "PAPER run request failed", href: "/paper", target: "PAPER" },
+};
+
+/**
+ * A failed client read is an attention item in its own right.
+ *
+ * The values on screen are then from an earlier successful read (or the server
+ * render), so the operator must be told that the ticking clock is not proof of
+ * fresh data.
+ */
+export function readFailureAttention(reads: OverviewReads): AttentionItem[] {
+  const items: AttentionItem[] = [];
+  for (const key of Object.keys(READ_TARGETS) as (keyof OverviewReads)[]) {
+    const meta = reads[key];
+    if (meta === undefined || meta.error === undefined) {
+      continue;
+    }
+    const shown =
+      meta.lastSuccessAt === undefined
+        ? meta.origin === "server"
+          ? "Showing values from the server render."
+          : "No successful read yet."
+        : `Showing values from the last successful read at ${clockLabel(meta.lastSuccessAt)}.`;
+    const target = READ_TARGETS[key];
+    items.push({
+      id: `read-${key}`,
+      state: "error",
+      title: target.title,
+      detail: `${meta.error} ${shown} ${String(meta.failures)} consecutive failure(s).`,
+      href: target.href,
+      target: target.target,
+    });
+  }
+  return items;
+}
 
 function captureSummary(strip: VenueCaptureStripResponse): OverviewCapture {
   if (!strip.ok) {
@@ -124,6 +177,7 @@ function paperSummary(paper: PaperBotView): OverviewPaper {
     available: paper.available,
     runId: paper.what.runId,
     kind: paper.what.kind,
+    lifecycle: paper.lifecycle,
     lastOutcome: paper.why.outcome,
     lastGate: paper.why.gateName,
     assumedPnl: paper.results.assumedPnl,
@@ -148,9 +202,10 @@ export function buildOverviewView(
   strip: VenueCaptureStripResponse,
   research: ResearchP0View,
   paper: PaperBotView,
+  reads: OverviewReads = {},
 ): OverviewView {
   const capture = captureSummary(strip);
-  const attention: AttentionItem[] = [];
+  const attention: AttentionItem[] = readFailureAttention(reads);
 
   if (!strip.ok) {
     attention.push({

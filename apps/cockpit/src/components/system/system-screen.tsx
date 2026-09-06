@@ -9,6 +9,7 @@ import { Card, CardBody, CardDisclosure, CardHeader } from "../ui/card";
 import { DataTable, dataTableColumnHelper, type DataTableColumns } from "../ui/data-table";
 import { KvList } from "../ui/kv";
 import { Notice } from "../ui/notice";
+import { ReadStatus } from "../ui/read-status";
 import { Stat } from "../ui/stat";
 import { useCockpitRefresh } from "../providers/cockpit-refresh";
 import {
@@ -26,6 +27,7 @@ import type { SecondRowView } from "../../lib/second-row";
 import type { Data1ACaptureResponse, VenueCaptureStripResponse } from "../../lib/types";
 import { useData1ACapturePoll } from "../../lib/use-data1a-capture";
 import { useVenueCapturePoll } from "../../lib/use-venue-capture";
+import { newestPartMtime } from "../../lib/venue-capture-poll";
 
 const gateHelper = dataTableColumnHelper<PaperRiskGate>();
 const riskHelper = dataTableColumnHelper<RiskField>();
@@ -89,8 +91,10 @@ export function SystemScreen({
   risk: RiskView;
 }) {
   const { token, paused, setPaused, intervalMs } = useCockpitRefresh();
-  const strip = useVenueCapturePoll(query, initialStrip, token);
-  const data1a = useData1ACapturePoll(query.data1a_run_id, initialData1A, token);
+  const stripPoll = useVenueCapturePoll(query, initialStrip, token);
+  const data1aPoll = useData1ACapturePoll(query.data1a_run_id, initialData1A, token);
+  const strip = stripPoll.data;
+  const data1a = data1aPoll.data;
   const [riskFilter, setRiskFilter] = useState<"all" | "copied" | "unavailable">("all");
 
   const riskRows = useMemo(() => {
@@ -121,6 +125,11 @@ export function SystemScreen({
           </p>
         </div>
         <div className="page-head-actions">
+          <ReadStatus
+            state={stripPoll}
+            sourceLabel="newest part"
+            sourceIso={newestPartMtime(strip)}
+          />
           <label className="row" style={{ gap: "0.35rem" }}>
             <input
               type="checkbox"
@@ -134,13 +143,20 @@ export function SystemScreen({
         </div>
       </div>
 
+      {stripPoll.error === undefined && data1aPoll.error === undefined ? null : (
+        <Notice state="error" title="A refresh failed — values below are from an earlier read">
+          {stripPoll.error ?? data1aPoll.error}
+        </Notice>
+      )}
+
       <Card>
         <CardHeader
           title="Bound capture runs"
           description="Auto-binding prefers the freshest live retain. Pick an explicit run to pin every workspace to it."
+          actions={<ReadStatus state={stripPoll} compact />}
         />
         <CardBody>
-          <VenueStrip strip={strip} />
+          <VenueStrip strip={strip} degraded={stripPoll.degraded} />
           {strip.ok ? (
             <RunPicker query={query} catalog={strip.strip.catalog} venues={strip.strip.venues} />
           ) : null}
@@ -171,6 +187,7 @@ export function SystemScreen({
         <Stat
           label="DATA-1A state"
           value={presentation?.tileLabel ?? "—"}
+          icon={<ReadStatus state={data1aPoll} compact />}
           compact
           tone={
             presentation === undefined

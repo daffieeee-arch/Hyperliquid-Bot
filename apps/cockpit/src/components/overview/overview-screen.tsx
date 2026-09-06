@@ -18,6 +18,7 @@ import { Badge } from "../ui/badge";
 import { Card, CardBody, CardDisclosure, CardHeader } from "../ui/card";
 import { KvList } from "../ui/kv";
 import { Notice } from "../ui/notice";
+import { ReadStatus } from "../ui/read-status";
 import { Stat } from "../ui/stat";
 import { useCockpitRefresh } from "../providers/cockpit-refresh";
 import { dataStateTone } from "../../lib/data-state";
@@ -27,9 +28,11 @@ import type { PaperBotView } from "../../lib/paper-bot";
 import type { VenueCaptureQuery } from "../../lib/paths";
 import type { ResearchP0View } from "../../lib/research-p0-view";
 import type { VenueCaptureStripResponse } from "../../lib/types";
+import { usePaperBot } from "../../lib/use-paper-bot";
 import { useResearchP0 } from "../../lib/use-research-p0";
 import { usePublicBtcPerp } from "../../lib/use-public-price";
 import { useVenueCapturePoll } from "../../lib/use-venue-capture";
+import { newestPartMtime } from "../../lib/venue-capture-poll";
 import { searchFromQuery } from "../../lib/query-search";
 
 export function OverviewScreen({
@@ -44,12 +47,28 @@ export function OverviewScreen({
   paper: PaperBotView;
 }) {
   const { token } = useCockpitRefresh();
-  const strip = useVenueCapturePoll(query, initialStrip, token);
-  const { view: research } = useResearchP0(query, initialResearch, token);
+  const stripPoll = useVenueCapturePoll(query, initialStrip, token);
+  const researchPoll = useResearchP0(query, initialResearch, token);
+  const paperPoll = usePaperBot(paper, token);
+  const strip = stripPoll.data;
+  const research = researchPoll.data;
+  const paperView = paperPoll.data;
   const mid = usePublicBtcPerp(token);
   const search = searchFromQuery(query);
 
-  const view = useMemo(() => buildOverviewView(strip, research, paper), [paper, research, strip]);
+  const view = useMemo(
+    () =>
+      buildOverviewView(strip, research, paperView, {
+        strip: stripPoll,
+        research: researchPoll,
+        paper: paperPoll,
+      }),
+    [paperPoll, paperView, research, researchPoll, strip, stripPoll],
+  );
+  const anyReadFailed =
+    stripPoll.error !== undefined ||
+    researchPoll.error !== undefined ||
+    paperPoll.error !== undefined;
 
   const attentionTone =
     view.attention.length === 0 ? "ok" : dataStateTone(view.attention[0]?.state ?? "ok");
@@ -64,7 +83,21 @@ export function OverviewScreen({
             research artifacts are actually attributable to the runs you have bound.
           </p>
         </div>
+        <div className="page-head-actions">
+          <ReadStatus
+            state={stripPoll}
+            sourceLabel="newest part"
+            sourceIso={newestPartMtime(strip)}
+          />
+        </div>
       </div>
+
+      {anyReadFailed ? (
+        <Notice state="error" title="A refresh failed — values below are from an earlier read">
+          The refresh clock kept ticking but at least one backend read did not succeed. Each card
+          shows when it was last read successfully; the attention list names the failing request.
+        </Notice>
+      ) : null}
 
       <div className="grid grid-sm-2 grid-lg-4">
         <Stat
@@ -176,9 +209,24 @@ export function OverviewScreen({
               title="PAPER desk"
               description="COURSE-1 soak only. DATA retain stays a separate identity."
               actions={
-                <Link href={`/paper${search}`} className="badge badge-outline">
-                  Open <ArrowUpRight size={11} aria-hidden="true" />
-                </Link>
+                <>
+                  <Badge
+                    tone={
+                      view.paper.lifecycle.state === "historical"
+                        ? "info"
+                        : view.paper.lifecycle.state === "in-flight"
+                          ? "paper"
+                          : "muted"
+                    }
+                    title={view.paper.lifecycle.note}
+                  >
+                    {view.paper.lifecycle.label}
+                  </Badge>
+                  <ReadStatus state={paperPoll} compact />
+                  <Link href={`/paper${search}`} className="badge badge-outline">
+                    Open <ArrowUpRight size={11} aria-hidden="true" />
+                  </Link>
+                </>
               }
             />
             <CardBody>
@@ -213,13 +261,16 @@ export function OverviewScreen({
           title="Bound capture runs"
           description="Read-only. The cockpit never starts or stops a collector."
           actions={
-            <Link href={`/system${search}`} className="badge badge-outline">
-              System <ArrowUpRight size={11} aria-hidden="true" />
-            </Link>
+            <>
+              <ReadStatus state={stripPoll} compact />
+              <Link href={`/system${search}`} className="badge badge-outline">
+                System <ArrowUpRight size={11} aria-hidden="true" />
+              </Link>
+            </>
           }
         />
         <CardBody>
-          <VenueStrip strip={strip} dense />
+          <VenueStrip strip={strip} dense degraded={stripPoll.degraded} />
         </CardBody>
       </Card>
 
@@ -229,9 +280,12 @@ export function OverviewScreen({
             title="Research availability"
             description="What is actually on disk for the runs you have bound."
             actions={
-              <Link href={`/research${search}`} className="badge badge-outline">
-                Open <ArrowUpRight size={11} aria-hidden="true" />
-              </Link>
+              <>
+                <ReadStatus state={researchPoll} compact />
+                <Link href={`/research${search}`} className="badge badge-outline">
+                  Open <ArrowUpRight size={11} aria-hidden="true" />
+                </Link>
+              </>
             }
           />
           <CardBody>

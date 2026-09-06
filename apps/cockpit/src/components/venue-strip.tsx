@@ -15,9 +15,12 @@ import type { VenueCaptureStripResponse } from "../lib/types";
 export function VenueStrip({
   strip,
   dense = false,
+  degraded = false,
 }: {
   strip: VenueCaptureStripResponse;
   dense?: boolean;
+  /** True when the latest read failed and these are values from an earlier read. */
+  degraded?: boolean;
 }) {
   if (!strip.ok) {
     return (
@@ -36,14 +39,21 @@ export function VenueStrip({
           <div
             key={venue.id}
             className="stat"
-            style={{ gap: "0.35rem", padding: dense ? "0.6rem 0.7rem" : undefined }}
+            style={{
+              gap: "0.35rem",
+              padding: dense ? "0.6rem 0.7rem" : undefined,
+              opacity: degraded ? 0.72 : undefined,
+            }}
+            title={
+              degraded ? "Last read failed; values are from an earlier successful read." : undefined
+            }
           >
             <div className="stat-top">
               <span className="stat-label">
                 {venue.chip} · {venue.series}
               </span>
               <span className="stat-icon">
-                <Badge tone={tone} dot live={venue.live} title={venue.status_detail}>
+                <Badge tone={tone} dot live={venue.live && !degraded} title={venue.status_detail}>
                   {venue.status}
                 </Badge>
               </span>

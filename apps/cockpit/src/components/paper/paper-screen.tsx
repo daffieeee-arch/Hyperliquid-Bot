@@ -7,11 +7,14 @@ import { Card, CardBody, CardDisclosure, CardHeader } from "../ui/card";
 import { DataTable, dataTableColumnHelper, type DataTableColumns } from "../ui/data-table";
 import { KvList } from "../ui/kv";
 import { Notice } from "../ui/notice";
+import { ReadStatus } from "../ui/read-status";
 import { Stat } from "../ui/stat";
+import { useCockpitRefresh } from "../providers/cockpit-refresh";
 import { formatGroupedNumber, yesNo } from "../../lib/display";
 import type { SeparateIdentityCards } from "../../lib/identity-cards";
 import type { IntentFillRow } from "../../lib/intent-fill";
-import type { PaperBotView } from "../../lib/paper-bot";
+import type { PaperBotView, PaperRunLifecycle } from "../../lib/paper-bot";
+import { usePaperBot } from "../../lib/use-paper-bot";
 
 type OutcomeFilter = "all" | "ACCEPT" | "REJECT" | "UNAVAILABLE";
 
@@ -91,13 +94,31 @@ const columns: DataTableColumns<IntentFillRow> = helper.columns([
   }),
 ]) as DataTableColumns<IntentFillRow>;
 
+function lifecycleTone(state: PaperRunLifecycle["state"]): "info" | "paper" | "muted" {
+  switch (state) {
+    case "historical":
+      return "info";
+    case "in-flight":
+      return "paper";
+    case "unavailable":
+      return "muted";
+    default: {
+      const exhaustive: never = state;
+      throw new Error(`Unhandled paper lifecycle: ${String(exhaustive)}`);
+    }
+  }
+}
+
 export function PaperScreen({
-  view,
+  view: initialView,
   identities,
 }: {
   view: PaperBotView;
   identities: SeparateIdentityCards;
 }) {
+  const { token } = useCockpitRefresh();
+  const paperPoll = usePaperBot(initialView, token);
+  const view = paperPoll.data;
   const [filter, setFilter] = useState<OutcomeFilter>("all");
   const rows = useMemo(
     () => (filter === "all" ? view.tape : view.tape.filter((row) => row.outcome === filter)),
@@ -115,13 +136,38 @@ export function PaperScreen({
             D22-B blocked.
           </p>
         </div>
+        <div className="page-head-actions">
+          <Badge tone={lifecycleTone(view.lifecycle.state)} title={view.lifecycle.note}>
+            {view.lifecycle.label}
+          </Badge>
+          <ReadStatus state={paperPoll} />
+        </div>
       </div>
+
+      {paperPoll.error === undefined ? null : (
+        <Notice state="error" title="PAPER refresh failed — values below are from an earlier read">
+          {paperPoll.error}
+        </Notice>
+      )}
 
       {view.error === undefined ? null : (
         <Notice state="missing" title="PAPER run artifacts unavailable">
           {view.error}
         </Notice>
       )}
+
+      {view.lifecycle.state === "historical" ? (
+        <Notice state="pending" title="Historical snapshot of a finished PAPER run">
+          {view.lifecycle.note} Claim state{" "}
+          <span className="mono">{view.lifecycle.claimState}</span>, health status{" "}
+          <span className="mono">{view.lifecycle.healthStatus}</span>. The values are re-read on
+          every refresh but will not change.
+        </Notice>
+      ) : view.lifecycle.artifactSource === "default-fixture" ? (
+        <Notice state="pending" title="Repository fixture (demo artifacts)">
+          {view.lifecycle.note}
+        </Notice>
+      ) : null}
 
       <div className="grid grid-sm-2 grid-lg-4">
         <Stat
@@ -166,6 +212,11 @@ export function PaperScreen({
               rows={[
                 { label: "Mode", value: view.what.mode, tone: "paper" },
                 { label: "Kind", value: view.what.kind, tone: "paper" },
+                {
+                  label: "Lifecycle",
+                  value: view.lifecycle.label,
+                  detail: `${view.lifecycle.healthStatus} · ${view.lifecycle.artifactSource}`,
+                },
                 { label: "run_id", value: view.what.runId },
                 { label: "Soak claim path", value: view.what.claimPath },
                 { label: "path_contract", value: view.what.pathContract },

@@ -114,7 +114,9 @@ def require_binance_impulse_instrument(value: object) -> BinanceImpulseInstrumen
     if type(value) is BinanceImpulseInstrument:
         return value
     if type(value) is not str:
-        raise TypeError("binance_impulse_instrument must be a BinanceImpulseInstrument or its value.")
+        raise TypeError(
+            "binance_impulse_instrument must be a BinanceImpulseInstrument or its value."
+        )
     try:
         return BinanceImpulseInstrument(value)
     except ValueError as error:

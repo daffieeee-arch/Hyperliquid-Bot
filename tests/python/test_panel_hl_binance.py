@@ -274,7 +274,7 @@ def _bn_bucket_records(
             marker={
                 "context_type": "mark_price",
                 "symbol": "BTCUSDT",
-                "mark_price": "100000.880000000000000001",
+                "mark_price": f"100000.88000000000000000{price_suffix}",
                 "index_price": "100000.700000000000000001",
                 "funding_rate": "0.000100000000000001",
             },
@@ -378,10 +378,14 @@ async def test_synthetic_overlap_writes_panel_ready_parquet(tmp_path: Path) -> N
     _assert_no_edge(written)
     assert payload["panel_version"] == PANEL_VERSION
     assert written["panel_version"] == PANEL_VERSION
-    assert payload["binance_column_families"]["spot"] == list(BINANCE_SPOT_FAMILY_COLUMNS)
-    assert payload["binance_column_families"]["usdm"] == list(BINANCE_USDM_FAMILY_COLUMNS)
-    assert payload["binance_identity_warning"] == BINANCE_IDENTITY_WARNING
-    assert "must not blend" in payload["binance_identity_warning"]
+    families = payload["binance_column_families"]
+    assert isinstance(families, dict)
+    assert families["spot"] == list(BINANCE_SPOT_FAMILY_COLUMNS)
+    assert families["usdm"] == list(BINANCE_USDM_FAMILY_COLUMNS)
+    warning = payload["binance_identity_warning"]
+    assert warning == BINANCE_IDENTITY_WARNING
+    assert isinstance(warning, str)
+    assert "must not blend" in warning
 
     types = _price_column_types(panel_path)
     for column in _PRICE_COLUMNS:

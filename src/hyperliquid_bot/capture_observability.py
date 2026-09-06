@@ -31,9 +31,7 @@ _INTEGRITY_GAP_EVENTS: Final = frozenset(
         "payload_size_error",
     }
 )
-_INTEGRITY_EVENT_SQL: Final = ", ".join(
-    f"'{event}'" for event in sorted(_INTEGRITY_GAP_EVENTS)
-)
+_INTEGRITY_EVENT_SQL: Final = ", ".join(f"'{event}'" for event in sorted(_INTEGRITY_GAP_EVENTS))
 
 
 def require_elapsed_seconds(value: object) -> float:

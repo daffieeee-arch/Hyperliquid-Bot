@@ -67,7 +67,7 @@ DATA1F_CLAIM_SCHEMA: Final = "data-1f-retained-capture-claim-v1"
 DATA1F_HEALTH_SCHEMA: Final = "data-1f-retained-capture-health-v1"
 # Application-silence bound, not a client keepalive. Official Spot JSON/SBE
 # streams require a pong within one minute of the server ping (every ~20s).
-# Required DATA-1F streams update much faster (100ms–1s or real-time).
+# Required DATA-1F streams update much faster (100ms-1s or real-time).
 REQUIRED_STREAM_STARVATION_SECONDS: Final = 60.0
 
 BINANCE_SPOT_WEBSOCKET_URL: Final = (
@@ -873,9 +873,7 @@ class BinancePublicResearchCollector:
 
     def _observed_required_streams(self, profile: _StreamProfile) -> set[str]:
         return {
-            stream
-            for name, stream in self._required_last_seen_monotonic
-            if name == profile.name
+            stream for name, stream in self._required_last_seen_monotonic if name == profile.name
         }
 
     def _profile_required_complete(self, profile: _StreamProfile) -> bool:

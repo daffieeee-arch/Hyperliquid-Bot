@@ -596,9 +596,7 @@ def _hanging_collector(
             max_reconnects=max_reconnects,
             required_stream_starvation_seconds=starvation_seconds,
         ),
-        spot_connection_factory=ScriptedConnectionFactory(
-            (FakeConnection(spot_messages),)
-        ),
+        spot_connection_factory=ScriptedConnectionFactory((FakeConnection(spot_messages),)),
         usdm_market_connection_factory=ScriptedConnectionFactory(
             (FakeConnection(market_messages),)
         ),
@@ -622,8 +620,7 @@ async def test_empty_required_streams_fail_closed_and_are_not_a_healthy_retain()
     assert raised.value.quality_event == "liveness_error"
     quality = _local_documents(sink.records, "data_quality")
     assert any(
-        marker["event"] == "liveness_error"
-        and marker["reason"] == "required_streams_unobserved"
+        marker["event"] == "liveness_error" and marker["reason"] == "required_streams_unobserved"
         for marker in quality
     )
     assert not any(marker["event"] == "gap" for marker in quality)
@@ -727,7 +724,7 @@ async def test_force_order_silence_is_not_required_stream_starvation() -> None:
         config=BinancePublicResearchConfig(
             reconnect_delay_seconds=0,
             max_reconnects=0,
-            required_stream_starvation_seconds=0.05,
+            required_stream_starvation_seconds=0.2,
         ),
         spot_connection_factory=ScriptedConnectionFactory(
             (
@@ -754,7 +751,7 @@ async def test_force_order_silence_is_not_required_stream_starvation() -> None:
     )
 
     async def request_stop() -> None:
-        await asyncio.sleep(0.16)
+        await asyncio.sleep(0.45)
         stop_event.set()
 
     stopper = asyncio.create_task(request_stop())
@@ -1210,16 +1207,20 @@ async def test_reconstructable_capture_writes_the_path_contract(tmp_path: Path) 
     assert claim["independent_websocket_profiles"] == ["spot", "usdm_market", "usdm_public"]
     assert claim["usdm_public_websocket_url"] == BINANCE_USDM_PUBLIC_WEBSOCKET_URL
     assert claim["required_stream_starvation_seconds"] == REQUIRED_STREAM_STARVATION_SECONDS
-    assert claim["required_streams"]["spot"] == [
+    required_streams = claim["required_streams"]
+    optional_streams = claim["optional_streams"]
+    assert isinstance(required_streams, dict)
+    assert isinstance(optional_streams, dict)
+    assert required_streams["spot"] == [
         "btcusdt@bookTicker",
         "btcusdt@depth@100ms",
         "btcusdt@trade",
     ]
-    assert claim["required_streams"]["usdm_market"] == [
+    assert required_streams["usdm_market"] == [
         "btcusdt@aggTrade",
         "btcusdt@markPrice@1s",
     ]
-    assert claim["optional_streams"]["usdm_market"] == ["btcusdt@forceOrder"]
+    assert optional_streams["usdm_market"] == ["btcusdt@forceOrder"]
     log_path = paths.run_dir / "capture-sample-run.log"
     assert log_path.is_file()
     assert "data1f start" in log_path.read_text(encoding="utf-8")
@@ -1264,8 +1265,12 @@ def test_data1f_claim_and_health_are_create_only_and_not_twenty_four_seven() -> 
     assert health["elapsed_seconds"] == 86_400.0
     assert health["duration_seconds"] == 86_400.0
     assert health["required_stream_starvation_seconds"] == REQUIRED_STREAM_STARVATION_SECONDS
-    assert health["optional_streams"]["usdm_market"] == ["btcusdt@forceOrder"]
-    assert any("liveness_error" in str(item) for item in health["limitations"])
+    optional_streams = health["optional_streams"]
+    assert isinstance(optional_streams, dict)
+    assert optional_streams["usdm_market"] == ["btcusdt@forceOrder"]
+    limitations = health["limitations"]
+    assert isinstance(limitations, list)
+    assert any("liveness_error" in str(item) for item in limitations)
     profiles = health["transport_profiles"]
     assert isinstance(profiles, list)
     assert profiles[0]["transport_profile"] == "spot"

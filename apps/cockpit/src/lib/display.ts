@@ -1,3 +1,10 @@
+import {
+  DEFAULT_CAPTURE_FRESH_MAX_S,
+  STALE_MTIME_REASON,
+  isLastPartFresh,
+} from "./capture-freshness";
+import type { VenueCaptureChipStatus } from "./types";
+
 export type SignedTone = "up" | "down" | "flat" | "unknown";
 export type StatusTone = "ok" | "warn" | "down" | "neutral";
 
@@ -52,11 +59,14 @@ export function healthTone(status: string): StatusTone {
 }
 
 export const DATA1A_RUNNING_PENDING_HEALTH = "RUNNING (health JSON pending until stop)";
+export const DATA1A_STALE_MTIME_LABEL = "STALE (stale_mtime)";
 
 export type Data1AHealthView = {
   health?: { status: string } | undefined;
   health_missing: boolean;
   health_error?: string | undefined;
+  observed_at?: string;
+  fresh_max_s?: number;
   parts: {
     raw_dir_present: boolean;
     count?: number | undefined;
@@ -70,6 +80,7 @@ export type Data1AHealthPresentation = {
   tone: StatusTone;
   note: string;
   live: boolean;
+  reason?: string;
 };
 
 export function data1aCaptureHealthPresentation(
@@ -99,12 +110,25 @@ export function data1aCaptureHealthPresentation(
     partCount > 0 &&
     snapshot.parts.last_part_mtime_utc !== undefined;
   if (partsLookLive) {
+    const freshMaxSeconds = snapshot.fresh_max_s ?? DEFAULT_CAPTURE_FRESH_MAX_S;
+    if (
+      isLastPartFresh(snapshot.parts.last_part_mtime_utc, snapshot.observed_at, freshMaxSeconds)
+    ) {
+      return {
+        statusLabel: DATA1A_RUNNING_PENDING_HEALTH,
+        tileLabel: "RUNNING",
+        tone: "ok",
+        note: "capture-health.json is written at stop; growing part count and last mtime are the live signal.",
+        live: true,
+      };
+    }
     return {
-      statusLabel: DATA1A_RUNNING_PENDING_HEALTH,
-      tileLabel: "RUNNING",
-      tone: "ok",
-      note: "capture-health.json is written at stop; growing part count and last mtime are the live signal.",
-      live: true,
+      statusLabel: DATA1A_STALE_MTIME_LABEL,
+      tileLabel: "STALE",
+      tone: "warn",
+      note: `last part mtime older than COCKPIT_CAPTURE_FRESH_MAX_S=${String(freshMaxSeconds)}s; not RUNNING`,
+      live: false,
+      reason: STALE_MTIME_REASON,
     };
   }
   return {
@@ -169,9 +193,12 @@ export function presentLastPartAge(
 
 export function venueCaptureChipStatus(
   presentation: Data1AHealthPresentation,
-): "RUNNING" | "DEGRADED" | "STOPPED" {
+): Exclude<VenueCaptureChipStatus, "MISSING"> {
   if (presentation.live) {
     return "RUNNING";
+  }
+  if (presentation.reason === STALE_MTIME_REASON || presentation.tileLabel === "STALE") {
+    return "STALE";
   }
   if (
     presentation.tileLabel === "UNREADABLE" ||

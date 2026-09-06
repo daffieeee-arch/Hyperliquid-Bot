@@ -100,13 +100,15 @@ pnpm --filter @hyperliquid-bot/cockpit dev
 
 Path helper: `data1a_run_paths(artifact_root, run_id)`. Health JSON is written at
 process end. While the run is live (claim present, published `raw/part-*.parquet`
-files growing, no `capture-health.json`) the panel shows
+files with `now - last_part_mtime <= COCKPIT_CAPTURE_FRESH_MAX_S=180`, no
+`capture-health.json`) the panel shows
 **RUNNING (health JSON pending until stop)** plus filesystem part count / last
-mtime, and `n/a` for gaps/reconnects. The browser polls `/api/data1a-capture`
-every **5 seconds** with `cache: no-store` so duration, published parts, bytes
-on disk, last part mtime, and `observed_at` update without a full page reload.
-Missing root or `run_id` is an explicit empty state; zeros and PnL are not
-invented.
+mtime, and `n/a` for gaps/reconnects. A present claim with a stale last part
+mtime is **STALE (stale_mtime)**, not RUNNING. Host clock must be sane. The
+browser polls `/api/data1a-capture` every **5 seconds** with `cache: no-store`
+so duration, published parts, bytes on disk, last part mtime, and `observed_at`
+update without a full page reload. Missing root or `run_id` is an explicit empty
+state; zeros and PnL are not invented.
 
 ## Point at multi-venue reconstructable captures
 
@@ -135,11 +137,14 @@ pnpm --filter @hyperliquid-bot/cockpit dev
 
 Query aliases: `?data1a_run_id=`, `?data1f_run_id=`, `?data1e_run_id=`,
 `?data1b_run_id=`. The strip polls `/api/venue-capture-health` every 5 seconds.
-A chip is **RUNNING** only when that venue has a claim, growing published
-parts, and no health file yet. **STOPPED** copies a finished health status.
-**DEGRADED** is an unreadable/failed/not-written health file. **MISSING** is
-fail-closed empty (no root, run, directory, or claim). Part age and part count
-stay `n/a` on MISSING chips.
+A chip is **RUNNING** only when that venue has a PAPER / fail-closed claim
+(signing off), a last `raw/part-*.parquet` mtime within
+`COCKPIT_CAPTURE_FRESH_MAX_S=180` (tunable), and no health file yet. A present
+claim with a stale mtime is **STALE** (`stale_mtime`), not RUNNING. **STOPPED**
+copies a finished health status (COMPLETED / OPERATOR_STOP). **DEGRADED** is an
+unreadable/failed/not-written health file. **MISSING** is fail-closed empty (no
+root, run, directory, or claim). Part age and part count stay `n/a` on MISSING
+chips. Host clock must be sane.
 
 Cockpit CI lives in `.github/workflows/cockpit.yml`. It is a separate
 workflow so the hashed D01 publication file `.github/workflows/ci.yml`

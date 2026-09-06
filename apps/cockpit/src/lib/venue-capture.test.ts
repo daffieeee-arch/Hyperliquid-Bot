@@ -16,6 +16,7 @@ import {
   DATA1F_PATH_CONTRACT_ID,
   VENUE_CAPTURE_STRIP_ORDER,
 } from "./paths";
+import { STALE_MTIME_REASON } from "./capture-freshness";
 import { loadVenueCaptureStrip } from "./venue-capture";
 
 const repoRoot = resolve(fileURLToPath(new URL("../../../../", import.meta.url)));
@@ -57,6 +58,7 @@ describe("multi-venue capture-health strip", () => {
     expect(hl?.part_count).toBeUndefined();
     expect(hl?.last_part_age).toBe("n/a");
     expect(hl?.status_detail).toBe("COMPLETED");
+    expect(strip.fresh_max_s).toBe(180);
     expect(binance?.status).toBe("MISSING");
     expect(bitvavo?.status).toBe("MISSING");
     expect(kraken?.status).toBe("MISSING");
@@ -119,6 +121,79 @@ describe("multi-venue capture-health strip", () => {
     expect(strip.venues.find((venue) => venue.id === "hl")?.status).toBe("MISSING");
     expect(strip.venues.find((venue) => venue.id === "bitvavo")?.status).toBe("MISSING");
     expect(strip.venues.find((venue) => venue.id === "kraken")?.status).toBe("MISSING");
+  });
+
+  it("marks a claim with last_part_mtime older than FRESH_MAX as STALE, not RUNNING", () => {
+    const artifactRoot = mkdtempSync(join(tmpdir(), "venue-stale-"));
+    const runId = "20260904t134900z-live-retained";
+    const runDir = join(artifactRoot, "data-1f", "binance", "BTCUSDT", runId);
+    writeClaim(runDir, DATA1F_CLAIM_SCHEMA, DATA1F_PATH_CONTRACT_ID, runId, {
+      venue: "binance",
+      product: "BTCUSDT",
+    });
+    mkdirSync(join(runDir, "raw"));
+    const part = join(runDir, "raw", "part-000001-000000000001-000000000010-abc.parquet");
+    writeFileSync(part, "binance-part", { encoding: "utf8" });
+    utimesSync(part, new Date("2026-09-04T13:40:00Z"), new Date("2026-09-04T13:40:00Z"));
+
+    const strip = loadVenueCaptureStrip(
+      {
+        TRADING_MODE: "PAPER",
+        ARTIFACT_ROOT: artifactRoot,
+        DATA1F_RUN_ID: runId,
+      },
+      repoRoot,
+      {},
+      () => observedAt,
+    );
+    const binance = strip.venues.find((venue) => venue.id === "binance");
+    expect(binance?.status).toBe("STALE");
+    expect(binance?.live).toBe(false);
+    expect(binance?.reason).toBe(STALE_MTIME_REASON);
+    expect(binance?.status_detail).toBe("STALE (stale_mtime)");
+    expect(binance?.part_count).toBe(1);
+    expect(binance?.last_part_mtime_utc).toBe("2026-09-04T13:40:00.000Z");
+    expect(binance?.tone).toBe("warn");
+  });
+
+  it("keeps finished COMPLETED health as STOPPED even when last part mtime is stale", () => {
+    const artifactRoot = mkdtempSync(join(tmpdir(), "venue-stopped-"));
+    const runId = "20260904t000000z-live-retained";
+    const runDir = join(artifactRoot, "data-1f", "binance", "BTCUSDT", runId);
+    writeClaim(runDir, DATA1F_CLAIM_SCHEMA, DATA1F_PATH_CONTRACT_ID, runId, {
+      venue: "binance",
+      product: "BTCUSDT",
+    });
+    writeJson(join(runDir, "capture-health.json"), {
+      schema: DATA1F_HEALTH_SCHEMA,
+      kind: "capture-health",
+      path_contract: DATA1F_PATH_CONTRACT_ID,
+      run_id: runId,
+      status: "COMPLETED",
+      retained: true,
+      twenty_four_seven: false,
+    });
+    mkdirSync(join(runDir, "raw"));
+    const part = join(runDir, "raw", "part-000001-000000000001-000000000010-abc.parquet");
+    writeFileSync(part, "stopped-part", { encoding: "utf8" });
+    utimesSync(part, new Date("2026-09-04T12:00:00Z"), new Date("2026-09-04T12:00:00Z"));
+
+    const strip = loadVenueCaptureStrip(
+      {
+        TRADING_MODE: "PAPER",
+        ARTIFACT_ROOT: artifactRoot,
+        DATA1F_RUN_ID: runId,
+      },
+      repoRoot,
+      {},
+      () => observedAt,
+    );
+    const binance = strip.venues.find((venue) => venue.id === "binance");
+    expect(binance?.status).toBe("STOPPED");
+    expect(binance?.live).toBe(false);
+    expect(binance?.reason).toBeUndefined();
+    expect(binance?.status_detail).toBe("COMPLETED");
+    expect(binance?.part_count).toBe(1);
   });
 
   it("loads all four path-contract venues without inventing a missing claim", () => {
@@ -226,5 +301,14 @@ describe("multi-venue capture-health strip", () => {
 
   it("refuses LIVE trading mode before reading any venue files", () => {
     expect(() => loadVenueCaptureStrip({ TRADING_MODE: "LIVE" }, repoRoot)).toThrow(/PAPER-only/);
+  });
+
+  it("refuses a non-positive COCKPIT_CAPTURE_FRESH_MAX_S before inventing RUNNING", () => {
+    expect(() =>
+      loadVenueCaptureStrip(
+        { TRADING_MODE: "PAPER", COCKPIT_CAPTURE_FRESH_MAX_S: "nope" },
+        repoRoot,
+      ),
+    ).toThrow(/COCKPIT_CAPTURE_FRESH_MAX_S/);
   });
 });

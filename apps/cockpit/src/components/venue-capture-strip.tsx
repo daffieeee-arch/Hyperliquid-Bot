@@ -1,5 +1,6 @@
 "use client";
 
+import { DEFAULT_CAPTURE_FRESH_MAX_S, STALE_MTIME_REASON } from "../lib/capture-freshness";
 import { DATA1A_CAPTURE_POLL_MS } from "../lib/data1a-capture-poll";
 import { presentCopiedNumber, presentCopiedText } from "../lib/display";
 import type { VenueCaptureQuery } from "../lib/paths";
@@ -32,7 +33,9 @@ function Chip({ venue }: { venue: VenueCaptureChip }) {
       <p className="venue-chip-note">
         {venue.status === "MISSING"
           ? "Fail closed · not invented"
-          : `${presentCopiedText(venue.run_id)} · ${venue.status_detail}`}
+          : venue.status === "STALE"
+            ? `${presentCopiedText(venue.run_id)} · ${venue.reason ?? STALE_MTIME_REASON}`
+            : `${presentCopiedText(venue.run_id)} · ${venue.status_detail}`}
       </p>
     </li>
   );
@@ -47,6 +50,7 @@ export function VenueCaptureStrip({
 }) {
   const result = useVenueCapturePoll(query, initial);
   const pollSeconds = String(DATA1A_CAPTURE_POLL_MS / 1000);
+  const freshMaxSeconds = result.ok ? result.strip.fresh_max_s : DEFAULT_CAPTURE_FRESH_MAX_S;
 
   return (
     <section className="venue-strip" aria-label="Multi-venue capture health">
@@ -54,7 +58,7 @@ export function VenueCaptureStrip({
         <h2>Capture health</h2>
         <p className="panel-kicker">
           HL / Binance / Bitvavo / Kraken · reconstructable claim / parts · poll {pollSeconds}s ·
-          not PnL
+          RUNNING only if last part mtime ≤ {String(freshMaxSeconds)}s · not PnL
         </p>
       </div>
       {result.ok ? (

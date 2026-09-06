@@ -319,6 +319,8 @@ and `DATA1A_RUN_ID=20260904t134940z-live-retained` (or copy
 `apps/cockpit/.env.example` to `apps/cockpit/.env.local`).
 `COCKPIT_DATA1A_RUN_ID` and `/?data1a_run_id=` are equivalent. The Operator
 Cockpit polls `/api/data1a-capture` every 5 seconds while the tab is open.
+`COCKPIT_CAPTURE_FRESH_MAX_S=180` (tunable) is the fail-closed RUNNING window
+(`now - last_part_mtime`); host clock must be sane.
 The first PAPER screen also shows a four-venue strip (HL / Binance / Bitvavo /
 Kraken) that reuses this claim / health / `raw/part-*.parquet` pattern on the
 DATA-1F / DATA-1E / DATA-1B path contracts and polls

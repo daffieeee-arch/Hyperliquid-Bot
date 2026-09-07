@@ -9,7 +9,9 @@
     "build": "next build",
     "start": "next start --port 3000",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "lint": "pnpm --dir ../.. run lint:cockpit",
+    "regress:browser": "playwright test"
   },
   "dependencies": {
     "@radix-ui/react-separator": "1.1.15",
@@ -29,6 +31,7 @@
     "tailwindcss": "4.3.3"
   },
   "devDependencies": {
+    "@playwright/test": "1.63.0",
     "@types/node": "26.4.1",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.7",

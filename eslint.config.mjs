@@ -3,11 +3,11 @@ import tseslint from "typescript-eslint";
 
 export default tseslint.config(
   {
-    ignores: [".venv/**", "node_modules/**", "apps/**", ".next/**"],
+    ignores: [".venv/**", "node_modules/**", "**/.next/**", "apps/cockpit/tests/**"],
   },
-  eslint.configs.recommended,
-  ...tseslint.configs.strictTypeChecked,
   {
+    files: ["vitest.config.ts", "tests/typescript/**/*.ts"],
+    extends: [eslint.configs.recommended, ...tseslint.configs.strictTypeChecked],
     languageOptions: {
       parserOptions: {
         projectService: true,
@@ -16,6 +16,25 @@ export default tseslint.config(
     },
     linterOptions: {
       reportUnusedDisableDirectives: "error",
+    },
+  },
+  {
+    files: ["apps/cockpit/src/**/*.ts", "apps/cockpit/src/**/*.tsx"],
+    extends: [eslint.configs.recommended, ...tseslint.configs.recommended],
+    languageOptions: {
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+    linterOptions: {
+      reportUnusedDisableDirectives: "error",
+    },
+    rules: {
+      "@typescript-eslint/no-unused-vars": [
+        "error",
+        { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
+      ],
     },
   },
 );

@@ -28,6 +28,7 @@ from websockets.asyncio.client import connect
 from websockets.exceptions import PayloadTooBig, WebSocketException
 
 from .binance_spot_trades import BinanceTimestampUnit, decode_binance_spot_trade
+from .binance_usdm_stream_contract import require_usdm_combined_stream_split
 from .capture_observability import (
     add_transport_counts,
     attach_observability_health,
@@ -95,6 +96,10 @@ BINANCE_USDM_MARKET_WEBSOCKET_URL: Final = (
 )
 BINANCE_USDM_PUBLIC_WEBSOCKET_URL: Final = (
     "wss://fstream.binance.com/public/stream?streams=btcusdt@bookTicker"
+)
+require_usdm_combined_stream_split(
+    public_url=BINANCE_USDM_PUBLIC_WEBSOCKET_URL,
+    market_url=BINANCE_USDM_MARKET_WEBSOCKET_URL,
 )
 BINANCE_SPOT_DEPTH_URL: Final = (
     "https://data-api.binance.vision/api/v3/depth?symbol=BTCUSDT&limit=1000"

@@ -13,11 +13,9 @@ import {
   BINANCE_IDENTITY_WARNING,
   BINANCE_IMPULSE_DEFAULT,
   RESEARCH_UNAVAILABLE,
-  type ResearchHealthRow,
   type ResearchIdentityRow,
   type ResearchOverlapClock,
   type ResearchP0View,
-  type ResearchRegistryRow,
   type ResearchSufficiency,
 } from "./research-p0-view";
 import type {
@@ -155,6 +153,9 @@ export function parsePanelSummary(payload: unknown, source: string): ResearchSuf
   if (payload.trading_mode !== undefined && payload.trading_mode !== "PAPER") {
     throw new Error("research-out panel-summary.json is not PAPER and the cockpit fails closed.");
   }
+  if ("live_mid" in payload || "research_truth" in payload || "public_mid_is_research" in payload) {
+    throw new Error("research-out summary must not treat live mid as research truth.");
+  }
   const rendered = JSON.stringify(payload).toLowerCase();
   if (rendered.includes('"edge"') || rendered.includes("promotion_decision")) {
     throw new Error("research-out summary contains forbidden edge/promotion tokens.");
@@ -202,7 +203,7 @@ export function listResearchOutSummaries(root: string, maxFiles = 16): string[] 
     if (found.length >= maxFiles || depth > 4) {
       return;
     }
-    let entries: string[] = [];
+    let entries: string[];
     try {
       entries = readdirSync(dir);
     } catch {

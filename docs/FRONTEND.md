@@ -36,7 +36,8 @@ The browser never receives trading secrets.
 | TerraPC retain ids | operator docs / picker hint only | HL/BV/KR `20260905t232635z-live-retained`; BN `20260906t101559z-live-retained` | auto-detect still prefers a live retain |
 
 LAN phone: `PORT=3001 pnpm --filter @hyperliquid-bot/cockpit dev:lan` then
-`http://192.168.1.2:3001` on the same Wi-Fi. Collectors are never started or
+`http://<LAN-IP>:3001` on the same Wi-Fi (the PC's LAN IP, for example
+`http://192.168.x.x:3001`). Collectors are never started or
 stopped from the cockpit.
 
 The first cockpit screen is a PAPER Operator Cockpit workstation (incremental
@@ -136,13 +137,13 @@ JSON, and `ARTIFACT_ROOT` plus optional `DATA1A_RUN_ID` (or `COCKPIT_DATA1A_RUN_
 `?data1a_run_id=`) for a live DATA-1A directory. Optional sibling run ids on the
 same root: `DATA1F_RUN_ID` (Binance), `DATA1E_RUN_ID` (Bitvavo),
 `DATA1B_RUN_ID` (Kraken). TerraPC WSL example:
-`ARTIFACT_ROOT=/home/dmesdary/hyperliquid-artifacts/reconstructable` with
+`ARTIFACT_ROOT=$HOME/hyperliquid-artifacts/reconstructable` with
 HL/Bitvavo/Kraken `20260905t232635z-live-retained` and Binance
 `20260906t101559z-live-retained` (do not prefer stopped
 `20260905t235830z-live-retained`; copy `apps/cockpit/.env.example`
 to `apps/cockpit/.env.local`, or export in the WSL shell before `next dev`).
 For a phone on the same Wi-Fi, bind `next dev --hostname 0.0.0.0` (`dev:lan`)
-and open `http://192.168.1.2:3001` — not cellular. See `docs/DATA.md`,
+and open `http://<LAN-IP>:3001` (the PC's LAN IP) — not cellular. See `docs/DATA.md`,
 `docs/runbooks/data1a-vps-retained-capture.md`,
 `docs/runbooks/data1a-wsl-pc-retained-capture.md`,
 `docs/runbooks/cockpit-first-paper-screen.md`, `apps/cockpit/README.md`, and

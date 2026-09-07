@@ -163,7 +163,7 @@ describe("DATA-1A path contract", () => {
     const resolved = resolveData1ARunDir(
       {
         TRADING_MODE: "PAPER",
-        ARTIFACT_ROOT: "/home/dmesdary/hyperliquid-artifacts/reconstructable",
+        ARTIFACT_ROOT: "/home/user/hyperliquid-artifacts/reconstructable",
         DATA1A_RUN_ID: "20260904t134940z-live-retained",
       },
       repoRoot,
@@ -171,14 +171,14 @@ describe("DATA-1A path contract", () => {
     expect(resolved.source).toBe("path-contract");
     expect(resolved.runId).toBe("20260904t134940z-live-retained");
     expect(resolved.runDir).toBe(
-      "/home/dmesdary/hyperliquid-artifacts/reconstructable/data-1a/hyperliquid/BTC-PERP/20260904t134940z-live-retained",
+      "/home/user/hyperliquid-artifacts/reconstructable/data-1a/hyperliquid/BTC-PERP/20260904t134940z-live-retained",
     );
   });
 
   it("treats DATA1A_RUN_ID as equivalent to COCKPIT_DATA1A_RUN_ID and lets the query override both", () => {
     const env = {
       TRADING_MODE: "PAPER",
-      ARTIFACT_ROOT: "/home/dmesdary/hyperliquid-artifacts/reconstructable",
+      ARTIFACT_ROOT: "/home/user/hyperliquid-artifacts/reconstructable",
       DATA1A_RUN_ID: "20260904t134940z-live-retained",
       COCKPIT_DATA1A_RUN_ID: "cockpit-alias-run",
     };
@@ -189,7 +189,7 @@ describe("DATA-1A path contract", () => {
     });
     expect(fromQuery.runId).toBe("20260904t134940z-live-retained");
     expect(fromQuery.runDir).toBe(
-      "/home/dmesdary/hyperliquid-artifacts/reconstructable/data-1a/hyperliquid/BTC-PERP/20260904t134940z-live-retained",
+      "/home/user/hyperliquid-artifacts/reconstructable/data-1a/hyperliquid/BTC-PERP/20260904t134940z-live-retained",
     );
   });
 
@@ -262,7 +262,7 @@ describe("DATA-1A path contract", () => {
       VENUE_CAPTURE_CONTRACTS.kraken,
       {
         TRADING_MODE: "PAPER",
-        ARTIFACT_ROOT: "/home/dmesdary/hyperliquid-artifacts/reconstructable",
+        ARTIFACT_ROOT: "/home/user/hyperliquid-artifacts/reconstructable",
         DATA1B_RUN_ID: "env-run",
         COCKPIT_DATA1B_RUN_ID: "cockpit-alias-run",
       },
@@ -271,7 +271,7 @@ describe("DATA-1A path contract", () => {
     );
     expect(resolved.runId).toBe("query-run");
     expect(resolved.runDir).toBe(
-      "/home/dmesdary/hyperliquid-artifacts/reconstructable/data-1b/kraken/BTC-USD/query-run",
+      "/home/user/hyperliquid-artifacts/reconstructable/data-1b/kraken/BTC-USD/query-run",
     );
   });
 

@@ -316,7 +316,7 @@ seconds. Treat ~3h closes as venue/proxy max-session or half-open sockets; persi
 / `exception_class` on disconnect markers and reconnect. This is not a LIVE or signing change.
 
 To point local `next dev` at a live TerraPC retain without stopping the
-collector, export `ARTIFACT_ROOT=/home/dmesdary/hyperliquid-artifacts/reconstructable`.
+collector, export `ARTIFACT_ROOT=$HOME/hyperliquid-artifacts/reconstructable`.
 Current 72h retain ids: HL / Bitvavo / Kraken
 `20260905t232635z-live-retained`, Binance `20260906t101559z-live-retained`
 (do not prefer stopped `20260905t235830z-live-retained`).

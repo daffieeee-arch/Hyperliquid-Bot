@@ -223,7 +223,7 @@ the exported names below:
 ```bash
 cd ~/code/Hyperliquid-Bot-main
 export TRADING_MODE=PAPER
-export ARTIFACT_ROOT=/home/dmesdary/hyperliquid-artifacts/reconstructable
+export ARTIFACT_ROOT=$HOME/hyperliquid-artifacts/reconstructable
 export DATA1A_RUN_ID=20260904t134940z-live-retained
 pnpm --filter @hyperliquid-bot/cockpit dev
 ```

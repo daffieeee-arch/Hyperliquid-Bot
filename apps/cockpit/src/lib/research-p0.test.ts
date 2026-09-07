@@ -69,6 +69,9 @@ describe("research P0", () => {
     expect(() =>
       parsePanelSummary({ ...panelReady, promotion_decision: "forbidden" }, "bad.json"),
     ).toThrow(/promotion/);
+    expect(() => parsePanelSummary({ ...panelReady, live_mid: "81156.0" }, "bad.json")).toThrow(
+      /live mid as research truth/,
+    );
   });
 
   it("builds a fail-closed P0 view from default fixtures without inventing Quant fields", () => {

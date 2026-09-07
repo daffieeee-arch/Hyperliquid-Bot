@@ -6,50 +6,70 @@ on:
     branches:
       - main
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
 jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      heavy: ${{ steps.scope.outputs.heavy }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Classify change set
+        id: scope
+        env:
+          PYTHONPATH: src
+        run: python3 src/hyperliquid_bot/ci_scope.py
+
   first-paper-screen:
+    needs: changes
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
+      - name: Skip docs-only change set
+        if: needs.changes.outputs.heavy != 'true'
+        run: echo "docs-only PR; cockpit first-paper-screen skipped."
+
       - name: Check out repository
+        if: needs.changes.outputs.heavy == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Install pinned Node.js
-        env:
-          NODE_SHA256: d6c664df3f3f61458e8c277585571328522d705166723a7c7823a9253a4d15a0
-          NODE_VERSION: 24.18.1
-        run: |
-          set -euo pipefail
-          archive="${RUNNER_TEMP}/node-v${NODE_VERSION}-linux-x64.tar.xz"
-          curl --fail --silent --show-error --location \
-            --output "${archive}" \
-            "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz"
-          echo "${NODE_SHA256}  ${archive}" | sha256sum --check --strict
-          tar --extract --xz --file "${archive}" --directory "${RUNNER_TEMP}"
-          echo "${RUNNER_TEMP}/node-v${NODE_VERSION}-linux-x64/bin" >> "${GITHUB_PATH}"
-
-      - name: Set up pnpm
-        uses: pnpm/setup@84cb39b217b10273981911c288cd62326dc7c6d2 # v2.0.2
-        with:
-          version: 11.23.0
-          install: false
+      - name: Set up Node.js and pnpm
+        if: needs.changes.outputs.heavy == 'true'
+        uses: ./.github/actions/setup-node-pnpm
 
       - name: Install TypeScript dependencies
+        if: needs.changes.outputs.heavy == 'true'
         run: pnpm install --frozen-lockfile
 
+      - name: Lint cockpit
+        if: needs.changes.outputs.heavy == 'true'
+        run: pnpm --filter @hyperliquid-bot/cockpit run lint
+
       - name: Type-check cockpit
+        if: needs.changes.outputs.heavy == 'true'
         run: pnpm --filter @hyperliquid-bot/cockpit run typecheck
 
       - name: Test cockpit
+        if: needs.changes.outputs.heavy == 'true'
         run: pnpm --filter @hyperliquid-bot/cockpit run test
 
       - name: Build cockpit
+        if: needs.changes.outputs.heavy == 'true'
         env:
           TRADING_MODE: PAPER
         run: pnpm --filter @hyperliquid-bot/cockpit run build

@@ -87,23 +87,23 @@ function summary(overrides: Record<string, unknown> = {}): Record<string, unknow
 
 describe("research verdict tone", () => {
   it("never paints a failed sufficiency gate as a positive result", () => {
-    expect(researchVerdictTone("not_enough_data")).toBe("warn");
-    expect(researchVerdictTone("NOT_ENOUGH_DATA")).toBe("warn");
-    expect(researchVerdictTone("insufficient")).toBe("warn");
-    expect(researchVerdictTone("gate_pending")).toBe("warn");
-    expect(researchVerdictTone("blocked")).toBe("warn");
+    expect(researchVerdictTone("not_enough_data", "matched")).toBe("warn");
+    expect(researchVerdictTone("NOT_ENOUGH_DATA", "matched")).toBe("warn");
+    expect(researchVerdictTone("insufficient", "matched")).toBe("warn");
+    expect(researchVerdictTone("gate_pending", "matched")).toBe("warn");
+    expect(researchVerdictTone("blocked", "matched")).toBe("warn");
   });
 
   it("only greens an allowlisted verdict that is attributable to the bound runs", () => {
-    expect(researchVerdictTone("panel_ready")).toBe("ok");
+    expect(researchVerdictTone("panel_ready", "matched")).toBe("ok");
     expect(researchVerdictTone("panel_ready", "mismatched")).toBe("warn");
     expect(researchVerdictTone("panel_ready", "unknown")).toBe("warn");
   });
 
   it("leaves unknown and unavailable verdicts muted rather than borrowing a colour", () => {
-    expect(researchVerdictTone(RESEARCH_UNAVAILABLE)).toBe("muted");
-    expect(researchVerdictTone("")).toBe("muted");
-    expect(researchVerdictTone("something_new")).toBe("muted");
+    expect(researchVerdictTone(RESEARCH_UNAVAILABLE, "matched")).toBe("muted");
+    expect(researchVerdictTone("", "matched")).toBe("muted");
+    expect(researchVerdictTone("something_new", "matched")).toBe("muted");
   });
 });
 

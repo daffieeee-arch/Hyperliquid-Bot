@@ -132,7 +132,7 @@ export type ResearchVerdictTone = "ok" | "warn" | "down" | "muted";
  */
 export function researchVerdictTone(
   verdict: string,
-  binding: ResearchRunBinding = "matched",
+  binding: ResearchRunBinding,
 ): ResearchVerdictTone {
   const normalized = verdict.trim().toLowerCase();
   if (normalized === "" || normalized === RESEARCH_UNAVAILABLE.toLowerCase()) {

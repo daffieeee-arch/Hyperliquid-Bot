@@ -19,7 +19,7 @@ Three data states are kept apart everywhere: **missing** (never written),
 **stale** (past the freshness bound) and **error** (present but unreadable).
 `pending` covers written-at-stop artifacts where mid-run absence is expected.
 
-Stack is €0 OSS: Next.js 15, Tailwind CSS v4, official free shadcn/ui (Radix;
+Stack is €0 OSS: Next.js 16, Tailwind CSS v4, official free shadcn/ui (Radix;
 sidebar/dashboard layout ideas only), Lucide, TanStack Table v9 (sorting),
 recharts (real public closes only), TradingView Lightweight Charts
 (Apache-2.0; `NOTICE`). Visual default **C Fail-Closed Amber** with optional

@@ -41,6 +41,7 @@ describe("public BTC-PERP candles", () => {
         headers: { "content-type": "application/json" },
       });
     const snapshot = await fetchPublicBtcPerpCandles(
+      "15m",
       fetchImpl,
       () => 1_681_924_500_000,
       () => "2026-09-06T00:00:00.000Z",

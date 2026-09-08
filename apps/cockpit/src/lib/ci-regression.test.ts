@@ -9,7 +9,7 @@ import { formatAssumedUsdcDisplay } from "./display";
 import {
   ASSUMED_PNL_LABEL,
   D22B_BLOCKED,
-  DOCUMENTED_TAPE_DEMO_REJECT_ID,
+  GATE_EXAMPLE_SOURCE,
   NOT_VENUE_RECONCILED,
   buildPaperBotView,
 } from "./paper-bot";
@@ -35,7 +35,9 @@ describe("CI PAPER regression contracts", () => {
     process.env.TRADING_MODE = "LIVE";
     try {
       const price = await getPublicBtcPerp();
-      const candles = await getPublicCandles();
+      const candles = await getPublicCandles(
+        new Request("http://127.0.0.1/api/public-btc-perp-candles?interval=15m"),
+      );
       expect(price.status).toBe(403);
       expect(candles.status).toBe(403);
       expect(await price.json()).toMatchObject({ error: expect.stringMatching(/PAPER-only/) });
@@ -60,13 +62,17 @@ describe("CI PAPER regression contracts", () => {
     expect(view.results.venuePnl).toBe("no");
   });
 
-  it("shows the documented #65 / risk_based_size REJECT on the soak tape", () => {
+  it("shows the documented #65 / risk_based_size REJECT next to, never inside, the soak tape", () => {
     const snapshot = loadPaperRunSnapshot({ TRADING_MODE: "PAPER" }, repoRoot);
     const view = buildPaperBotView(snapshot, undefined);
-    const rejected = view.tape.find((row) => row.outcome === "REJECT");
-    expect(rejected?.clientOrderId).toBe(DOCUMENTED_TAPE_DEMO_REJECT_ID);
-    expect(rejected?.gateCode).toBe("risk_based_size");
-    expect(rejected?.outcome).toBe("REJECT");
+    // The documented gate stays visible as a reference example (#66 design gate) ...
+    const example = view.gateExamples.find((row) => row.gateCode === "risk_based_size");
+    expect(example?.source).toBe(GATE_EXAMPLE_SOURCE);
+    expect(example?.reason).not.toBe("");
+    // ... but run history is exactly what orders.json recorded (#67 review finding):
+    // the ACCEPT-only fixture must not gain an invented REJECT row.
+    expect(view.tape.some((row) => row.outcome === "REJECT")).toBe(false);
+    expect(view.tapeRejects.none).toBe(true);
   });
 
   it("fails closed when a research summary treats live mid as research truth", () => {

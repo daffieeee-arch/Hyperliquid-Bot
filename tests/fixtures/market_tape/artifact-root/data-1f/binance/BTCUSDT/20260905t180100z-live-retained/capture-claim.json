@@ -1,0 +1,12 @@
+{
+  "credentialless": true,
+  "path_contract": "data-1f-binance-btcusdt-v1",
+  "product": "BTCUSDT",
+  "retained": true,
+  "run_id": "20260905t180100z-live-retained",
+  "schema": "data-1f-retained-capture-claim-v1",
+  "signing": false,
+  "state": "STARTED_FAIL_CLOSED",
+  "twenty_four_seven": false,
+  "venue": "binance"
+}

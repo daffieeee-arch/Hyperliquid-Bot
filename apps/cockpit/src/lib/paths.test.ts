@@ -56,6 +56,8 @@ describe("COURSE-1 path contract", () => {
     expect(isRunId("20260906t101559z-live-retained")).toBe(true);
     expect(isRunId("sample-run")).toBe(true);
     expect(isRunId("SAMPLE")).toBe(false);
+    expect(isRunId(".")).toBe(false);
+    expect(isRunId("..")).toBe(false);
     expect(() => requireRunId("SAMPLE")).toThrow(/run_id/);
     expect(() => requireRunId("has space")).toThrow(/run_id/);
     expect(() => requireRunId("")).toThrow(/run_id/);

@@ -65,8 +65,8 @@
   "parent_basis": "cf50a77d99893f1f90cd8707ff41e0ce8c8211d9",
   "publication_files": {
     ".github/workflows/ci.yml": {
-      "bytes": 9953,
-      "sha256": "8e1dc7318e71ab8ddb0f5c0faf979a91377c9924ed3deea613ea7641090c8c22"
+      "bytes": 15744,
+      "sha256": "8ddb93276a30389e680f70a2abec8544b070ad549cadba4ddd775ca89879976d"
     },
     "vertical_slices/__init__.py": {
       "bytes": 79,

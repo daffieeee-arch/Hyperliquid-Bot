@@ -9,8 +9,9 @@
     "pnpm": "11.23.0"
   },
   "scripts": {
-    "format:check": "prettier --check .github/workflows/ci.yml eslint.config.mjs package.json pnpm-workspace.yaml prettier.config.mjs tsconfig.json vitest.config.ts tests/typescript/toolchain.test.ts apps/cockpit/package.json apps/cockpit/tsconfig.json apps/cockpit/next.config.ts apps/cockpit/vitest.config.ts apps/cockpit/src",
-    "lint": "eslint --max-warnings=0 vitest.config.ts tests/typescript/toolchain.test.ts",
+    "format:check": "prettier --check .github/workflows/ci.yml .github/workflows/cockpit.yml .github/actions/setup-node-pnpm/action.yml eslint.config.mjs package.json pnpm-workspace.yaml prettier.config.mjs tsconfig.json vitest.config.ts tests/typescript/toolchain.test.ts apps/cockpit/package.json apps/cockpit/tsconfig.json apps/cockpit/next.config.ts apps/cockpit/vitest.config.ts apps/cockpit/playwright.config.ts apps/cockpit/src apps/cockpit/tests",
+    "lint": "eslint --max-warnings=0 vitest.config.ts tests/typescript/toolchain.test.ts apps/cockpit/src",
+    "lint:cockpit": "eslint --max-warnings=0 apps/cockpit/src",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "cockpit:dev": "pnpm --filter @hyperliquid-bot/cockpit dev",
@@ -20,11 +21,11 @@
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
-    "@types/node": "24.13.3",
-    "eslint": "10.9.0",
+    "@types/node": "26.4.1",
+    "eslint": "10.10.0",
     "prettier": "3.9.6",
     "typescript": "6.0.3",
-    "typescript-eslint": "8.67.0",
+    "typescript-eslint": "8.69.0",
     "vitest": "4.1.11"
   }
 }

@@ -106,7 +106,7 @@ contract:
 
 ```bash
 export TRADING_MODE=PAPER
-export ARTIFACT_ROOT=/home/dmesdary/hyperliquid-artifacts/reconstructable
+export ARTIFACT_ROOT=$HOME/hyperliquid-artifacts/reconstructable
 export DATA1A_RUN_ID=20260905t232635z-live-retained
 export DATA1E_RUN_ID=20260905t232635z-live-retained
 export DATA1B_RUN_ID=20260905t232635z-live-retained
@@ -128,7 +128,8 @@ Set `PORT` in the shell — Next.js does not read `PORT` from `.env`:
 PORT=3001 pnpm --filter @hyperliquid-bot/cockpit dev:lan
 ```
 
-Open `http://192.168.1.2:3001` from the phone. Allow inbound TCP on that port
+Open `http://<LAN-IP>:3001` from the phone (the PC's LAN IP on the same
+Wi-Fi, for example `http://192.168.x.x:3001`). Allow inbound TCP on that port
 on the Windows / WSL firewall. `127.0.0.1` is loopback-only.
 
 Later VPS path-contract root (same file names):
@@ -170,7 +171,7 @@ collector:
 
 ```bash
 export TRADING_MODE=PAPER
-export ARTIFACT_ROOT=/home/dmesdary/hyperliquid-artifacts/reconstructable
+export ARTIFACT_ROOT=$HOME/hyperliquid-artifacts/reconstructable
 # Optional; omit to auto-detect the freshest live retain per venue:
 export DATA1A_RUN_ID=20260905t232635z-live-retained
 export DATA1F_RUN_ID=20260906t101559z-live-retained
@@ -193,9 +194,10 @@ unreadable/failed/not-written health file. **MISSING** is fail-closed empty (no
 root, run, directory, or claim). Part age and part count stay `n/a` on MISSING
 chips. Host clock must be sane.
 
-Cockpit CI lives in `.github/workflows/cockpit.yml`. It is a separate
-workflow so the hashed D01 publication file `.github/workflows/ci.yml`
-stays byte-identical.
+Cockpit CI lives in `.github/workflows/cockpit.yml` and shares the
+`.github/actions/setup-node-pnpm` composite with `ci.yml`. Changing
+`.github/workflows/ci.yml` updates the D01 publication integrity hash;
+see [CI](../CI.md).
 
 ## Fail closed
 

@@ -1,0 +1,55 @@
+# Dependabot version updates (PAPER-only repo hygiene).
+# Docs: https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+# Schema: https://json.schemastore.org/dependabot-2.0.json
+version: 2
+updates:
+  # Python manifests live at repo root: pyproject.toml + uv.lock.
+  # `pip` is the requested ecosystem; GitHub also documents a dedicated `uv`
+  # ecosystem if lockfile-only updates need a later split.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    groups:
+      python-minor-and-patch:
+        applies-to: "version-updates"
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # pnpm workspace root (package.json, pnpm-workspace.yaml, pnpm-lock.yaml).
+  # Workspace packages include `.` and `apps/cockpit`; one root entry avoids
+  # duplicate PRs for the same lockfile.
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    groups:
+      npm-minor-and-patch:
+        applies-to: "version-updates"
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    groups:
+      github-actions-minor-and-patch:
+        applies-to: "version-updates"
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"

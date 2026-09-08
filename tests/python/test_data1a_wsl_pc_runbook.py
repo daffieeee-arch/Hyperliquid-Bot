@@ -130,7 +130,7 @@ def test_wsl_runbook_documents_known_good_operator_paths() -> None:
     assert "tens of KB/s" in text
     assert "standby-timeout-ac 0" in text
     assert "wsl --shutdown" in text
-    assert "/home/dmesdary/hyperliquid-artifacts/reconstructable" in text
+    assert "$HOME/hyperliquid-artifacts/reconstructable" in text
     assert "DATA1A_RUN_ID" in text
     assert "pnpm --filter @hyperliquid-bot/cockpit dev" in text
     assert "RUNNING (health JSON pending until stop)" in text

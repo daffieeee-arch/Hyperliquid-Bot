@@ -70,7 +70,10 @@ The initial CI pipeline should include:
 
 ### Cross-cutting
 
-- secret scanning;
+- secret scanning (never skipped on PRs that touch code);
+- dependency review on pull requests;
+- actionlint on workflow YAML;
+- a focused PAPER API/browser regress suite (fixtures only);
 - dependency review where available;
 - container build smoke test;
 - schema/contract compatibility checks;

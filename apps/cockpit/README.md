@@ -163,7 +163,8 @@ example (cockpit on **3001**):
 PORT=3001 pnpm --filter @hyperliquid-bot/cockpit dev:lan
 ```
 
-Then open `http://192.168.1.2:3001` from the phone. Allow inbound TCP on that
+Then open `http://<LAN-IP>:3001` from the phone (use the PC's LAN IP on the
+same Wi-Fi, for example `http://192.168.x.x:3001`). Allow inbound TCP on that
 port in the Windows / WSL firewall. `127.0.0.1` is loopback only. Cellular /
 4G will not reach the home LAN.
 
@@ -197,7 +198,7 @@ run is never bound as RUNNING:
 
 ```bash
 export TRADING_MODE=PAPER
-export ARTIFACT_ROOT=/home/dmesdary/hyperliquid-artifacts/reconstructable
+export ARTIFACT_ROOT=$HOME/hyperliquid-artifacts/reconstructable
 pnpm --filter @hyperliquid-bot/cockpit dev
 ```
 

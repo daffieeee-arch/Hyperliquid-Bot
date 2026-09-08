@@ -170,6 +170,10 @@ Where a later integration test genuinely needs a non-production secret, inject i
 
 Parity is achieved through containers, contracts and tests—not by editing source directly on a runtime host.
 
+GitHub Actions Phase A, cockpit lint, and the PAPER API/browser regress
+suite are documented in [CI](CI.md). Local checks stay the same: `uv run
+pytest`, `pnpm run lint`, `pnpm --filter @hyperliquid-bot/cockpit run test`.
+
 Keep consistent across local, CI and every runtime profile:
 
 - Linux/amd64 runtime target;

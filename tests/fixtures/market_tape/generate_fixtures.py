@@ -709,6 +709,17 @@ def _reset_fixture_root() -> None:
             f"refusing to delete {ROOT}: it was not created by this generator "
             f"(missing {SENTINEL_NAME}). Pick an empty or fixture-only --out."
         )
+    # A sentinel root that collectors later wrote into is no longer fixture-only.
+    foreign = [
+        path
+        for path in ROOT.rglob("*.parquet")
+        if path.name.startswith("part-") and WRITER_TAG not in path.name
+    ]
+    if foreign or any(ROOT.rglob("capture-health.json")):
+        raise SystemExit(
+            f"refusing to delete {ROOT}: it contains parts or health files not written "
+            "by this generator."
+        )
     shutil.rmtree(ROOT)
 
 

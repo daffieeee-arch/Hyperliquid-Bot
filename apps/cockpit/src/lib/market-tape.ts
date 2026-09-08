@@ -103,8 +103,12 @@ function touchRun(runDir: string): RunTapeCache {
   }
   entry.touched = Date.now();
   if (store.size > MARKET_TAPE_MAX_CACHED_RUNS) {
-    const oldest = [...store.values()].sort((left, right) => left.touched - right.touched)[0];
-    if (oldest !== undefined && oldest.runDir !== runDir) {
+    // Never evict a run mid-refresh: a new caller would cold-start a second
+    // entry and parse the same parts in parallel with the discarded one.
+    const oldest = [...store.values()]
+      .filter((candidate) => candidate.inflight === undefined && candidate.runDir !== runDir)
+      .sort((left, right) => left.touched - right.touched)[0];
+    if (oldest !== undefined) {
       store.delete(oldest.runDir);
     }
   }

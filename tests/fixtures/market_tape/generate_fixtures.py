@@ -51,6 +51,9 @@ DEFAULT_ROOT = Path(__file__).resolve().parent / "artifact-root"
 DEFAULT_BASE_NS = 1_788_631_200_000_000_000  # 2026-09-05T18:00:00Z
 STEP_NS = 1_000_000_000
 WRITER_TAG = "fixture00001"
+# Marks a directory as generator output; ``main`` only ever deletes roots that carry it.
+SENTINEL_NAME = ".cockpit-market-tape-fixture"
+SENTINEL_TEXT = "written by tests/fixtures/market_tape/generate_fixtures.py; safe to regenerate\n"
 
 ROOT = DEFAULT_ROOT
 BASE_NS = DEFAULT_BASE_NS
@@ -678,15 +681,35 @@ def main(argv: list[str] | None = None) -> None:
             print(path.relative_to(ROOT), path.stat().st_size)
         return
 
-    if ROOT.exists():
-        shutil.rmtree(ROOT)
+    _reset_fixture_root()
     hyperliquid()
     binance()
     bitvavo()
     kraken()
+    (ROOT / SENTINEL_NAME).write_text(SENTINEL_TEXT, encoding="utf-8")
     for path in sorted(ROOT.rglob("*")):
         if path.is_file():
             print(path.relative_to(ROOT), path.stat().st_size)
+
+
+def _reset_fixture_root() -> None:
+    """Delete ``ROOT`` only when this generator demonstrably created it.
+
+    Operators run this next to a shell that exports the real ``ARTIFACT_ROOT``.
+    A mistyped ``--out`` must never wipe a retain: the directory is removed only
+    if it is empty or carries the sentinel this script writes.
+    """
+    if not ROOT.exists():
+        return
+    if not ROOT.is_dir():
+        raise SystemExit(f"refusing to overwrite non-directory {ROOT}")
+    entries = list(ROOT.iterdir())
+    if entries and not (ROOT / SENTINEL_NAME).is_file():
+        raise SystemExit(
+            f"refusing to delete {ROOT}: it was not created by this generator "
+            f"(missing {SENTINEL_NAME}). Pick an empty or fixture-only --out."
+        )
+    shutil.rmtree(ROOT)
 
 
 if __name__ == "__main__":

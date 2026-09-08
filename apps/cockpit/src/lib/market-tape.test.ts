@@ -296,6 +296,26 @@ describe("market tape reader", () => {
     expect(marketTapeCacheSize()).toBe(1);
   });
 
+  it("never folds a part in twice when refreshes overlap (StrictMode, two tabs, two clocks)", async () => {
+    const runDir = join(fixtureRoot, "data-1a", "hyperliquid", "BTC-PERP", HL_RUN);
+
+    const results = await Promise.all([
+      refreshRunTape(runDir),
+      refreshRunTape(runDir),
+      refreshRunTape(runDir),
+    ]);
+
+    const parsed = results.map((result) => result.parsed);
+    expect(parsed.reduce((sum, count) => sum + count, 0)).toBe(2);
+    const cache = results[0]?.cache;
+    expect(cache?.processed.size).toBe(2);
+    const instrument = snapshotInstruments(cache?.state ?? createVenueTapeState())[0];
+    expect(instrument?.tradeCount).toBe(3);
+    expect(instrument?.bboCount).toBe(2);
+    expect(instrument?.recentTrades.length).toBe(3);
+    expect(marketTapeCacheSize()).toBe(1);
+  });
+
   it("skips older parts on a cold start instead of re-reading the whole retain", async () => {
     const root = mkdtempSync(join(tmpdir(), "market-tape-cold-"));
     const runDir = join(root, "data-1a", "hyperliquid", "BTC-PERP", HL_RUN);

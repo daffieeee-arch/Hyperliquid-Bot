@@ -54,6 +54,12 @@ type RunTapeCache = {
   /** Last event received inside the newest processed part, for publication lag. */
   newestProcessed: { name: string; mtimeUtc: string; lastEventUtc: string | undefined } | undefined;
   touched: number;
+  /**
+   * Refresh currently running for this run. `applyTapeRow` is not idempotent
+   * (counters, recent-trade ring), so two overlapping refreshes must never both
+   * fold the same part into `state`; callers chain on this promise instead.
+   */
+  inflight: Promise<unknown> | undefined;
 };
 
 type TapeCacheStore = Map<string, RunTapeCache>;
@@ -91,6 +97,7 @@ function touchRun(runDir: string): RunTapeCache {
       skippedOnColdStart: 0,
       newestProcessed: undefined,
       touched: 0,
+      inflight: undefined,
     };
     store.set(runDir, entry);
   }
@@ -191,6 +198,28 @@ export async function refreshRunTape(
   coldStartParts: number = MARKET_TAPE_COLD_START_PARTS,
 ): Promise<{ cache: RunTapeCache; parts: PublishedPartFile[]; parsed: number }> {
   const cache = touchRun(runDir);
+  // Serialise per run: a second caller (StrictMode double-fetch, a second tab,
+  // two workspaces on their own clocks) waits for the running refresh and then
+  // sees the parts it would have parsed as already processed.
+  const previous = cache.inflight ?? Promise.resolve();
+  const run = previous
+    .catch(() => undefined)
+    .then(() => refreshRunTapeExclusive(cache, coldStartParts));
+  cache.inflight = run;
+  try {
+    return await run;
+  } finally {
+    if (cache.inflight === run) {
+      cache.inflight = undefined;
+    }
+  }
+}
+
+async function refreshRunTapeExclusive(
+  cache: RunTapeCache,
+  coldStartParts: number,
+): Promise<{ cache: RunTapeCache; parts: PublishedPartFile[]; parsed: number }> {
+  const runDir = cache.runDir;
   const parts = listPublishedPartFiles(join(runDir, "raw"));
   const pending = parts.filter((part) => !cache.processed.has(part.name));
   let toParse = pending;

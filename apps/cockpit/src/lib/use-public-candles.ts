@@ -2,15 +2,22 @@
 
 import { useEffect, useState } from "react";
 
-import { DATA1A_CAPTURE_POLL_MS } from "./data1a-capture-poll";
-import { parsePublicCandleSnapshot, type PublicBtcCandleSnapshot } from "./public-candles";
+import {
+  PUBLIC_CANDLE_INTERVAL,
+  parsePublicCandleSnapshot,
+  type PublicBtcCandleSnapshot,
+  type PublicCandleInterval,
+} from "./public-candles";
 
 export type PublicCandleState =
   | { status: "loading" }
   | { status: "ready"; snapshot: PublicBtcCandleSnapshot }
   | { status: "error"; message: string };
 
-export function usePublicBtcPerpCandles(): PublicCandleState {
+export function usePublicBtcPerpCandles(
+  interval: PublicCandleInterval = PUBLIC_CANDLE_INTERVAL,
+  refreshToken = 0,
+): PublicCandleState {
   const [state, setState] = useState<PublicCandleState>({ status: "loading" });
 
   useEffect(() => {
@@ -18,7 +25,10 @@ export function usePublicBtcPerpCandles(): PublicCandleState {
 
     async function refresh(): Promise<void> {
       try {
-        const response = await fetch("/api/public-btc-perp-candles", { cache: "no-store" });
+        const response = await fetch(
+          `/api/public-btc-perp-candles?interval=${encodeURIComponent(interval)}`,
+          { cache: "no-store" },
+        );
         const payload: unknown = await response.json();
         if (!response.ok) {
           const message =
@@ -45,14 +55,10 @@ export function usePublicBtcPerpCandles(): PublicCandleState {
     }
 
     void refresh();
-    const timer = window.setInterval(() => {
-      void refresh();
-    }, DATA1A_CAPTURE_POLL_MS);
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
     };
-  }, []);
+  }, [interval, refreshToken]);
 
   return state;
 }

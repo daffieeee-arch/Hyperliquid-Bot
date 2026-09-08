@@ -6,17 +6,16 @@ import { loadCaptureSnapshotForContract } from "./data1a-capture";
 import { presentCopiedText, presentGapReconnect } from "./display";
 import { captureArtifactRoot, VENUE_CAPTURE_CONTRACTS, type VenueCaptureQuery } from "./paths";
 import {
-  TERRAPC_BINANCE_ACTIVE_RETAIN_RUN_ID,
-  TERRAPC_SHARED_RETAIN_RUN_ID,
-} from "./terrapc-defaults";
-import {
   BINANCE_IDENTITY_WARNING,
   BINANCE_IMPULSE_DEFAULT,
+  RESEARCH_RUN_BINDING_NOTE,
   RESEARCH_UNAVAILABLE,
   type ResearchIdentityRow,
   type ResearchOverlapClock,
   type ResearchP0View,
+  type ResearchRunBinding,
   type ResearchSufficiency,
+  type ResearchVenueRun,
 } from "./research-p0-view";
 import type {
   Data1ACaptureSnapshot,
@@ -33,9 +32,13 @@ export {
   OVERLAP_72H_SECONDS,
   PANEL_VERSION_EXPECTED,
   PUBLIC_MID_NOT_RESEARCH,
+  RESEARCH_NEGATIVE_VERDICTS,
+  RESEARCH_POSITIVE_VERDICTS,
   RESEARCH_P0_SOURCE,
+  RESEARCH_RUN_BINDING_NOTE,
   RESEARCH_UNAVAILABLE,
   RESEARCH_ZONE_KICKER,
+  researchVerdictTone,
 } from "./research-p0-view";
 export type {
   ResearchHealthRow,
@@ -43,7 +46,10 @@ export type {
   ResearchOverlapClock,
   ResearchP0View,
   ResearchRegistryRow,
+  ResearchRunBinding,
   ResearchSufficiency,
+  ResearchVenueRun,
+  ResearchVerdictTone,
 } from "./research-p0-view";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -126,10 +132,8 @@ export function buildOverlapClock(strip: VenueCaptureStrip | undefined): Researc
         : shared.join(" · ");
   const overlapStart = strip?.provenance.overlap_starts_utc ?? RESEARCH_UNAVAILABLE;
   const note = strip?.provenance.overlap_note ?? RESEARCH_UNAVAILABLE;
+  // Derived only from the bound runs; no historical run_id is special-cased.
   let badge: ResearchOverlapClock["badge"] = "gate_pending";
-  if (bn === TERRAPC_BINANCE_ACTIVE_RETAIN_RUN_ID && hl === TERRAPC_SHARED_RETAIN_RUN_ID) {
-    badge = "partial";
-  }
   if (overlapStart !== RESEARCH_UNAVAILABLE && bn !== undefined && hl !== undefined && bn !== hl) {
     badge = "partial";
   }
@@ -146,7 +150,173 @@ export function buildOverlapClock(strip: VenueCaptureStrip | undefined): Researc
   };
 }
 
-export function parsePanelSummary(payload: unknown, source: string): ResearchSufficiency {
+type SummaryVenue = ResearchVenueRun["venue"];
+
+/** Summary field → venue. `run_id` alone does not say which venue it describes. */
+const RUN_ID_FIELDS: Record<string, SummaryVenue> = {
+  run_id: "any",
+  hl_run_id: "hl",
+  hyperliquid_run_id: "hl",
+  bn_run_id: "binance",
+  binance_run_id: "binance",
+  bv_run_id: "bitvavo",
+  bitvavo_run_id: "bitvavo",
+  kr_run_id: "kraken",
+  kraken_run_id: "kraken",
+};
+
+/** Keys accepted inside a `run_ids` / `products` object. */
+const VENUE_KEYS: Record<string, SummaryVenue> = {
+  hl: "hl",
+  hyperliquid: "hl",
+  bn: "binance",
+  binance: "binance",
+  bv: "bitvavo",
+  bitvavo: "bitvavo",
+  kr: "kraken",
+  kraken: "kraken",
+};
+
+const PRODUCT_FIELDS: Record<string, SummaryVenue> = {
+  hl_product: "hl",
+  hyperliquid_product: "hl",
+  bn_product: "binance",
+  binance_product: "binance",
+  bv_product: "bitvavo",
+  bitvavo_product: "bitvavo",
+  kr_product: "kraken",
+  kraken_product: "kraken",
+};
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
+}
+
+function declaredProducts(payload: Record<string, unknown>): Map<SummaryVenue, string> {
+  const products = new Map<SummaryVenue, string>();
+  for (const [field, venue] of Object.entries(PRODUCT_FIELDS)) {
+    const value = nonEmptyString(payload[field]);
+    if (value !== undefined) {
+      products.set(venue, value);
+    }
+  }
+  if (isRecord(payload.products)) {
+    for (const [key, value] of Object.entries(payload.products)) {
+      const venue = VENUE_KEYS[key.toLowerCase()];
+      const product = nonEmptyString(value);
+      if (venue !== undefined && product !== undefined) {
+        products.set(venue, product);
+      }
+    }
+  }
+  return products;
+}
+
+/**
+ * Copy every run the summary declares, keeping the venue it was declared for.
+ *
+ * Accepts the `hl_run_id` / `bn_run_id` scalars the WP-Q1 panel writes, the
+ * other venue-prefixed scalars, and a `run_ids` list/object. Nothing is
+ * inferred from the file path: an anonymous summary stays anonymous.
+ */
+export function panelSummaryRunRefs(payload: unknown): ResearchVenueRun[] {
+  if (!isRecord(payload)) {
+    return [];
+  }
+  const products = declaredProducts(payload);
+  const found: ResearchVenueRun[] = [];
+  const push = (venue: SummaryVenue, runId: string | undefined): void => {
+    if (runId === undefined) {
+      return;
+    }
+    if (found.some((ref) => ref.venue === venue && ref.runId === runId)) {
+      return;
+    }
+    const product = products.get(venue);
+    found.push(product === undefined ? { venue, runId } : { venue, runId, product });
+  };
+  for (const [field, venue] of Object.entries(RUN_ID_FIELDS)) {
+    push(venue, nonEmptyString(payload[field]));
+  }
+  const list = payload.run_ids;
+  if (Array.isArray(list)) {
+    for (const item of list) {
+      push("any", nonEmptyString(item));
+    }
+  } else if (isRecord(list)) {
+    for (const [key, item] of Object.entries(list)) {
+      push(VENUE_KEYS[key.toLowerCase()] ?? "any", nonEmptyString(item));
+    }
+  }
+  return found;
+}
+
+export function panelSummaryRunIds(payload: unknown): string[] {
+  return [...new Set(panelSummaryRunRefs(payload).map((ref) => ref.runId))];
+}
+
+function runRefMatches(declared: ResearchVenueRun, bound: ResearchVenueRun): boolean {
+  if (declared.runId !== bound.runId) {
+    return false;
+  }
+  if (declared.venue !== "any" && declared.venue !== bound.venue) {
+    return false;
+  }
+  return declared.product === undefined || declared.product === bound.product;
+}
+
+/**
+ * Compare a summary with the full bound combination, venue by venue.
+ *
+ * A venue-tagged run is only checked against the run bound for that same
+ * venue, so `bn_run_id` can never be satisfied by a Hyperliquid run that
+ * happens to share the id. One matching venue is not enough: a summary about
+ * the current HL run and a restarted (older) BN run is `mismatched`.
+ */
+export function classifyRunBinding(
+  summaryRuns: readonly ResearchVenueRun[],
+  boundRuns: readonly ResearchVenueRun[],
+): ResearchRunBinding {
+  if (summaryRuns.length === 0 || boundRuns.length === 0) {
+    return "unknown";
+  }
+  let unbound = 0;
+  for (const declared of summaryRuns) {
+    if (declared.venue === "any") {
+      if (!boundRuns.some((bound) => runRefMatches(declared, bound))) {
+        return "mismatched";
+      }
+      continue;
+    }
+    const boundForVenue = boundRuns.filter((bound) => bound.venue === declared.venue);
+    if (boundForVenue.length === 0) {
+      unbound += 1;
+      continue;
+    }
+    if (!boundForVenue.some((bound) => runRefMatches(declared, bound))) {
+      return "mismatched";
+    }
+  }
+  return unbound === 0 ? "matched" : "partial";
+}
+
+/** Bound runs as the capture strip reports them; MISSING chips are not bound. */
+export function boundRunsFromChips(venues: readonly VenueCaptureChip[]): ResearchVenueRun[] {
+  const refs: ResearchVenueRun[] = [];
+  for (const venue of venues) {
+    if (venue.run_id === undefined || venue.run_id === "" || venue.status === "MISSING") {
+      continue;
+    }
+    refs.push({ venue: venue.id, runId: venue.run_id, product: venue.product });
+  }
+  return refs;
+}
+
+export function parsePanelSummary(
+  payload: unknown,
+  source: string,
+  boundRuns: readonly ResearchVenueRun[] = [],
+): ResearchSufficiency {
   if (!isRecord(payload)) {
     return unavailableSufficiency("panel-summary.json is not an object");
   }
@@ -164,7 +334,11 @@ export function parsePanelSummary(payload: unknown, source: string): ResearchSuf
   const reasons = Array.isArray(sufficiency?.reasons)
     ? sufficiency.reasons.filter((item): item is string => typeof item === "string")
     : [];
+  const runRefs = panelSummaryRunRefs(payload);
   return {
+    runIds: [...new Set(runRefs.map((ref) => ref.runId))],
+    runRefs,
+    runBinding: classifyRunBinding(runRefs, boundRuns),
     verdict: typeof payload.verdict === "string" ? payload.verdict : RESEARCH_UNAVAILABLE,
     reasons,
     hlGapFraction:
@@ -194,6 +368,9 @@ export function unavailableSufficiency(reason: string): ResearchSufficiency {
     overlapBuckets: RESEARCH_UNAVAILABLE,
     panelVersion: RESEARCH_UNAVAILABLE,
     source: reason,
+    runIds: [],
+    runRefs: [],
+    runBinding: "unavailable",
   };
 }
 
@@ -228,28 +405,75 @@ export function listResearchOutSummaries(root: string, maxFiles = 16): string[] 
   return found;
 }
 
-export function loadPanelSummaryFromRoot(root: string | undefined): ResearchSufficiency {
+const BINDING_RANK: Record<ResearchRunBinding, number> = {
+  matched: 4,
+  partial: 3,
+  mismatched: 2,
+  unknown: 1,
+  unavailable: 0,
+};
+
+/**
+ * Pick the panel summary that belongs to the full bound combination.
+ *
+ * Reading the first file on disk silently attributes an unrelated verdict to
+ * whatever the operator happens to have selected. Instead every summary is
+ * parsed and classified per venue; a `matched` summary wins. If none matches,
+ * the best-classified readable summary is returned already flagged
+ * (`partial` / `mismatched` / `unknown`) so the UI can refuse to present it as
+ * a verdict about the current runs.
+ */
+export function loadPanelSummaryFromRoot(
+  root: string | undefined,
+  boundRuns: readonly ResearchVenueRun[] = [],
+): ResearchSufficiency {
   if (root === undefined || root === "" || !existsSync(root)) {
     return unavailableSufficiency(
       "research-out/panel-summary.json is not pointed; sufficiency stays UNAVAILABLE",
     );
   }
   const files = listResearchOutSummaries(root);
-  const first = files[0];
-  if (first === undefined) {
+  if (files.length === 0) {
     return unavailableSufficiency(
       "No panel-summary.json under research-out; WP-Q1 gates stay UNAVAILABLE",
     );
   }
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(first, "utf8"));
-    return parsePanelSummary(parsed, relative(root, first));
-  } catch (error: unknown) {
-    if (error instanceof Error && error.message.includes("fails closed")) {
-      throw error;
+  const parsed: ResearchSufficiency[] = [];
+  let unreadable = 0;
+  for (const file of files) {
+    try {
+      const payload: unknown = JSON.parse(readFileSync(file, "utf8"));
+      parsed.push(parsePanelSummary(payload, relative(root, file), boundRuns));
+    } catch (error: unknown) {
+      if (error instanceof Error && error.message.includes("fails closed")) {
+        throw error;
+      }
+      unreadable += 1;
     }
-    return unavailableSufficiency("panel-summary.json is unreadable; values are not invented");
   }
+  const matched = parsed.find((summary) => summary.runBinding === "matched");
+  if (matched !== undefined) {
+    return matched;
+  }
+  const fallback = parsed.reduce<ResearchSufficiency | undefined>(
+    (best, summary) =>
+      best === undefined || BINDING_RANK[summary.runBinding] > BINDING_RANK[best.runBinding]
+        ? summary
+        : best,
+    undefined,
+  );
+  if (fallback === undefined) {
+    return unavailableSufficiency(
+      `panel-summary.json is unreadable (${String(unreadable)} file(s)); values are not invented`,
+    );
+  }
+  return {
+    ...fallback,
+    reasons: [
+      RESEARCH_RUN_BINDING_NOTE[fallback.runBinding],
+      ...fallback.reasons.filter((reason) => reason !== ""),
+    ],
+  };
 }
 
 export function researchOutRoot(env: NodeJS.Dict<string>): string | undefined {
@@ -305,13 +529,19 @@ export function buildResearchP0View(
       healthPending: snapshot?.health_missing === true,
     };
   });
-  void nowIso; // elapsed vs 72h stays UNAVAILABLE; never claimed mid-run
+  const boundRuns = boundRunsFromChips(venues);
+  const boundRunIds = [...new Set(boundRuns.map((ref) => ref.runId))];
   return {
     registry,
     health,
     identity: buildResearchIdentity(),
     identityWarning: BINANCE_IDENTITY_WARNING,
     overlap: buildOverlapClock(strip.ok ? strip.strip : undefined),
-    sufficiency: loadPanelSummaryFromRoot(researchOutRoot(env)),
+    sufficiency: loadPanelSummaryFromRoot(researchOutRoot(env), boundRuns),
+    boundRunIds,
+    boundRuns,
+    // elapsed vs 72h stays UNAVAILABLE; observed_at only timestamps the read.
+    observedAt: strip.ok ? strip.strip.observed_at : nowIso,
+    error: strip.ok ? undefined : strip.error,
   };
 }

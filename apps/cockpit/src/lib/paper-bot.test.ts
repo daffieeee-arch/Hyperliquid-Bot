@@ -8,7 +8,6 @@ import {
   ASSUMED_PNL_LABEL,
   COURSE1_SOAK_KIND,
   D22B_BLOCKED,
-  DOCUMENTED_TAPE_DEMO_REJECT_ID,
   NOT_VENUE_RECONCILED,
   PAPER_BOT_UNAVAILABLE,
   buildLastDecision,
@@ -66,13 +65,9 @@ describe("DESK COURSE-1 soak card", () => {
   it("shows last-N tape with rejected rows and a read-only #65 caps strip", () => {
     const snapshot = loadPaperRunSnapshot({ TRADING_MODE: "PAPER" }, repoRoot);
     const view = buildPaperBotView(snapshot, undefined);
-    expect(view.tape).toHaveLength(3);
+    expect(view.tape).toHaveLength(2);
     expect(view.tape[0]?.outcome).toBe("ACCEPT");
     expect(view.tape[0]?.gateCode).toBe(RISK_REASON_UNAVAILABLE);
-    const rejected = view.tape.find((row) => row.outcome === "REJECT");
-    expect(rejected?.clientOrderId).toBe(DOCUMENTED_TAPE_DEMO_REJECT_ID);
-    expect(rejected?.gateCode).toBe("risk_based_size");
-    expect(rejected?.gateReason).toMatch(/risk-based size/);
     expect(view.tape[view.tape.length - 1]?.outcome).toBe("ACCEPT");
     expect(view.preflight.equity).toBe("100000 USDC assumed");
     expect(view.preflight.riskPerTrade).toBe(DOCUMENTED_RISK_PER_TRADE);

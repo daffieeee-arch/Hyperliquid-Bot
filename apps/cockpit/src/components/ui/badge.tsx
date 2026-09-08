@@ -1,33 +1,34 @@
-import { cva, type VariantProps } from "class-variance-authority";
 import type { ComponentProps } from "react";
 
 import { cn } from "@/lib/utils";
+import type { DataTone } from "@/lib/data-state";
 
-const badgeVariants = cva(
-  "inline-flex items-center rounded-[var(--radius)] border px-1.5 py-0.5 text-[0.62rem] font-semibold tracking-[0.08em] uppercase",
-  {
-    variants: {
-      variant: {
-        default: "border-transparent bg-primary text-primary-foreground",
-        paper: "border-transparent bg-[var(--paper)] text-[var(--paper-ink)]",
-        outline: "border-border text-muted-foreground",
-        warn: "border-transparent bg-[var(--warn)]/15 text-[var(--warn)]",
-      },
-    },
-    defaultVariants: {
-      variant: "default",
-    },
-  },
-);
+export type BadgeTone = DataTone | "paper" | "outline";
+
+const TONE_CLASS: Record<BadgeTone, string> = {
+  ok: "badge-ok",
+  warn: "badge-warn",
+  down: "badge-down",
+  info: "badge-info",
+  muted: "badge-muted",
+  paper: "badge-paper",
+  outline: "badge-outline",
+};
 
 function Badge({
+  tone = "muted",
+  dot = false,
+  live = false,
   className,
-  variant,
+  children,
   ...props
-}: ComponentProps<"span"> & VariantProps<typeof badgeVariants>) {
+}: ComponentProps<"span"> & { tone?: BadgeTone; dot?: boolean; live?: boolean }) {
   return (
-    <span data-slot="badge" className={cn(badgeVariants({ variant }), className)} {...props} />
+    <span data-slot="badge" className={cn("badge", TONE_CLASS[tone], className)} {...props}>
+      {dot ? <span className={cn("dot", live && "dot-live")} aria-hidden="true" /> : null}
+      {children}
+    </span>
   );
 }
 
-export { Badge, badgeVariants };
+export { Badge };

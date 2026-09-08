@@ -165,7 +165,11 @@ export function AppShell({ children }: { children: ReactNode }) {
             <strong className="truncate-1">{route.label}</strong>
           </nav>
           <div className="topbar-actions">
-            <span className="paper-pill" title="PAPER only. No signing, no live capital.">
+            <span
+              className="paper-pill"
+              role="status"
+              title="PAPER only. No signing, no live capital."
+            >
               <span className="dot" aria-hidden="true" />
               Paper
             </span>

@@ -258,7 +258,7 @@ export function PaperScreen({
           </CardBody>
         </Card>
 
-        <Card>
+        <Card aria-label="Results">
           <CardHeader title="Results" description={view.results.assumedPnlLabel} />
           <CardBody>
             <KvList
@@ -283,7 +283,7 @@ export function PaperScreen({
         </Card>
       </div>
 
-      <Card>
+      <Card aria-label="Intent tape">
         <CardHeader
           title="Intent tape"
           description={`Last ${String(view.tapeLimit)} intents and fills copied from orders.json and fills.json. Only rows this run actually recorded appear here.`}
@@ -343,7 +343,7 @@ export function PaperScreen({
           </CardBody>
         </Card>
 
-        <Card>
+        <Card aria-label="How a reject reads">
           <CardHeader
             title="How a reject reads"
             description="Documented #65 / D01 catalog. Reference only — these rows are never mixed into the tape above."

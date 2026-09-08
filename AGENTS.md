@@ -39,20 +39,47 @@ Read `README.md`, `docs/ARCHITECTURE.md`, `docs/DEVELOPMENT.md`, `docs/DEPLOYMEN
 
 ## Development workflow
 
-For each implementation task:
+Apply this ship workflow automatically to every development task unless the
+user explicitly narrows the scope (for example docs-only advice with no
+repository change):
 
-1. inspect the relevant documentation and current code;
-2. state assumptions and scope;
-3. work on a feature branch or worktree, never directly on `main`;
-4. keep changes narrowly scoped;
-5. add/update deterministic tests;
-6. run relevant format, lint, typecheck and test commands;
-7. review the diff for secrets and architecture violations;
-8. report what changed, tests run, remaining risks and readiness stage;
-9. open a pull request only when requested or when the task explicitly includes it;
-10. never deploy merely because CI passes.
+1. Never work directly on `main`.
+2. Start each new task on a separate feature branch from the latest
+   `origin/main` (fetch first; use a worktree when parallel tasks require it).
+3. Before starting, confirm Git status is clean and synchronized so no
+   existing work can be lost (clean tree, no unexpected uncommitted files,
+   local/remote refs understood).
+4. Execute the task narrowly: no unrelated refactors, architecture changes, or
+   out-of-scope expansions.
+5. Add or update deterministic tests when behavior changes, and run the
+   relevant local format/lint/typecheck/test commands.
+6. For every change, judge whether existing CI already covers the new or
+   changed behavior. Extend CI only when truly needed; avoid duplicate,
+   redundant, or unnecessarily heavy checks. Prefer the docs-only / path-based
+   skip paths already defined in `docs/CI.md`.
+7. Commit and push the branch.
+8. Open a pull request targeting `main`.
+9. Let all required CI checks complete successfully.
+10. For material or high-risk changes (execution, risk, secrets, LIVE gates,
+    infra/runtime, non-trivial strategy/data contracts), obtain an independent
+    review from a separate agent/model before merge. Skip independent review
+    for trivial docs/chore PRs unless the user asks.
+11. Resolve blocking review findings on the same branch; re-run the relevant
+    tests and CI.
+12. Merge only when CI is green, the PR has no merge conflicts, and all
+    blocking issues are resolved.
+13. Use Squash and Merge by default.
+14. After merge, delete the merged feature branch and any associated worktree,
+    but only after confirming they hold no uncommitted or unmerged work.
+15. Synchronize local `main` with `origin/main` again.
 
-Do not make unrelated refactors during a focused task.
+Keep the workflow practical: add extra steps, tests, or CI only when the
+nature of the change actually requires them.
+
+Also for each task: inspect relevant documentation and current code; state
+assumptions and scope; review the diff for secrets and architecture
+violations; report what changed, tests run, remaining risks and readiness
+stage. Never deploy merely because CI passes or a PR merged.
 
 ## Language and style
 

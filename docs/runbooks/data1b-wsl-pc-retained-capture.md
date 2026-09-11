@@ -17,8 +17,11 @@ Kraken Spot WebSocket v2 wire symbol is `BTC/USD` (not REST/v1 `XBT/USD`).
 fallback**. Retired path contract `data-1b-kraken-btc-eur-v1` is not current.
 
 **Do not start a multi-day DATA-1B retain now.** This PR is prepare-only.
-Wait until CoS assigns this window. This document does **not** attach to,
-resume, or stop tmux `hl-capture`, `bn-capture`, or `bv-capture`.
+Wait until CoS assigns this window via the joint Phase A checklist (smoke,
+STOP, Chupa explicit OK). Product remains BTC/USD, not BTC/EUR. See
+[phase-a-72h-joint-retained-capture.md](phase-a-72h-joint-retained-capture.md).
+This document does **not** attach to, resume, or stop tmux `hl-capture`,
+`bn-capture`, or `bv-capture`.
 
 ## Why not a Cloud Agent
 

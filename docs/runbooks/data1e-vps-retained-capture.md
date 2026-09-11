@@ -18,7 +18,7 @@ cutover order) is
 [linux-vps-reference-profile.md](linux-vps-reference-profile.md).
 
 **Do not start a multi-day DATA-1E retain now.** Wait for CoS to assign this
-window.
+window via the joint Phase A TerraPC checklist (not this VPS host).
 
 ## Duration contract
 

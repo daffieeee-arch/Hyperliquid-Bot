@@ -33,6 +33,10 @@ from .capture_observability import (
     elapsed_from_report,
     transport_exception_fields,
 )
+from .hyperliquid_retained_instruments import (
+    HyperliquidRetainedInstrumentPlan,
+    build_hyperliquid_retained_plan,
+)
 from .parquet_research import (
     ParquetResearchWriter,
     ParquetRotation,
@@ -54,6 +58,7 @@ from .reconstructable_paths import (
     Data1ARunPaths,
     data1a_run_paths,
 )
+from .retained_capture_profile import claim_profile_fields
 
 HYPERLIQUID_MAINNET_WEBSOCKET_URL: Final = "wss://api.hyperliquid.xyz/ws"
 HYPERLIQUID_RESEARCH_VENUE: Final = "hyperliquid"
@@ -65,28 +70,16 @@ DATA1A_HEALTH_SCHEMA: Final = "data-1a-retained-capture-health-v1"
 HYPERLIQUID_TRANSPORT_PROFILE: Final = "hyperliquid_public"
 _SERVER_IDLE_TIMEOUT_SECONDS: Final = 60.0
 _MIN_HEARTBEAT_SECONDS: Final = 5.0
+_MARKET_DATA_STALE_SECONDS: Final = 90.0
+_MARKET_DATA_CHANNELS: Final = frozenset({"trades", "bbo", "l2Book", "activeAssetCtx"})
 
 _GREETING: Final = b"Websocket connection established."
 _PING_TEXT: Final = '{"method":"ping"}'
-_SUBSCRIPTION_PAYLOADS: Final = (
-    (
-        "trades",
-        b'{"method":"subscribe","subscription":{"type":"trades","coin":"BTC"}}',
-    ),
-    (
-        "bbo",
-        b'{"method":"subscribe","subscription":{"type":"bbo","coin":"BTC"}}',
-    ),
-    (
-        "l2Book",
-        b'{"method":"subscribe","subscription":{"type":"l2Book","coin":"BTC"}}',
-    ),
-    (
-        "activeAssetCtx",
-        b'{"method":"subscribe","subscription":{"type":"activeAssetCtx","coin":"BTC"}}',
-    ),
+_DEFAULT_BTC_PLAN: Final = build_hyperliquid_retained_plan()
+_SUBSCRIPTION_PAYLOADS: Final = tuple(
+    (item.channel, item.payload_bytes) for item in _DEFAULT_BTC_PLAN.subscriptions
 )
-_EXPECTED_SUBSCRIPTIONS: Final = frozenset(channel for channel, _ in _SUBSCRIPTION_PAYLOADS)
+_EXPECTED_SUBSCRIPTIONS: Final = _DEFAULT_BTC_PLAN.expected_channels
 _EXPECTED_INBOUND_CHANNELS: Final = _EXPECTED_SUBSCRIPTIONS | {
     "subscriptionResponse",
     "pong",
@@ -160,6 +153,7 @@ class HyperliquidRawResearchCollector:
         sink: RawResearchSink,
         *,
         config: HyperliquidRawResearchConfig | None = None,
+        instrument_plan: HyperliquidRetainedInstrumentPlan | None = None,
         connection_factory: ConnectionFactory | None = None,
         utc_ns: NanosecondClock = time.time_ns,
         monotonic_ns: NanosecondClock = time.monotonic_ns,
@@ -168,6 +162,15 @@ class HyperliquidRawResearchCollector:
     ) -> None:
         self._sink = sink
         self._config = config if config is not None else HyperliquidRawResearchConfig()
+        self._instrument_plan = (
+            instrument_plan if instrument_plan is not None else build_hyperliquid_retained_plan()
+        )
+        if HYPERLIQUID_RESEARCH_PRODUCT not in {
+            self._instrument_plan.required.product,
+        }:
+            raise ValueError("DATA-1A required product must remain BTC-PERP")
+        if "BTC" not in self._instrument_plan.started_coins:
+            raise ValueError("DATA-1A must not drop required BTC channels")
         self._connection_factory = (
             connection_factory
             if connection_factory is not None
@@ -318,7 +321,8 @@ class HyperliquidRawResearchCollector:
         connection: WebSocketConnection,
         session_id: str,
     ) -> None:
-        for subscription_type, payload_bytes in _SUBSCRIPTION_PAYLOADS:
+        for subscription in self._instrument_plan.subscriptions:
+            payload_bytes = subscription.payload_bytes
             captured = capture_application_payload(
                 payload_bytes.decode("utf-8"),
                 utc_ns=self._utc_ns,
@@ -335,7 +339,8 @@ class HyperliquidRawResearchCollector:
                 session_id,
                 "subscription",
                 "subscription_sent",
-                subscription_type=subscription_type,
+                subscription_type=subscription.channel,
+                coin=subscription.coin,
             )
 
     async def _receive_session(
@@ -344,8 +349,10 @@ class HyperliquidRawResearchCollector:
         session_id: str,
         stop_event: asyncio.Event,
     ) -> None:
-        acknowledged_subscriptions: set[str] = set()
+        acknowledged_subscriptions: set[tuple[str, str]] = set()
+        expected_identities = self._instrument_plan.expected_subscription_identities
         subscriptions_active_marked = False
+        market_data_stale_marked = False
         stop_task = asyncio.create_task(stop_event.wait(), name="raw-research-stop-wait")
         receive_task = asyncio.create_task(
             self._receive_captured(connection),
@@ -353,6 +360,7 @@ class HyperliquidRawResearchCollector:
         )
         next_heartbeat = self._monotonic() + float(self._config.heartbeat_interval_seconds)
         last_inbound = self._monotonic()
+        last_market_data = self._monotonic()
         try:
             while True:
                 now = self._monotonic()
@@ -361,27 +369,38 @@ class HyperliquidRawResearchCollector:
                     0.0,
                     last_inbound + float(self._config.receive_timeout_seconds) - now,
                 )
+                if market_data_stale_marked:
+                    stale_wait = heartbeat_wait
+                else:
+                    stale_wait = max(
+                        0.0,
+                        last_market_data + _MARKET_DATA_STALE_SECONDS - now,
+                    )
                 done, _ = await asyncio.wait(
                     (receive_task, stop_task),
-                    timeout=min(heartbeat_wait, receive_wait),
+                    timeout=min(heartbeat_wait, receive_wait, stale_wait),
                     return_when=asyncio.FIRST_COMPLETED,
                 )
                 if receive_task in done:
                     captured = receive_task.result()
                     last_inbound = self._monotonic()
                     _, channel, document = await self._record_inbound(captured, session_id)
+                    if channel in _MARKET_DATA_CHANNELS:
+                        last_market_data = last_inbound
+                        market_data_stale_marked = False
                     if channel == "subscriptionResponse" and document is not None:
-                        subscription_type = _subscription_type_from_response(document)
-                        if subscription_type in _EXPECTED_SUBSCRIPTIONS:
-                            acknowledged_subscriptions.add(subscription_type)
+                        identity = _subscription_identity_from_response(document)
+                        if identity is not None and identity in expected_identities:
+                            acknowledged_subscriptions.add(identity)
                             await self._append_marker(
                                 session_id,
                                 "subscription",
                                 "subscription_acknowledged",
-                                subscription_type=subscription_type,
+                                subscription_type=identity[0],
+                                coin=identity[1],
                             )
                             if (
-                                acknowledged_subscriptions == _EXPECTED_SUBSCRIPTIONS
+                                acknowledged_subscriptions == expected_identities
                                 and not subscriptions_active_marked
                             ):
                                 await self._append_marker(
@@ -408,9 +427,26 @@ class HyperliquidRawResearchCollector:
                     return
                 if self._monotonic() >= last_inbound + float(self._config.receive_timeout_seconds):
                     raise TimeoutError("Hyperliquid public receive timed out.")
+                if (
+                    self._monotonic() >= last_market_data + _MARKET_DATA_STALE_SECONDS
+                    and not market_data_stale_marked
+                ):
+                    await self._append_marker(
+                        session_id,
+                        "data_quality",
+                        "market_data_stale_despite_heartbeat",
+                        reason=(
+                            "heartbeat/pong kept the socket alive but no trades/bbo/"
+                            "l2Book/activeAssetCtx arrived; heartbeat is not market-data validity"
+                        ),
+                    )
+                    market_data_stale_marked = True
 
-                await self._send_heartbeat(connection, session_id)
-                next_heartbeat = self._monotonic() + float(self._config.heartbeat_interval_seconds)
+                if self._monotonic() >= next_heartbeat:
+                    await self._send_heartbeat(connection, session_id)
+                    next_heartbeat = self._monotonic() + float(
+                        self._config.heartbeat_interval_seconds
+                    )
         finally:
             for task in (receive_task, stop_task):
                 if not task.done():
@@ -580,6 +616,13 @@ def _classify_inbound(
 
 
 def _subscription_type_from_response(document: dict[str, object]) -> str | None:
+    identity = _subscription_identity_from_response(document)
+    return None if identity is None else identity[0]
+
+
+def _subscription_identity_from_response(
+    document: dict[str, object],
+) -> tuple[str, str] | None:
     data = document.get("data")
     if type(data) is not dict:
         return None
@@ -587,7 +630,10 @@ def _subscription_type_from_response(document: dict[str, object]) -> str | None:
     if type(subscription) is not dict:
         return None
     subscription_type = subscription.get("type")
-    return subscription_type if type(subscription_type) is str else None
+    coin = subscription.get("coin")
+    if type(subscription_type) is not str or type(coin) is not str:
+        return None
+    return (subscription_type, coin)
 
 
 def build_capture_report(database_path: Path, parquet_dir: Path) -> dict[str, object]:
@@ -651,12 +697,17 @@ async def run_bounded_capture(
     duration_seconds: float,
     stop_event: asyncio.Event | None = None,
     connection_factory: ConnectionFactory | None = None,
+    instrument_plan: HyperliquidRetainedInstrumentPlan | None = None,
 ) -> dict[str, object]:
     """Run the no-credential capture, close Parquet, and build the DuckDB catalog."""
 
     _require_bounded_duration(duration_seconds)
     writer = ParquetResearchWriter(output_dir, rotation=ParquetRotation())
-    collector = HyperliquidRawResearchCollector(writer, connection_factory=connection_factory)
+    collector = HyperliquidRawResearchCollector(
+        writer,
+        connection_factory=connection_factory,
+        instrument_plan=instrument_plan,
+    )
     try:
         await collector.capture_for(duration_seconds, stop_event=stop_event)
     finally:
@@ -670,11 +721,13 @@ def data1a_capture_claim(
     run_id: str,
     duration_seconds: float,
     paths: Data1ARunPaths,
+    instrument_plan: HyperliquidRetainedInstrumentPlan | None = None,
 ) -> dict[str, object]:
     """Create-only start claim for a reconstructable DATA-1A run."""
 
     duration = _require_bounded_duration(duration_seconds)
-    return {
+    plan = instrument_plan if instrument_plan is not None else build_hyperliquid_retained_plan()
+    claim: dict[str, object] = {
         "schema": DATA1A_CLAIM_SCHEMA,
         "state": "STARTED_FAIL_CLOSED",
         "path_contract": DATA1A_PATH_CONTRACT_ID,
@@ -686,6 +739,7 @@ def data1a_capture_claim(
         "heartbeat_interval_seconds": 45.0,
         "receive_timeout_seconds": 60.0,
         "application_ping": True,
+        "heartbeat_is_not_market_data": True,
         "credentialless": True,
         "signing": False,
         "duration_seconds": duration,
@@ -693,10 +747,16 @@ def data1a_capture_claim(
         "max_duration_seconds": MAX_CAPTURE_SECONDS,
         "retained": duration > SMOKE_CAPTURE_SECONDS,
         "twenty_four_seven": False,
+        "started_coins": list(plan.started_coins),
+        "addon_coins": list(item.coin for item in plan.addons),
+        "addon_start_policy": plan.addon_start_policy,
+        "deferred_addon_coins": list(plan.deferred_addon_coins),
         "resume_policy": "never resume or overwrite an existing DATA-1A run directory",
         "raw_dir": paths.raw_dir.as_posix(),
         "database_path": paths.database_path.as_posix(),
     }
+    claim.update(claim_profile_fields(duration))
+    return claim
 
 
 def data1a_capture_health(
@@ -722,6 +782,7 @@ def data1a_capture_health(
             "duration_seconds": duration,
             "retained": duration > SMOKE_CAPTURE_SECONDS,
             "twenty_four_seven": False,
+            "heartbeat_is_not_market_data": True,
             "credentialless": True,
             "events": report.get("events"),
             "payload_bytes": report.get("payload_bytes"),
@@ -757,9 +818,11 @@ async def run_reconstructable_capture(
     stop_event: asyncio.Event | None = None,
     operator_stop: Callable[[], bool] | None = None,
     connection_factory: ConnectionFactory | None = None,
+    instrument_plan: HyperliquidRetainedInstrumentPlan | None = None,
 ) -> dict[str, object]:
     """Write DATA-1A Parquet/DuckDB to the documented reconstructable path."""
 
+    plan = instrument_plan if instrument_plan is not None else build_hyperliquid_retained_plan()
     paths = data1a_run_paths(artifact_root, run_id)
     if paths.run_dir.exists():
         raise FileExistsError(f"DATA-1A refuses to reuse existing run directory: {paths.run_dir}")
@@ -776,7 +839,12 @@ async def run_reconstructable_capture(
     )
     _write_create_only_json(
         paths.capture_claim_path,
-        data1a_capture_claim(run_id=run_id, duration_seconds=duration_seconds, paths=paths),
+        data1a_capture_claim(
+            run_id=run_id,
+            duration_seconds=duration_seconds,
+            paths=paths,
+            instrument_plan=plan,
+        ),
     )
     report: dict[str, object] = {
         "events": 0,
@@ -798,6 +866,7 @@ async def run_reconstructable_capture(
             duration_seconds=duration_seconds,
             stop_event=stop_event,
             connection_factory=connection_factory,
+            instrument_plan=plan,
         )
         if operator_stop is not None and operator_stop():
             status = "OPERATOR_STOP"
@@ -856,6 +925,16 @@ def _argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--artifact-root", type=Path)
     parser.add_argument("--run-id")
     parser.add_argument("--duration-seconds", required=True, type=float)
+    parser.add_argument(
+        "--addon-coins",
+        default="",
+        help="Optional Hyperliquid add-on coins (ETH,SOL). Never replaces BTC.",
+    )
+    parser.add_argument(
+        "--enable-addons",
+        action="store_true",
+        help="Subscribe to --addon-coins. Default Phase A policy is deferred_at_start.",
+    )
     return parser
 
 
@@ -894,6 +973,10 @@ async def _run_from_args(args: argparse.Namespace) -> dict[str, object]:
     except (NotImplementedError, RuntimeError):
         pass
 
+    instrument_plan = build_hyperliquid_retained_plan(
+        addon_coins=cast(str, args.addon_coins),
+        enable_addons=bool(args.enable_addons),
+    )
     mode = _resolve_cli_mode(args)
     if mode == "reconstructable":
         return await run_reconstructable_capture(
@@ -902,12 +985,14 @@ async def _run_from_args(args: argparse.Namespace) -> dict[str, object]:
             duration_seconds=cast(float, args.duration_seconds),
             stop_event=stop_event,
             operator_stop=lambda: operator_stopped,
+            instrument_plan=instrument_plan,
         )
     return await run_bounded_capture(
         output_dir=cast(Path, args.output_dir),
         database_path=cast(Path, args.database),
         duration_seconds=cast(float, args.duration_seconds),
         stop_event=stop_event,
+        instrument_plan=instrument_plan,
     )
 
 

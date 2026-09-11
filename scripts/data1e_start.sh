@@ -25,11 +25,12 @@ RUN_ID="${RUN_ID:-}"
 
 data1e_refuse_live_modes
 data1e_refuse_protected_keys
+data1_refuse_test_env_live_start "${TMUX_SESSION}" "${CHECK_ONLY}"
 data1e_refuse_protected_tmux_session "${TMUX_SESSION}"
 
 if [[ -z "${DURATION_SECONDS}" ]]; then
   echo "Set DURATION_SECONDS explicitly (1 through 604800). Example retained window: 259200." >&2
-  echo "Do not start a multi-day DATA-1E retain until CoS assigns this window." >&2
+  echo "Do not start a multi-day DATA-1E retain until the joint Phase A smoke is STOPPED and Chupa gives explicit OK." >&2
   exit 1
 fi
 data1e_require_duration "${DURATION_SECONDS}"
@@ -84,10 +85,17 @@ echo "credentialless=false"
 echo "authenticated_read_only=true"
 echo "twenty_four_seven=false"
 echo "wait_for_cos=true"
+echo "wait_for_joint_phase_a=true"
+echo "standard_fallback=false"
 echo "capture_log=${RUN_DIR}/capture-${RUN_ID}.log"
 echo "tmux_log=${ARTIFACT_ROOT}/logs/capture-${RUN_ID}.log"
 echo "do_not_interrupt_72h=true"
 echo "cloud_agents_must_not_stop=true"
+data1_phase_a_echo_profile "${DURATION_SECONDS}"
+data1_phase_a_echo_pin_policy
+data1_bandwidth_echo_policy
+data1_phase_a_require_chupa_ok_for_72h "${DURATION_SECONDS}" "${CHECK_ONLY}"
+data1_bandwidth_require_hard_for_72h "${DURATION_SECONDS}" "${CHECK_ONLY}"
 
 if [[ "${CHECK_ONLY}" -eq 1 ]]; then
   echo "status=CHECK_ONLY"
@@ -101,8 +109,9 @@ unset TRADING_MODE
 unset D41_EXECUTION_MODE
 
 mkdir -p "${ARTIFACT_ROOT}/logs"
+BANDWIDTH_WRAP="$(data1_bandwidth_wrap_command)"
 tmux new-session -d -s "${TMUX_SESSION}" \
-  "cd $(printf '%q' "${REPO_ROOT}") && unset TRADING_MODE D41_EXECUTION_MODE && export PYTHONPATH=src && exec uv run --frozen python -m hyperliquid_bot.bitvavo_mdpro_research --artifact-root $(printf '%q' "${ARTIFACT_ROOT}") --run-id $(printf '%q' "${RUN_ID}") --duration-seconds $(printf '%q' "${DURATION_SECONDS}")"
+  "cd $(printf '%q' "${REPO_ROOT}") && unset TRADING_MODE D41_EXECUTION_MODE && export PYTHONPATH=src && exec ${BANDWIDTH_WRAP} uv run --frozen python -m hyperliquid_bot.bitvavo_mdpro_research --artifact-root $(printf '%q' "${ARTIFACT_ROOT}") --run-id $(printf '%q' "${RUN_ID}") --duration-seconds $(printf '%q' "${DURATION_SECONDS}")"
 tmux pipe-pane -t "${TMUX_SESSION}" -o "cat >> $(printf '%q' "${ARTIFACT_ROOT}/logs/capture-${RUN_ID}.log")" || true
 
 echo "status=STARTED"

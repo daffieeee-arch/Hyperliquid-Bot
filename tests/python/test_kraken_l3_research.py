@@ -845,7 +845,9 @@ async def test_connection_factory_disables_protocol_ping(
 ) -> None:
     captured: dict[str, object] = {}
 
-    def fake_connect(uri: str, **options: object) -> AbstractAsyncContextManager[FakeConnection]:
+    def fake_connect(
+        uri: str, **options: object
+    ) -> AbstractAsyncContextManager[WebSocketConnection]:
         captured["uri"] = uri
         captured["options"] = options
         return _fake_context(FakeConnection(()))
@@ -921,6 +923,7 @@ async def test_disconnect_records_rcvd_vs_sent_close_codes() -> None:
     closed = ConnectionClosedError(
         Close(1011, "internal error"),
         Close(1011, "keepalive ping timeout"),
+        True,
     )
     public = FakeConnection(
         [_ack("trade"), _ack("book"), _fixture_text("book_snapshot.json"), closed],

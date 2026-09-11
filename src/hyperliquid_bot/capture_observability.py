@@ -138,21 +138,21 @@ def transport_exception_fields(error: BaseException) -> dict[str, int | str]:
         seen.add(id(current))
         if errno_value is None:
             raw_errno = getattr(current, "errno", None)
-            if type(raw_errno) is int:
-                errno_value = raw_errno
+            if isinstance(raw_errno, int):
+                errno_value = int(raw_errno)
         received = getattr(current, "rcvd", None)
         sent = getattr(current, "sent", None)
         if received is not None and received_code is None:
             code = getattr(received, "code", None)
-            if type(code) is int:
-                received_code = code
+            if isinstance(code, int):
+                received_code = int(code)
             reason = sanitize_close_reason(getattr(received, "reason", None))
             if reason is not None:
                 received_reason = reason
         if sent is not None and sent_code is None:
             code = getattr(sent, "code", None)
-            if type(code) is int:
-                sent_code = code
+            if isinstance(code, int):
+                sent_code = int(code)
             reason = sanitize_close_reason(getattr(sent, "reason", None))
             if reason is not None:
                 sent_reason = reason

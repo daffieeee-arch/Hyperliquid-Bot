@@ -44,7 +44,7 @@ def test_elapsed_seconds_is_separate_from_requested_duration() -> None:
 def test_transport_exception_fields_distinguish_rcvd_vs_sent_and_sanitize_reason() -> None:
     received = Close(CloseCode.POLICY_VIOLATION, "Too many requests")
     sent = Close(CloseCode.INTERNAL_ERROR, "keepalive ping timeout")
-    closed = ConnectionClosedError(received, sent)
+    closed = ConnectionClosedError(received, sent, True)
     fields = transport_exception_fields(closed)
     assert fields["exception_class"] == "ConnectionClosedError"
     assert int(fields["close_code"]) == 1008
@@ -69,7 +69,8 @@ def test_transport_exception_fields_distinguish_rcvd_vs_sent_and_sanitize_reason
     assert int(chained["close_code"]) == 1000
     assert chained["close_reason_rcvd"] == "Ping timeout"
 
-    errno_error = OSError(104, "Connection reset by peer")
+    errno_error = OSError("synthetic transport errno")
+    errno_error.errno = 104
     errno_fields = transport_exception_fields(errno_error)
     assert errno_fields["exception_class"] == "OSError"
     assert int(errno_fields["errno"]) == 104

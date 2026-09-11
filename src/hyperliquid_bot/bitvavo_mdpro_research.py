@@ -34,11 +34,13 @@ from websockets.asyncio.client import connect
 from websockets.exceptions import PayloadTooBig, WebSocketException
 
 from .capture_observability import (
+    DISCONNECT_LOG_SUFFIX,
     add_transport_counts,
     attach_observability_health,
     capture_log_path,
     capture_logger,
     configure_capture_logger,
+    disconnect_log_values,
     elapsed_from_report,
     transport_exception_fields,
 )
@@ -167,10 +169,9 @@ class _DecimalLexeme(str):
 
 
 class _ReceiveFailure(Enum):
-    """Secret-free result used to detach lower transport exceptions."""
+    """Secret-free result used to detach payload-size failures from recv()."""
 
     PAYLOAD_TOO_BIG = "payload_too_big"
-    TRANSPORT = "transport"
 
 
 class WebSocketConnection(Protocol):
@@ -963,8 +964,6 @@ class BitvavoMdProResearchCollector:
                 None,
                 self._config.max_application_payload_bytes,
             ) from None
-        if received is _ReceiveFailure.TRANSPORT:
-            raise OSError("Bitvavo Market Data Pro receive failed.") from None
         return received
 
     async def _receive_captured(
@@ -977,8 +976,10 @@ class BitvavoMdProResearchCollector:
             raise
         except PayloadTooBig:
             return _ReceiveFailure.PAYLOAD_TOO_BIG
-        except Exception:
-            return _ReceiveFailure.TRANSPORT
+        except (WebSocketException, OSError):
+            raise
+        except Exception as error:
+            raise OSError("Bitvavo Market Data Pro receive failed.") from error
         try:
             return capture_application_payload(
                 frame,
@@ -989,8 +990,10 @@ class BitvavoMdProResearchCollector:
             raise
         except PayloadTooBig:
             return _ReceiveFailure.PAYLOAD_TOO_BIG
-        except Exception:
-            return _ReceiveFailure.TRANSPORT
+        except (WebSocketException, OSError):
+            raise
+        except Exception as error:
+            raise OSError("Bitvavo Market Data Pro receive failed.") from error
 
     async def _append_captured(
         self,
@@ -1124,10 +1127,9 @@ class BitvavoMdProResearchCollector:
     ) -> None:
         fields = dict(failure_fields or {})
         capture_logger().info(
-            "bitvavo disconnect transport_profile=%s exception_class=%s close_code=%s",
+            "bitvavo disconnect transport_profile=%s " + DISCONNECT_LOG_SUFFIX,
             BITVAVO_MDPRO_FEED_PRODUCT,
-            fields.get("exception_class"),
-            fields.get("close_code"),
+            *disconnect_log_values(fields),
         )
         await self._append_marker(
             session_id,
@@ -1937,6 +1939,7 @@ async def run_reconstructable_capture(
         "parquet_bytes": 0,
         "gaps": 0,
         "reconnects": 0,
+        "reconnect_clusters": 0,
         "elapsed_seconds": 0.0,
         "transport_profiles": [],
         "integrity_events": 0,

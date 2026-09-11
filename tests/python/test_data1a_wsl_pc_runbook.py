@@ -46,7 +46,7 @@ def _script_env(
             "REPO_ROOT": str(REPO_ROOT),
             "RUN_ID": run_id,
             "DURATION_SECONDS": duration,
-            "TMUX_SESSION": "hl-capture",
+            "TMUX_SESSION": "pytest-hl-isolated",
             "HOME": str(tmp_path / "home"),
         }
     )
@@ -143,6 +143,9 @@ def test_wsl_runbook_documents_known_good_operator_paths() -> None:
     assert "duration_seconds" in text
     assert "capture-<run_id>.log" in text
     assert "Protect a 72h evidence window" in text
+    assert "phase-a-72h-joint-retained-capture.md" in text
+    assert "deferred at start" in text
+    assert "ETH/SOL" in text
     assert "Do **not** send `C-c`" in text
     assert "Cloud Agents must not" in text
     assert "heartbeat" in text.lower() or "45s" in text or "45 s" in text
@@ -198,7 +201,7 @@ def test_status_reports_tmux_and_parquet_part_count(tmp_path: Path) -> None:
     completed = _run("data1a_status.sh", tmp_path)
     assert completed.returncode == 0, completed.stderr
     stdout = completed.stdout
-    assert "tmux_session=hl-capture" in stdout
+    assert "tmux_session=pytest-hl-isolated" in stdout
     assert "tmux_alive=" in stdout
     assert "run_id=20260904t134940z-live-retained" in stdout
     assert "run_id_source=explicit" in stdout
@@ -227,6 +230,10 @@ def test_start_check_only_is_create_only(tmp_path: Path) -> None:
     assert "status=CHECK_ONLY" in completed.stdout
     assert "run_id=20260904t134940z-live-retained" in completed.stdout
     assert "signing=false" in completed.stdout
+    assert "phase_a_profile=retained_72h" in completed.stdout
+    assert "hl_addon_start_policy=deferred" in completed.stdout
+    assert "bandwidth_monitor_is_not_limiter=true" in completed.stdout
+    assert "do_not_start_now=true" in completed.stdout
     run_dir = (
         artifact_root / "data-1a" / "hyperliquid" / "BTC-PERP" / "20260904t134940z-live-retained"
     )

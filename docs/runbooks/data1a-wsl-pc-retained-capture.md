@@ -9,10 +9,12 @@ and no extra venues. The VPS counterpart is
 [data1a-vps-retained-capture.md](data1a-vps-retained-capture.md).
 
 This document is a parallel operator guide. It does **not** attach to, resume,
-or stop a capture that is already running. For a later overlapping Binance
-DATA-1F retain, see
-[data1f-wsl-pc-retained-capture.md](data1f-wsl-pc-retained-capture.md). Do not
-start that capture until this DATA-1A window finishes and CoS assigns it.
+or stop a capture that is already running. Phase A is a **joint** four-lane
+72h retain (HL + Binance + Bitvavo + Kraken) after a ≤60 min smoke and
+**Chupa explicit OK**. See
+[phase-a-72h-joint-retained-capture.md](phase-a-72h-joint-retained-capture.md).
+Do not start the 72h window from a Cloud Agent. Hyperliquid ETH/SOL add-on
+channels exist in code and tests and stay **deferred at start**.
 
 ## Why not a Cloud Agent
 

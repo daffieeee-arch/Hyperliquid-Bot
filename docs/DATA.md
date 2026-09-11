@@ -286,6 +286,10 @@ treat that soak cap as the DATA-1A capture contract.
 Operator commands, retain/stop/continue rules, and the git-safe sample exporter are
 in [DATA-1A VPS retained-capture runbook](runbooks/data1a-vps-retained-capture.md)
 and the [DATA-1A operator PC/WSL retained-capture runbook](runbooks/data1a-wsl-pc-retained-capture.md).
+The joint four-lane 72h Phase A campaign (prepare-only; smoke then Chupa OK)
+is [phase-a-72h-joint-retained-capture.md](runbooks/phase-a-72h-joint-retained-capture.md).
+DATA-2A short-pilot limits are not valid for that 72h profile. Hyperliquid
+ETH/SOL add-on configs exist and stay deferred at Phase A start.
 Cloud Agents are unsuitable for a multi-day retain. The later always-on host
 profile (not a migrate-today order) is
 [linux-vps-reference-profile.md](runbooks/linux-vps-reference-profile.md).
@@ -658,7 +662,9 @@ Operator retain/stop/continue rules are in
 [DATA-1B operator PC/WSL retained-capture runbook](runbooks/data1b-wsl-pc-retained-capture.md).
 Cloud Agents are unsuitable for a multi-day retain and must not SSH to or stop TerraPC
 `hl-capture`, `bn-capture`, or `bv-capture`. **Do not start a multi-day DATA-1B retain
-until CoS assigns this window.** Never resume the same `run_id`.
+until CoS assigns this window** via the joint Phase A checklist
+([phase-a-72h-joint-retained-capture.md](runbooks/phase-a-72h-joint-retained-capture.md)).
+Never resume the same `run_id`.
 
 On 2026-08-31, a bounded phase 2 smoke completed two short authenticated BTC/EUR L3 sessions
 (historical EUR identity; current DATA-1B primary product is BTC/USD)
@@ -974,7 +980,9 @@ Operator retain/stop/continue rules are in
 [DATA-1E operator PC/WSL retained-capture runbook](runbooks/data1e-wsl-pc-retained-capture.md).
 Cloud Agents are unsuitable for a multi-day retain and must not SSH to or stop TerraPC
 `hl-capture` or `bn-capture`. **Do not start a multi-day DATA-1E retain until CoS assigns
-this window.** Never resume the same `run_id`.
+this window** via the joint Phase A checklist
+([phase-a-72h-joint-retained-capture.md](runbooks/phase-a-72h-joint-retained-capture.md)).
+Never resume the same `run_id`.
 
 On 2026-08-31, the final bounded phase-2 smoke completed two short authenticated BTC-EUR Pro book
 sessions with one controlled session restart and no automatic reconnect. Each session received
@@ -1143,7 +1151,9 @@ Operator retain/stop/continue rules are in
 [DATA-1F operator PC/WSL retained-capture runbook](runbooks/data1f-wsl-pc-retained-capture.md).
 Cloud Agents are unsuitable for a multi-day retain and must not SSH to or stop TerraPC
 `hl-capture`. **Do not start a multi-day DATA-1F retain until the live DATA-1A 72h series
-finishes and CoS assigns this window.**
+finishes and CoS assigns this window** — except the new joint Phase A campaign, which
+starts all four lanes together after smoke + Chupa OK
+([phase-a-72h-joint-retained-capture.md](runbooks/phase-a-72h-joint-retained-capture.md)).
 
 Spot `depth@100ms` is heavier than DATA-1A. A 60-second smoke wrote about 8 MB payload /
 1.6 MB Parquet; budget tens of GB for 72 hours. USDⓈ-M open interest remains one REST

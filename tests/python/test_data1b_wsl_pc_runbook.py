@@ -24,7 +24,7 @@ def _script_env(
     extra: Mapping[str, str] | None = None,
     run_id: str = "20260904t000000z-live-retained",
     duration: str = "259200",
-    tmux_session: str = "kr-capture",
+    tmux_session: str = "pytest-kr-isolated",
 ) -> dict[str, str]:
     env = os.environ.copy()
     for name in (
@@ -80,7 +80,7 @@ def _run(
     args: tuple[str, ...] = (),
     run_id: str = "20260904t000000z-live-retained",
     duration: str = "259200",
-    tmux_session: str = "kr-capture",
+    tmux_session: str = "pytest-kr-isolated",
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["bash", str(SCRIPTS / script), *args],
@@ -157,6 +157,8 @@ def test_wsl_runbook_documents_known_good_operator_paths() -> None:
     assert "Cloud Agents are **unsuitable**" in text
     assert "must not SSH" in text
     assert "Do not start a multi-day DATA-1B retain now" in text
+    assert "phase-a-72h-joint-retained-capture.md" in text
+    assert "Chupa" in text
     assert "LIVE" in text
     assert "standby-timeout-ac 0" in text
     assert "wsl --shutdown" in text
@@ -229,7 +231,7 @@ def test_status_reports_tmux_and_parquet_part_count(tmp_path: Path) -> None:
     completed = _run("data1b_status.sh", tmp_path)
     assert completed.returncode == 0, completed.stderr
     stdout = completed.stdout
-    assert "tmux_session=kr-capture" in stdout
+    assert "tmux_session=pytest-kr-isolated" in stdout
     assert "tmux_alive=" in stdout
     assert "hl_capture_tmux_alive=" in stdout
     assert "bn_capture_tmux_alive=" in stdout

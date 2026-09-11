@@ -12,6 +12,7 @@ from typing import cast
 
 import pytest
 
+import hyperliquid_bot.hyperliquid_raw_research as hyperliquid_raw_research_module
 from hyperliquid_bot.hyperliquid_raw_research import (
     MAX_CAPTURE_SECONDS,
     SMOKE_CAPTURE_SECONDS,
@@ -25,6 +26,7 @@ from hyperliquid_bot.hyperliquid_raw_research import (
     data1a_capture_health,
     run_reconstructable_capture,
 )
+from hyperliquid_bot.hyperliquid_retained_instruments import build_hyperliquid_retained_plan
 from hyperliquid_bot.raw_research import MessageDirection, RawResearchRecord
 from hyperliquid_bot.reconstructable_paths import (
     DATA1A_PATH_CONTRACT_ID,
@@ -459,3 +461,78 @@ def test_cli_modes_are_mutually_exclusive(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="not both"):
         _resolve_cli_mode(mixed)
+
+
+@pytest.mark.asyncio
+async def test_enabled_addons_subscribe_eth_and_sol_without_dropping_btc() -> None:
+    stop_event = asyncio.Event()
+    inbound = [
+        "Websocket connection established.",
+        *[
+            json.dumps(
+                {
+                    "channel": "subscriptionResponse",
+                    "data": {
+                        "method": "subscribe",
+                        "subscription": {"type": channel, "coin": coin},
+                    },
+                },
+                separators=(",", ":"),
+            )
+            for coin in ("BTC", "ETH", "SOL")
+            for channel in ("trades", "bbo", "l2Book", "activeAssetCtx")
+        ],
+        _fixture_text("trades_frame.json"),
+    ]
+    connection = FakeConnection(inbound, stop_event=stop_event)
+    collector = HyperliquidRawResearchCollector(
+        MemorySink(),
+        instrument_plan=build_hyperliquid_retained_plan(
+            addon_coins="ETH,SOL",
+            enable_addons=True,
+        ),
+        connection_factory=ScriptedConnectionFactory([connection]),
+        session_id_factory=lambda: "session-addons",
+    )
+    await collector.capture_for(5.0, stop_event=stop_event)
+    sent = [str(item) for item in connection.sent]
+    assert sent[0] == '{"method":"subscribe","subscription":{"type":"trades","coin":"BTC"}}'
+    assert any('"coin":"ETH"' in item and "trades" in item for item in sent)
+    assert any('"coin":"SOL"' in item and "bbo" in item for item in sent)
+    assert sum(1 for item in sent if '"coin":"BTC"' in item) == 4
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_does_not_count_as_market_data_validity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(hyperliquid_raw_research_module, "_MARKET_DATA_STALE_SECONDS", 0.05)
+
+    class PongAfterAck(FakeConnection):
+        async def recv(self) -> str | bytes:
+            if self._messages:
+                return await super().recv()
+            await asyncio.sleep(0.2)
+            return '{"channel":"pong"}'
+
+    stop_event = asyncio.Event()
+    inbound = [
+        "Websocket connection established.",
+        *[
+            _subscription_response(channel)
+            for channel in ("trades", "bbo", "l2Book", "activeAssetCtx")
+        ],
+    ]
+    connection = PongAfterAck(inbound)
+    sink = MemorySink()
+    collector = HyperliquidRawResearchCollector(
+        sink,
+        connection_factory=ScriptedConnectionFactory([connection]),
+        session_id_factory=lambda: "session-stale",
+    )
+    runner = asyncio.create_task(collector.capture_for(2.0, stop_event=stop_event))
+    await asyncio.sleep(0.25)
+    stop_event.set()
+    await runner
+    quality = _local_events(sink.records, "data_quality")
+    assert any(event["event"] == "market_data_stale_despite_heartbeat" for event in quality)

@@ -8,14 +8,16 @@ Public Binance MAINNET market data only (Spot BTCUSDT + USDⓈ-M BTCUSDT). No
 keys, no signing, no Bitvavo, no Kraken, and no extra venues.
 
 For the Windows 11 + WSL2 Ubuntu operator PC (TerraPC), including tmux
-`bn-capture` start/status/stop, the wait-for-DATA-1A rule, and Quant handoff,
-see [data1f-wsl-pc-retained-capture.md](data1f-wsl-pc-retained-capture.md).
+`bn-capture` start/status/stop, the joint Phase A 72h campaign, and Quant
+handoff, see [data1f-wsl-pc-retained-capture.md](data1f-wsl-pc-retained-capture.md)
+and [phase-a-72h-joint-retained-capture.md](phase-a-72h-joint-retained-capture.md).
 Cloud Agents are unsuitable for a multi-day retain and must not SSH to or stop
 `hl-capture` or `bn-capture`. The later host profile (not a cutover order) is
 [linux-vps-reference-profile.md](linux-vps-reference-profile.md).
 
-**Do not start a multi-day DATA-1F retain now.** Wait for the TerraPC
-DATA-1A 72h series to finish and for CoS to assign this window.
+**Do not start a multi-day DATA-1F retain now.** Phase A is a joint four-lane
+TerraPC WSL retain after smoke + Chupa OK; this VPS profile is not the
+current host.
 
 ## Duration contract
 

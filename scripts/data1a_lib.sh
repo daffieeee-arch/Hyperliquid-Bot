@@ -1,6 +1,14 @@
 # Shared DATA-1A operator-PC helpers. Sourced by data1a_*.sh.
 # Public Hyperliquid capture only. Create-only. Never print secret values.
 
+_DATA1A_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=data1_operator_isolation.sh
+source "${_DATA1A_LIB_DIR}/data1_operator_isolation.sh"
+# shellcheck source=data1_bandwidth_lib.sh
+source "${_DATA1A_LIB_DIR}/data1_bandwidth_lib.sh"
+# shellcheck source=data1_phase_a_lib.sh
+source "${_DATA1A_LIB_DIR}/data1_phase_a_lib.sh"
+
 data1a_default_artifact_root() {
   printf '%s\n' "${HOME}/hyperliquid-artifacts/reconstructable"
 }

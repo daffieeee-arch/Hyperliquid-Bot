@@ -100,4 +100,7 @@ See the PR description for the same table. Summary:
 5. **OPERATOR_STOP / live tmux names** —
    Stop scripts and pytest sources must not contain
    `tmux send-keys -t hl-capture` (or `bn-` / `bv-` / `kr-capture`). A mutated
-   helper fixture expects `OperatorStopIsolationError`.
+   helper fixture expects `OperatorStopIsolationError`. Tests/CI must use
+   isolated fake session names and become a no-op when a live name is
+   targeted (`TEST_ISOLATION_NOOP`). No `pkill` / `killall` /
+   `tmux kill-server`.

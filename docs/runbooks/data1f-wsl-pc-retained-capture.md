@@ -9,10 +9,11 @@ Public Binance MAINNET market data only (Spot BTCUSDT + USDⓈ-M BTCUSDT). No ke
 no signing, no Bitvavo, no Kraken, and no extra venues. The VPS
 counterpart is [data1f-vps-retained-capture.md](data1f-vps-retained-capture.md).
 
-**Do not start a multi-day DATA-1F retain now.** Wait until the live DATA-1A
-Hyperliquid 72h series on TerraPC has finished (`capture-health.json` present)
-and CoS assigns this window. This document does **not** attach to, resume, or
-stop tmux `hl-capture`.
+**Do not start a multi-day DATA-1F retain now.** Phase A is a joint four-lane
+start after the ≤60 min smoke is STOPPED and Chupa gives explicit OK (CoS
+assigns the 72h window together, not after DATA-1A finishes). See
+[phase-a-72h-joint-retained-capture.md](phase-a-72h-joint-retained-capture.md).
+This document does **not** attach to, resume, or stop tmux `hl-capture`.
 
 ## Why not a Cloud Agent
 

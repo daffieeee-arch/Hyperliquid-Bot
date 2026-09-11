@@ -1072,6 +1072,48 @@ async def test_client_keepalive_1011_is_recorded_as_transport_gap() -> None:
 
 
 @pytest.mark.asyncio
+async def test_spot_1008_records_sanitized_close_reason_without_host_change() -> None:
+    sink = MemorySink()
+    stop_event = asyncio.Event()
+    stop_after = StopAfterConnections(stop_event, 3)
+    policy = ConnectionClosedError(
+        Close(1008, "Too many requests"),
+        None,
+    )
+    first = FakeConnection((policy,))
+    second = FakeConnection(
+        (
+            _fixture_text("public_spot_trade_frame.json"),
+            _fixture_text("public_spot_book_ticker_frame.json"),
+            _fixture_text("public_spot_depth_frame.json"),
+        ),
+        on_last=stop_after,
+    )
+    collector, spot_factory = _collector(
+        sink,
+        stop_event,
+        spot_connections=(first, second),
+        max_reconnects=1,
+    )
+    await collector.capture_for(1, stop_event=stop_event)
+    sessions = _local_documents(sink.records, "session")
+    assert any(
+        marker["event"] == "disconnect"
+        and marker.get("transport_profile") == "spot"
+        and marker.get("exception_class") == "ConnectionClosedError"
+        and marker.get("close_code") == 1008
+        and marker.get("close_code_rcvd") == 1008
+        and marker.get("close_reason_rcvd") == "Too many requests"
+        for marker in sessions
+    )
+    assert BINANCE_SPOT_WEBSOCKET_URL.startswith("wss://data-stream.binance.vision:443/stream")
+    assert "/public/" not in BINANCE_SPOT_WEBSOCKET_URL
+    assert "/market/" not in BINANCE_SPOT_WEBSOCKET_URL
+    assert "btcusdt@depth@100ms" in BINANCE_SPOT_WEBSOCKET_URL
+    assert spot_factory.calls == 2
+
+
+@pytest.mark.asyncio
 async def test_documented_spot_server_shutdown_is_exact_raw_and_reconnects() -> None:
     sink = MemorySink()
     stop_event = asyncio.Event()

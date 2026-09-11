@@ -17,7 +17,8 @@ from typing import cast
 
 import duckdb
 import pytest
-from websockets.exceptions import PayloadTooBig, WebSocketException
+from websockets.exceptions import ConnectionClosedError, PayloadTooBig, WebSocketException
+from websockets.frames import Close
 
 from hyperliquid_bot.bitvavo_mdpro_research import (
     BITVAVO_MDPRO_API_KEY_ENV,
@@ -1051,6 +1052,39 @@ async def test_reconnect_reauthenticates_and_starts_with_empty_book_state() -> N
     assert [item["event"] for item in quality].count("snapshot_received") == 1
     assert [item["event"] for item in quality].count("resnapshot_received") == 1
     assert any(item["event"] == "gap_detected" for item in quality)
+
+
+@pytest.mark.asyncio
+async def test_receive_close_preserves_connection_closed_code_and_reason() -> None:
+    stop_event = asyncio.Event()
+    closed = ConnectionClosedError(Close(1000, "Ping timeout"), None)
+    first = FakeConnection(
+        [*_successful_messages(snapshot_sequence=100), closed],
+    )
+    second = FakeConnection(
+        _successful_messages(snapshot_sequence=200),
+        on_last=stop_event.set,
+    )
+    sink = MemorySink()
+    collector = BitvavoMdProResearchCollector(
+        sink,
+        _credentials(),
+        config=BitvavoMdProResearchConfig(reconnect_delay_seconds=0),
+        connection_factory=ScriptedConnectionFactory([first, second]),
+        session_id_factory=SessionIds(),
+    )
+    await collector.capture_for(5.0, stop_event=stop_event)
+    disconnected = [
+        item
+        for item in _marker_documents(sink.records, channel="session")
+        if item["event"] == "disconnected"
+    ]
+    assert disconnected
+    assert disconnected[0]["exception_class"] == "ConnectionClosedError"
+    assert disconnected[0]["close_code"] == 1000
+    assert disconnected[0]["close_code_rcvd"] == 1000
+    assert disconnected[0]["close_reason_rcvd"] == "Ping timeout"
+    assert "OSError" not in disconnected[0]["exception_class"]
 
 
 @pytest.mark.asyncio

@@ -141,8 +141,15 @@ freshest live retain on that path contract (claim + fresh parts, no health
 JSON). Stale or stopped directories are listed in the run picker but are not
 auto-bound as RUNNING. Missing artifact root remains an explicit empty state.
 The strip is a compact table: status, last part age, part count, last
-mtime, bind source, and run_id per venue. Gaps/reconnects are copied from
-`capture-health.json` when present and stay n/a while health is pending.
+mtime, bind source, and run_id per venue. Gaps, raw reconnect attempts and
+optional 5-second `reconnect_clusters` are copied from `capture-health.json`
+when present and stay n/a while health is pending. The parser also preserves
+the additive `close_code_rcvd` / `close_code_sent`, sanitized
+`close_reason_rcvd` / `close_reason_sent`, `exception_class` and `errno`
+fields when a health producer supplies them at capture or transport-profile
+level. Current collectors persist those disconnect details in local markers
+and capture logs rather than the end health summary, so the cockpit does not
+invent or expose them when they are absent.
 Overlap start is shown when one venue (often Binance) started later. DATA-1A capture duration is 1–604800
 seconds; the COURSE-1 soak remains 1–600 seconds. Locally
 the first screen defaults to

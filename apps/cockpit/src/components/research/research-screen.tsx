@@ -64,7 +64,7 @@ const registryColumns: DataTableColumns<ResearchRegistryRow> = registryHelper.co
 const healthColumns: DataTableColumns<ResearchHealthRow> = healthHelper.columns([
   healthHelper.accessor("venue", { header: "Venue" }),
   healthHelper.accessor("gapsReconnects", {
-    header: "Gaps / reconnects",
+    header: "Gaps · reconnects (raw / clusters)",
     cell: ({ row }) => unavailable(row.original.gapsReconnects),
   }),
   healthHelper.accessor("transportProfiles", {
@@ -319,7 +319,7 @@ export function ResearchScreen({
       <Card>
         <CardHeader
           title="Capture health"
-          description="Gaps, reconnects and transport profiles as recorded. Health JSON is written at stop, so a running capture legitimately shows UNAVAILABLE."
+          description="Gaps, raw reconnect attempts, 5-second reconnect clusters and transport profiles as recorded. Health JSON is written at stop, so a running capture legitimately shows UNAVAILABLE."
         />
         <CardBody flush>
           <DataTable

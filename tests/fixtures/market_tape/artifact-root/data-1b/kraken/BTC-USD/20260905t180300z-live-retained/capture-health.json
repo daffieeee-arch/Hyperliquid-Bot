@@ -1,0 +1,40 @@
+{
+  "_fixture": "synthetic-reconnect-observability-v1",
+  "close_code": 1011,
+  "close_code_rcvd": 1011,
+  "close_code_sent": 1011,
+  "close_reason_rcvd": "internal error",
+  "close_reason_sent": "keepalive ping timeout",
+  "exception_class": "ConnectionClosedError",
+  "gaps": 6,
+  "kind": "capture-health",
+  "limitations": ["Synthetic PAPER fixture; not runtime or profitability evidence."],
+  "path_contract": "data-1b-kraken-btc-usd-v1",
+  "reconnect_clusters": 3,
+  "reconnects": 6,
+  "retained": true,
+  "run_id": "20260905t180300z-live-retained",
+  "schema": "data-1b-retained-capture-health-v1",
+  "status": "OPERATOR_STOP",
+  "transport_profiles": [
+    {
+      "close_code": 1011,
+      "close_code_rcvd": 1011,
+      "close_code_sent": 1011,
+      "close_reason_rcvd": "internal error",
+      "close_reason_sent": "keepalive ping timeout",
+      "exception_class": "ConnectionClosedError",
+      "gaps": 3,
+      "reconnect_clusters": 3,
+      "reconnects": 3,
+      "transport_profile": "public"
+    },
+    {
+      "gaps": 3,
+      "reconnect_clusters": 3,
+      "reconnects": 3,
+      "transport_profile": "l3"
+    }
+  ],
+  "twenty_four_seven": false
+}

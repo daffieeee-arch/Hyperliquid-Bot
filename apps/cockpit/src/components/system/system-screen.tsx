@@ -21,7 +21,11 @@ import {
   dataStateTone,
   worstDataState,
 } from "../../lib/data-state";
-import { data1aCaptureHealthPresentation, presentCopiedNumber } from "../../lib/display";
+import {
+  data1aCaptureHealthPresentation,
+  presentCopiedNumber,
+  presentGapReconnectClusters,
+} from "../../lib/display";
 import { newestTapeEvent } from "../../lib/market-tape-rows";
 import type { MarketTapeResponse } from "../../lib/market-tape-types";
 import type { VenueCaptureQuery } from "../../lib/paths";
@@ -251,14 +255,18 @@ export function SystemScreen({
           }
         />
         <Stat
-          label="Gaps / reconnects"
+          label="Gaps · reconnects"
           value={
             data1a.ok
-              ? `${presentCopiedNumber(data1a.snapshot.health?.gaps)} / ${presentCopiedNumber(data1a.snapshot.health?.reconnects)}`
+              ? presentGapReconnectClusters(
+                  data1a.snapshot.health?.gaps,
+                  data1a.snapshot.health?.reconnects,
+                  data1a.snapshot.health?.reconnect_clusters,
+                )
               : "—"
           }
           compact
-          meta="Written at stop. A running capture shows n/a rather than zero."
+          meta="Raw attempts and optional 5s wall-clock clusters are distinct. Written at stop."
         />
         <Stat
           label="Claim state"
@@ -294,7 +302,10 @@ export function SystemScreen({
                 { label: "run_id", value: secondRow.binance.runId },
                 { label: "Status", value: secondRow.binance.status },
                 { label: "Last part age", value: secondRow.binance.lastPartAge },
-                { label: "Gaps / reconnects", value: secondRow.binance.gapsReconnects },
+                {
+                  label: "Gaps · reconnects",
+                  value: secondRow.binance.gapsReconnects,
+                },
                 { label: "Binding", value: secondRow.binance.binding },
               ]}
             />

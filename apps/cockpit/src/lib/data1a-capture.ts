@@ -19,6 +19,7 @@ import type {
   Data1ACaptureHealth,
   Data1ACaptureSnapshot,
   JsonObject,
+  TransportDisconnectFields,
   TransportProfileRow,
 } from "./types";
 
@@ -67,6 +68,13 @@ function optionalText(source: JsonObject, field: string): string | undefined {
   return typeof value === "string" && value !== "" ? value : undefined;
 }
 
+function optionalStrictText(source: JsonObject, field: string, path: string): string | undefined {
+  if (!(field in source)) {
+    return undefined;
+  }
+  return requireText(source, field, path);
+}
+
 function optionalFiniteNumber(source: JsonObject, field: string, path: string): number | undefined {
   if (!(field in source)) {
     return undefined;
@@ -87,6 +95,25 @@ function optionalInt(source: JsonObject, field: string, path: string): number | 
     throw new Error(`${path} field ${field} must be an integer when present.`);
   }
   return value;
+}
+
+function optionalDisconnectFields(source: JsonObject, path: string): TransportDisconnectFields {
+  const fields: TransportDisconnectFields = {};
+  const textFields = ["exception_class", "close_reason_rcvd", "close_reason_sent"] as const;
+  for (const field of textFields) {
+    const value = optionalStrictText(source, field, path);
+    if (value !== undefined) {
+      fields[field] = value;
+    }
+  }
+  const intFields = ["close_code", "close_code_rcvd", "close_code_sent", "errno"] as const;
+  for (const field of intFields) {
+    const value = optionalInt(source, field, path);
+    if (value !== undefined) {
+      fields[field] = value;
+    }
+  }
+  return fields;
 }
 
 function optionalStringList(source: JsonObject, field: string, path: string): string[] {
@@ -120,10 +147,13 @@ function optionalTransportProfiles(
     if (typeof name !== "string" || name === "") {
       throw new Error(`${itemPath} is missing transport_profile.`);
     }
+    const reconnectClusters = optionalInt(item, "reconnect_clusters", itemPath);
     return {
       transport_profile: name,
       gaps: optionalInt(item, "gaps", itemPath),
       reconnects: optionalInt(item, "reconnects", itemPath),
+      ...(reconnectClusters === undefined ? {} : { reconnect_clusters: reconnectClusters }),
+      ...optionalDisconnectFields(item, itemPath),
     };
   });
 }
@@ -207,11 +237,13 @@ function loadHealth(
         credentialless: optionalBoolean(raw, "credentialless", path),
         gaps: optionalInt(raw, "gaps", path),
         reconnects: optionalInt(raw, "reconnects", path),
+        reconnect_clusters: optionalInt(raw, "reconnect_clusters", path),
         events: optionalInt(raw, "events", path),
         parquet_files: optionalInt(raw, "parquet_files", path),
         parquet_bytes: optionalInt(raw, "parquet_bytes", path),
         transport_profiles: optionalTransportProfiles(raw, path),
         limitations: optionalStringList(raw, "limitations", path),
+        ...optionalDisconnectFields(raw, path),
       },
       health_missing: false,
       health_error: undefined,

@@ -70,5 +70,5 @@ def test_start_helpers_accept_spaced_vps_defaults(tmp_path: Path, lane: str) -> 
 def test_start_helpers_shell_quote_spaced_vps_paths(lane: str) -> None:
     text = (REPO_ROOT / "scripts" / f"data1{lane}_start.sh").read_text(encoding="utf-8")
 
-    assert '$(printf \'%q\' "${REPO_ROOT}")' in text
-    assert '$(printf \'%q\' "${ARTIFACT_ROOT}")' in text
+    assert "$(printf '%q' \"${REPO_ROOT}\")" in text
+    assert "$(printf '%q' \"${ARTIFACT_ROOT}\")" in text

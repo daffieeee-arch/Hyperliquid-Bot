@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# DATA-1B operator-PC stop helper for WSL2 Ubuntu.
+# DATA-1B operator stop helper.
 # Create-only: sends SIGINT via tmux C-c. Never resumes or reuses the same run_id.
 # Never attaches to or stops tmux hl-capture, bn-capture, or bv-capture.
 

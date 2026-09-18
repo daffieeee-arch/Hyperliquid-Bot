@@ -1,4 +1,4 @@
-# Shared DATA-1 operator-PC status helpers.
+# Shared DATA-1 operator status helpers.
 # Create-only inspection. PAPER public captures only. Never print secret values.
 # When RUN_ID is unset, status defaults to the freshest live retain.
 

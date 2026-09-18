@@ -159,8 +159,8 @@ the first screen defaults to
 JSON, and `ARTIFACT_ROOT` plus optional `DATA1A_RUN_ID` (or `COCKPIT_DATA1A_RUN_ID` /
 `?data1a_run_id=`) for a live DATA-1A directory. Optional sibling run ids on the
 same root: `DATA1F_RUN_ID` (Binance), `DATA1E_RUN_ID` (Bitvavo),
-`DATA1B_RUN_ID` (Kraken). TerraPC WSL example:
-`ARTIFACT_ROOT=$HOME/hyperliquid-artifacts/reconstructable` with
+`DATA1B_RUN_ID` (Kraken). Primary VPS example:
+`ARTIFACT_ROOT="$HOME/Hyperliquid Project/data-capture"` with
 HL/Bitvavo/Kraken `20260905t232635z-live-retained` and Binance
 `20260906t101559z-live-retained` (do not prefer stopped
 `20260905t235830z-live-retained`; copy `apps/cockpit/.env.example`
@@ -174,7 +174,9 @@ and open `http://<LAN-IP>:3001` (the PC's LAN IP) — not cellular. See `docs/DA
 
 ## Development model
 
-Frontend development happens in WSL2 on the Windows workstation. Next.js hot reload may be viewed from the Windows browser through localhost while the source and toolchain remain in the WSL Linux filesystem.
+Frontend development happens primarily on the Netcup Ubuntu 24.04 LTS VPS.
+Use Cursor Remote SSH or a CLI agent there and forward the Next.js port over
+SSH when browser access is needed. TerraPC/WSL2 remains a secondary option.
 
 The local frontend uses:
 

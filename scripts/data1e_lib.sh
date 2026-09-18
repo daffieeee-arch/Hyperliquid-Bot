@@ -1,4 +1,4 @@
-# Shared DATA-1E operator-PC helpers. Sourced by data1e_*.sh.
+# Shared DATA-1E VPS-first operator helpers. Sourced by data1e_*.sh.
 # Authenticated Bitvavo Market Data Pro capture only. Create-only.
 # Never print secret values.
 # Never attach to, resume, or stop hl-capture or bn-capture.
@@ -12,11 +12,11 @@ source "${_DATA1E_LIB_DIR}/data1_bandwidth_lib.sh"
 source "${_DATA1E_LIB_DIR}/data1_phase_a_lib.sh"
 
 data1e_default_artifact_root() {
-  printf '%s\n' "${HOME}/hyperliquid-artifacts/reconstructable"
+  printf '%s\n' "${HOME}/Hyperliquid Project/data-capture"
 }
 
 data1e_default_repo_root() {
-  printf '%s\n' "${HOME}/code/Hyperliquid-Bot-main"
+  printf '%s\n' "${HOME}/Hyperliquid Project/Hyperliquid-Bot"
 }
 
 data1e_default_tmux_session() {

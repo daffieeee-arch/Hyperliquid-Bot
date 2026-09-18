@@ -3,7 +3,8 @@
 Status: operator runbook for the reconstructable CLI
 `python -m hyperliquid_bot.binance_public_research`. Windows 11 + WSL2 Ubuntu
 workstation (TerraPC). This is **not** a 24/7 service, not D22-B, and not LIVE
-trading.
+trading. It is a **secondary fallback**; the Netcup Ubuntu 24.04 LTS VPS and
+its VPS runbook are primary.
 
 Public Binance MAINNET market data only (Spot BTCUSDT + USDⓈ-M BTCUSDT). No keys,
 no signing, no Bitvavo, no Kraken, and no extra venues. The VPS
@@ -63,6 +64,15 @@ Documented operator layout (do not invent a second tree):
 
 `DEVELOPMENT.md` uses `~/code/Hyperliquid-Bot` as the generic example. On this
 workstation the checkout name is `Hyperliquid-Bot-main`. Same repository.
+
+The helpers now default to the primary VPS layout. For this secondary WSL
+runbook, export the legacy WSL override before any `scripts/data1f_*.sh`
+command:
+
+```bash
+export REPO_ROOT="$HOME/code/Hyperliquid-Bot-main"
+export ARTIFACT_ROOT="$HOME/hyperliquid-artifacts/reconstructable"
+```
 
 Run directory contents (path contract; Hypothesis `--binance-parquet-dir` is
 the `raw/` directory):
@@ -374,7 +384,6 @@ handoff artifact.
 - D22-B venue-authoritative reconciliation
 - funding settlement, signing, TESTNET, SHADOW, LIVE
 - profitability or strategy promotion
-- TrueNAS / ClickHouse reuse
 - Bitvavo DATA-1E / Kraken DATA-1B multi-day retain (operator docs exist;
   do not start until CoS assigns)
 - a complete Spot tape, full-book depth, or USD-M liquidation/OI history

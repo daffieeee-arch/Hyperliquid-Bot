@@ -11,13 +11,12 @@ For the Windows 11 + WSL2 Ubuntu operator PC (TerraPC), including tmux
 `bn-capture` start/status/stop, the joint Phase A 72h campaign, and Quant
 handoff, see [data1f-wsl-pc-retained-capture.md](data1f-wsl-pc-retained-capture.md)
 and [phase-a-72h-joint-retained-capture.md](phase-a-72h-joint-retained-capture.md).
-Cloud Agents are unsuitable for a multi-day retain and must not SSH to or stop
-`hl-capture` or `bn-capture`. The later host profile (not a cutover order) is
+Cloud Agents are unsuitable for a multi-day retain and must not stop
+`hl-capture` or `bn-capture`. The active host profile is
 [linux-vps-reference-profile.md](linux-vps-reference-profile.md).
 
-**Do not start a multi-day DATA-1F retain now.** Phase A is a joint four-lane
-TerraPC WSL retain after smoke + Chupa OK; this VPS profile is not the
-current host.
+**Do not start a multi-day DATA-1F retain without assignment.** Phase A is a
+joint four-lane VPS retain after smoke + Chupa OK.
 
 ## Duration contract
 
@@ -55,7 +54,7 @@ Helpers: `data1f_run_paths(artifact_root, run_id)`. Hypothesis
 ## Fail-closed start
 
 ```bash
-# From a supported Ubuntu LTS VPS checkout of a tested commit / image.
+# From the Netcup Ubuntu 24.04 LTS VPS.
 # PAPER is irrelevant to this public collector; it never signs or submits orders.
 # Do not start until CoS assigns this window after the DATA-1A 72h series.
 unset TRADING_MODE
@@ -63,14 +62,16 @@ unset D41_EXECUTION_MODE
 # Refuse to start if any protected key name is present in the shell.
 # Do not print or log secret values.
 
+export REPO_ROOT="$HOME/Hyperliquid Project/Hyperliquid-Bot"
 export PYTHONPATH=src
-export ARTIFACT_ROOT=/var/lib/hyperliquid-bot/reconstructable
+export ARTIFACT_ROOT="$HOME/Hyperliquid Project/data-capture"
 export RUN_ID="$(date -u +%Y%m%dt%H%M%Sz)-live-retained"
 # Example retained window: 4 hours. Raise up to 604800 on the durable VPS store.
 export DURATION_SECONDS=14400
 
 test ! -e "${ARTIFACT_ROOT}/data-1f/binance/BTCUSDT/${RUN_ID}"
 
+cd "$REPO_ROOT"
 PYTHONPATH=src uv run --frozen python -m hyperliquid_bot.binance_public_research \
   --artifact-root "${ARTIFACT_ROOT}" \
   --run-id "${RUN_ID}" \
@@ -148,6 +149,5 @@ DuckDB catalog into a new run.
 - D22-B venue-authoritative reconciliation
 - funding settlement, signing, TESTNET, SHADOW, LIVE
 - profitability or strategy promotion
-- TrueNAS / ClickHouse reuse
 - Bitvavo DATA-1E / Kraken DATA-1B multi-day retain (operator docs exist;
   do not start until CoS assigns)

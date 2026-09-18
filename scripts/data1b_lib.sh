@@ -1,4 +1,4 @@
-# Shared DATA-1B operator-PC helpers. Sourced by data1b_*.sh.
+# Shared DATA-1B VPS-first operator helpers. Sourced by data1b_*.sh.
 # Public Kraken BTC/USD L2+trades by default. Optional L3 via KRAKEN_WS_* only.
 # Path segment is BTC-USD. Retired BTC-EUR is not the current contract.
 # Create-only. Never print secret values.
@@ -13,11 +13,11 @@ source "${_DATA1B_LIB_DIR}/data1_bandwidth_lib.sh"
 source "${_DATA1B_LIB_DIR}/data1_phase_a_lib.sh"
 
 data1b_default_artifact_root() {
-  printf '%s\n' "${HOME}/hyperliquid-artifacts/reconstructable"
+  printf '%s\n' "${HOME}/Hyperliquid Project/data-capture"
 }
 
 data1b_default_repo_root() {
-  printf '%s\n' "${HOME}/code/Hyperliquid-Bot-main"
+  printf '%s\n' "${HOME}/Hyperliquid Project/Hyperliquid-Bot"
 }
 
 data1b_default_tmux_session() {

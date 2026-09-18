@@ -29,7 +29,7 @@ def test_phase_a_runbook_covers_four_lanes_and_hard_lessons() -> None:
     assert "ETH" in text and "SOL" in text
     assert "pytest-hl-isolated" in text or "isolated fake" in text
     assert "pkill" in text
-    assert "TrueNAS" in text
+    assert "Netcup Ubuntu 24.04" in text
     assert "OKX" in text
     assert "$HOME" in text
     assert "192.168.x.x" in text or "<LAN-IP>" in text

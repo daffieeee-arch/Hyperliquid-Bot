@@ -1,4 +1,4 @@
-# Shared DATA-1F operator-PC helpers. Sourced by data1f_*.sh.
+# Shared DATA-1F VPS-first operator helpers. Sourced by data1f_*.sh.
 # Public Binance capture only. Create-only. Never print secret values.
 # Never attach to, resume, or stop the DATA-1A tmux session hl-capture.
 
@@ -11,11 +11,11 @@ source "${_DATA1F_LIB_DIR}/data1_bandwidth_lib.sh"
 source "${_DATA1F_LIB_DIR}/data1_phase_a_lib.sh"
 
 data1f_default_artifact_root() {
-  printf '%s\n' "${HOME}/hyperliquid-artifacts/reconstructable"
+  printf '%s\n' "${HOME}/Hyperliquid Project/data-capture"
 }
 
 data1f_default_repo_root() {
-  printf '%s\n' "${HOME}/code/Hyperliquid-Bot-main"
+  printf '%s\n' "${HOME}/Hyperliquid Project/Hyperliquid-Bot"
 }
 
 data1f_default_tmux_session() {

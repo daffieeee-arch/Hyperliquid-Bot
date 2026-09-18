@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# DATA-1E operator-PC start helper for WSL2 Ubuntu.
+# DATA-1E VPS-first start helper.
 # Create-only authenticated Bitvavo MD Pro capture. Never resumes a run_id.
 # Never attaches to or stops tmux hl-capture or bn-capture.
 

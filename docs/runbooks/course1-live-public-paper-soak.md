@@ -55,7 +55,7 @@ export SOAK_PYTHON="$SOAK_VENV/bin/python"
 ## Live-public PAPER soak
 
 ```bash
-export ARTIFACT_ROOT=/var/lib/hyperliquid-bot/reconstructable
+export ARTIFACT_ROOT="$HOME/Hyperliquid Project/data-capture"
 export RUN_ID="$(date -u +%Y%m%dt%H%M%Sz)-live-paper"
 export SOAK_RUN_DIR="${ARTIFACT_ROOT}/course1/live-public-paper/${RUN_ID}"
 test ! -e "$SOAK_RUN_DIR"

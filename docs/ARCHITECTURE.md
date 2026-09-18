@@ -6,13 +6,19 @@ The platform follows two governing principles:
 
 > **Observe many venues; trade on few venues.**
 
-> **Develop away from the 24/7 runtime; deploy tested immutable artifacts.**
+> **Separate interactive development from runtime services; deploy tested immutable artifacts.**
 
-The data plane may ingest multiple free public feeds, while authenticated execution is introduced gradually and only where it has a measurable purpose. Source development happens on Windows 11 through WSL2 and Codex. The runtime boundary is host-neutral Linux/amd64 OCI and consumes pinned images; **ADR-024** records a supported Ubuntu LTS VPS as the definitive primary PAPER profile, while TrueNAS remains an optional existing protected profile.
+The data plane may ingest multiple free public feeds, while authenticated
+execution is introduced gradually and only where it has a measurable purpose.
+Source development happens primarily on the Netcup Ubuntu 24.04 LTS VPS
+(hostname `chupa`) through Cursor IDE Remote SSH, Cursor CLI (`agent`) or Codex
+CLI. The runtime boundary remains host-neutral Linux/amd64 OCI and consumes
+pinned images. **ADR-024** records the VPS as the definitive development,
+capture and PAPER profile.
 
 ```mermaid
 flowchart LR
-    DEV[Windows 11 + WSL2\nCodex development] --> GH[GitHub PR]
+    DEV[Netcup Ubuntu 24.04 LTS VPS\nCursor / Codex development] --> GH[GitHub PR]
     GH --> CI[GitHub Actions\nTests + image build]
     CI --> REG[Private GHCR\nversioned image + digest]
     REG --> RT[Linux/amd64 OCI runtime\nPAPER / SHADOW / LIVE]
@@ -108,15 +114,13 @@ COURSE-1 defers Phase 1A-3B1C-2, 3B1C-3, 3B1D and the provenance-complete form o
 code, tests and ADR-022 remain intact and dormant. Reactivation needs a concrete consumer and a
 new priority decision after the vertical slice; sunk implementation cost is not itself a consumer.
 
-The local slice precedes runtime-host work. Host-neutral Linux/amd64 OCI is the architecture
-boundary. **ADR-024** records a supported Ubuntu LTS VPS as the definitive primary PAPER profile.
-Factual VPS provisioning and TerraPC cutover remain separate CoS steps and are not authorized by
-that ADR alone. TrueNAS remains an optional existing profile; ADR-024 neither migrates nor removes
-existing TrueNAS, ClickHouse or Grafana state.
+Host-neutral Linux/amd64 OCI is the architecture boundary. **ADR-024** records
+the Netcup Ubuntu 24.04 LTS VPS as the definitive primary development, capture
+and PAPER profile. TerraPC/WSL2 remains a secondary operator environment.
 
 ## Environment separation
 
-### DEV — Windows 11 + WSL2
+### DEV — Netcup Ubuntu 24.04 LTS VPS
 
 Owns:
 
@@ -128,7 +132,10 @@ Owns:
 - frontend development;
 - small/medium research experiments.
 
-DEV does not own 24/7 state and does not contain production trading credentials.
+The source checkout and disposable development services are separate from
+running service containers and durable volumes. DEV contains no production
+trading credentials. TerraPC/WSL2 may provide a secondary isolated DEV
+environment.
 
 ### CI — GitHub Actions
 
@@ -155,10 +162,10 @@ Owns:
 - runtime secrets;
 - monitoring, alerts, recovery and backups.
 
-These are separately configured deployments. **ADR-024** selects a supported Ubuntu LTS VPS as the
-primary PAPER profile; the existing TrueNAS environment is optional and protected. Provisioning and
-cutover wait for explicit CoS approval after ADR-024. Source code is never edited in place inside
-running containers.
+These are separately configured deployments. **ADR-024** selects the Netcup
+Ubuntu 24.04 LTS VPS as the primary PAPER profile. Source code is never edited
+in place inside running containers, even though the VPS also hosts the primary
+interactive development checkout.
 
 ## Separation of concerns
 
@@ -179,7 +186,10 @@ MarketData.venue_health(venue)
 
 Initial public adapters target Hyperliquid, Bitvavo, Kraken and selected Binance feeds. Additional venues are added only where they serve a research hypothesis or resilience requirement.
 
-The local development data plane uses mocks, fixtures and disposable services. The selected durable runtime store is authoritative for self-collected 24/7 history; existing TrueNAS/ClickHouse state remains protected until an approved migration exists.
+The development data plane uses mocks, fixtures and disposable services. The
+VPS durable runtime store is authoritative for self-collected 24/7 history;
+development tasks do not mutate it except through an explicit operational
+workflow.
 
 #### Dormant provenance spine and atomic v3 cutover
 
@@ -437,7 +447,8 @@ Runs isolated experiments and may consume significant CPU/RAM without affecting 
 
 Research may run:
 
-- locally in WSL2 against bounded sample data;
+- on the VPS against bounded sample data;
+- secondarily in WSL2 against bounded sample data;
 - in CI for deterministic regression tests;
 - as a controlled low-priority runtime research worker against larger datasets.
 
@@ -580,7 +591,9 @@ Use for append-heavy analytical/time-series data:
 - PnL/equity snapshots;
 - backtest results.
 
-A small disposable ClickHouse container is used in local development. A managed runtime ClickHouse instance may later hold continuous paper/runtime data with separate writer/read-only identities. The existing TrueNAS instance remains an optional protected source until migration is explicitly approved.
+A small disposable ClickHouse container is used in development. A managed
+runtime ClickHouse instance may later hold continuous paper/runtime data with
+separate writer/read-only identities.
 
 ### PostgreSQL
 
@@ -625,7 +638,9 @@ flowchart TD
     MW[Master Hardware Wallet] -. authorizes .-> HL
 ```
 
-Withdrawal/funding permissions are never granted to automated Bitvavo/Kraken credentials. The Hyperliquid master wallet seed never resides on Windows/WSL2, any runtime host or container (including TrueNAS), GitHub or the browser.
+Withdrawal/funding permissions are never granted to automated Bitvavo/Kraken
+credentials. The Hyperliquid master wallet seed never resides on any
+development or runtime host, container, GitHub or the browser.
 
 ## Execution modes
 
@@ -676,7 +691,6 @@ data/
 infra/
   dev/
   images/
-  truenas/              # optional existing profile
   clickhouse/
   postgres/
   redis/
@@ -711,4 +725,4 @@ The production execution path must eventually support:
 - separate exchange credentials with minimum permissions;
 - dedicated Hyperliquid agent wallet(s) separate from the master wallet;
 - versioned image deployment with health checks and tested rollback;
-- no runtime dependency on the Windows development machine.
+- no runtime dependency on an interactive development session.

@@ -12,13 +12,12 @@ No trade keys, no signing, no OKX.
 For the Windows 11 + WSL2 Ubuntu operator PC (TerraPC), including tmux
 `bv-capture` start/status/stop, see
 [data1e-wsl-pc-retained-capture.md](data1e-wsl-pc-retained-capture.md).
-Cloud Agents are unsuitable for a multi-day retain and must not SSH to or stop
-`hl-capture`, `bn-capture`, or `bv-capture`. The later host profile (not a
-cutover order) is
+Cloud Agents are unsuitable for a multi-day retain and must not stop
+`hl-capture`, `bn-capture`, or `bv-capture`. The active host profile is
 [linux-vps-reference-profile.md](linux-vps-reference-profile.md).
 
-**Do not start a multi-day DATA-1E retain now.** Wait for CoS to assign this
-window via the joint Phase A TerraPC checklist (not this VPS host).
+**Do not start a multi-day DATA-1E retain without assignment.** Wait for CoS
+to assign the window via the joint Phase A checklist on this primary VPS.
 
 ## Duration contract
 
@@ -66,13 +65,14 @@ Pro ticker on the same socket. Claim `feed` is
 ## Fail-closed start
 
 ```bash
-# From a supported Ubuntu LTS VPS checkout of a tested commit / image.
+# From the Netcup Ubuntu 24.04 LTS VPS.
 # Do not start until CoS assigns this window.
 unset TRADING_MODE
 unset D41_EXECUTION_MODE
 
+export REPO_ROOT="$HOME/Hyperliquid Project/Hyperliquid-Bot"
 export PYTHONPATH=src
-export ARTIFACT_ROOT=/var/lib/hyperliquid-bot/reconstructable
+export ARTIFACT_ROOT="$HOME/Hyperliquid Project/data-capture"
 export RUN_ID="$(date -u +%Y%m%dt%H%M%Sz)-live-retained"
 export DURATION_SECONDS=14400
 
@@ -80,6 +80,7 @@ test -n "${BITVAVO_MDPRO_API_KEY:-}"
 test -n "${BITVAVO_MDPRO_API_SECRET:-}"
 test ! -e "${ARTIFACT_ROOT}/data-1e/bitvavo/BTC-EUR/${RUN_ID}"
 
+cd "$REPO_ROOT"
 PYTHONPATH=src uv run --frozen python -m hyperliquid_bot.bitvavo_mdpro_research \
   --artifact-root "${ARTIFACT_ROOT}" \
   --run-id "${RUN_ID}" \
@@ -124,6 +125,5 @@ To retain more data after a stop, start a **new** `run_id`.
 - D22-B venue-authoritative reconciliation
 - funding settlement, signing, TESTNET, SHADOW, LIVE
 - profitability or strategy promotion
-- TrueNAS / ClickHouse reuse
 - OKX
 - live Pro trades/ticker retain coverage (subscribe-set is prepare-only until CoS starts)

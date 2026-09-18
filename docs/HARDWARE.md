@@ -2,15 +2,18 @@
 
 ## Development and runtime profiles
 
-The project deliberately separates development from continuous runtime operation:
+The project isolates development and continuous runtime responsibilities:
 
-- **Windows workstation:** interactive development, Codex, frontend work, local tests, disposable containers and optional GPU research.
-- **Intended primary runtime profile:** a supported Ubuntu LTS VPS running Linux/amd64 OCI workloads, per **ADR-024** (decision only; provisioning/cutover remain separate CoS steps).
-- **Optional existing profile:** TrueNAS SCALE for retained datasets/services where keeping it is explicitly chosen; not the capture host.
+- **Primary profile:** Netcup Ubuntu 24.04 LTS VPS (hostname `chupa`) for
+  interactive development, capture and PAPER Linux/amd64 OCI workloads under
+  **ADR-024**.
+- **Secondary profile:** TerraPC/WSL2 for optional fallback operator work and
+  GPU research.
 
-The trading runtime must not depend on the Windows workstation remaining powered on.
+Continuous services must not depend on TerraPC or an interactive SSH/CLI
+session remaining connected.
 
-## Development workstation
+## Secondary TerraPC workstation
 
 Current known system:
 
@@ -22,7 +25,7 @@ Current known system:
 - Docker Desktop WSL2 backend;
 - ChatGPT/Codex desktop with mobile Remote supervision.
 
-### Development role
+### Secondary role
 
 Use for:
 
@@ -35,7 +38,8 @@ Use for:
 - bounded data exports;
 - later GPU-assisted ML experiments.
 
-Do not use it as the 24/7 paper/live host and do not store the Hyperliquid master wallet or normal production trading secrets there.
+Do not use it as the primary 24/7 PAPER host and do not store the Hyperliquid
+master wallet or normal production trading secrets there.
 
 A bounded DATA-1A public BTC-PERP retained capture may run under WSL2 while AC
 sleep is disabled. That is operator-supervised research capture, not a 24/7
@@ -69,13 +73,16 @@ Tune after measurement. Keep sufficient RAM and CPU headroom for Windows, the Ch
 
 ### Workstation storage
 
-The repository and Linux development files should live inside the WSL Linux filesystem, for example:
+The primary repository and capture paths on the VPS are:
 
-```text
-~/code/Hyperliquid-Bot
+```bash
+export REPO_ROOT="$HOME/Hyperliquid Project/Hyperliquid-Bot"
+export ARTIFACT_ROOT="$HOME/Hyperliquid Project/data-capture"
 ```
 
-Do not develop from an SMB-mounted TrueNAS directory or `/mnt/c` when the toolchain runs in WSL. Local Docker volumes are disposable; full history belongs on the selected durable runtime store. Existing TrueNAS data remains protected pending an approved retain-or-migrate decision.
+If the secondary WSL environment is used, keep its checkout in the Linux
+filesystem rather than `/mnt/c` or a network share. Disposable development
+volumes remain separate from durable VPS capture data.
 
 ### GPU
 
@@ -90,34 +97,14 @@ Phase 1 must remain CPU-capable. No core collector, risk or execution process ma
 
 ## Primary runtime profile
 
-The architecture target is a host-neutral Linux/amd64 OCI runtime. **ADR-024** records a supported
-Ubuntu LTS VPS as the definitive primary PAPER profile. VPS sizing and storage topology follow the
-working local slice and the companion reference runbook. Provisioning and TerraPC cutover remain
-separate CoS steps; ADR-024 alone does not authorize them.
+The architecture target is a host-neutral Linux/amd64 OCI runtime. **ADR-024**
+records the Netcup Ubuntu 24.04 LTS VPS as the definitive primary
+development, capture and PAPER profile. VPS sizing and storage topology follow
+the companion reference runbook.
 
-The PAPER capture/ops **migration-target** size (four concurrent collectors, EU/Amsterdam
-or nearby, TrueNAS out of runtime scope) is recorded in
-[linux-vps-reference-profile.md](runbooks/linux-vps-reference-profile.md). That runbook is
-not an order to provision or leave TerraPC WSL today.
-
-## Optional existing TrueNAS profile
-
-TrueNAS SCALE is **out of runtime and capture scope**. It may remain a file share or host an
-optional Ubuntu VM; it is not the capture host and not the PAPER runtime. Historical
-hardware notes below are inventory only.
-
-The existing TrueNAS SCALE system may remain an optional share/VM host with:
-
-- TrueNAS SCALE 26.0.0-BETA.3 at the current planning point;
-- AMD Ryzen 7 PRO 8845HS, 8 cores / 16 threads;
-- approximately 64 GB RAM;
-- SSD-backed `fastdisk`;
-- HDD RAIDZ1 `tank` for bulk/archive storage;
-- existing ClickHouse, Grafana and Hermes-related workloads.
-
-ECC was expected from the hardware context but was not confirmed by the most recent software audit. Treat ECC status as **unverified** until hardware/firmware reporting confirms it.
-
-The host is powerful enough for the intended first strategies but remains a shared homelab/NAS, not an unlimited institutional cluster.
+The PAPER capture/ops reference size for four concurrent collectors in an EU
+region is recorded in
+[linux-vps-reference-profile.md](runbooks/linux-vps-reference-profile.md).
 
 ## Runtime resource philosophy
 
@@ -153,27 +140,25 @@ Do not start heavy research or build workloads when memory headroom is low. Graf
 
 ## Storage placement
 
-Recommended logical placement:
+Recommended logical placement under durable VPS storage:
 
 ```text
-fastdisk/
-  quant/hyperliquid-paper/clickhouse/
-  quant/hyperliquid-paper/control/
-  quant/hyperliquid-paper/runtime/
-  quant/hyperliquid-paper/features/
-  quant/hyperliquid-shadow/
-  quant/hyperliquid-live/
+$HOME/Hyperliquid Project/data-capture/
+  data-1a/
+  data-1b/
+  data-1e/
+  data-1f/
 
-tank/
-  quant/hyperliquid/archive/
-  quant/hyperliquid/raw-market-data/
-  quant/hyperliquid/backtests/
-  quant/hyperliquid/backups/
+/var/lib/hyperliquid-bot/
+  clickhouse/
+  control/
+  runtime/
+  backups/
 ```
 
-Exact paths are finalized after reviewing the existing 90+ GB ClickHouse dataset and avoiding disruption to Solana/Hermes data.
-
-Recent/active analytical data stays on SSD. Large cold raw archives move to HDD according to retention rules.
+Capture helper defaults use the home-directory path. Container services may
+use explicit `/var/lib` volumes. Exact production volume placement must be
+documented before deployment.
 
 ## What not to run initially
 
@@ -185,7 +170,7 @@ Avoid unnecessary heavy infrastructure such as:
 - Spark;
 - a full Hyperliquid non-validator node on this host;
 - duplicate ClickHouse instances without a demonstrated isolation need;
-- production container builds on TrueNAS.
+- production container builds on the runtime host.
 
 Add complexity only when a measured bottleneck justifies it.
 
@@ -203,15 +188,11 @@ Every runtime profile runs versioned images, not a mutable source checkout. Serv
 
 Restart recovery must never assume that local trading state is authoritative. For authenticated execution, reconcile against the venue before enabling new risk.
 
-## Optional TrueNAS operating-system maturity
-
-If retained, TrueNAS 26 BETA.3 is suitable for public data and PAPER testing with backups and monitoring. It is an early-release optional profile, not the primary target, and should not carry material live trading risk without explicit acceptance.
-
-Before SMALL LIVE:
+## Before SMALL LIVE
 
 - use a supported stable isolated runtime;
 - re-run deployment, soak, recovery and rollback tests after an OS upgrade;
-- confirm Custom Apps, private registry pulls, networking and persistent mounts;
+- confirm private registry pulls, networking and persistent mounts;
 - verify temperature and memory behavior under sustained load.
 
 ## Backups
@@ -222,7 +203,6 @@ Back up at minimum:
 - strategy/model metadata;
 - Grafana provisioning and dashboard definitions;
 - critical ClickHouse metadata and selected data partitions;
-- TrueNAS deployment configuration when that optional profile is retained;
 - runtime configuration without secret values;
 - release/image digest history;
 - repository state through GitHub.

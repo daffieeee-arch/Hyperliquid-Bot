@@ -1,40 +1,34 @@
 # Linux VPS reference profile — PAPER capture and PAPER ops
 
-Status: committed **migration-target** profile for a future always-on Ubuntu LTS
-VPS. This is **not** an order to provision, cut over, or stop TerraPC today.
+Status: active profile for the Netcup Ubuntu 24.04 LTS VPS (hostname `chupa`),
+the primary development, capture and PAPER host.
 
 PAPER / research capture only. No LIVE trading, no signing, no capital, no
 exchange order credentials. Browser code and Grafana never sign orders.
 
-The current production capture path remains **TerraPC Windows 11 + WSL2**.
-Operator start/status/stop commands stay in the existing WSL runbooks until an
-explicit CoS cutover:
+The VPS operator runbooks are the primary start/status/stop guides:
 
-- [data1a-wsl-pc-retained-capture.md](data1a-wsl-pc-retained-capture.md)
-- [data1f-wsl-pc-retained-capture.md](data1f-wsl-pc-retained-capture.md)
-- [data1e-wsl-pc-retained-capture.md](data1e-wsl-pc-retained-capture.md)
-- [data1b-wsl-pc-retained-capture.md](data1b-wsl-pc-retained-capture.md)
+- [data1a-vps-retained-capture.md](data1a-vps-retained-capture.md)
+- [data1f-vps-retained-capture.md](data1f-vps-retained-capture.md)
+- [data1e-vps-retained-capture.md](data1e-vps-retained-capture.md)
+- [data1b-vps-retained-capture.md](data1b-vps-retained-capture.md)
 
-Per-venue VPS command counterparts (same path contracts, later host) are
-[data1a-vps-retained-capture.md](data1a-vps-retained-capture.md),
-[data1f-vps-retained-capture.md](data1f-vps-retained-capture.md),
-[data1e-vps-retained-capture.md](data1e-vps-retained-capture.md), and
-[data1b-vps-retained-capture.md](data1b-vps-retained-capture.md).
+The WSL-named runbooks remain secondary TerraPC operator notes.
 
-This document is the sizing / vendor-shortlist companion to **ADR-024**. It is still **not** a
-migrate-today order. Provisioning, factual cutover from TerraPC, and any TrueNAS retain-or-migrate
-plan remain separate CoS steps after ADR-024
+This document is the sizing and operating companion to **ADR-024**
 ([DEPLOYMENT.md](../DEPLOYMENT.md), [ROADMAP.md](../ROADMAP.md),
 [DECISIONS/README.md](../DECISIONS/README.md)).
 
-Vendor product facts below were checked against official pages on
-**2026-09-06**. SKU availability and list prices change; confirm on the vendor
-page before ordering.
+Operational platform facts were rechecked against official pages on
+**2026-09-18**. Ubuntu documents 24.04 as LTS, Netcup lists Ubuntu 24.04
+vServer images, Docker supports Ubuntu Noble 24.04, Cursor documents the
+Linux `agent` CLI, and OpenAI documents Codex CLI on Linux. Links appear
+below and in [DEVELOPMENT.md](../DEVELOPMENT.md).
 
 ## Why a VPS
 
-TerraPC WSL is acceptable for the current assigned 72-hour retain. It is not
-the long-term 24/7 target:
+The Netcup VPS is the selected host because it remains available independently
+of TerraPC:
 
 - Windows sleep, hibernate, update reboot, lid-close, and `wsl --shutdown`
   kill the collector. Detached tmux survives a closed terminal; it does not
@@ -56,14 +50,11 @@ reclaimed mid-run. The committed DATA-1A live-evidence sample
 
 | Item | Status |
 | --- | --- |
-| TrueNAS SCALE as capture host or PAPER runtime | **Retired.** Share or optional Ubuntu VM on that hardware only; not the capture host. |
-| Windows as the capture OS | Out of scope. WSL2 on the home PC is the current TerraPC retain path only. |
+| TerraPC/WSL2 as primary capture host | Retired; secondary operator notes only. |
 | Cursor Cloud Agent / Cursor Pro as the capture host | Unsuitable (ephemeral). |
 | LIVE trading, signing, withdrawal/transfer keys | Forbidden on this profile. |
 | Always-on collector with no duration cap | Not implemented. Writer still exits at the requested duration or SIGINT/SIGTERM. |
-| Definitive runtime ADR | **ADR-024** (decision only). |
-| Migrate-today / provision order | Still separate CoS work; this runbook does not authorize it. |
-| ClickHouse init/overwrite on existing TrueNAS data | Not authorized by this document. |
+| Definitive runtime ADR | **ADR-024**. |
 
 ## Reference profile
 
@@ -77,17 +68,13 @@ Use a current **Ubuntu LTS** server image (amd64). Canonical documents LTS
 releases every two years with five years of standard security maintenance
 ([Ubuntu release cycle](https://ubuntu.com/about/release-cycle)).
 
-Prefer **Ubuntu 24.04 LTS** (`Noble`) so the capture host matches GitHub
-Actions `ubuntu-24.04` and the existing WSL/CI toolchain. Ubuntu 26.04 LTS
-exists (released April 2026 on the same page); do not jump the capture host
-ahead of CI/images without a later decision.
+Use **Ubuntu 24.04 LTS** (`Noble`) so the capture host matches GitHub Actions
+`ubuntu-24.04`. Official references:
 
-Official images: [Ubuntu 24.04 releases](https://releases.ubuntu.com/24.04/),
-DigitalOcean Droplet image list
-(`ubuntu-24-04-x64`;
-[Linux images](https://docs.digitalocean.com/products/droplets/details/images/)),
-Hetzner Cloud OS list
-([Servers overview](https://docs.hetzner.com/cloud/servers/overview/)).
+- Ubuntu release lifecycle: https://ubuntu.com/about/release-cycle
+- Ubuntu Server documentation: https://ubuntu.com/server/docs/
+- Netcup vServer images: https://www.netcup.com/en/server/vserver-images
+- Docker Engine on Ubuntu: https://docs.docker.com/engine/install/ubuntu/
 
 ### Compute (modest)
 
@@ -150,105 +137,26 @@ endpoints and any later Polymarket feed are independent of whether the VPS
 sits in Amsterdam, Frankfurt, or Helsinki. Do not claim fill-quality or
 alpha from VPS region.
 
-Official nearby-EU locations checked 2026-09-06:
+## Selected provider
 
-- DigitalOcean **AMS3** (Amsterdam, the Netherlands), also **FRA1**
-  (Frankfurt) and **LON1** (London):
-  [Regional availability](https://docs.digitalocean.com/platform/regional-availability/).
-- Hetzner Cloud **eu-central**: Falkenstein `fsn1`, Nuremberg `nbg1`,
-  Helsinki `hel1`. Hetzner Cloud has **no Amsterdam location**:
-  [Locations](https://docs.hetzner.com/cloud/general/locations/).
+Netcup is selected. Its official vServer image catalog lists Ubuntu 24.04,
+Ubuntu cloud image 24.04 and Ubuntu 24.04 Live Server for KVM-based vServers:
+https://www.netcup.com/en/server/vserver-images
 
-## Provider shortlist (not a vendor lock)
+Do not infer unrecorded CPU, memory, disk, traffic, region or availability
+from this architecture decision. Verify the actual `chupa` VPS allocation in
+the Netcup control plane before changing collector concurrency or retention.
 
-Pick one EU provider that meets the profile. Re-check the official page at
-order time. Criteria, in order:
+## Repository and artifact path contracts
 
-1. **Price / performance** for 2–4 vCPU and 4–8 GiB, billed hourly with a
-   monthly cap.
-2. **Disk** ≥160 GB local or cheap attachable SSD volume.
-3. **Snapshots / backups** that can capture the OS disk (artifact volumes
-   are usually **not** included — confirm).
-4. **Included egress** large enough that a multi-day inbound WebSocket
-   retain plus occasional artifact copy-out is not a surprise bill.
-   Inbound capture traffic is the main flow; egress matters when copying
-   parquet off-box.
-5. EU location (Amsterdam or nearby), IPv4, SSH keys, and a firewall.
+Primary VPS defaults used by the capture helpers and VPS runbooks:
 
-### 1. DigitalOcean Droplets — Amsterdam (`ams3`)
-
-Official pages:
-
-- Product / list prices: [Droplet pricing](https://www.digitalocean.com/pricing/droplets)
-- Billing notes: [Droplet pricing docs](https://docs.digitalocean.com/products/droplets/details/pricing/)
-- Regions: [Regional availability](https://docs.digitalocean.com/platform/regional-availability/)
-- Ubuntu images: [Linux images](https://docs.digitalocean.com/products/droplets/details/images/)
-- First-boot hardening: [Recommended Droplet setup](https://docs.digitalocean.com/products/droplets/getting-started/recommended-droplet-setup/)
-
-Basic Droplet rows from the official pricing page (2026-09-06):
-
-| Memory | vCPU | Transfer (outbound) | SSD | List price |
-| --- | --- | --- | --- | --- |
-| 4 GiB | 2 | 4,000 GiB | 80 GiB | $24 / mo |
-| 8 GiB | 4 | 5,000 GiB | 160 GiB | $48 / mo |
-
-Prefer the **8 GiB / 160 GiB** Basic size for four-venue parquet headroom, or
-the 4 GiB / 80 GiB size **plus** a Volume if Binance growth requires it.
-Inbound transfer is free; extra outbound is $0.01 / GiB
-([bandwidth billing](https://docs.digitalocean.com/products/droplets/details/pricing/#bandwidth-billing)).
-Droplet Snapshots are listed at $0.06 / GB / month on the same pricing page.
-AMS3 shows Basic Droplet availability on the regional-availability table.
-
-### 2. Hetzner Cloud — Germany / Finland (`fsn1` / `nbg1` / `hel1`)
-
-Official pages:
-
-- Product: [Hetzner Cloud](https://www.hetzner.com/cloud/)
-- Cost-Optimized SKUs: [Cost-Optimized](https://www.hetzner.com/cloud/cost-optimized/)
-- Locations: [Locations](https://docs.hetzner.com/cloud/general/locations/)
-- Snapshots / backups: [Backups and snapshots](https://docs.hetzner.com/cloud/servers/backups-snapshots/overview/)
-
-Cost-Optimized x86 rows from the official page (2026-09-06). EU-central
-includes **at least 20 TB** traffic. Prices are shown on that page (hourly
-and monthly cap; confirm current figures — they are not copied here because
-the marketing page does not always render a stable number in text extracts).
-
-| SKU | vCPU | RAM | NVMe | Traffic (EU) |
-| --- | --- | --- | --- | --- |
-| CX23 | 2 | 4 GB | 40 GB | 20 TB |
-| CX33 | 4 | 8 GB | 80 GB | 20 TB |
-| CX43 | 8 | 16 GB | 160 GB | 20 TB |
-
-CX23 local disk is **too small** for four-venue multi-day parquet. Prefer
-**CX33 plus a Volume**, or **CX43** (160 GB) when that SKU is orderable.
-The Cost-Optimized page marked several SKUs “currently unavailable” at
-check time; treat names as the official catalog, not a guarantee the SKU
-is in stock.
-
-Hetzner snapshots are manual copies of the **server disk only**; attached
-Volumes are not included
-([backup/snapshot overview](https://docs.hetzner.com/cloud/servers/backups-snapshots/overview/)).
-Daily backups are a separate product (seven slots, oldest rotated).
-
-Hetzner is usually the stronger price/perf and included-bandwidth option
-in nearby EU. DigitalOcean is the option that is actually **in Amsterdam**.
-Neither is locked.
-
-## Artifact root and path contracts
-
-VPS reconstructable root used by the existing VPS runbooks:
-
-```text
-/var/lib/hyperliquid-bot/reconstructable
+```bash
+export REPO_ROOT="$HOME/Hyperliquid Project/Hyperliquid-Bot"
+export ARTIFACT_ROOT="$HOME/Hyperliquid Project/data-capture"
 ```
 
-TerraPC WSL root (current retain; do not invent a second tree):
-
-```text
-~/hyperliquid-artifacts/reconstructable
-```
-
-Same create-only layout on either host:
+Create-only layout:
 
 ```text
 <artifact-root>/
@@ -276,10 +184,9 @@ dash, or underscore. Never resume or overwrite an existing run directory.
 Keep the artifact root **outside git**. Do not commit `raw/part-*.parquet`
 or `research.duckdb`.
 
-## Ops checklist (when CoS later provisions)
+## Ops checklist
 
-Do not apply this to a live TerraPC window. Do not start VPS collectors
-until CoS assigns the window.
+Do not start collectors until CoS assigns the window.
 
 1. **SSH keys only.** Disable password authentication. Restrict the
    provider firewall to operator IPs where practical.
@@ -312,30 +219,27 @@ until CoS assigns the window.
     collector. PAPER is irrelevant to these public/view-only writers;
     they never sign.
 
-Start/status/stop command text until cutover: **WSL runbooks**, not this
-file. After cutover, use the matching `data1*-vps-retained-capture.md`
-with `ARTIFACT_ROOT=/var/lib/hyperliquid-bot/reconstructable`.
+Use the matching `data1*-vps-retained-capture.md` with the primary
+`ARTIFACT_ROOT` above.
 
-## What stays on TerraPC now vs what moves later
+## Primary and secondary host roles
 
-| Now on TerraPC WSL | Later on this VPS (after CoS cutover) |
+| Netcup Ubuntu VPS (primary) | TerraPC/WSL2 (secondary) |
 | --- | --- |
-| Current assigned 72 h retain (`hl-capture` / `bn-capture` / `bv-capture` / `kr-capture` as assigned) | Multi-day overlapping four-venue PAPER capture |
-| Operator Cockpit `next dev` against the WSL artifact root | Optional later read-only cockpit pointing at the VPS root |
-| Codex / WSL development, tests, PRs | Nothing. The VPS is not a development host. |
-| Command source of truth (WSL runbooks) | Same commands, VPS artifact root, after cutover |
-| Sleep-risk accepted for the current 72 h | No host sleep; durable volume |
+| Assigned multi-day PAPER captures | Optional fallback captures only when explicitly assigned |
+| Cursor Remote SSH / `agent` / Codex CLI development | Optional WSL/GPU development |
+| Primary cockpit and artifact root | Optional read-only cockpit |
+| VPS runbooks | WSL-named fallback runbooks |
 
-Do **not** copy a live DuckDB catalog or append to published parquet on
-cutover. Start a **new** `run_id` on the VPS.
+Do not copy a live DuckDB catalog or append to published parquet when moving a
+capture between hosts. Start a new `run_id`.
 
 ## Secrets
 
 - Never add, print, log, or commit real private keys or exchange
   credentials.
-- The Hyperliquid master-wallet key must not reside on Windows/WSL2, any
-  runtime host or container (including a TrueNAS share or Ubuntu VM), or
-  GitHub.
+- The Hyperliquid master-wallet key must not reside on any development or
+  runtime host, container, or GitHub.
 - No withdrawal or transfer permissions on any bot credential.
 - Gitignored env files: `chmod 600`. Copy names from `.env.example` /
   `apps/cockpit/.env.example` only.
@@ -343,12 +247,10 @@ cutover. Start a **new** `run_id` on the VPS.
 
 ## Explicitly not proven / not authorized
 
-- Provisioning or paying for a VPS in this document
 - 24/7 always-on collection
 - Lossless WAL / crash-safe in-memory segment recovery
 - Cloud Agent or Cursor Pro multi-day capture
 - D22-B venue-authoritative reconciliation
 - Funding settlement, signing, TESTNET, SHADOW, LIVE
 - Profitability or strategy promotion
-- TrueNAS / ClickHouse as the capture or PAPER runtime
 - Exchange-colocation benefits from an Amsterdam (or nearby EU) VPS

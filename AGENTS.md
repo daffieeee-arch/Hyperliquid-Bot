@@ -6,17 +6,16 @@ This repository builds a professional multi-strategy crypto quantitative researc
 
 Primary development environment:
 
-- Windows 11 workstation;
-- Codex/ChatGPT desktop;
-- Codex agent running in WSL2 Ubuntu;
-- repository stored inside the WSL Linux filesystem.
+- Netcup Ubuntu 24.04 LTS VPS (hostname `chupa`);
+- Cursor IDE Remote SSH, Cursor CLI (`agent`) and Codex CLI;
+- repository at `$HOME/Hyperliquid Project/Hyperliquid-Bot`;
+- TerraPC/WSL2 only as a secondary operator environment.
 
 24/7 runtime boundary:
 
 - host-neutral Linux/amd64 OCI runtime;
-- a supported Ubuntu LTS VPS is the definitive primary PAPER profile (**ADR-024**);
-  provisioning and TerraPC cutover remain separate CoS steps;
-- the existing TrueNAS SCALE environment remains an optional protected profile;
+- the Netcup Ubuntu 24.04 LTS VPS is the definitive primary PAPER, capture and
+  development profile (**ADR-024**);
 - CI-built Linux container images;
 - PAPER first, later SHADOW and explicitly approved LIVE.
 
@@ -27,7 +26,7 @@ Read `README.md`, `docs/ARCHITECTURE.md`, `docs/DEVELOPMENT.md`, `docs/DEPLOYMEN
 - `PAPER` is the default and initial permitted trading mode.
 - Local development must fail closed if asked to use an unapproved live mode.
 - Never add, request, print, log or commit real private keys or exchange credentials.
-- The Hyperliquid master-wallet key must never reside on Windows/WSL2, any runtime host or container (including TrueNAS), or GitHub.
+- The Hyperliquid master-wallet key must never reside on any development or runtime host, container, or GitHub.
 - Never expose withdrawal or transfer permissions to the bot.
 - Strategy code must not call venue-specific APIs directly.
 - LLMs may propose strategies and code; deterministic tests/data decide correctness and performance.
@@ -36,7 +35,7 @@ Read `README.md`, `docs/ARCHITECTURE.md`, `docs/DEVELOPMENT.md`, `docs/DEPLOYMEN
 - No strategy or agent self-promotes to LIVE.
 - Do not edit source inside running runtime containers.
 - Do not deploy floating `latest` tags.
-- Do not mutate TrueNAS runtime data from ordinary Windows development tasks.
+- Do not mutate durable runtime data from ordinary development tasks.
 
 ## Development workflow
 
@@ -108,7 +107,7 @@ Every quantitative experiment must define:
 
 Never claim profitability from in-sample results alone. Avoid look-ahead, survivorship, selection and execution bias.
 
-Local development uses fixtures, replay and bounded exports. Continuous data belongs on the selected durable runtime store. Existing TrueNAS/ClickHouse data remains protected until an approved migration exists.
+Local development uses fixtures, replay and bounded exports. Continuous data belongs on the VPS durable runtime store.
 
 ## Execution and risk
 
@@ -127,14 +126,12 @@ Browser code and Grafana never sign orders.
 
 ## Infrastructure boundaries
 
-- DEV runs in WSL2 and disposable local Docker services.
+- DEV runs on the Netcup Ubuntu 24.04 LTS VPS; disposable Docker services and
+  WSL2 remain available for isolated local work.
 - CI builds/tests images.
 - The approved Linux/OCI runtime host pulls image digests and owns persistent runtime volumes.
 - **ADR-024** records the definitive PAPER runtime profile (Ubuntu LTS VPS + Linux/amd64 OCI).
-  VPS provisioning and TerraPC cutover remain separate CoS steps and are not authorized by
-  that ADR alone.
 - Redis and PostgreSQL are introduced only when their defined responsibilities are required.
-- Reuse the existing TrueNAS ClickHouse safely; never initialize or overwrite it without explicit migration/backup approval.
 - Grafana dashboards and alerts should be version-controlled even when edited through MCP.
 
 ## MCP and administrative actions
@@ -143,7 +140,7 @@ Useful project-scoped operations are allowed when explicitly part of the task. H
 
 - deleting datasets/snapshots/databases;
 - DROP/TRUNCATE/destructive migrations;
-- TrueNAS pool/topology changes;
+- storage pool/topology changes;
 - reboot/shutdown/update;
 - destructive ACL/share changes;
 - deleting unrelated Grafana assets;

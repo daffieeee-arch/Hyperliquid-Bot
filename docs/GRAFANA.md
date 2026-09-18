@@ -5,8 +5,7 @@
 Grafana is not the primary trading UI. It is the professional observability, research-analysis and forensic layer behind the trading cockpit.
 
 Grafana runs on the approved continuous runtime. **ADR-024** selects the Ubuntu LTS VPS/OCI
-profile for PAPER; the existing TrueNAS Grafana instance remains an optional protected profile and
-is not changed or migrated by that ADR. Dashboard definitions, datasource provisioning and alert
+profile for PAPER. Dashboard definitions, datasource provisioning and alert
 rules are developed/versioned in Git and promoted with the software release. Hermes may also use
 Grafana MCP to create and refine project dashboards, provided those changes are exported back to
 version control.
@@ -35,9 +34,10 @@ A disposable local Grafana container may be used in Windows/WSL2 for:
 
 It contains no production credentials and may be recreated at any time.
 
-### Optional existing TrueNAS profile
+### VPS runtime
 
-The existing TrueNAS Grafana instance is reused where practical. Hyperliquid assets live in a dedicated folder and are backed by version-controlled provisioning files.
+Hyperliquid assets live in a dedicated folder on the VPS Grafana deployment
+and are backed by version-controlled provisioning files.
 
 Every deployed dashboard should expose or link to:
 
@@ -61,7 +61,8 @@ Grafana MCP does not need to be globally read-only. The intended model is:
 
 The Grafana MCP service account is separate from the ClickHouse datasource account. The datasource uses read-only SQL credentials even when Hermes can edit the dashboard that contains the query.
 
-Changes made through MCP should be reviewed and exported/provisioned so TrueNAS state does not become the only copy.
+Changes made through MCP should be reviewed and exported/provisioned so
+runtime state does not become the only copy.
 
 ## Dashboard families
 

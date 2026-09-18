@@ -3,7 +3,8 @@
 Status: operator runbook for the reconstructable CLI
 `python -m hyperliquid_bot.bitvavo_mdpro_research`. Windows 11 + WSL2 Ubuntu
 workstation (TerraPC). This is **not** a 24/7 service, not D22-B, and not LIVE
-trading.
+trading. It is a **secondary fallback**; the Netcup Ubuntu 24.04 LTS VPS and
+its VPS runbook are primary.
 
 Authenticated **View-only** Bitvavo Market Data Pro on the same Pro socket for
 `BTC-EUR`: `book` (depth 1000) plus `trades`. Optional `ticker` is flagged
@@ -44,6 +45,15 @@ not `/mnt/c`.
 
 `DEVELOPMENT.md` uses `~/code/Hyperliquid-Bot` as the generic example. On this
 workstation the checkout name is `Hyperliquid-Bot-main`. Same repository.
+
+The helpers now default to the primary VPS layout. For this secondary WSL
+runbook, export the legacy WSL override before any `scripts/data1e_*.sh`
+command:
+
+```bash
+export REPO_ROOT="$HOME/code/Hyperliquid-Bot-main"
+export ARTIFACT_ROOT="$HOME/hyperliquid-artifacts/reconstructable"
+```
 
 ```text
 ~/hyperliquid-artifacts/reconstructable/data-1e/bitvavo/BTC-EUR/<run_id>/
@@ -313,6 +323,5 @@ copy a live DuckDB catalog into a new run.
 - D22-B venue-authoritative reconciliation
 - funding settlement, signing, TESTNET, SHADOW, LIVE
 - profitability or strategy promotion
-- TrueNAS / ClickHouse reuse
 - OKX
 - a complete book beyond requested depth-1000, checksum coverage, or live Pro trades/ticker retain coverage

@@ -2,12 +2,15 @@
 
 ## Delivery model
 
-Development and runtime are deliberately separated:
+Development and runtime responsibilities remain isolated even when they share
+the primary host:
 
-- **Windows 11 + WSL2 + Codex:** source development, local tests and small research;
+- **Netcup Ubuntu 24.04 LTS VPS (`chupa`):** primary source development,
+  capture, tests, research and PAPER operation;
+- **TerraPC/WSL2:** secondary operator environment;
 - **GitHub Actions:** independent CI and image construction;
 - **Host-neutral Linux/amd64 OCI runtime:** 24/7 data collection and PAPER/SHADOW/LIVE; **ADR-024**
-  records a supported Ubuntu LTS VPS as the definitive primary PAPER profile and TrueNAS is optional.
+  records the Netcup VPS as the definitive primary profile.
 
 Fases overlap by workstream. A strategy may be in PAPER while another remains in RESEARCH, and production hardening can continue while live-market paper evidence accumulates.
 
@@ -42,7 +45,7 @@ The active sequence is:
    for a multi-day retain. DATA-1F Binance retained-capture operator docs are in
    `docs/runbooks/data1f-wsl-pc-retained-capture.md` and
    `docs/runbooks/data1f-vps-retained-capture.md`; do not start that capture until
-   the TerraPC DATA-1A 72h series finishes and CoS assigns the window.
+   the assigned DATA-1A 72h series finishes and CoS assigns the window.
    DATA-1E Bitvavo MD Pro and DATA-1B Kraken retained-capture operator docs are in
    `docs/runbooks/data1e-wsl-pc-retained-capture.md` /
    `docs/runbooks/data1e-vps-retained-capture.md` and
@@ -58,8 +61,9 @@ The active sequence is:
    cockpit, collectors, or LIVE).
 7. **Complete (decision only):** ADR-024 records the definitive PAPER runtime
    profile (Ubuntu LTS VPS + Linux/amd64 OCI, digest-pinned, Compose-compatible).
-   It does **not** authorize provisioning, TerraPC cutover, or TrueNAS data
-   mutation; factual VPS migration remains a separate CoS step.
+   The Netcup Ubuntu 24.04 LTS VPS is now the primary development, capture and
+   PAPER host; deployment and capture starts still require their explicit
+   operator gates.
 
 The fit decision is not a benchmark exercise. It checks only the blocking product and safety
 questions: supportable pinned version, licensing, Python/runtime compatibility, Hyperliquid
@@ -92,8 +96,8 @@ Exit gate:
 
 Runtime-host work follows this exit gate. Host-neutral Linux/amd64 OCI/Compose is the architecture
 boundary. **ADR-024** records a supported Ubuntu LTS VPS as the definitive primary PAPER profile.
-Factual VPS provisioning, TerraPC cutover, and disposition of existing TrueNAS/ClickHouse/Grafana
-state remain separate, later CoS scope and are not authorized by that ADR alone.
+The Netcup Ubuntu 24.04 LTS VPS is now the primary development, capture and
+PAPER host.
 
 ## Phase 0A — Blueprint and project decisions
 
@@ -134,7 +138,8 @@ Deliverables:
 
 Exit gate:
 
-- Codex can modify a feature branch, run tests and open a pull request without touching TrueNAS or using live trading credentials.
+- Codex can modify a feature branch, run tests and open a pull request without
+  using live trading credentials.
 
 ## Phase 1A — Local foundation vertical slice
 
@@ -303,7 +308,6 @@ Deliverables:
 
 - private GHCR image publication;
 - digest-pinned Linux/amd64 OCI/Compose deployment on a supported Ubuntu LTS VPS;
-- an explicit retain-or-migrate plan for the optional existing TrueNAS profile;
 - separate paper datasets and configuration;
 - managed ClickHouse Hyperliquid database/users;
 - 24/7 public-data collection;
@@ -384,7 +388,8 @@ Deliverables:
 - protected software/deployment promotion gates;
 - disaster-recovery and rollback drills.
 
-Development still occurs on Windows/WSL2. Authenticated runtime testing occurs only in the appropriate isolated approved runtime environment.
+Development occurs primarily on the VPS. Authenticated runtime testing occurs
+only in the appropriate isolated approved runtime environment.
 
 ## Phase 5 — Advanced alpha and portfolio layer
 
@@ -425,7 +430,7 @@ These workstreams can progress simultaneously after shared contracts are agreed:
 
 ### A. Development platform and CI
 
-- WSL2/Codex;
+- VPS/Cursor/Codex;
 - repository bootstrap;
 - tests;
 - image builds;
@@ -493,9 +498,9 @@ Potential additions only when justified:
 
 ## Planning interpretation
 
-The goal is not to spend months before seeing results. The local vertical slice came first;
-**ADR-024** records the Ubuntu LTS VPS/OCI PAPER runtime decision. Factual VPS PAPER deployment from
-the same repository and CI pipeline remains a separate CoS step. Production hardening and
-out-of-sample evidence then accumulate in parallel; TrueNAS remains optional.
+The goal is not to spend months before seeing results. The local vertical slice
+came first; **ADR-024** records the Ubuntu LTS VPS/OCI PAPER runtime decision,
+and the Netcup VPS is now the primary development and capture host. Production
+hardening and out-of-sample evidence then accumulate in parallel.
 
 Time ranges are engineering/research estimates, not guarantees of strategy profitability.

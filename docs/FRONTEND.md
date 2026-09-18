@@ -70,8 +70,46 @@ control, and on mobile the sidebar collapses into a drawer. Routes:
 
 - **One refresh clock.** `CockpitRefreshProvider` owns a single token; every
   polled panel keys its fetch on it, so no zone can sit on stale numbers while
-  the rest of the page has moved on. The topbar shows the last tick and can
-  pause or force a refresh.
+  the rest of the page has moved on. The topbar can pause or force a refresh.
+- **Refresh feedback is earned, not assumed.** `usePoll` registers every
+  keyed request in the provider's in-flight registry (`lib/refresh-activity.ts`)
+  and settles it with whether the content changed (fingerprint that ignores
+  `observed_at` / `fetched_at` / `cache` stamps). The topbar `RefreshCw` button
+  is disabled and spins while any request is in flight; when the tick has fully
+  settled the label beside it reads `Updated HH:MM:SS CEST`, `Already current ·
+  age Xs` (age since data last changed), or `Refresh failed · <reason>` with the
+  button re-enabled, and the read badge pulses once. The public HL mid and
+  candle hooks run on `usePoll` too, so Markets (mid, candles, strip, stored
+  tape) is tracked as one snapshot.
+- **Europe/Amsterdam first, UTC in the tooltip.** `lib/time-display.ts` fixes
+  `COCKPIT_TIME_ZONE = "Europe/Amsterdam"`; `localClockLabel` renders
+  `HH:MM:SS CEST` / `CET` through `Intl.DateTimeFormat` (en-GB, `h23`), never
+  the browser's zone. Read badges, tape rows, recent trades and attention items
+  show the local label; the exact UTC ISO stays in `title` / detail text and in
+  the data. Tests always pass the zone explicitly so they do not depend on the
+  machine clock.
+- **A ticking clock is not a read.** `useNow(1000)` is a client-only display
+  clock (undefined during SSR). `readAgeLabel` derives `updated Ns ago` from
+  `PollState.lastSuccessAt` only, so a failing panel keeps counting up from its
+  last good read (`last good read Ns ago`) instead of looking fresh because the
+  second hand moved.
+- **Stored quotes are wired, attributed and bounded.** `applyStoredTapeQuote`
+  (`lib/markets.ts`) fills the Markets Last / Mid columns for Binance, Bitvavo
+  and Kraken from the stored tape of the bound run: Last = `lastTrade.price`,
+  Mid = `(bid + ask) / 2` in exact decimal-string arithmetic, source
+  `stored capture · run <id> · <channels>`. The contract product is mapped to
+  the collector's instrument (`BTCUSDT → BTCUSDT-SPOT`, `BTC-EUR`, `BTC/USD`,
+  `BTC-PERP`) before falling back to the first instrument with a tick. HL keeps
+  the public `/info` mid and gains the stored last. Green is inside
+  `fresh_max_s`, amber is stale, red **UNAVAILABLE** carries the honest reason
+  (capture MISSING, tape unreadable, no trade/BBO decoded yet). No venue API is
+  called from the browser.
+- **Readable at desk density.** Body 15px (hybrid) / 14px (terminal), meta
+  and eyebrows 12px, table body 13px with 11.5px muted headers, badges ≥ 11px.
+  Primary Last / Mid cells use `.quote-primary` (15.2px, 16px on phones,
+  tabular-nums semibold); spread / age / venue use `.quote-secondary` (13px).
+  IBM Plex Sans is the body face; mono is reserved for numeric columns and
+  identifiers.
 - **Missing ≠ stale ≠ error.** `lib/data-state.ts` is the shared vocabulary:
   `missing` was never written, `stale` is past the freshness bound, `error` is
   present-but-unreadable, `pending` is written-at-stop. Notices and badges are
@@ -226,9 +264,13 @@ Later command center:
 
 First PAPER slice (now on the first screen): bound HL BTC-PERP public mid from
 existing `/api/public-btc-perp`, capture freshness on the same bound runs, and
-fail-closed **UNAVAILABLE** for Binance / Bitvavo / Kraken last/BBO (those
-quotes are not in cockpit APIs). Copied COURSE-1 soak `mark_price` is labeled
-as a soak mark, not a live last and not venue PnL. No L2/L3 ladders.
+a `Bound venues · last / mid` table (Venue | Instrument | Last | Mid | Age |
+Status) whose Binance / Bitvavo / Kraken values come from the stored tape of
+the bound run via `/api/market-tape` (see *Stored quotes are wired* above).
+A venue without a usable stored tick stays fail-closed **UNAVAILABLE** with
+its reason; nothing is fetched from a venue API. Copied COURSE-1 soak
+`mark_price` is labeled as a soak mark, not a live last and not venue PnL.
+No L2/L3 ladders.
 
 Later TradingView/Bookmap-inspired market workspace:
 

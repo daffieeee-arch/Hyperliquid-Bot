@@ -139,6 +139,7 @@ should construct the recommended path. Operator steps are in
 
 ## Honest remaining COURSE-1 work
 
-D22-B remains blocked and unimplemented. The definitive runtime ADR and any
-later 24/7 PAPER host work remain later, separately authorized scope. Schema v3
-and Phase 1A-3B1C-2+ stay dormant. No additional DATA-1 venue is added here.
+D22-B remains blocked and unimplemented. **ADR-024** records the definitive PAPER runtime
+profile; provisioning, TerraPC cutover, and any later 24/7 PAPER host work remain separately
+authorized CoS scope. Schema v3 and Phase 1A-3B1C-2+ stay dormant. No additional DATA-1 venue
+is added here.

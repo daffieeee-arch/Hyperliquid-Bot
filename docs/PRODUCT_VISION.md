@@ -6,7 +6,7 @@ A professional crypto quantitative research and trading platform centered on Hyp
 
 The platform is designed to behave more like a small systematic trading desk than a single retail bot. It should continuously test multiple independent sources of edge, measure whether those edges survive realistic costs, allocate capital according to current evidence, and reduce or quarantine strategies whose live behavior diverges from their validated distribution.
 
-Development happens on a Windows 11 workstation through WSL2 and Codex. Tested, versioned Linux/amd64 OCI images run on an independent host-neutral runtime. A supported Ubuntu LTS VPS is the intended primary deployment profile after the local vertical slice; TrueNAS remains an optional existing profile.
+Development happens on a Windows 11 workstation through WSL2 and Codex. Tested, versioned Linux/amd64 OCI images run on an independent host-neutral runtime. A supported Ubuntu LTS VPS is the definitive primary PAPER profile (**ADR-024**); provisioning and TerraPC cutover remain separate CoS steps. TrueNAS remains an optional existing protected profile.
 
 ## Strategic objective
 

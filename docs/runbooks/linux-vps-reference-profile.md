@@ -21,9 +21,11 @@ Per-venue VPS command counterparts (same path contracts, later host) are
 [data1e-vps-retained-capture.md](data1e-vps-retained-capture.md), and
 [data1b-vps-retained-capture.md](data1b-vps-retained-capture.md).
 
-This document is **not** the definitive runtime ADR. Provisioning, factual
-migration, and that ADR remain later work after the local vertical slice
-([DEPLOYMENT.md](../DEPLOYMENT.md), [ROADMAP.md](../ROADMAP.md)).
+This document is the sizing / vendor-shortlist companion to **ADR-024**. It is still **not** a
+migrate-today order. Provisioning, factual cutover from TerraPC, and any TrueNAS retain-or-migrate
+plan remain separate CoS steps after ADR-024
+([DEPLOYMENT.md](../DEPLOYMENT.md), [ROADMAP.md](../ROADMAP.md),
+[DECISIONS/README.md](../DECISIONS/README.md)).
 
 Vendor product facts below were checked against official pages on
 **2026-09-06**. SKU availability and list prices change; confirm on the vendor
@@ -59,7 +61,8 @@ reclaimed mid-run. The committed DATA-1A live-evidence sample
 | Cursor Cloud Agent / Cursor Pro as the capture host | Unsuitable (ephemeral). |
 | LIVE trading, signing, withdrawal/transfer keys | Forbidden on this profile. |
 | Always-on collector with no duration cap | Not implemented. Writer still exits at the requested duration or SIGINT/SIGTERM. |
-| Definitive runtime ADR / migrate-today order | Separate later work. |
+| Definitive runtime ADR | **ADR-024** (decision only). |
+| Migrate-today / provision order | Still separate CoS work; this runbook does not authorize it. |
 | ClickHouse init/overwrite on existing TrueNAS data | Not authorized by this document. |
 
 ## Reference profile

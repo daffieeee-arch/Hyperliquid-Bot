@@ -14,8 +14,9 @@ Primary development environment:
 24/7 runtime boundary:
 
 - host-neutral Linux/amd64 OCI runtime;
-- a supported Ubuntu LTS VPS is the intended primary deployment profile after the local vertical slice;
-- the existing TrueNAS SCALE environment remains an optional profile;
+- a supported Ubuntu LTS VPS is the definitive primary PAPER profile (**ADR-024**);
+  provisioning and TerraPC cutover remain separate CoS steps;
+- the existing TrueNAS SCALE environment remains an optional protected profile;
 - CI-built Linux container images;
 - PAPER first, later SHADOW and explicitly approved LIVE.
 
@@ -129,7 +130,9 @@ Browser code and Grafana never sign orders.
 - DEV runs in WSL2 and disposable local Docker services.
 - CI builds/tests images.
 - The approved Linux/OCI runtime host pulls image digests and owns persistent runtime volumes.
-- VPS provisioning, migration and the definitive runtime ADR follow only after the local vertical slice.
+- **ADR-024** records the definitive PAPER runtime profile (Ubuntu LTS VPS + Linux/amd64 OCI).
+  VPS provisioning and TerraPC cutover remain separate CoS steps and are not authorized by
+  that ADR alone.
 - Redis and PostgreSQL are introduced only when their defined responsibilities are required.
 - Reuse the existing TrueNAS ClickHouse safely; never initialize or overwrite it without explicit migration/backup approval.
 - Grafana dashboards and alerts should be version-controlled even when edited through MCP.

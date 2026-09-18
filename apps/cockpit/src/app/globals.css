@@ -70,8 +70,8 @@
   --up: var(--ok);
 
   --radius: 8px;
-  --font-size: 14px;
-  --font-meta: 11px;
+  --font-size: 15px;
+  --font-meta: 12px;
   --sidebar-w: 15rem;
   --topbar-h: 3.5rem;
 }
@@ -86,7 +86,7 @@
   --line: #1e232b;
   --line-strong: #2b323c;
   --radius: 2px;
-  --font-size: 13px;
+  --font-size: 14px;
   --sidebar-w: 14rem;
   --topbar-h: 3rem;
 }
@@ -305,14 +305,14 @@ body {
 }
 
 .brand-copy strong {
-  font-size: 0.82rem;
+  font-size: 0.85rem;
   font-weight: 600;
   letter-spacing: 0.02em;
   color: var(--text-strong);
 }
 
 .brand-copy span {
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   color: var(--dim);
 }
 
@@ -328,7 +328,7 @@ body {
 
 .nav-heading {
   padding: 0.35rem 0.55rem;
-  font-size: 0.62rem;
+  font-size: 0.72rem;
   font-weight: 600;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -342,7 +342,7 @@ body {
   padding: 0.48rem 0.55rem;
   border-radius: var(--radius-md);
   color: var(--muted);
-  font-size: 0.84rem;
+  font-size: 0.875rem;
   font-weight: 500;
   text-decoration: none;
   transition:
@@ -364,7 +364,7 @@ body {
 .nav-item-badge {
   margin-left: auto;
   font-family: var(--font-mono);
-  font-size: 0.65rem;
+  font-size: 0.72rem;
   font-weight: 600;
   padding: 0.05rem 0.3rem;
   border-radius: 99px;
@@ -417,7 +417,7 @@ body {
   align-items: center;
   gap: 0.4rem;
   min-width: 0;
-  font-size: 0.78rem;
+  font-size: 0.8125rem;
   color: var(--dim);
 }
 
@@ -511,7 +511,7 @@ body {
   border-radius: 99px;
   background: var(--paper);
   color: var(--paper-ink);
-  font-size: 0.62rem;
+  font-size: 0.72rem;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -562,7 +562,7 @@ body {
 
 .page-head p {
   margin: 0.2rem 0 0;
-  font-size: 0.82rem;
+  font-size: 0.875rem;
   color: var(--muted);
   max-width: 68ch;
 }
@@ -606,7 +606,7 @@ body {
 
 .card-title {
   margin: 0;
-  font-size: 0.85rem;
+  font-size: 0.9rem;
   font-weight: 600;
   letter-spacing: 0.01em;
   color: var(--text-strong);
@@ -614,7 +614,7 @@ body {
 
 .card-desc {
   margin: 0;
-  font-size: 0.72rem;
+  font-size: 0.78rem;
   line-height: 1.45;
   color: var(--dim);
 }
@@ -640,7 +640,7 @@ body {
 .card-foot {
   padding: 0.5rem 0.85rem;
   border-top: 1px solid var(--line);
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   color: var(--dim);
 }
 
@@ -735,7 +735,7 @@ body {
 }
 
 .stat-meta {
-  font-size: 0.72rem;
+  font-size: 0.78rem;
   line-height: 1.4;
   color: var(--dim);
 }
@@ -752,7 +752,7 @@ body {
   padding: 0.12rem 0.42rem;
   border: 1px solid transparent;
   border-radius: 99px;
-  font-size: 0.65rem;
+  font-size: 0.72rem;
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -847,7 +847,7 @@ body {
   padding: 0.22rem 0.55rem;
   border-radius: calc(var(--radius-md) - 2px);
   font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   font-weight: 600;
   cursor: pointer;
   transition:
@@ -872,7 +872,7 @@ body {
 }
 
 .field > span {
-  font-size: 0.62rem;
+  font-size: 0.72rem;
   font-weight: 600;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -889,7 +889,7 @@ body {
   background: var(--panel-2);
   color: var(--text);
   font-family: var(--font-mono);
-  font-size: 0.74rem;
+  font-size: 0.8125rem;
 }
 
 .field select:hover,
@@ -909,14 +909,14 @@ body {
 table.dt {
   width: 100%;
   border-collapse: collapse;
-  font-size: 0.76rem;
+  font-size: 0.8125rem;
 }
 
 table.dt caption {
   caption-side: top;
   padding: 0 0.85rem 0.5rem;
   text-align: left;
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   color: var(--dim);
 }
 
@@ -928,7 +928,7 @@ table.dt th {
   border-bottom: 1px solid var(--line);
   background: var(--panel-2);
   color: var(--dim);
-  font-size: 0.63rem;
+  font-size: 0.72rem;
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -987,7 +987,6 @@ table.dt tbody tr:last-child td {
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.005em;
-  color: var(--text-strong);
 }
 
 .quote-secondary {
@@ -1014,7 +1013,7 @@ table.dt tbody tr:last-child td {
 
 .cell-id {
   font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   color: var(--muted);
   overflow-wrap: anywhere;
 }
@@ -1044,7 +1043,7 @@ table.dt tbody tr:last-child td {
 
 .kv-row dt {
   margin: 0;
-  font-size: 0.66rem;
+  font-size: 0.72rem;
   font-weight: 600;
   letter-spacing: 0.07em;
   text-transform: uppercase;
@@ -1054,7 +1053,7 @@ table.dt tbody tr:last-child td {
 .kv-row dd {
   margin: 0;
   font-family: var(--font-mono);
-  font-size: 0.76rem;
+  font-size: 0.8125rem;
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
 }
@@ -1062,7 +1061,7 @@ table.dt tbody tr:last-child td {
 .kv-detail {
   display: block;
   margin-top: 0.1rem;
-  font-size: 0.66rem;
+  font-size: 0.75rem;
   letter-spacing: 0;
   color: var(--dim);
 }
@@ -1079,7 +1078,7 @@ table.dt tbody tr:last-child td {
   border-left-width: 3px;
   border-radius: var(--radius-md);
   background: var(--panel-2);
-  font-size: 0.76rem;
+  font-size: 0.8125rem;
   line-height: 1.45;
 }
 
@@ -1096,7 +1095,7 @@ table.dt tbody tr:last-child td {
 }
 
 .notice-body strong {
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -1141,7 +1140,7 @@ table.dt tbody tr:last-child td {
 .empty {
   padding: 1.1rem 0.85rem;
   text-align: center;
-  font-size: 0.78rem;
+  font-size: 0.8125rem;
   color: var(--dim);
 }
 
@@ -1167,7 +1166,7 @@ table.dt tbody tr:last-child td {
 
 .chart-note {
   margin: 0.4rem 0 0;
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   color: var(--dim);
   overflow-wrap: anywhere;
 }
@@ -1212,13 +1211,13 @@ a.attention-row:hover {
 }
 
 .attention-copy strong {
-  font-size: 0.78rem;
+  font-size: 0.8125rem;
   font-weight: 600;
   color: var(--text);
 }
 
 .attention-copy span {
-  font-size: 0.72rem;
+  font-size: 0.78rem;
   color: var(--dim);
   overflow-wrap: anywhere;
 }
@@ -1258,7 +1257,7 @@ a.attention-row:hover {
   list-style: none;
   cursor: pointer;
   padding: 0.5rem 0.85rem;
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   font-weight: 600;
   letter-spacing: 0.07em;
   text-transform: uppercase;
@@ -1293,7 +1292,7 @@ a.attention-row:hover {
 
 .disclosure-body {
   padding: 0 0.85rem 0.85rem;
-  font-size: 0.74rem;
+  font-size: 0.8125rem;
   color: var(--muted);
 }
 
@@ -1310,7 +1309,7 @@ a.attention-row:hover {
   border-top: 1px solid var(--line);
   background: var(--bg-elevated);
   font-family: var(--font-mono);
-  font-size: 0.66rem;
+  font-size: 0.72rem;
   letter-spacing: 0.05em;
   color: var(--dim);
 }

@@ -75,7 +75,7 @@ const columns: DataTableColumns<InstrumentRow> = helper.columns([
     header: "Last trade",
     cell: ({ row }) => (
       <>
-        <span className={`tone-${sideTone(row.original.lastSide)}`}>
+        <span className={`quote-primary tone-${sideTone(row.original.lastSide)}`}>
           {formatGroupedNumber(row.original.lastPrice)}
         </span>
         {row.original.lastPrice === "—" ? null : (
@@ -91,7 +91,7 @@ const columns: DataTableColumns<InstrumentRow> = helper.columns([
         {row.original.bid === "—" ? (
           <span className="tone-muted">—</span>
         ) : (
-          <span>
+          <span className="quote-secondary mono">
             {formatGroupedNumber(row.original.bid)} / {formatGroupedNumber(row.original.ask)}
           </span>
         )}
@@ -110,7 +110,7 @@ function RecentTrades({ trades, quote }: { trades: TapeTrade[]; quote: string })
     return <p style={{ margin: 0 }}>No trade decoded from the processed parts yet.</p>;
   }
   return (
-    <table className="dt" style={{ fontSize: "0.8rem" }}>
+    <table className="dt">
       <thead>
         <tr>
           <th>Time</th>

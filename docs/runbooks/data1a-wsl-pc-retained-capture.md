@@ -2,7 +2,8 @@
 
 Status: operator runbook for the existing reconstructable CLI from PR #32, on
 the Windows 11 + WSL2 Ubuntu workstation (TerraPC). This is **not** a 24/7
-service, not D22-B, and not LIVE trading.
+service, not D22-B, and not LIVE trading. It is a **secondary fallback**;
+the Netcup Ubuntu 24.04 LTS VPS and its VPS runbook are primary.
 
 Public Hyperliquid MAINNET market data only. No keys, no signing, no Binance,
 and no extra venues. The VPS counterpart is
@@ -43,6 +44,15 @@ Documented operator layout (do not invent a second tree):
 
 `DEVELOPMENT.md` uses `~/code/Hyperliquid-Bot` as the generic example. On this
 workstation the checkout name is `Hyperliquid-Bot-main`. Same repository.
+
+The helpers now default to the primary VPS layout. For this secondary WSL
+runbook, export the legacy WSL override before any `scripts/data1a_*.sh`
+command:
+
+```bash
+export REPO_ROOT="$HOME/code/Hyperliquid-Bot-main"
+export ARTIFACT_ROOT="$HOME/hyperliquid-artifacts/reconstructable"
+```
 
 Run directory contents (path contract Cockpit should later read):
 
@@ -399,7 +409,6 @@ from a Cloud Agent.
 - D22-B venue-authoritative reconciliation
 - funding settlement, signing, TESTNET, SHADOW, LIVE
 - profitability or strategy promotion
-- TrueNAS / ClickHouse reuse
 - Bitvavo DATA-1E / Kraken DATA-1B multi-day retain (operator docs exist;
   `bv-capture` / `kr-capture`; do not start until CoS assigns)
 - Binance DATA-1F multi-day retain (operator docs exist; do not start while

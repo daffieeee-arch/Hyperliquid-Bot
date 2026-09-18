@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# DATA-1F operator-PC status: tmux liveness and published Parquet part count.
+# DATA-1F operator status: tmux liveness and published Parquet part count.
 # Create-only inspection. No secrets. Does not start, stop, or resume a run.
 # Never attaches to or stops tmux hl-capture.
 # When RUN_ID is unset, defaults to the freshest live retain.

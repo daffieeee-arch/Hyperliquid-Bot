@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# DATA-1A operator-PC status: tmux liveness and published Parquet part count.
+# DATA-1A operator status: tmux liveness and published Parquet part count.
 # Create-only inspection. No secrets. Does not start, stop, or resume a run.
 # When RUN_ID is unset, defaults to the freshest live retain.
 

@@ -9,9 +9,9 @@ and no extra venues.
 For the Windows 11 + WSL2 Ubuntu operator PC (TerraPC), including tmux
 `hl-capture` start/status/stop and Quant handoff, see
 [data1a-wsl-pc-retained-capture.md](data1a-wsl-pc-retained-capture.md). Cloud
-Agents are unsuitable for a multi-day retain and must not SSH to or stop a
-capture that is already running. The later host profile (not a cutover order)
-is [linux-vps-reference-profile.md](linux-vps-reference-profile.md).
+Agents are unsuitable for a multi-day retain and must not stop a capture that
+is already running. The active host profile is
+[linux-vps-reference-profile.md](linux-vps-reference-profile.md).
 
 ## Duration contract
 
@@ -60,21 +60,23 @@ fails closed. Part count and last part mtime come from a cheap
 ## Fail-closed start
 
 ```bash
-# From a supported Ubuntu LTS VPS checkout of a tested commit / image.
+# From the Netcup Ubuntu 24.04 LTS VPS.
 # PAPER is irrelevant to this public collector; it never signs or submits orders.
 unset TRADING_MODE
 unset D41_EXECUTION_MODE
 # Refuse to start if any protected Hyperliquid key name is present in the shell.
 # Do not print or log secret values.
 
+export REPO_ROOT="$HOME/Hyperliquid Project/Hyperliquid-Bot"
 export PYTHONPATH=src
-export ARTIFACT_ROOT=/var/lib/hyperliquid-bot/reconstructable
+export ARTIFACT_ROOT="$HOME/Hyperliquid Project/data-capture"
 export RUN_ID="$(date -u +%Y%m%dt%H%M%Sz)-live-retained"
 # Example retained window: 4 hours. Raise up to 604800 on the durable VPS store.
 export DURATION_SECONDS=14400
 
 test ! -e "${ARTIFACT_ROOT}/data-1a/hyperliquid/BTC-PERP/${RUN_ID}"
 
+cd "$REPO_ROOT"
 PYTHONPATH=src uv run --frozen python -m hyperliquid_bot.hyperliquid_raw_research \
   --artifact-root "${ARTIFACT_ROOT}" \
   --run-id "${RUN_ID}" \
@@ -178,4 +180,3 @@ lives in `tests/fixtures/data_1a_live_evidence/`.
 - D22-B venue-authoritative reconciliation
 - funding settlement, signing, TESTNET, SHADOW, LIVE
 - profitability or strategy promotion
-- TrueNAS / ClickHouse reuse

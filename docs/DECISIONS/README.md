@@ -5,12 +5,12 @@ This register records current high-level decisions and the conditions under whic
 ## COURSE-1B runtime transition status
 
 Host-neutral Linux/amd64 OCI is the platform boundary. **ADR-024** records the definitive PAPER
-runtime profile: a supported Ubuntu LTS VPS running digest-pinned OCI images under
-Compose-compatible declarative configuration. TrueNAS is no longer mandatory or primary; its
-existing environment remains an optional protected profile. This narrows the host-specific scope of
-ADR-003, ADR-012, ADR-016, ADR-017, ADR-019 and ADR-021. ADR-024 does **not** authorize
-provisioning, cutover, or mutation of retained TrueNAS/ClickHouse/Grafana assets; those remain
-explicit later CoS steps. TerraPC WSL remains the interim capture host until cutover is approved.
+runtime profile: the Netcup Ubuntu 24.04 LTS VPS (hostname `chupa`) running
+digest-pinned OCI images under Compose-compatible declarative configuration.
+It is also the primary capture and interactive development host. The previous
+NAS appliance profile is retired, superseding its operational treatment in
+ADR-003, ADR-012, ADR-016, ADR-017, ADR-019 and ADR-021. TerraPC/WSL2 remains
+a secondary operator environment.
 
 ## ADR-001 — Python for the quantitative/trading core
 
@@ -44,7 +44,8 @@ explicit later CoS steps. TerraPC WSL remains the interim capture host until cut
 
 **Alternative considered:** PostgreSQL as the only database.
 
-**Implementation note:** use a disposable local ClickHouse container in DEV and, when needed, a managed persistent instance on the approved runtime. Existing TrueNAS/ClickHouse state remains protected while that profile is retained or until migration is explicitly approved.
+**Implementation note:** use a disposable ClickHouse container in DEV and,
+when needed, a managed persistent instance on the approved VPS runtime.
 
 ---
 
@@ -124,7 +125,8 @@ explicit later CoS steps. TerraPC WSL remains the interim capture host until cut
 
 **Decision:** Start with ClickHouse + Python services + Next.js + Grafana/Alloy, adding PostgreSQL and Redis when their responsibilities become necessary. Do not add Kafka, Kubernetes, Elasticsearch/OpenSearch or Spark without a demonstrated bottleneck.
 
-**Why:** Preserve operational simplicity and reliability across the host-neutral Linux/OCI boundary, including constrained VPS and optional shared TrueNAS profiles.
+**Why:** Preserve operational simplicity and reliability across the
+host-neutral Linux/OCI boundary and the constrained VPS profile.
 
 ---
 
@@ -164,9 +166,11 @@ explicit later CoS steps. TerraPC WSL remains the interim capture host until cut
 
 ---
 
-## ADR-015 — Windows 11 + WSL2 is the primary development environment
+## ADR-015 — Windows 11 + WSL2 development environment (superseded)
 
-**Decision:** Develop the project on the Windows workstation using WSL2 Ubuntu, with Codex configured to run in WSL. Keep the repository inside the WSL Linux filesystem.
+**Decision:** The original decision used the Windows workstation with WSL2
+Ubuntu. ADR-024's development/capture host update supersedes that primary-host
+choice; TerraPC/WSL2 remains secondary.
 
 **Why:** Provides Linux parity, fast local iteration, strong Codex/desktop/mobile Remote workflows, better frontend/debugging ergonomics and access to the workstation's CPU/GPU without destabilizing the continuous runtime.
 
@@ -176,13 +180,18 @@ explicit later CoS steps. TerraPC WSL remains the interim capture host until cut
 
 ---
 
-## ADR-016 — The deployment/runtime host is not the interactive development host
+## ADR-016 — Interactive development is isolated from runtime services
 
-**Decision:** Any 24/7 PAPER/SHADOW/LIVE host runs CI-built Linux/OCI images. Do not run production-like services from a mutable repository checkout and do not hot-edit running containers.
+**Decision:** Any 24/7 PAPER/SHADOW/LIVE service runs a CI-built Linux/OCI
+image. Interactive development may share the VPS host but not the running
+container or durable runtime volume. Do not run production-like services from
+a mutable repository checkout and do not hot-edit running containers.
 
 **Why:** Isolates experimentation from persistent services, reduces failure blast radius, enables deterministic rollback and keeps the Windows PC optional during continuous operation.
 
-**Constraint:** Authorized runtime tooling may operate deployments and project resources, but source changes return through Git and CI. The Ubuntu LTS VPS profile, optional TrueNAS profile and later migration remain subject to their own scoped controls.
+**Constraint:** Authorized runtime tooling may operate deployments and project
+resources, but source changes return through Git and CI. The Ubuntu LTS VPS
+profile remains subject to scoped controls.
 
 ---
 
@@ -210,7 +219,8 @@ explicit later CoS steps. TerraPC WSL remains the interim capture host until cut
 
 **Why:** Keeps development fast/reproducible and prevents accidental mutation or copying of large production-like datasets.
 
-**Constraint:** Windows may query approved runtime data read-only or receive bounded exports; it does not directly mutate the runtime database. Existing TrueNAS/ClickHouse data receives the same protection while that optional profile is retained.
+**Constraint:** Development tools may query approved runtime data read-only or
+receive bounded exports; they do not directly mutate the runtime database.
 
 ---
 
@@ -221,7 +231,9 @@ explicit later CoS steps. TerraPC WSL remains the interim capture host until cut
 **Examples:**
 
 - Grafana MCP may edit Hyperliquid dashboards/alerts, while its ClickHouse datasource stays read-only;
-- TrueNAS MCP may inspect and operate project apps/datasets, while destructive pool/dataset/update/reboot actions require explicit approval;
+- Host administration may inspect and operate project services/datasets,
+  while destructive storage/dataset/update/reboot actions require explicit
+  approval;
 - ClickHouse research is read-only, while migrations use a separate controlled identity;
 - paper trading tools may be available, while withdrawal/transfer tools are never exposed.
 
@@ -229,9 +241,11 @@ explicit later CoS steps. TerraPC WSL remains the interim capture host until cut
 
 ---
 
-## ADR-021 — The optional early-release TrueNAS profile is PAPER-only by default
+## ADR-021 — Early-release NAS appliance profile (superseded)
 
-**Decision:** If retained, TrueNAS 26 BETA.3 may host research and PAPER services with backups and monitoring. It is not the primary deployment profile. Material live capital requires a supported stable runtime release or explicit documented risk acceptance and repeated soak/recovery testing.
+**Decision:** The earlier allowance for an early-release NAS appliance to host
+research and PAPER services is superseded by ADR-024. That appliance profile
+is retired from the active architecture.
 
 **Why:** Operating-system maturity is part of execution risk, not merely infrastructure preference.
 
@@ -1555,11 +1569,12 @@ An unsuitable result reopens the thin-native fallback rather than silently expan
 
 ## ADR-024 — Definitive PAPER runtime: Ubuntu LTS VPS + Linux/amd64 OCI
 
-**Decision:** The definitive continuous PAPER runtime is a supported **Ubuntu LTS** host
-(prefer **24.04 LTS** to match CI `ubuntu-24.04`) on **Linux/amd64**, running
-**digest-pinned OCI images** under **Compose-compatible** declarative configuration. The
-architecture remains host-neutral Linux/OCI; the VPS is the chosen primary *profile*, not a
-second product stack.
+**Decision:** The definitive continuous PAPER runtime is the Netcup
+**Ubuntu 24.04 LTS** VPS (hostname `chupa`) on **Linux/amd64**, running
+**digest-pinned OCI images** under **Compose-compatible** declarative
+configuration. It is also the primary capture and interactive development
+host. The architecture remains host-neutral Linux/OCI; the VPS is the chosen
+primary *profile*, not a second product stack.
 
 **Evidence gate:** COURSE-1 completed the local Hyperliquid BTC-PERP replay → strategy → risk →
 credentialless sandbox-PAPER route (D01), the bounded project-owned PAPER ledger/restart seam
@@ -1567,15 +1582,16 @@ credentialless sandbox-PAPER route (D01), the bounded project-owned PAPER ledger
 satisfy the previously pending “record the runtime ADR after the local route passes” gate. They
 are **not** 24/7 capture evidence, D22-B venue reconciliation, profitability, or LIVE readiness.
 
-**Interim capture host:** Until an explicit CoS cutover, **TerraPC Windows 11 + WSL2** remains
-the operator path for assigned retained-capture windows. Detached tmux on WSL does not survive
-host sleep or `wsl --shutdown`. Cursor Cloud Agents / ephemeral VMs must not run multi-day
-WebSocket retains and must not SSH to TerraPC to start or stop capture sessions.
+**Development/capture host update:** The Netcup VPS is the primary operator
+path for assigned retained-capture windows and interactive development through
+Cursor Remote SSH, Cursor CLI or Codex CLI. TerraPC/WSL2 remains a secondary
+operator path. Cursor Cloud Agents / ephemeral VMs must not run multi-day
+WebSocket retains.
 
-**Sizing and vendor shortlist:** Operational sizing, disk budgets, region preference, and
-provider shortlist live in
-[linux-vps-reference-profile.md](../runbooks/linux-vps-reference-profile.md). That runbook is the
-migration-*target* companion to this ADR; it is still **not** a migrate-today order.
+**Sizing and provider record:** Operational sizing and disk budgets live in
+[linux-vps-reference-profile.md](../runbooks/linux-vps-reference-profile.md).
+Netcup provides the selected VPS and lists Ubuntu 24.04 among its official
+vServer images.
 
 **Operational requirements (PAPER):**
 
@@ -1587,36 +1603,31 @@ migration-*target* companion to this ADR; it is still **not** a migrate-today or
 - Do not edit source inside running runtime containers; changes return through Git and CI.
 - Services expose health/readiness probes; rollback is redeploy of the previous known-good digest
   plus retained volumes (no “fix in place” on the host checkout).
-- Application data and capture artifacts live on durable volumes outside git and outside image
-  layers; ordinary Windows/WSL development must not mutate runtime volumes.
+- Application data and capture artifacts live on durable volumes outside git
+  and outside image layers; development tasks must not mutate runtime volumes
+  except through an explicit operational workflow.
+- Interactive development sharing the VPS does not authorize editing source
+  inside running containers or bypassing image promotion.
 
-**TrueNAS / ClickHouse / Grafana disposition:**
-
-- TrueNAS SCALE is **out of capture and PAPER runtime scope** (share or optional Ubuntu VM on
-  that hardware only — not the capture host).
-- Existing TrueNAS ClickHouse datasets and Grafana assets remain **protected**: no initialize,
-  overwrite, DROP/TRUNCATE, or undeclared migration from ordinary development or this ADR.
-- Any retain-or-migrate plan for those assets requires a **separate** explicit approval and
-  backup/migration runbook; ADR-003/ADR-021 stay narrowed but are not a cutover license.
+**Retired profile:** The previous NAS appliance profile is retired from the
+active architecture. This update supersedes its earlier operational allowance
+without rewriting the historical reason ADR-021 existed.
 
 **Explicitly not authorized by this ADR:**
 
-- ordering or provisioning a VPS;
-- DNS/cutover away from TerraPC;
 - starting always-on collectors without a duration cap;
 - enabling SHADOW or LIVE;
-- mutating retained TrueNAS analytical or Grafana state;
 - claiming D22-B, promotion, or profitability.
 
 **Reopen when:** Ubuntu LTS or CI image lines diverge enough to break the amd64 OCI contract;
 Compose is replaced by a different orchestrator; a supported non-VPS Linux profile is proposed as
-primary; TrueNAS is reconsidered as a capture host; or SHADOW/LIVE runtime isolation requirements
+primary; or SHADOW/LIVE runtime isolation requirements
 demand a separate host decision.
 
 ---
 
 ## Pending ADR gates — not yet decisions
 
-No material open ADR gate remains after ADR-024. Future gates (for example D22-B venue-authoritative
-crash-window reconciliation, or a TrueNAS retain-or-migrate plan) require separate evidence and
+No material open ADR gate remains after ADR-024. Future gates such as D22-B
+venue-authoritative crash-window reconciliation require separate evidence and
 explicit authorization; they are not implied by this register entry.

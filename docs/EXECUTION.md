@@ -6,7 +6,9 @@ Convert validated signals into reliable orders with minimal avoidable alpha loss
 
 ## Development versus runtime
 
-Execution code is developed and tested on Windows/WSL2, but authenticated execution runs only in an explicitly authorized isolated runtime environment.
+Execution code is developed and tested primarily on the Netcup Ubuntu 24.04
+LTS VPS, but authenticated execution runs only in an explicitly authorized
+isolated runtime environment.
 
 Local DEV:
 
@@ -21,7 +23,7 @@ Approved PAPER/SHADOW/LIVE runtime:
 - runs CI-built, digest-pinned images;
 - owns persistent ledgers and reconciliation state;
 - receives environment-specific secrets;
-- remains operational when the Windows development workstation is offline;
+- remains operational when interactive development tools are disconnected;
 - does not execute from a mutable source checkout.
 
 ## Venue
@@ -32,7 +34,10 @@ Hyperliquid is the initial primary execution venue. Market information may come 
 
 Use an EVM-compatible master wallet for account ownership and authorize dedicated Hyperliquid API/agent wallets for automation.
 
-The master private key/seed must never be stored on Windows/WSL2, any runtime host or container (including TrueNAS), logs, browser code or GitHub. The runtime execution service receives only the dedicated agent key required for its assigned environment/process/account scope.
+The master private key/seed must never be stored on any development or runtime
+host, container, logs, browser code or GitHub. The runtime execution service
+receives only the dedicated agent key required for its assigned
+environment/process/account scope.
 
 Prefer separate agent wallets per independent trading process to reduce nonce/state conflicts and isolate operational blast radius.
 
@@ -96,7 +101,7 @@ Every state transition is persisted/audited with:
 - global halt/flatten controls;
 - separate live secrets and persistent state;
 - tested deployment rollback;
-- no runtime dependency on Codex/Hermes/Windows;
+- no runtime dependency on Cursor, Codex, Hermes or an interactive session;
 - stable runtime platform or explicit risk acceptance.
 
 ## Maker versus taker

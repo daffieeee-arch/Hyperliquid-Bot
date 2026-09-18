@@ -38,7 +38,7 @@ tests/fixtures/course1_cockpit/live-public-soak/
   capture-health.json
 ```
 
-Path contract for later VPS artifacts (same file names, no schema change):
+Path contract for VPS artifacts (same file names, no schema change):
 
 ```text
 <artifact-root>/course1/live-public-paper/<run_id>/
@@ -82,7 +82,7 @@ leverage/margin/liquidation/VaR stay UNAVAILABLE.
 
 ```bash
 export TRADING_MODE=PAPER
-export COCKPIT_ARTIFACT_ROOT=/var/lib/hyperliquid-bot/reconstructable
+export COCKPIT_ARTIFACT_ROOT="$HOME/Hyperliquid Project/data-capture"
 export COCKPIT_RUN_ID=20260904t001800z-live-paper
 pnpm --filter @hyperliquid-bot/cockpit dev
 ```
@@ -94,29 +94,21 @@ The helper shape is `course1_cockpit_paths(artifact_root, run_id)` from
 
 Do not stop a running collector. The cockpit only reads files. Next.js loads
 `apps/cockpit/.env.local` during `next dev`; exporting the same names in the
-WSL shell also works. The repository-root `.env.example` is not loaded by
+VPS shell also works. The repository-root `.env.example` is not loaded by
 Next.js.
 
-TerraPC WSL2 (current 72h retain). Paths are on the Linux filesystem, not
-`/mnt/c`. HL / Bitvavo / Kraken share `20260905t232635z-live-retained`.
-Binance is the post-#58 retain `20260906t101559z-live-retained`. Do not
-prefer the stopped earlier Binance id `20260905t235830z-live-retained`.
-Leaving venue run_ids unset auto-detects the freshest live retain per path
-contract:
+On the Netcup Ubuntu 24.04 LTS VPS, leave venue run IDs unset so the cockpit
+auto-detects the freshest live retain per path contract:
 
 ```bash
 export TRADING_MODE=PAPER
-export ARTIFACT_ROOT=$HOME/hyperliquid-artifacts/reconstructable
-export DATA1A_RUN_ID=20260905t232635z-live-retained
-export DATA1E_RUN_ID=20260905t232635z-live-retained
-export DATA1B_RUN_ID=20260905t232635z-live-retained
-export DATA1F_RUN_ID=20260906t101559z-live-retained
+export ARTIFACT_ROOT="$HOME/Hyperliquid Project/data-capture"
 pnpm --filter @hyperliquid-bot/cockpit dev
 ```
 
 `COCKPIT_DATA1A_RUN_ID` is an equivalent alias for `DATA1A_RUN_ID`. Or keep
 `ARTIFACT_ROOT` and open
-`http://127.0.0.1:3000/?data1a_run_id=20260905t232635z-live-retained`.
+`http://127.0.0.1:3000/?data1a_run_id=<run_id>`.
 DESK live-vs-stale chips and MARKETS bound-instrument rows use the same binds.
 Sibling last/BBO stay UNAVAILABLE.
 
@@ -132,12 +124,11 @@ Open `http://<LAN-IP>:3001` from the phone (the PC's LAN IP on the same
 Wi-Fi, for example `http://192.168.x.x:3001`). Allow inbound TCP on that port
 on the Windows / WSL firewall. `127.0.0.1` is loopback-only.
 
-Later VPS path-contract root (same file names):
+Primary VPS path-contract root (same file names):
 
 ```bash
 export TRADING_MODE=PAPER
-export ARTIFACT_ROOT=/var/lib/hyperliquid-bot/reconstructable
-export DATA1A_RUN_ID=20260904t134940z-live-retained
+export ARTIFACT_ROOT="$HOME/Hyperliquid Project/data-capture"
 pnpm --filter @hyperliquid-bot/cockpit dev
 ```
 
@@ -171,12 +162,8 @@ collector:
 
 ```bash
 export TRADING_MODE=PAPER
-export ARTIFACT_ROOT=$HOME/hyperliquid-artifacts/reconstructable
+export ARTIFACT_ROOT="$HOME/Hyperliquid Project/data-capture"
 # Optional; omit to auto-detect the freshest live retain per venue:
-export DATA1A_RUN_ID=20260905t232635z-live-retained
-export DATA1F_RUN_ID=20260906t101559z-live-retained
-export DATA1E_RUN_ID=20260905t232635z-live-retained
-export DATA1B_RUN_ID=20260905t232635z-live-retained
 pnpm --filter @hyperliquid-bot/cockpit dev
 ```
 

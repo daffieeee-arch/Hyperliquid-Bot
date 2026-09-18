@@ -175,7 +175,7 @@ def test_wsl_runbook_documents_known_good_operator_paths() -> None:
     assert "freshest live retain" in text
     vps = VPS_RUNBOOK.read_text(encoding="utf-8")
     assert "1 through 604800 seconds" in vps
-    assert "Do not start a multi-day DATA-1E retain now" in vps
+    assert "Do not start a multi-day DATA-1E retain without assignment" in vps
     assert "book` (depth 1000) plus `trades`" in vps or "book (depth 1000) plus trades" in vps
     assert "--include-ticker" in vps
     assert "bitvavo-mdpro-btc-eur-book-trades" in vps

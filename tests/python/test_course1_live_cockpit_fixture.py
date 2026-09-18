@@ -42,7 +42,7 @@ def test_live_soak_fixture_is_paper_assumed_overlay() -> None:
     assert fills["fill_count"] == 2
 
     paths = course1_cockpit_paths(
-        Path("/var/lib/hyperliquid-bot/reconstructable"),
+        Path("/home/chupa/Hyperliquid Project/data-capture"),
         "20260904t001800z-live-paper",
     )
     assert paths.run_dir.name == "20260904t001800z-live-paper"

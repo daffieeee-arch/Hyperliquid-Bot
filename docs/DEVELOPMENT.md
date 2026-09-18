@@ -2,57 +2,67 @@
 
 ## Decision
 
-Primary software development happens on the Windows 11 workstation through **WSL2 Ubuntu** with Codex/ChatGPT desktop. The independent Linux/OCI runtime is not an interactive source-development machine; it receives tested container images for continuous paper, shadow and later live operation. **ADR-024** records a supported Ubuntu LTS VPS as the definitive primary PAPER profile (capture-size companion: [linux-vps-reference-profile.md](runbooks/linux-vps-reference-profile.md)); provisioning and TerraPC cutover remain separate CoS steps. TrueNAS SCALE is out of runtime/capture scope.
+Primary software development happens on the Netcup **Ubuntu 24.04 LTS** VPS
+(hostname `chupa`) through Cursor IDE Remote SSH, Cursor CLI (`agent`) or Codex
+CLI. The same VPS is the primary capture and PAPER host under **ADR-024**.
+Interactive source work remains isolated from running service containers and
+durable runtime volumes; long-running services consume reviewed,
+digest-pinned images rather than the mutable checkout.
 
-This separation provides faster iteration, better debugging, safer experimentation and a cleaner 24/7 runtime.
+TerraPC/WSL2 is a secondary operator environment, not the primary development
+or capture host.
 
-## Development workstation
+## Primary development station
 
-Current known workstation:
+Primary host:
 
-- Windows 11, fully updated;
-- AMD Ryzen 7 7800X3D;
-- 32 GB RAM;
-- NVIDIA RTX 4070 SUPER 12 GB;
-- WSL2 Ubuntu;
-- ChatGPT/Codex desktop with ChatGPT Pro;
-- Docker Desktop using the WSL2 backend.
+- Netcup VPS;
+- Ubuntu 24.04 LTS;
+- hostname `chupa`;
+- Cursor IDE with the Anysphere Remote SSH extension;
+- Cursor CLI (`agent`);
+- Codex CLI;
+- native Linux Python, Node.js and Docker tooling.
 
-The GPU is not required for Phase 1. It may later support local ML experiments or model training, while production inference should remain lightweight enough for the approved runtime profile unless evidence justifies otherwise.
+Netcup lists Ubuntu 24.04 among its KVM vServer images, Ubuntu classifies
+24.04 as an LTS release, and Docker supports Ubuntu Noble 24.04 for Docker
+Engine. Cursor documents Linux support for `agent`; OpenAI documents Linux
+support for Codex CLI. See the official references below.
 
-## Codex environment
+## Interactive tools
 
-Use the ChatGPT desktop application on Windows, but configure the **Codex agent environment as WSL2** for this repository. The integrated terminal should also normally use WSL.
+Use Cursor Remote SSH when an editor is preferred. Use `agent` or `codex`
+directly in the VPS shell for terminal-first work. Run all tools from the
+repository root unless a worktree is intentionally selected.
 
 Recommended permission posture:
 
 - use the workspace-scoped permission profile for ordinary implementation;
 - retain approval prompts for commands outside the workspace or for network/system changes;
 - do not use unrestricted/danger-full-access as the default;
-- never run the desktop app as Administrator for routine repository work;
+- do not run routine development as `root`;
 - use separate feature branches or Codex-managed worktrees for parallel tasks.
 
-Codex may be supervised from the ChatGPT mobile app through Remote. Remote operation still depends on the Windows host remaining powered on, online, connected and available. Files, credentials and commands stay on the host environment.
+The primary paths are:
 
-## WSL2 filesystem policy
-
-Clone and develop the repository inside the Linux filesystem, for example:
-
-```text
-~/code/Hyperliquid-Bot
+```bash
+export REPO_ROOT="$HOME/Hyperliquid Project/Hyperliquid-Bot"
+export ARTIFACT_ROOT="$HOME/Hyperliquid Project/data-capture"
+cd "$REPO_ROOT"
 ```
 
-Do not use `/mnt/c/...`, an SMB share, or a TrueNAS-mounted source directory as the primary working tree. Linux-native filesystem placement avoids cross-filesystem I/O, symlink and permission problems.
+Keep capture data outside Git. The source checkout may coexist on the VPS with
+runtime services, but it is not mounted into production-like containers and
+is not the source of deployed service code.
 
-Windows can access the files through:
+## Secondary TerraPC/WSL2 notes
 
-```text
-\\wsl$\Ubuntu\home\<user>\code\Hyperliquid-Bot
-```
+TerraPC/WSL2 may be used for isolated fallback development, GPU research, or
+the explicitly WSL-named operator runbooks. Keep any WSL checkout in its Linux
+filesystem, not under `/mnt/c` or a network share. WSL examples are secondary
+overrides; capture helper defaults always resolve to the VPS layout above.
 
-but Linux tooling remains authoritative for builds and tests.
-
-## WSL2 resource guardrails
+### WSL2 resource guardrails
 
 The workstation has 32 GB RAM and 16 logical CPU threads. A conservative starting point is to cap the WSL2 utility VM so Windows remains responsive while Codex, Docker and tests run.
 
@@ -69,15 +79,9 @@ These values are starting limits, not permanent settings. Adjust them after obse
 
 ## Docker development model
 
-Use Docker Desktop with:
-
-- WSL2 engine enabled;
-- WSL integration enabled for the chosen Ubuntu distribution;
-- Linux containers mode;
-- current Docker Desktop and WSL versions;
-- resource usage bounded through WSL settings.
-
-Do not install a second Docker Engine daemon inside the same WSL distribution when Docker Desktop integration is used. Duplicate daemons create confusing sockets, images, networks and permissions.
+Use Docker Engine on Ubuntu 24.04 according to Docker's official Ubuntu
+installation guide. For secondary WSL use, Docker Desktop integration may be
+used; do not run a competing Docker Engine daemon in the same distribution.
 
 The local Compose stack is disposable and may include:
 
@@ -167,27 +171,32 @@ Development uses:
 - small local ClickHouse datasets;
 - read-only exports from an approved runtime store where explicitly needed.
 
-The full 24/7 dataset belongs on the selected durable runtime store. Windows development should not mutate a runtime ClickHouse instance. Heavy research can run as a controlled runtime research job or against a bounded exported dataset. Existing TrueNAS/ClickHouse state remains protected pending an explicit retain-or-migrate decision.
+The full 24/7 dataset belongs on the VPS durable runtime store. Interactive
+development should not mutate the runtime ClickHouse instance. Heavy research
+can run as a controlled runtime research job or against a bounded exported
+dataset.
 
 Small fixtures suitable for reproducible tests may be committed. Large raw captures, secrets and personal trading/account data must not be committed.
 
 ## Secret policy in development
 
-The Windows/WSL development environment must not contain:
+Development environments must not contain:
 
 - a Hyperliquid master-wallet key;
 - a live Hyperliquid agent key during normal development;
 - Bitvavo/Kraken withdrawal credentials;
-- TrueNAS administrative credentials in repository files;
+- host root/admin credentials in repository files;
 - production database passwords in source or images.
 
 Initial development requires no authenticated exchange credentials. Public market data and deterministic mocks are sufficient.
 
 Where a later integration test genuinely needs a non-production secret, inject it through local protected secret storage or environment configuration excluded from Git. Never paste it into a Codex prompt, commit, frontend bundle or test fixture.
 
-## Local versus runtime parity
+## Development versus runtime parity
 
-Parity is achieved through containers, contracts and tests—not by editing source directly on a runtime host.
+Parity is achieved through containers, contracts and tests—not by editing
+source inside running containers. Sharing a physical VPS does not merge the
+source checkout, disposable development services and durable runtime volumes.
 
 GitHub Actions Phase A, cockpit lint, and the PAPER API/browser regress
 suite are documented in [CI](CI.md). Local checks stay the same: `uv run
@@ -206,19 +215,34 @@ Keep consistent across local, CI and every runtime profile:
 
 Differences are limited to configuration, credentials, resource limits and persistent volumes.
 
-## First workstation bootstrap milestone
+## Primary VPS bootstrap milestone
 
 The development environment is ready when all of the following are true:
 
-- WSL2 Ubuntu is current and healthy;
-- Codex agent environment is WSL2;
-- mobile Remote can connect to a harmless Codex thread;
-- repository is cloned under the WSL Linux home filesystem;
-- Git/GitHub authentication works from WSL;
-- Docker Desktop WSL integration works;
-- `docker run` and `docker compose` work from WSL;
+- Ubuntu 24.04 LTS is current and healthy;
+- hostname is `chupa`;
+- Cursor Remote SSH can open the repository;
+- `agent --version` and `codex --version` succeed;
+- repository and artifact roots match the primary paths above;
+- Git/GitHub authentication works from the VPS;
+- `docker run` and `docker compose` work on the VPS;
 - repository version managers/package tools are available;
 - no real trading credentials are present;
 - a feature branch can be pushed and a pull request created.
 
-Only after this milestone should Codex bootstrap the application source tree.
+## Official operational references
+
+- Ubuntu release lifecycle:
+  https://ubuntu.com/about/release-cycle
+- Ubuntu Server documentation:
+  https://ubuntu.com/server/docs/
+- Netcup vServer images:
+  https://www.netcup.com/en/server/vserver-images
+- Docker Engine on Ubuntu:
+  https://docs.docker.com/engine/install/ubuntu/
+- Cursor CLI installation and `agent` command:
+  https://cursor.com/docs/cli/installation.md
+- Cursor-maintained Remote SSH extension announcement:
+  https://forum.cursor.com/t/remote-ssh-unstable-while-vscode-is-stable/87621/1
+- OpenAI Codex CLI quickstart:
+  https://developers.openai.com/codex/quickstart

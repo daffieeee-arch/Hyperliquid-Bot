@@ -1,9 +1,10 @@
-# Phase A — joint 72h PAPER retained capture (TerraPC WSL)
+# Phase A — joint 72h PAPER retained capture (primary VPS)
 
 Status: **prepare-only**. This document is the campaign runbook for one
 bounded, overlapping 72-hour PAPER retain of the four production lanes that
 already have start/status/stop helpers. Cloud Agents must not start this
-campaign, SSH to TerraPC, or send `C-c` to live sessions.
+campaign or send `C-c` to live sessions. Run it on the Netcup Ubuntu 24.04
+LTS VPS only after the explicit operator gate.
 
 This is a **new** campaign. Prior mid-window `OPERATOR_STOP` retains are not
 success evidence and must not be resumed or overwritten.
@@ -17,19 +18,19 @@ success evidence and must not be resumed or overwritten.
 | DATA-1E | Bitvavo BTC-EUR MD Pro (no silent Standard fallback) | `bv-capture` | `scripts/data1e_*.sh` |
 | DATA-1B | Kraken BTC/USD L2+tape, L3 when WS keys present (not BTC/EUR) | `kr-capture` | `scripts/data1b_*.sh` |
 
-Per-lane detail remains in the WSL runbooks:
+Primary per-lane detail is in the VPS runbooks:
 
-- [data1a-wsl-pc-retained-capture.md](data1a-wsl-pc-retained-capture.md)
-- [data1f-wsl-pc-retained-capture.md](data1f-wsl-pc-retained-capture.md)
-- [data1e-wsl-pc-retained-capture.md](data1e-wsl-pc-retained-capture.md)
-- [data1b-wsl-pc-retained-capture.md](data1b-wsl-pc-retained-capture.md)
+- [data1a-vps-retained-capture.md](data1a-vps-retained-capture.md)
+- [data1f-vps-retained-capture.md](data1f-vps-retained-capture.md)
+- [data1e-vps-retained-capture.md](data1e-vps-retained-capture.md)
+- [data1b-vps-retained-capture.md](data1b-vps-retained-capture.md)
 
 ## Out of scope
 
 OKX, Deribit, and Polymarket retained capture (research modules only — do not
 claim eight venues ready). No Coinbase, Aster, or new venues. No historical
-bulk download. No LIVE / orders / wallets / VPN. TrueNAS is not a runtime
-host. Cloud Agents must not start or stop collectors.
+bulk download. No LIVE / orders / wallets / VPN. Cloud Agents must not start
+or stop collectors.
 
 ## Official contracts checked (2026-09-11)
 
@@ -87,17 +88,17 @@ the same `uv run --frozen python -m …` commands. Do not invent a new
 orchestrator. Closing the chat must not stop the retain.
 
 Tests and CI use isolated fake session names (`pytest-hl-isolated`, …) and
-refuse to send `C-c` to live names. Never run pytest against a TerraPC
-checkout that shares those live tmux names without the isolation helpers.
+refuse to send `C-c` to live names. Never run pytest against a checkout that
+shares those live tmux names without the isolation helpers.
 No `pkill`, `killall`, or `tmux kill-server`.
 
 ## Pinned checkout and per-feed outputs
 
 Do not share a development worktree or its venv with the retain.
 
-```text
-REPO_ROOT=$HOME/code/Hyperliquid-Bot-phase-a-72h
-ARTIFACT_ROOT=$HOME/hyperliquid-artifacts/phase-a-72h
+```bash
+REPO_ROOT="$HOME/Hyperliquid Project/Hyperliquid-Bot"
+ARTIFACT_ROOT="$HOME/Hyperliquid Project/data-capture"
 ```
 
 Pin `REPO_ROOT` to the merged commit SHA of this campaign (or a later
@@ -175,7 +176,7 @@ locally (`BITVAVO_MDPRO_API_KEY` / `BITVAVO_MDPRO_API_SECRET`,
 argv, logs, artifacts, or git. Hyperliquid and Binance lanes stay
 credentialless. Refuse `HYPERLIQUID_*` signing names and execution keys.
 
-## Host sleep / WSL checklist
+## Secondary WSL host checklist
 
 On the Windows host, before smoke or 72h:
 
@@ -210,13 +211,13 @@ On the Windows host, before smoke or 72h:
 - [ ] Live tmux names are free
 - [ ] ETH/SOL remain deferred
 
-### 3. TerraPC joint smoke (≤60 min) — operator only
+### 3. Joint VPS smoke (≤60 min) — operator only
 
 Cloud Agents must not do this step.
 
 ```bash
-export REPO_ROOT=$HOME/code/Hyperliquid-Bot-phase-a-72h
-export ARTIFACT_ROOT=$HOME/hyperliquid-artifacts/phase-a-72h
+export REPO_ROOT="$HOME/Hyperliquid Project/Hyperliquid-Bot"
+export ARTIFACT_ROOT="$HOME/Hyperliquid Project/data-capture"
 export DURATION_SECONDS=3600
 export PHASE_A_JOINT_SMOKE=1
 export RUN_ID="$(date -u +%Y%m%dt%H%M%Sz)-phase-a-smoke"

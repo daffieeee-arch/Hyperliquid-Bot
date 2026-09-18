@@ -6,7 +6,11 @@ A professional crypto quantitative research and trading platform centered on Hyp
 
 The platform is designed to behave more like a small systematic trading desk than a single retail bot. It should continuously test multiple independent sources of edge, measure whether those edges survive realistic costs, allocate capital according to current evidence, and reduce or quarantine strategies whose live behavior diverges from their validated distribution.
 
-Development happens on a Windows 11 workstation through WSL2 and Codex. Tested, versioned Linux/amd64 OCI images run on an independent host-neutral runtime. A supported Ubuntu LTS VPS is the definitive primary PAPER profile (**ADR-024**); provisioning and TerraPC cutover remain separate CoS steps. TrueNAS remains an optional existing protected profile.
+Development happens primarily on the Netcup Ubuntu 24.04 LTS VPS through
+Cursor IDE Remote SSH, Cursor CLI and Codex CLI. Tested, versioned
+Linux/amd64 OCI images run as isolated services on the host-neutral runtime.
+The VPS is the definitive primary development, capture and PAPER profile
+(**ADR-024**); TerraPC/WSL2 is secondary.
 
 ## Strategic objective
 
@@ -43,7 +47,8 @@ The platform has six logical planes:
 - **Trading Plane** — signals, portfolio construction, risk and execution.
 - **Control Plane** — configuration, strategy lifecycle, permissions and operator actions.
 - **Observability Plane** — Grafana, traces, logs, alerts and forensic reconstruction.
-- **Build & Deployment Plane** — Windows/WSL2 development, GitHub CI, private images and approved-runtime promotion/rollback.
+- **Build & Deployment Plane** — VPS development, GitHub CI, private images
+  and approved-runtime promotion/rollback.
 
 The build/deployment plane ensures that source changes do not directly affect 24/7 services. PAPER, SHADOW and LIVE are distinct runtime environments with separate configuration, secrets and approval gates.
 
@@ -87,7 +92,8 @@ Success requires:
 - immutable container artifacts;
 - digest-pinned host-neutral Linux/OCI deployments;
 - deployment health checks and rollback;
-- no dependence on the Windows PC for 24/7 operation;
+- no dependence on TerraPC or an interactive development session for 24/7
+  operation;
 - every trade attributable to strategy, configuration, commit and image digest.
 
 ## Success criteria

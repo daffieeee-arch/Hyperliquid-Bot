@@ -32,7 +32,7 @@ PRODUCTION
 ## Software lifecycle
 
 ```text
-WINDOWS/WSL2 DEV
+NETCUP UBUNTU VPS DEV
   ↓
 PULL REQUEST
   ↓
@@ -131,10 +131,9 @@ Require:
 - no dependency on Windows, Codex, Hermes or an interactive session for continuous risk management;
 - stable runtime operating system preferred.
 
-The intended primary deployment profile is a supported Ubuntu LTS VPS (**ADR-024**). The existing
-TrueNAS 26 BETA.3 profile, if retained, is acceptable for PAPER research but not preferred for
-material live capital without explicit documented risk acceptance and repeated recovery/soak
-testing. Actual VPS provisioning and TerraPC cutover remain separate CoS steps after ADR-024.
+The primary deployment profile is the Netcup Ubuntu 24.04 LTS VPS
+(**ADR-024**). Material live capital still requires explicit approval,
+isolation, and repeated recovery/soak testing.
 
 ## SMALL LIVE -> PRODUCTION
 

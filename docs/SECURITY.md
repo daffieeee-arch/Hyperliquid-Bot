@@ -6,16 +6,17 @@ Trading security is designed from day one, even while the system only uses paper
 
 The platform separates four trust zones:
 
-1. Windows/WSL2 development;
+1. VPS development checkout and disposable services;
 2. GitHub/CI and container registry;
 3. approved Linux/OCI PAPER/SHADOW runtime;
 4. separately approved LIVE runtime and exchange credentials.
 
 Moving code between zones happens through reviewed source and immutable container artifacts—not through shared mutable directories.
 
-## Development workstation boundary
+## Development boundary
 
-Windows/WSL2 is trusted for source development, but it is not the live signing host.
+The Netcup Ubuntu 24.04 LTS VPS is trusted for source development and PAPER
+capture, but the development checkout is not a live signing boundary.
 
 Normal development must not contain:
 
@@ -23,12 +24,13 @@ Normal development must not contain:
 - a production Hyperliquid agent key;
 - CEX withdrawal credentials;
 - production database administrator credentials;
-- TrueNAS root/admin credentials in repository files;
+- host root/admin credentials in repository files;
 - secrets embedded in test fixtures or prompts.
 
 Codex should use workspace-scoped permissions and normal approval prompts. `danger-full-access`, Administrator execution and unrestricted access to personal/NAS data are not defaults.
 
-Mobile Remote can supervise Codex but does not change this boundary: commands still execute with the host's configured permissions.
+Remote SSH and CLI agents do not change this boundary: commands execute with
+the VPS user's configured permissions.
 
 ## Wallet separation
 
@@ -36,7 +38,8 @@ Mobile Remote can supervise Codex but does not change this boundary: commands st
 - Prefer hardware-backed custody for meaningful capital.
 - Hyperliquid agent/API wallets are authorized for automated trading.
 - Use separate agent wallets per trading process/account scope where practical.
-- Never expose the master seed/private key to Windows/WSL2, any runtime host or container (including TrueNAS), logs, browser code or GitHub.
+- Never expose the master seed/private key to any development or runtime host,
+  container, logs, browser code or GitHub.
 
 ## Centralized-exchange credentials
 
@@ -121,9 +124,7 @@ Grafana, Codex, research workers and the frontend do not receive exchange privat
 
 The project favors **maximum useful capability with scoped standing privilege**, not blanket read-only access.
 
-### Optional TrueNAS-profile MCP
-
-When the optional TrueNAS profile is used, Hermes may inspect and operate project resources, including creating/updating project datasets and Custom Apps when authorized.
+### Host administration
 
 Always require explicit approval for high-blast-radius actions such as:
 
@@ -134,7 +135,9 @@ Always require explicit approval for high-blast-radius actions such as:
 - destructive ACL/share changes;
 - modifying unrelated applications.
 
-Credentials must not appear in process arguments or plain repository configuration. Use certificate verification and a project-scoped service identity where supported.
+Credentials must not appear in process arguments or plain repository
+configuration. Use certificate verification and a project-scoped service
+identity where supported.
 
 ### Grafana MCP
 

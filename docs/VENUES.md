@@ -384,7 +384,8 @@ outcome; 3B1C closes that separate delivery-audit gap.
   where supported; never reused for execution.
 - Bitvavo/Kraken live execution keys: view/trade only; withdrawals disabled; IP allowlist where
   supported.
-- Hyperliquid: dedicated agent/API wallet; master wallet key never on any runtime host, including TrueNAS.
+- Hyperliquid: dedicated agent/API wallet; master wallet key never on any
+  development or runtime host.
 - Kraken MCP: safe services only during research and paper phases.
 - LLMs never hold unrestricted withdrawal/funding permissions.
 - Every live venue has an independent kill switch and a platform-wide halt.

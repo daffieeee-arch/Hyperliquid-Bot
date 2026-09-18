@@ -219,7 +219,7 @@ PYTHONPATH=src uv run --frozen python -m hyperliquid_bot.exp_h1_leadlag \
   --output-dir /path/to/h1-out
 ```
 
-Build the panel first from reconstructable retained runs (TerraPC roots live
+Build the panel first from reconstructable retained runs (the VPS root lives
 outside git):
 
 ```bash

@@ -4,11 +4,13 @@
 
 Prevent false discovery, overfitting, survivorship bias, look-ahead bias and unrealistic execution assumptions from creating fictitious trading edges.
 
-Research must also be reproducible across the Windows/WSL2 development environment, GitHub CI and the approved Linux/OCI research/runtime environment.
+Research must also be reproducible across the primary VPS development
+environment, GitHub CI and the approved Linux/OCI research/runtime
+environment.
 
 ## Research environments
 
-### Windows/WSL2
+### Netcup Ubuntu 24.04 LTS VPS
 
 Use for:
 
@@ -77,12 +79,13 @@ score in-sample expectancy, and do not treat committed fixtures, D01 routing eve
 DATA-1A smoke as a hypothesis-usable series. Trading must retain a multi-day DATA-1A run at
 `<artifact-root>/data-1a/hyperliquid/BTC-PERP/<run_id>/` (schema version 1, UTC ns receipt
 clocks, `capture-claim.json` with `retained: true`) outside git before Quant can move past this
-gate. Trading may retain that series on the operator WSL PC
-([DATA-1A operator PC/WSL runbook](runbooks/data1a-wsl-pc-retained-capture.md)) or on a VPS
-([DATA-1A VPS runbook](runbooks/data1a-vps-retained-capture.md)). Cloud Agents are unsuitable
-for a multi-day retain. The later Linux VPS host profile (migration target, not a
-cutover order) is
-[linux-vps-reference-profile.md](runbooks/linux-vps-reference-profile.md). A writer duration above 600 seconds is still not 24/7 service and is
+  gate. Trading should retain that series on the primary VPS
+([DATA-1A VPS runbook](runbooks/data1a-vps-retained-capture.md)).
+The operator WSL PC runbook remains a secondary fallback
+([DATA-1A operator PC/WSL runbook](runbooks/data1a-wsl-pc-retained-capture.md)).
+Cloud Agents are unsuitable for a multi-day retain. The Linux VPS host profile
+is [linux-vps-reference-profile.md](runbooks/linux-vps-reference-profile.md).
+A writer duration above 600 seconds is still not 24/7 service and is
 not by itself an edge.
 
 A passing sanity report is not evidence of edge. The current momentum slot is a fixed-lookback
@@ -91,7 +94,7 @@ Binance DATA-1F remains optional and is required only if the reserved basis stub
 Operator docs for a later retained Binance capture are in
 [DATA-1F operator PC/WSL runbook](runbooks/data1f-wsl-pc-retained-capture.md) and
 [DATA-1F VPS runbook](runbooks/data1f-vps-retained-capture.md). Do not start that capture
-until the TerraPC DATA-1A 72h series finishes and CoS assigns the window. Cloud Agents are
+until the assigned DATA-1A 72h series finishes and CoS assigns the window. Cloud Agents are
 unsuitable for a multi-day retain.
 
 WP-Q1 (`python -m hyperliquid_bot.panel_hl_binance`) is the next PAPER research gate after a
@@ -110,7 +113,7 @@ overlap after the gap mask is too small, or any predeclared horizon has too few 
 It may only emit `noise` or `not_enough_data`. It never assigns `edge`. Pre-registration,
 falsification rules and the registry template live in
 [experiments/exp_h1_leadlag.md](experiments/exp_h1_leadlag.md).
-H2 basis remains out of scope. Operator reconstructable roots later live on TerraPC
+H2 basis remains out of scope. Operator reconstructable roots live on the VPS
 outside git; unit tests use synthetic panels only.
 
 Bitvavo DATA-1E (authenticated View-only MD Pro BTC-EUR book + trades on the same Pro
@@ -223,7 +226,7 @@ Each experiment records:
 - code commit SHA;
 - container image digest where applicable;
 - dataset/version/range;
-- source environment (`DEV`, `CI`, `TRUENAS_RESEARCH`);
+- source environment (`DEV`, `CI`, `VPS_RESEARCH`);
 - feature set;
 - strategy/model version;
 - parameters;

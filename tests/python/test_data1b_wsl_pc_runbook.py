@@ -176,7 +176,7 @@ def test_wsl_runbook_documents_known_good_operator_paths() -> None:
     assert "freshest live retain" in text
     vps = VPS_RUNBOOK.read_text(encoding="utf-8")
     assert "1 through 604800 seconds" in vps
-    assert "Do not start a multi-day DATA-1B retain now" in vps
+    assert "Do not start a multi-day DATA-1B retain without assignment" in vps
     assert "depth 100" in vps
     assert "best 10" in vps
     assert "CRC32" in vps or "CRC" in vps

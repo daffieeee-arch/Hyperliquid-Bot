@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# DATA-1F operator-PC start helper for WSL2 Ubuntu.
+# DATA-1F VPS-first start helper.
 # Create-only public Binance capture. No secrets. Never resumes a run_id.
 # Never attaches to or stops tmux hl-capture.
 

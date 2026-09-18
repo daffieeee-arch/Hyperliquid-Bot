@@ -2,15 +2,19 @@
 
 Private multi-strategy crypto quantitative research and trading platform.
 
-The project is developed on a Windows 11 workstation through **WSL2 + Codex**, validated in GitHub Actions and packaged as immutable Linux/amd64 OCI images. The 24/7 architecture is host-neutral; **ADR-024** records a supported Ubuntu LTS VPS as the definitive primary PAPER profile, while the existing TrueNAS SCALE environment remains optional and protected.
+The project is developed primarily on the Netcup **Ubuntu 24.04 LTS** VPS
+(hostname `chupa`) through Cursor IDE Remote SSH, Cursor CLI (`agent`) and
+Codex CLI. GitHub Actions validates the source and packages immutable
+Linux/amd64 OCI images. **ADR-024** records this supported Ubuntu LTS VPS as
+the definitive primary development, capture and PAPER profile.
 
 > **Current stage:** COURSE-1 core-engine fit gate, BTC-PERP vertical-slice planning, and first PAPER cockpit screen<br>
 > **Default trading mode:** PAPER<br>
 > **Live capital:** Disabled by design until explicit promotion gates are met<br>
-> **Primary development host:** Windows 11 + WSL2<br>
+> **Primary development host:** Netcup Ubuntu 24.04 LTS VPS (`chupa`)<br>
 > **24/7 runtime boundary:** Host-neutral Linux/amd64 OCI<br>
-> **Primary PAPER profile:** Supported Ubuntu LTS VPS (**ADR-024**; provisioning/cutover separate)<br>
-> **Optional existing profile:** TrueNAS SCALE (protected; not the capture host)
+> **Primary PAPER/capture profile:** Netcup Ubuntu 24.04 LTS VPS (**ADR-024**)<br>
+> **Secondary operator environment:** TerraPC/WSL2
 
 The current delivery priority is one credentialless Hyperliquid BTC perpetual path from a bounded,
 deterministic replay through strategy, risk and PAPER execution to reproducible orders, fills,
@@ -39,7 +43,8 @@ See [Product Vision](docs/PRODUCT_VISION.md) and [Strategies](docs/STRATEGIES.md
 - Multiple independent strategies instead of one monolithic model.
 - Free market data first. Paid data is considered only after measured incremental value.
 - **Observe many venues; trade on few venues.**
-- Develop away from the 24/7 runtime host.
+- Keep interactive source work separate from running service containers and
+  persistent runtime volumes, even when both are on the VPS.
 - Build once in CI and promote the same image artifact through paper, shadow and live stages.
 - The same strategy and risk code path is used in backtest, paper, shadow, testnet and live modes.
 - Leverage is a consequence of risk-based position sizing, never the source of the edge.
@@ -51,13 +56,13 @@ See [Product Vision](docs/PRODUCT_VISION.md) and [Strategies](docs/STRATEGIES.md
 ## Environment model
 
 ```text
-Windows 11 workstation
-└── WSL2 Ubuntu
-    ├── Codex / ChatGPT desktop
-    ├── source repository
-    ├── Python + TypeScript toolchains
-    ├── disposable local Docker stack
-    └── unit/integration tests
+Netcup Ubuntu 24.04 LTS VPS (chupa)
+├── Cursor Remote SSH / Cursor CLI / Codex CLI
+├── source: $HOME/Hyperliquid Project/Hyperliquid-Bot
+├── captures: $HOME/Hyperliquid Project/data-capture
+├── Python + TypeScript toolchains
+├── disposable development services
+└── unit/integration tests
              │
              ▼
           GitHub
@@ -69,12 +74,12 @@ Windows 11 workstation
              │
              ▼
  Linux/amd64 OCI runtime
-    Ubuntu LTS VPS primary profile
-    TrueNAS optional existing profile
+    Netcup Ubuntu 24.04 LTS VPS
        PAPER / SHADOW / LIVE
 ```
 
-The Windows computer is a development workstation, not a trading server. It may be powered off without interrupting services on the independently operated 24/7 runtime.
+TerraPC/WSL2 is a secondary operator environment and may be powered off
+without interrupting services on the VPS.
 
 See [Development Workflow](docs/DEVELOPMENT.md) and [Deployment & Environments](docs/DEPLOYMENT.md).
 
@@ -102,8 +107,8 @@ See [Venue Strategy](docs/VENUES.md).
 | Configuration / control state | PostgreSQL when the control plane requires it |
 | Realtime state / event distribution | Redis when multi-process realtime state requires it |
 | Observability | Grafana + Grafana Alloy / OpenTelemetry |
-| Local development | Windows 11 + WSL2 + Docker Desktop |
-| Runtime | Host-neutral Linux/amd64 OCI; Ubuntu LTS VPS primary PAPER profile (ADR-024) |
+| Local development | Netcup Ubuntu 24.04 LTS VPS; TerraPC/WSL2 secondary |
+| Runtime | Host-neutral Linux/amd64 OCI on the Netcup VPS (ADR-024) |
 | CI/CD | GitHub Actions + private GitHub Container Registry |
 
 Redis and PostgreSQL remain planned platform components, but they are not mandatory blockers for the first thin vertical slice.
@@ -135,7 +140,6 @@ data/
 infra/
   dev/                  # disposable local compose stack
   images/               # Dockerfiles/build targets
-  truenas/              # optional existing TrueNAS profile
   clickhouse/
   postgres/
   redis/
@@ -177,9 +181,12 @@ No stage may be skipped merely because an in-sample backtest looks attractive or
 
 The aim is to get useful output early rather than disappear into a months-long build:
 
-- Initial days: WSL2/Codex workspace, repository bootstrap, CI and local disposable services.
+- Initial days: repository bootstrap, CI and disposable development services.
 - Current: time-boxed core-engine fit gate, then one local BTC-PERP replay-to-PAPER slice. A first PAPER cockpit screen now reads reconstructable COURSE-1 JSON plus public BTC-PERP mid, with a compact DESK banner, fail-closed MARKETS panel, and a first RISK slice that copies only existing PAPER fields and leaves missing leverage/margin/liquidation/VaR **UNAVAILABLE**.
-- After the local vertical slice: **ADR-024** records the Ubuntu LTS VPS/OCI PAPER runtime; factual VPS provisioning, TerraPC cutover, and any 24/7 public-data PAPER ops remain separate CoS steps. Retain TrueNAS only where explicitly chosen.
+- Current operations: **ADR-024** records the Netcup Ubuntu 24.04 LTS
+  VPS/OCI profile; the VPS is now the primary interactive development,
+  capture and PAPER host. Service deployment still uses reviewed,
+  digest-pinned images and explicit operator approval.
 - Week 3-6: robust research, validation, execution simulation and paper-vs-backtest comparison.
 - Week 6-12: production-grade recovery, reconciliation, security and live-readiness work while paper evidence accumulates.
 - Following weeks: shadow and very-small-capital validation before any material live allocation.

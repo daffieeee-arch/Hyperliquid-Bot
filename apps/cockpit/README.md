@@ -115,7 +115,7 @@ tests/fixtures/course1_cockpit/live-public-soak/
   capture-health.json
 ```
 
-Those file names match the COURSE-1 path contract. Later VPS artifacts use the
+Those file names match the COURSE-1 path contract. VPS artifacts use the
 same names under:
 
 ```text
@@ -172,7 +172,7 @@ To read a path-contract directory instead of the fixture:
 
 ```bash
 export TRADING_MODE=PAPER
-export COCKPIT_ARTIFACT_ROOT=/var/lib/hyperliquid-bot/reconstructable
+export COCKPIT_ARTIFACT_ROOT="$HOME/Hyperliquid Project/data-capture"
 export COCKPIT_RUN_ID=20260904t001800z-live-paper
 pnpm --filter @hyperliquid-bot/cockpit dev
 ```
@@ -187,8 +187,8 @@ To watch a DATA-1A reconstructable capture on the same machine (do not stop the
 collector). Next.js loads `apps/cockpit/.env.local`; the repository-root
 `.env.example` is documentation only.
 
-TerraPC WSL2 (current 72h retain; Linux filesystem, not `/mnt/c`). The
-recommended binding is **auto-detect**: set only `ARTIFACT_ROOT` and leave every
+Netcup Ubuntu 24.04 LTS VPS (primary capture host). The recommended binding is
+**auto-detect**: set only `ARTIFACT_ROOT` and leave every
 venue run_id unset. Per venue the cockpit then binds the freshest run that has a
 `capture-claim.json`, no `capture-health.json` (i.e. not stopped) and a
 `raw/part-*.parquet` newer than `COCKPIT_CAPTURE_FRESH_MAX_S` (180s). A venue
@@ -198,14 +198,12 @@ run is never bound as RUNNING:
 
 ```bash
 export TRADING_MODE=PAPER
-export ARTIFACT_ROOT=$HOME/hyperliquid-artifacts/reconstructable
+export ARTIFACT_ROOT="$HOME/Hyperliquid Project/data-capture"
 pnpm --filter @hyperliquid-bot/cockpit dev
 ```
 
-Before pinning a run id by hand, check what is actually on disk; the ids in
-older notes (`20260905t232635z-live-retained` for HL / Bitvavo / Kraken,
-`20260906t101559z-live-retained` for the restarted Binance) describe one
-moment and go stale as soon as a collector restarts:
+Before pinning a run ID by hand, check what is actually on disk. Recorded IDs
+describe one moment and go stale as soon as a collector restarts:
 
 ```bash
 ls -lt "$ARTIFACT_ROOT"/data-1f/binance/BTCUSDT/          # newest run dir first
@@ -239,12 +237,11 @@ not stop any collector to "refresh" numbers. Routes send
 `Cache-Control: no-store`. Optional: `COCKPIT_CAPTURE_FRESH_MAX_S=180` (seconds;
 tunable). Host clock must be sane.
 
-Later VPS path-contract root (same file names):
+Primary VPS path-contract root (same file names):
 
 ```bash
 export TRADING_MODE=PAPER
-export ARTIFACT_ROOT=/var/lib/hyperliquid-bot/reconstructable
-export DATA1A_RUN_ID=20260904t134940z-live-retained
+export ARTIFACT_ROOT="$HOME/Hyperliquid Project/data-capture"
 pnpm --filter @hyperliquid-bot/cockpit dev
 ```
 

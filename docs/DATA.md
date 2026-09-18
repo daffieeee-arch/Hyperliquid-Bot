@@ -12,7 +12,7 @@ Public market-data adapters can be added without granting live order permissions
 
 ## Development and runtime data split
 
-### Windows/WSL2 development
+### VPS development
 
 Use:
 
@@ -35,7 +35,11 @@ The selected durable runtime store is the system of record for:
 - portfolio/equity history;
 - operational data-quality records.
 
-Windows development must not directly mutate a runtime database. Read-only remote analysis may be permitted, while large experiments run through a controlled research worker or bounded export. Existing TrueNAS/ClickHouse data remains protected until retention or migration is explicitly approved. TrueNAS SCALE is out of capture/runtime scope; the later multi-day PAPER capture host is a Linux VPS (migration target, not a cutover order) recorded in [linux-vps-reference-profile.md](runbooks/linux-vps-reference-profile.md). Current retains stay on TerraPC WSL.
+Development tasks must not directly mutate the durable runtime database.
+Read-only analysis may be permitted, while large experiments run through a
+controlled research worker or bounded export. The Netcup Ubuntu 24.04 LTS VPS
+is the primary multi-day PAPER capture host recorded in
+[linux-vps-reference-profile.md](runbooks/linux-vps-reference-profile.md).
 
 ### Fixture policy
 
@@ -322,11 +326,8 @@ ping: BTC-PERP already produces inbound frames, and a missed heartbeat would clo
 seconds. Treat ~3h closes as venue/proxy max-session or half-open sockets; persist `close_code`
 / `exception_class` on disconnect markers and reconnect. This is not a LIVE or signing change.
 
-To point local `next dev` at a live TerraPC retain without stopping the
-collector, export `ARTIFACT_ROOT=$HOME/hyperliquid-artifacts/reconstructable`.
-Current 72h retain ids: HL / Bitvavo / Kraken
-`20260905t232635z-live-retained`, Binance `20260906t101559z-live-retained`
-(do not prefer stopped `20260905t235830z-live-retained`).
+To point `next dev` at a live VPS retain without stopping the collector,
+export `ARTIFACT_ROOT="$HOME/Hyperliquid Project/data-capture"`.
 Unset venue run_ids auto-detect the freshest live retain (claim + fresh
 `raw/part-*.parquet`, no health JSON). Explicit `DATA1A_RUN_ID` /
 `DATA1F_RUN_ID` / `DATA1E_RUN_ID` / `DATA1B_RUN_ID` (or
@@ -456,7 +457,7 @@ Preferred reconstructable inputs, both retained outside git:
 Each run needs `raw/part-*.parquet`, a DuckDB catalog rebuilt from `raw/` by
 `create_research_catalog`, and `capture-claim.json` with `retained: true` plus the matching
 path contract. Ad-hoc parquet/database pairs exist only for disposable synthetic tests.
-Point `--artifact-root` at the TerraPC reconstructable root when those retained runs exist;
+Point `--artifact-root` at the VPS reconstructable root when those retained runs exist;
 do not commit live captures.
 
 The join clock is receipt UTC (`received_utc_ns // bucket_ns`). Default `--bucket-ms` is
@@ -672,7 +673,7 @@ retain from this document.
 Operator retain/stop/continue rules are in
 [DATA-1B VPS retained-capture runbook](runbooks/data1b-vps-retained-capture.md) and the
 [DATA-1B operator PC/WSL retained-capture runbook](runbooks/data1b-wsl-pc-retained-capture.md).
-Cloud Agents are unsuitable for a multi-day retain and must not SSH to or stop TerraPC
+Cloud Agents are unsuitable for a multi-day retain and must not stop
 `hl-capture`, `bn-capture`, or `bv-capture`. **Do not start a multi-day DATA-1B retain
 until CoS assigns this window** via the joint Phase A checklist
 ([phase-a-72h-joint-retained-capture.md](runbooks/phase-a-72h-joint-retained-capture.md)).
@@ -996,7 +997,7 @@ PYTHONPATH=src uv run --frozen python -m hyperliquid_bot.bitvavo_mdpro_research 
 Operator retain/stop/continue rules are in
 [DATA-1E VPS retained-capture runbook](runbooks/data1e-vps-retained-capture.md) and the
 [DATA-1E operator PC/WSL retained-capture runbook](runbooks/data1e-wsl-pc-retained-capture.md).
-Cloud Agents are unsuitable for a multi-day retain and must not SSH to or stop TerraPC
+Cloud Agents are unsuitable for a multi-day retain and must not stop
 `hl-capture` or `bn-capture`. **Do not start a multi-day DATA-1E retain until CoS assigns
 this window** via the joint Phase A checklist
 ([phase-a-72h-joint-retained-capture.md](runbooks/phase-a-72h-joint-retained-capture.md)).
@@ -1181,7 +1182,7 @@ PYTHONPATH=src uv run --frozen python -m hyperliquid_bot.binance_public_research
 Operator retain/stop/continue rules are in
 [DATA-1F VPS retained-capture runbook](runbooks/data1f-vps-retained-capture.md) and the
 [DATA-1F operator PC/WSL retained-capture runbook](runbooks/data1f-wsl-pc-retained-capture.md).
-Cloud Agents are unsuitable for a multi-day retain and must not SSH to or stop TerraPC
+Cloud Agents are unsuitable for a multi-day retain and must not stop
 `hl-capture`. **Do not start a multi-day DATA-1F retain until the live DATA-1A 72h series
 finishes and CoS assigns this window** — except the new joint Phase A campaign, which
 starts all four lanes together after smoke + Chupa OK
@@ -1514,10 +1515,10 @@ Official sources checked for this slice:
 
 ## Self-collected dataset
 
-After ADR-024 and an approved CoS cutover, realtime collectors should run on the approved 24/7
-runtime and persist data to ClickHouse. This creates a dataset with the same receipt path and
-timestamp discipline the future live bot will use. Until cutover, TerraPC WSL remains the interim
-retain path; ADR-024 does not authorize provisioning or TrueNAS mutation by itself.
+Realtime collectors should run on the approved Netcup 24/7 runtime and
+persist data to ClickHouse. This creates a dataset with the same receipt path
+and timestamp discipline the future live bot will use. Capture starts remain
+subject to their explicit operator gates.
 
 Recommended normalized schema per instrument/time bucket includes:
 
@@ -2107,9 +2108,11 @@ Use SSD-backed durable runtime storage for:
 - paper/live execution data;
 - Redis/PostgreSQL when introduced.
 
-Move large cold archives and old raw market data to the chosen archive tier according to retention policy; the existing TrueNAS HDD pool remains an option while that profile is retained.
+Move large cold archives and old raw market data to an approved VPS archive
+tier according to the retention policy.
 
-The Windows workstation stores only source, build caches and bounded development datasets. It is not a backup of the durable runtime data store.
+TerraPC stores only secondary source/build caches and bounded development
+datasets. It is not a backup of the durable VPS runtime data store.
 
 ## Paid data decision rule
 

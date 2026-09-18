@@ -2,22 +2,25 @@
 
 ## Principle
 
-Source code is developed on Windows/WSL2, tested in CI and packaged into immutable Linux/amd64 OCI images for an independently operated runtime host.
+Source code is developed primarily on the Netcup Ubuntu 24.04 LTS VPS
+(hostname `chupa`), tested in CI and packaged into immutable Linux/amd64 OCI
+images for continuous services on that host.
 
-The runtime must not run directly from a mutable development checkout. Production-like services consume versioned images and persistent volumes.
+Production-like services must not run directly from the mutable development
+checkout. They consume versioned images and persistent volumes even though
+development and runtime share the VPS.
 
 The architecture boundary is host-neutral Linux/OCI. **ADR-024** records a supported Ubuntu LTS
-VPS as the definitive primary PAPER runtime profile; the existing TrueNAS SCALE environment remains
-optional and protected. The local BTC-PERP vertical slice came first. ADR-024 does **not** authorize
-VPS provisioning, TerraPC cutover, or mutation of retained TrueNAS/ClickHouse/Grafana assets.
+VPS as the definitive primary development, capture and PAPER runtime profile.
+The selected host is the Netcup Ubuntu 24.04 LTS VPS.
 
 ## Environment matrix
 
 | Environment | Host | Purpose | Credentials | Persistence |
 |---|---|---|---|---|
-| DEV | Windows 11 + WSL2 | coding, unit tests, local integration tests, small research | no live exchange credentials | disposable/local |
+| DEV | Netcup Ubuntu 24.04 LTS VPS; TerraPC/WSL2 secondary | coding, unit tests, local integration tests, small research | no live exchange credentials | disposable/local |
 | CI | GitHub Actions | independent tests, security checks and image builds | repository-scoped workflow credentials | ephemeral |
-| PAPER | approved Linux/OCI runtime; Ubuntu LTS VPS intended | 24/7 public data, paper execution, Grafana and cockpit | public data; no live trading key | durable |
+| PAPER | Netcup Ubuntu 24.04 LTS VPS (`chupa`) | 24/7 public data, paper execution, Grafana and cockpit | public data; no live trading key | durable |
 | SHADOW | approved isolated Linux/OCI runtime | live signals/account observation without submitting orders | read-only/account-scoped where needed | durable and isolated |
 | SMALL LIVE | approved supported isolated runtime | tightly capped real execution | dedicated trade-only credentials | durable and isolated |
 | PRODUCTION | approved supported isolated runtime | controlled scaled operation | least-privilege per service | durable, backed up and monitored |
@@ -27,7 +30,7 @@ PAPER, SHADOW and LIVE are distinct deployments with separate configuration, sec
 ## Software supply chain
 
 ```text
-Codex in WSL2
+Cursor / Codex on the Netcup VPS
       ↓
 feature branch / pull request
       ↓
@@ -132,44 +135,12 @@ Each deployment profile receives a dedicated registry credential with package-re
 ## Primary Ubuntu LTS VPS profile
 
 **ADR-024** selects Linux/amd64 OCI images and Compose-compatible declarative configuration on a
-supported Ubuntu LTS VPS (prefer 24.04 LTS) as the definitive PAPER runtime profile. Deployments
+supported Ubuntu LTS VPS (Ubuntu 24.04 LTS) as the definitive PAPER runtime
+profile. Deployments
 pin image digests; `PAPER` remains fail-closed; rollback is redeploy of a previous digest.
 
-A PAPER-only **reference** size for later multi-day market-data capture (not a cutover
-order; current retains stay on TerraPC WSL until CoS cutover) is
+A PAPER-only reference size for multi-day market-data capture is
 [linux-vps-reference-profile.md](runbooks/linux-vps-reference-profile.md).
-
-## Optional existing TrueNAS profile
-
-TrueNAS SCALE is **out of runtime and capture scope** (share or optional Ubuntu VM only;
-not the capture host). The notes below are historical inventory, not a deploy path.
-
-If that hardware is reused only as a share or Ubuntu VM, do not treat Custom Apps as the
-PAPER capture host. Historical Custom Apps notes (not current runtime) recorded that
-runtime configuration lived under version control without secret values, and that
-TrueNAS supplied:
-
-- image digest;
-- resource limits;
-- service network configuration;
-- persistent dataset mounts;
-- runtime secrets;
-- health/restart policy;
-- paper/shadow/live mode selection.
-
-Application data belongs in explicit host datasets rather than image layers or anonymous state that cannot be backed up.
-
-Example logical namespaces:
-
-```text
-fastdisk/quant/hyperliquid-paper/
-fastdisk/quant/hyperliquid-shadow/
-fastdisk/quant/hyperliquid-live/
-tank/quant/hyperliquid-archive/
-tank/quant/hyperliquid-backups/
-```
-
-Exact dataset names are finalized after inspecting the existing TrueNAS and ClickHouse layout.
 
 ## Initial deployment policy
 
@@ -220,19 +191,11 @@ Where technically possible, promote the exact same image digest from PAPER to SH
 
 Rebuilding from the same source commit creates a new artifact and requires revalidation. Passing paper validation belongs to an artifact/configuration pair, not merely to a Git branch name.
 
-## Optional TrueNAS profile maturity
-
-If retained, TrueNAS 26 BETA.3 is acceptable for research and PAPER with backups and monitoring,
-but it is not the primary deployment profile. Material live capital must use a supported stable
-isolated runtime or have explicit risk acceptance. Repeat soak/recovery testing after any material
-operating-system change.
-
 ## Runtime change authority
 
 Hermes and MCP integrations may manage the environment, but standing privileges remain scoped:
 
-- TrueNAS operational actions, when that optional profile is used, are allowed for project datasets/apps within approved scope;
-- destructive pool/dataset, update or reboot actions require explicit approval;
+- destructive storage/dataset, update or reboot actions require explicit approval;
 - Grafana MCP may edit the Hyperliquid folder and alerts;
 - datasource credentials remain read-only where possible;
 - ClickHouse schema migrations use a separate controlled identity from research queries;

@@ -18,13 +18,13 @@ fallback**. Path contract `data-1b-kraken-btc-usd-v1` replaced retired
 For the Windows 11 + WSL2 Ubuntu operator PC (TerraPC), including tmux
 `kr-capture` start/status/stop, see
 [data1b-wsl-pc-retained-capture.md](data1b-wsl-pc-retained-capture.md).
-Cloud Agents are unsuitable for a multi-day retain and must not SSH to or stop
-`hl-capture`, `bn-capture`, `bv-capture`, or `kr-capture`. The later host
-profile (not a cutover order) is
+Cloud Agents are unsuitable for a multi-day retain and must not stop
+`hl-capture`, `bn-capture`, `bv-capture`, or `kr-capture`. The active host
+profile is
 [linux-vps-reference-profile.md](linux-vps-reference-profile.md).
 
-**Do not start a multi-day DATA-1B retain now.** Wait for CoS to assign this
-window via the joint Phase A TerraPC checklist (not this VPS host).
+**Do not start a multi-day DATA-1B retain without assignment.** Wait for CoS
+to assign the window via the joint Phase A checklist on this primary VPS.
 
 ## Duration contract
 
@@ -83,18 +83,20 @@ trade/signing names listed in the WSL runbook.
 ## Fail-closed start
 
 ```bash
-# From a supported Ubuntu LTS VPS checkout of a tested commit / image.
+# From the Netcup Ubuntu 24.04 LTS VPS.
 # Do not start until CoS assigns this window.
 unset TRADING_MODE
 unset D41_EXECUTION_MODE
 
+export REPO_ROOT="$HOME/Hyperliquid Project/Hyperliquid-Bot"
 export PYTHONPATH=src
-export ARTIFACT_ROOT=/var/lib/hyperliquid-bot/reconstructable
+export ARTIFACT_ROOT="$HOME/Hyperliquid Project/data-capture"
 export RUN_ID="$(date -u +%Y%m%dt%H%M%Sz)-live-retained"
 export DURATION_SECONDS=14400
 
 test ! -e "${ARTIFACT_ROOT}/data-1b/kraken/BTC-USD/${RUN_ID}"
 
+cd "$REPO_ROOT"
 # Python defaults: --l2-depth 100 --l3-depth 100. CRC32 still covers only the best 10 levels.
 PYTHONPATH=src uv run --frozen python -m hyperliquid_bot.kraken_l3_research \
   --artifact-root "${ARTIFACT_ROOT}" \
@@ -140,5 +142,4 @@ To retain more data after a stop, start a **new** `run_id`.
 - D22-B venue-authoritative reconciliation
 - funding settlement, signing, TESTNET, SHADOW, LIVE
 - profitability or strategy promotion
-- TrueNAS / ClickHouse reuse
 - OKX

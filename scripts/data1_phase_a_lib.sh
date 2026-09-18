@@ -1,5 +1,5 @@
 # Shared Phase A campaign helpers. Sourced by data1*_lib.sh.
-# Joint 72h PAPER retain on TerraPC WSL. Never print secret values.
+# Joint 72h PAPER retain on the primary VPS. Never print secret values.
 
 data1_phase_a_profile_name() {
   local duration="$1"

@@ -1,4 +1,4 @@
-# Shared DATA-1A operator-PC helpers. Sourced by data1a_*.sh.
+# Shared DATA-1A VPS-first operator helpers. Sourced by data1a_*.sh.
 # Public Hyperliquid capture only. Create-only. Never print secret values.
 
 _DATA1A_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -10,11 +10,11 @@ source "${_DATA1A_LIB_DIR}/data1_bandwidth_lib.sh"
 source "${_DATA1A_LIB_DIR}/data1_phase_a_lib.sh"
 
 data1a_default_artifact_root() {
-  printf '%s\n' "${HOME}/hyperliquid-artifacts/reconstructable"
+  printf '%s\n' "${HOME}/Hyperliquid Project/data-capture"
 }
 
 data1a_default_repo_root() {
-  printf '%s\n' "${HOME}/code/Hyperliquid-Bot-main"
+  printf '%s\n' "${HOME}/Hyperliquid Project/Hyperliquid-Bot"
 }
 
 data1a_default_tmux_session() {

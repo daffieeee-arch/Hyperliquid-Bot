@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# DATA-1B operator-PC start helper for WSL2 Ubuntu.
+# DATA-1B VPS-first start helper.
 # Create-only public Kraken BTC/USD L2+trades (optional L3 via KRAKEN_WS_*).
 # Never resumes a run_id. Never attaches to or stops hl-capture, bn-capture, or bv-capture.
 # Retired BTC-EUR is not the current contract and is never a silent fallback.

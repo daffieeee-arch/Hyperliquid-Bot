@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# DATA-1A operator-PC stop helper for WSL2 Ubuntu.
+# DATA-1A operator stop helper.
 # Create-only: sends SIGINT via tmux C-c. Never resumes or reuses the same run_id.
 
 set -euo pipefail

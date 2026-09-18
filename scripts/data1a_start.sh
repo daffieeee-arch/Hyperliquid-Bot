@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# DATA-1A operator-PC start helper for WSL2 Ubuntu.
+# DATA-1A VPS-first start helper.
 # Create-only public Hyperliquid capture. No secrets. Never resumes a run_id.
 
 set -euo pipefail

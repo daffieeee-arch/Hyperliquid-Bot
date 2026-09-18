@@ -66,12 +66,16 @@ repository change):
     for trivial docs/chore PRs unless the user asks.
 11. Resolve blocking review findings on the same branch; re-run the relevant
     tests and CI.
-12. Merge only when CI is green, the PR has no merge conflicts, and all
-    blocking issues are resolved.
-13. Use Squash and Merge by default.
-14. After merge, delete the merged feature branch and any associated worktree,
-    but only after confirming they hold no uncommitted or unmerged work.
-15. Synchronize local `main` with `origin/main` again.
+12. Stop at Ready: do **not** squash-merge feature PRs yourself. Cursor Cloud
+    Agents open PRs and fix CI/review findings only.
+13. **Chief of Staff (CoS / Grok Bot)** reviews feature PRs and squash-merges
+    them when the review is OK, CI is green, and the PR is mergeable.
+    Dependabot PRs may be CoS auto-merged on green CI without a full feature
+    review. LIVE/capital still needs Chupa's explicit approval.
+14. After CoS merge, delete the merged feature branch and any associated
+    worktree only after confirming they hold no uncommitted or unmerged work
+    (ops/CoS), then synchronize the Netcup VPS `main` checkout with
+    `origin/main` when a deploy is needed.
 
 Keep the workflow practical: add extra steps, tests, or CI only when the
 nature of the change actually requires them.

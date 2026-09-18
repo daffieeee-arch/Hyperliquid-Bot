@@ -156,10 +156,27 @@ describe("DATA-1A capture loader", () => {
       twenty_four_seven: false,
       gaps: 1,
       reconnects: 2,
+      reconnect_clusters: 1,
+      exception_class: "ConnectionClosedError",
+      close_code: 1011,
+      close_code_rcvd: 1011,
+      close_code_sent: 1011,
+      close_reason_rcvd: "internal error",
+      close_reason_sent: "keepalive ping timeout",
       limitations: [],
       transport_profiles: [
         { transport_profile: "spot", gaps: 0, reconnects: 0 },
-        { transport_profile: "usdm_public", gaps: 1, reconnects: 2 },
+        {
+          transport_profile: "usdm_public",
+          gaps: 1,
+          reconnects: 2,
+          reconnect_clusters: 1,
+          exception_class: "ConnectionClosedError",
+          close_code: 1008,
+          close_code_rcvd: 1008,
+          close_reason_rcvd: "Too many requests",
+          errno: 104,
+        },
       ],
     });
     const snapshot = loadData1ACaptureSnapshot(
@@ -174,8 +191,27 @@ describe("DATA-1A capture loader", () => {
     );
     expect(snapshot.health?.transport_profiles).toEqual([
       { transport_profile: "spot", gaps: 0, reconnects: 0 },
-      { transport_profile: "usdm_public", gaps: 1, reconnects: 2 },
+      {
+        transport_profile: "usdm_public",
+        gaps: 1,
+        reconnects: 2,
+        reconnect_clusters: 1,
+        exception_class: "ConnectionClosedError",
+        close_code: 1008,
+        close_code_rcvd: 1008,
+        close_reason_rcvd: "Too many requests",
+        errno: 104,
+      },
     ]);
+    expect(snapshot.health).toMatchObject({
+      reconnect_clusters: 1,
+      exception_class: "ConnectionClosedError",
+      close_code: 1011,
+      close_code_rcvd: 1011,
+      close_code_sent: 1011,
+      close_reason_rcvd: "internal error",
+      close_reason_sent: "keepalive ping timeout",
+    });
   });
 
   it("does not invent part counts when the run directory is missing", () => {

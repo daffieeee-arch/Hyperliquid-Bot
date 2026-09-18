@@ -1,5 +1,9 @@
 import { deskCaptureGlance } from "./desk";
-import { captureBindingSourceLabel, presentCopiedText, presentGapReconnect } from "./display";
+import {
+  captureBindingSourceLabel,
+  presentCopiedText,
+  presentGapReconnectClusters,
+} from "./display";
 import type { PaperRunSnapshot, VenueCaptureChip, VenueCaptureStripResponse } from "./types";
 
 export const SECOND_ROW_UNAVAILABLE = "UNAVAILABLE";
@@ -87,7 +91,11 @@ export function buildSecondRowView(
       runId: presentCopiedText(binance?.run_id),
       status: binance?.status ?? SECOND_ROW_UNAVAILABLE,
       lastPartAge: binance?.last_part_age ?? "n/a",
-      gapsReconnects: presentGapReconnect(binance?.gaps, binance?.reconnects),
+      gapsReconnects: presentGapReconnectClusters(
+        binance?.gaps,
+        binance?.reconnects,
+        binance?.reconnect_clusters,
+      ),
       binding:
         binance === undefined ? "unbound" : captureBindingSourceLabel(binance.binding_source),
       note: BINANCE_USDM_PUBLIC_NOTE,

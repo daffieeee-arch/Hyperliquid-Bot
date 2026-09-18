@@ -142,13 +142,24 @@ export type Data1ACaptureClaim = {
   resume_policy?: string;
 };
 
-export type TransportProfileRow = {
+export type TransportDisconnectFields = {
+  exception_class?: string;
+  close_code?: number;
+  close_code_rcvd?: number;
+  close_code_sent?: number;
+  close_reason_rcvd?: string;
+  close_reason_sent?: string;
+  errno?: number;
+};
+
+export type TransportProfileRow = TransportDisconnectFields & {
   transport_profile: string;
   gaps?: number;
   reconnects?: number;
+  reconnect_clusters?: number;
 };
 
-export type Data1ACaptureHealth = {
+export type Data1ACaptureHealth = TransportDisconnectFields & {
   schema: string;
   kind: "capture-health";
   path_contract: string;
@@ -159,6 +170,7 @@ export type Data1ACaptureHealth = {
   credentialless?: boolean;
   gaps?: number;
   reconnects?: number;
+  reconnect_clusters?: number;
   events?: number;
   parquet_files?: number;
   parquet_bytes?: number;
@@ -248,6 +260,14 @@ export type VenueCaptureChip = {
   last_part_mtime_utc: string | undefined;
   gaps: number | undefined;
   reconnects: number | undefined;
+  reconnect_clusters?: number;
+  exception_class?: string;
+  close_code?: number;
+  close_code_rcvd?: number;
+  close_code_sent?: number;
+  close_reason_rcvd?: string;
+  close_reason_sent?: string;
+  errno?: number;
   run_id: string | undefined;
   binding_source: CaptureBindingSource;
   observed_at: string;

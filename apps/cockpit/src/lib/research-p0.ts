@@ -3,7 +3,7 @@ import { join, relative, resolve } from "node:path";
 
 import { bindVenueCaptureRun } from "./capture-runs";
 import { loadCaptureSnapshotForContract } from "./data1a-capture";
-import { presentCopiedText, presentGapReconnect } from "./display";
+import { presentCopiedText, presentGapReconnectClusters } from "./display";
 import { captureArtifactRoot, VENUE_CAPTURE_CONTRACTS, type VenueCaptureQuery } from "./paths";
 import {
   BINANCE_IDENTITY_WARNING,
@@ -64,7 +64,9 @@ function formatProfiles(profiles: TransportProfileRow[] | undefined): string {
     .map((profile) => {
       const gaps = profile.gaps === undefined ? "n/a" : String(profile.gaps);
       const reconnects = profile.reconnects === undefined ? "n/a" : String(profile.reconnects);
-      return `${profile.transport_profile}:${gaps}/${reconnects}`;
+      const clusters =
+        profile.reconnect_clusters === undefined ? "n/a" : String(profile.reconnect_clusters);
+      return `${profile.transport_profile}:${gaps} gaps/${reconnects} raw/${clusters} clusters`;
     })
     .join(" · ");
 }
@@ -519,7 +521,11 @@ export function buildResearchP0View(
     return {
       id: venue.id,
       venue: venue.chip,
-      gapsReconnects: presentGapReconnect(snapshot?.health?.gaps, snapshot?.health?.reconnects),
+      gapsReconnects: presentGapReconnectClusters(
+        snapshot?.health?.gaps,
+        snapshot?.health?.reconnects,
+        snapshot?.health?.reconnect_clusters,
+      ),
       transportProfiles: formatProfiles(snapshot?.health?.transport_profiles),
       partCount:
         snapshot?.parts.count === undefined ? RESEARCH_UNAVAILABLE : String(snapshot.parts.count),

@@ -17,6 +17,7 @@ import {
   presentCopiedText,
   presentData1ADuration,
   presentGapReconnect,
+  presentGapReconnectClusters,
   presentLastPartAge,
   presentLastPartMtime,
   signedTone,
@@ -172,6 +173,9 @@ describe("cockpit display helpers", () => {
     expect(presentGapReconnect(undefined, undefined)).toBe("n/a");
     expect(presentGapReconnect(0, 0)).toBe("0/0");
     expect(presentGapReconnect(2, undefined)).toBe("2/n/a");
+    expect(presentGapReconnectClusters(undefined, undefined, undefined)).toBe("n/a");
+    expect(presentGapReconnectClusters(1, 6, 3)).toBe("1 gaps · 6 raw / 3 clusters");
+    expect(presentGapReconnectClusters(0, 2, undefined)).toBe("0 gaps · 2 raw / n/a clusters");
     expect(presentLastPartMtime(undefined)).toBe("n/a");
     expect(presentLastPartMtime("2026-09-06T10:15:59.000Z")).toBe("2026-09-06 10:15:59Z");
     expect(presentLastPartMtime("not-a-time")).toBe("n/a");

@@ -62,6 +62,7 @@ const strip: VenueCaptureStrip = {
       binding_source: "env",
       gaps: 0,
       reconnects: 2,
+      reconnect_clusters: 1,
       error: undefined,
     }),
     chip({ id: "bitvavo", chip: "BITVAVO", series: "DATA-1E" }),
@@ -88,7 +89,7 @@ describe("second-row operator cards", () => {
     expect(view.binance.profile).toBe(BINANCE_USDM_PUBLIC_PROFILE);
     expect(view.binance.channel).toBe(BINANCE_USDM_PUBLIC_CHANNEL);
     expect(view.binance.runId).toBe(TERRAPC_BINANCE_ACTIVE_RETAIN_RUN_ID);
-    expect(view.binance.gapsReconnects).toBe("0/2");
+    expect(view.binance.gapsReconnects).toBe("0 gaps · 2 raw / 1 clusters");
     expect(view.binance.note).toBe(BINANCE_USDM_PUBLIC_NOTE);
     expect(JSON.stringify(view)).not.toContain("net_pnl");
     expect(JSON.stringify(view)).not.toContain("-0.0126583080");

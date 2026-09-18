@@ -22,6 +22,7 @@ import {
 import { loadVenueCaptureStrip } from "./venue-capture";
 
 const repoRoot = resolve(fileURLToPath(new URL("../../../../", import.meta.url)));
+const reconnectFixtureRoot = join(repoRoot, "tests", "fixtures", "market_tape", "artifact-root");
 const observedAt = "2026-09-06T12:00:00.000Z";
 
 const panelReady = {
@@ -93,6 +94,19 @@ describe("research P0", () => {
     expect(view.identityWarning).toBe(BINANCE_IDENTITY_WARNING);
     expect(RESEARCH_ZONE_KICKER).toMatch(/Artifact \/ summary cards only/);
     expect(PUBLIC_MID_NOT_RESEARCH).toMatch(/public mid/);
+  });
+
+  it("labels raw reconnect attempts separately from 5-second clusters", () => {
+    const env = {
+      TRADING_MODE: "PAPER",
+      ARTIFACT_ROOT: reconnectFixtureRoot,
+      DATA1F_RUN_ID: "20260905t180100z-live-retained",
+    };
+    const strip = loadVenueCaptureStrip(env, repoRoot, {}, () => observedAt);
+    const view = buildResearchP0View({ ok: true, strip }, env, repoRoot, {}, observedAt);
+    const binance = view.health.find((row) => row.id === "binance");
+    expect(binance?.gapsReconnects).toBe("2 gaps · 4 raw / 2 clusters");
+    expect(binance?.transportProfiles).toContain("spot:2 gaps/4 raw/2 clusters");
   });
 
   it("copies a pointed panel-summary.json and leaves missing mid-run health as UNAVAILABLE", () => {

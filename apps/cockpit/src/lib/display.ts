@@ -173,6 +173,18 @@ export function presentGapReconnect(
   return `${presentCopiedNumber(gaps)}/${presentCopiedNumber(reconnects)}`;
 }
 
+/** Keep reconnect attempts distinct from optional 5-second wall-clock clusters. */
+export function presentGapReconnectClusters(
+  gaps: number | undefined,
+  reconnects: number | undefined,
+  reconnectClusters: number | undefined,
+): string {
+  if (gaps === undefined && reconnects === undefined && reconnectClusters === undefined) {
+    return "n/a";
+  }
+  return `${presentCopiedNumber(gaps)} gaps · ${presentCopiedNumber(reconnects)} raw / ${presentCopiedNumber(reconnectClusters)} clusters`;
+}
+
 /** Compact UTC mtime for the strip. Fail closed if unparseable. */
 export function presentLastPartMtime(mtimeUtc: string | undefined): string {
   if (mtimeUtc === undefined || mtimeUtc === "") {

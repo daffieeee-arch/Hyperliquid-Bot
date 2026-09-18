@@ -6,7 +6,8 @@ Development and runtime are deliberately separated:
 
 - **Windows 11 + WSL2 + Codex:** source development, local tests and small research;
 - **GitHub Actions:** independent CI and image construction;
-- **Host-neutral Linux/amd64 OCI runtime:** 24/7 data collection and PAPER/SHADOW/LIVE; a supported Ubuntu LTS VPS is the intended primary deployment profile and TrueNAS is optional.
+- **Host-neutral Linux/amd64 OCI runtime:** 24/7 data collection and PAPER/SHADOW/LIVE; **ADR-024**
+  records a supported Ubuntu LTS VPS as the definitive primary PAPER profile and TrueNAS is optional.
 
 Fases overlap by workstream. A strategy may be in PAPER while another remains in RESEARCH, and production hardening can continue while live-market paper evidence accumulates.
 
@@ -90,9 +91,9 @@ Exit gate:
 - no result is presented as profitability, strategy promotion, TESTNET or LIVE readiness.
 
 Runtime-host work follows this exit gate. Host-neutral Linux/amd64 OCI/Compose is the architecture
-boundary and a supported Ubuntu LTS VPS is the intended primary profile. The definitive runtime
-ADR, factual VPS migration and disposition of existing TrueNAS/ClickHouse/Grafana state remain a
-separate, later scope.
+boundary. **ADR-024** records a supported Ubuntu LTS VPS as the definitive primary PAPER profile.
+Factual VPS provisioning, TerraPC cutover, and disposition of existing TrueNAS/ClickHouse/Grafana
+state remain separate, later CoS scope and are not authorized by that ADR alone.
 
 ## Phase 0A — Blueprint and project decisions
 

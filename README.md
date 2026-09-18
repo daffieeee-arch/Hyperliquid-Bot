@@ -2,15 +2,15 @@
 
 Private multi-strategy crypto quantitative research and trading platform.
 
-The project is developed on a Windows 11 workstation through **WSL2 + Codex**, validated in GitHub Actions and packaged as immutable Linux/amd64 OCI images. The 24/7 architecture is host-neutral; a supported Ubuntu LTS VPS is the intended primary deployment profile, while the existing TrueNAS SCALE environment remains optional.
+The project is developed on a Windows 11 workstation through **WSL2 + Codex**, validated in GitHub Actions and packaged as immutable Linux/amd64 OCI images. The 24/7 architecture is host-neutral; **ADR-024** records a supported Ubuntu LTS VPS as the definitive primary PAPER profile, while the existing TrueNAS SCALE environment remains optional and protected.
 
 > **Current stage:** COURSE-1 core-engine fit gate, BTC-PERP vertical-slice planning, and first PAPER cockpit screen<br>
 > **Default trading mode:** PAPER<br>
 > **Live capital:** Disabled by design until explicit promotion gates are met<br>
 > **Primary development host:** Windows 11 + WSL2<br>
 > **24/7 runtime boundary:** Host-neutral Linux/amd64 OCI<br>
-> **Intended primary deployment profile:** Supported Ubuntu LTS VPS, after the local slice<br>
-> **Optional existing profile:** TrueNAS SCALE
+> **Primary PAPER profile:** Supported Ubuntu LTS VPS (**ADR-024**; provisioning/cutover separate)<br>
+> **Optional existing profile:** TrueNAS SCALE (protected; not the capture host)
 
 The current delivery priority is one credentialless Hyperliquid BTC perpetual path from a bounded,
 deterministic replay through strategy, risk and PAPER execution to reproducible orders, fills,
@@ -103,7 +103,7 @@ See [Venue Strategy](docs/VENUES.md).
 | Realtime state / event distribution | Redis when multi-process realtime state requires it |
 | Observability | Grafana + Grafana Alloy / OpenTelemetry |
 | Local development | Windows 11 + WSL2 + Docker Desktop |
-| Runtime | Host-neutral Linux/amd64 OCI; Ubuntu LTS VPS intended primary profile |
+| Runtime | Host-neutral Linux/amd64 OCI; Ubuntu LTS VPS primary PAPER profile (ADR-024) |
 | CI/CD | GitHub Actions + private GitHub Container Registry |
 
 Redis and PostgreSQL remain planned platform components, but they are not mandatory blockers for the first thin vertical slice.
@@ -179,7 +179,7 @@ The aim is to get useful output early rather than disappear into a months-long b
 
 - Initial days: WSL2/Codex workspace, repository bootstrap, CI and local disposable services.
 - Current: time-boxed core-engine fit gate, then one local BTC-PERP replay-to-PAPER slice. A first PAPER cockpit screen now reads reconstructable COURSE-1 JSON plus public BTC-PERP mid, with a compact DESK banner, fail-closed MARKETS panel, and a first RISK slice that copies only existing PAPER fields and leaves missing leverage/margin/liquidation/VaR **UNAVAILABLE**.
-- After the local vertical slice: record the runtime ADR, migrate to the approved Ubuntu LTS VPS profile and begin 24/7 public-data collection and paper trading; retain TrueNAS only where explicitly chosen.
+- After the local vertical slice: **ADR-024** records the Ubuntu LTS VPS/OCI PAPER runtime; factual VPS provisioning, TerraPC cutover, and any 24/7 public-data PAPER ops remain separate CoS steps. Retain TrueNAS only where explicitly chosen.
 - Week 3-6: robust research, validation, execution simulation and paper-vs-backtest comparison.
 - Week 6-12: production-grade recovery, reconciliation, security and live-readiness work while paper evidence accumulates.
 - Following weeks: shadow and very-small-capital validation before any material live allocation.

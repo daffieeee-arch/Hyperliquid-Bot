@@ -8,7 +8,7 @@ The platform follows two governing principles:
 
 > **Develop away from the 24/7 runtime; deploy tested immutable artifacts.**
 
-The data plane may ingest multiple free public feeds, while authenticated execution is introduced gradually and only where it has a measurable purpose. Source development happens on Windows 11 through WSL2 and Codex. The runtime boundary is host-neutral Linux/amd64 OCI and consumes pinned images; a supported Ubuntu LTS VPS is the intended primary deployment profile, while TrueNAS remains an optional existing profile.
+The data plane may ingest multiple free public feeds, while authenticated execution is introduced gradually and only where it has a measurable purpose. Source development happens on Windows 11 through WSL2 and Codex. The runtime boundary is host-neutral Linux/amd64 OCI and consumes pinned images; **ADR-024** records a supported Ubuntu LTS VPS as the definitive primary PAPER profile, while TrueNAS remains an optional existing protected profile.
 
 ```mermaid
 flowchart LR

@@ -160,12 +160,11 @@ JSON, and `ARTIFACT_ROOT` plus optional `DATA1A_RUN_ID` (or `COCKPIT_DATA1A_RUN_
 `?data1a_run_id=`) for a live DATA-1A directory. Optional sibling run ids on the
 same root: `DATA1F_RUN_ID` (Binance), `DATA1E_RUN_ID` (Bitvavo),
 `DATA1B_RUN_ID` (Kraken). Primary VPS example:
-`ARTIFACT_ROOT="$HOME/Hyperliquid Project/data-capture"` with
-HL/Bitvavo/Kraken `20260905t232635z-live-retained` and Binance
-`20260906t101559z-live-retained` (do not prefer stopped
-`20260905t235830z-live-retained`; copy `apps/cockpit/.env.example`
-to `apps/cockpit/.env.local`, or export in the WSL shell before `next dev`).
-For a phone on the same Wi-Fi, bind `next dev --hostname 0.0.0.0` (`dev:lan`)
+set `ARTIFACT_ROOT="$HOME/Hyperliquid Project/data-capture"` and leave venue
+run IDs unset for live-retain auto-detection. Copy
+`apps/cockpit/.env.example` to `apps/cockpit/.env.local`, or export in the VPS
+shell before `next dev`. For the secondary TerraPC/WSL path only, a phone on
+the same Wi-Fi can use `next dev --hostname 0.0.0.0` (`dev:lan`)
 and open `http://<LAN-IP>:3001` (the PC's LAN IP) — not cellular. See `docs/DATA.md`,
 `docs/runbooks/data1a-vps-retained-capture.md`,
 `docs/runbooks/data1a-wsl-pc-retained-capture.md`,

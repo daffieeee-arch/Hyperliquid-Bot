@@ -242,7 +242,6 @@ Primary VPS path-contract root (same file names):
 ```bash
 export TRADING_MODE=PAPER
 export ARTIFACT_ROOT="$HOME/Hyperliquid Project/data-capture"
-export DATA1A_RUN_ID=20260904t134940z-live-retained
 pnpm --filter @hyperliquid-bot/cockpit dev
 ```
 

@@ -4,9 +4,7 @@
   "exception_class": "ConnectionResetError",
   "gaps": 1,
   "kind": "capture-health",
-  "limitations": [
-    "Synthetic PAPER fixture; not runtime or profitability evidence."
-  ],
+  "limitations": ["Synthetic PAPER fixture; not runtime or profitability evidence."],
   "path_contract": "data-1e-bitvavo-btc-eur-v1",
   "reconnect_clusters": 1,
   "reconnects": 1,

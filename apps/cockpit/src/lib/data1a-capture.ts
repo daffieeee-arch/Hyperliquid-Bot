@@ -97,10 +97,7 @@ function optionalInt(source: JsonObject, field: string, path: string): number | 
   return value;
 }
 
-function optionalDisconnectFields(
-  source: JsonObject,
-  path: string,
-): TransportDisconnectFields {
+function optionalDisconnectFields(source: JsonObject, path: string): TransportDisconnectFields {
   const fields: TransportDisconnectFields = {};
   const textFields = ["exception_class", "close_reason_rcvd", "close_reason_sent"] as const;
   for (const field of textFields) {

@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  clockLabel,
   describePollRead,
   formatAgeSeconds,
   initialPollState,
   pollFailed,
   pollSucceeded,
+  readAgeLabel,
   secondsBetween,
 } from "./poll-state";
 
@@ -47,20 +47,39 @@ describe("poll state", () => {
     const failedBeforeAnySuccess = pollFailed(initial, new Error("500"), "2026-09-06T12:00:15Z");
     const described = describePollRead(failedBeforeAnySuccess);
     expect(described.tone).toBe("down");
-    expect(described.label).toBe("read failed 12:00:15Z");
+    // Labels are Europe/Amsterdam wall clock (CEST in September); detail keeps UTC.
+    expect(described.label).toBe("read failed 14:00:15 CEST");
     expect(described.detail).toMatch(/values from the server render/);
+    expect(described.detail).toMatch(/Attempt at 12:00:15Z/);
 
     const ok = pollSucceeded(initial, "fresh", "2026-09-06T12:00:30Z");
-    expect(describePollRead(ok)).toMatchObject({ tone: "ok", label: "read 12:00:30Z" });
+    expect(describePollRead(ok)).toMatchObject({ tone: "ok", label: "read 14:00:30 CEST" });
+    expect(describePollRead(ok).detail).toMatch(/at 12:00:30Z/);
 
     const failedAfterSuccess = pollFailed(ok, new Error("timeout"), "2026-09-06T12:00:45Z");
-    expect(describePollRead(failedAfterSuccess).detail).toMatch(/values from 12:00:30Z/);
+    expect(describePollRead(failedAfterSuccess).detail).toMatch(
+      /values from 14:00:30 CEST \(12:00:30Z\)/,
+    );
+
+    const winter = pollSucceeded(initial, "fresh", "2026-01-06T12:00:30Z");
+    expect(describePollRead(winter).label).toBe("read 13:00:30 CET");
   });
 
-  it("formats clock labels and ages without inventing values", () => {
-    expect(clockLabel(undefined)).toBe("—");
-    expect(clockLabel("not-a-date")).toBe("—");
-    expect(clockLabel("2026-09-06T12:34:56.789Z")).toBe("12:34:56Z");
+  it("ticks the read age from the last successful read only", () => {
+    const initial = initialPollState("ssr");
+    expect(readAgeLabel(initial, "2026-09-06T12:00:00Z")).toBeUndefined();
+
+    const ok = pollSucceeded(initial, "fresh", "2026-09-06T12:00:30Z");
+    expect(readAgeLabel(ok, undefined)).toBeUndefined();
+    expect(readAgeLabel(ok, "2026-09-06T12:00:33Z")).toBe("updated 3s ago");
+    expect(readAgeLabel(ok, "2026-09-06T12:03:35Z")).toBe("updated 3m 05s ago");
+
+    // A failed attempt does not reset the age: the clock keeps counting from the last good read.
+    const failed = pollFailed(ok, new Error("timeout"), "2026-09-06T12:00:45Z");
+    expect(readAgeLabel(failed, "2026-09-06T12:00:50Z")).toBe("last good read 20s ago");
+  });
+
+  it("formats ages without inventing values", () => {
     expect(secondsBetween("2026-09-06T12:00:00Z", "2026-09-06T12:01:30Z")).toBe(90);
     expect(secondsBetween(undefined, "2026-09-06T12:01:30Z")).toBeUndefined();
     expect(formatAgeSeconds(undefined)).toBe("n/a");

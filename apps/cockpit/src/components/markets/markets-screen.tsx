@@ -17,8 +17,10 @@ import { captureChipDataState, dataStateTone } from "../../lib/data-state";
 import { formatGroupedNumber } from "../../lib/display";
 import {
   MARKET_QUOTE_UNAVAILABLE,
+  applyStoredTapeQuote,
   marketsRowsFromBoundVenues,
   soakMarkRow,
+  type MarketQuoteState,
   type MarketRow,
 } from "../../lib/markets";
 import type { MarketTapeResponse } from "../../lib/market-tape-types";
@@ -36,36 +38,118 @@ import { newestPartMtime } from "../../lib/venue-capture-poll";
 
 const helper = dataTableColumnHelper<MarketRow>();
 
+const QUOTE_STATE_LABEL: Record<MarketQuoteState, string> = {
+  ok: "FRESH",
+  stale: "STALE",
+  unavailable: "UNAVAILABLE",
+};
+
+function quoteStateTone(state: MarketQuoteState): "ok" | "warn" | "down" {
+  switch (state) {
+    case "ok":
+      return "ok";
+    case "stale":
+      return "warn";
+    case "unavailable":
+      return "down";
+    default: {
+      const exhaustive: never = state;
+      throw new Error(`Unhandled quote state: ${String(exhaustive)}`);
+    }
+  }
+}
+
+function Detail({
+  children,
+  title,
+  nowrap = false,
+}: {
+  children: string;
+  title?: string;
+  nowrap?: boolean;
+}) {
+  return (
+    <span className={nowrap ? "quote-detail quote-detail-nowrap" : "quote-detail"} title={title}>
+      {children}
+    </span>
+  );
+}
+
+function QuoteCell({ value, reason }: { value: string; reason: string | undefined }) {
+  if (value === MARKET_QUOTE_UNAVAILABLE) {
+    return (
+      <span className="quote-primary tone-warn" title={reason}>
+        UNAVAILABLE
+      </span>
+    );
+  }
+  if (value === "—") {
+    return <span className="quote-primary tone-muted">…</span>;
+  }
+  return <span className="quote-primary">{formatGroupedNumber(value)}</span>;
+}
+
 const columns: DataTableColumns<MarketRow> = helper.columns([
   helper.accessor("venue", { header: "Venue" }),
-  helper.accessor("product", { header: "Instrument" }),
-  helper.accessor("quote", {
-    header: "Last / mid",
-    cell: ({ row }) =>
-      row.original.quote === MARKET_QUOTE_UNAVAILABLE ? (
-        <span className="tone-muted">UNAVAILABLE</span>
-      ) : (
-        formatGroupedNumber(row.original.quote)
-      ),
+  helper.accessor("instrument", {
+    header: "Instrument",
+    cell: ({ row }) => (
+      <>
+        <span className="mono quote-secondary">{row.original.instrument}</span>
+        {row.original.instrument === row.original.product ? null : (
+          <Detail nowrap>{`contract ${row.original.product}`}</Detail>
+        )}
+      </>
+    ),
   }),
-  helper.accessor("quoteSource", { header: "Source", enableSorting: false }),
-  helper.accessor("captureStatus", {
-    header: "Capture",
-    cell: ({ row }) =>
-      row.original.captureStatus === undefined ? (
-        <span className="tone-muted">n/a</span>
-      ) : (
-        <Badge
-          tone={dataStateTone(captureChipDataState(row.original.captureStatus))}
-          dot
-          live={row.original.live}
-        >
-          {row.original.captureStatus}
-        </Badge>
-      ),
+  helper.accessor("last", {
+    header: "Last",
+    cell: ({ row }) => <QuoteCell value={row.original.last} reason={row.original.quoteReason} />,
   }),
-  helper.accessor("lastPartAge", { header: "Age" }),
-  helper.accessor("runId", { header: "Run" }),
+  helper.accessor("mid", {
+    header: "Mid",
+    cell: ({ row }) => <QuoteCell value={row.original.mid} reason={row.original.quoteReason} />,
+  }),
+  helper.accessor("quoteAge", {
+    header: "Age",
+    cell: ({ row }) => (
+      <>
+        <span className="quote-secondary" title={row.original.quoteAt}>
+          {row.original.quoteAge}
+        </span>
+        <Detail nowrap>{`part ${row.original.lastPartAge}`}</Detail>
+      </>
+    ),
+  }),
+  helper.accessor("quoteState", {
+    header: "Status",
+    cell: ({ row }) => (
+      <>
+        <span className="row" style={{ gap: "0.3rem" }}>
+          <Badge
+            tone={quoteStateTone(row.original.quoteState)}
+            dot
+            live={row.original.quoteState === "ok" && row.original.live}
+            title={row.original.quoteReason}
+          >
+            {QUOTE_STATE_LABEL[row.original.quoteState]}
+          </Badge>
+          {row.original.captureStatus === undefined ? null : (
+            <Badge
+              tone={dataStateTone(captureChipDataState(row.original.captureStatus))}
+              title={`Capture health chip for run ${row.original.runId}; the quote chip on the left is about the stored tick itself.`}
+            >
+              {`capture ${row.original.captureStatus}`}
+            </Badge>
+          )}
+        </span>
+        {row.original.quoteReason === undefined ? null : (
+          <Detail>{row.original.quoteReason}</Detail>
+        )}
+        <Detail title={row.original.quoteSource}>{row.original.quoteSource}</Detail>
+      </>
+    ),
+  }),
 ]) as DataTableColumns<MarketRow>;
 
 export function MarketsScreen({
@@ -87,7 +171,14 @@ export function MarketsScreen({
   const mid = usePublicBtcPerp(token);
   const origin = stripOrigin(strip);
 
-  const rows = strip.ok ? marketsRowsFromBoundVenues(strip.strip.venues, mid) : [];
+  const freshMaxS = strip.ok ? strip.strip.fresh_max_s : 180;
+  const rows = strip.ok
+    ? applyStoredTapeQuote(
+        marketsRowsFromBoundVenues(strip.strip.venues, mid),
+        tapePoll.data,
+        freshMaxS,
+      )
+    : [];
   const soak = soakMarkRow(soakPnl);
 
   return (
@@ -153,7 +244,7 @@ export function MarketsScreen({
         />
         <Stat
           label="Soak mark"
-          value={soak === undefined ? "—" : formatGroupedNumber(soak.quote)}
+          value={soak === undefined ? "—" : formatGroupedNumber(soak.mid)}
           compact
           tone="warn"
           meta={
@@ -192,16 +283,15 @@ export function MarketsScreen({
 
       <Card>
         <CardHeader
-          title="Bound venues · public quote"
-          description="One row per bound capture contract. Only Hyperliquid has a public cockpit quote; the other venues' stored last/BBO live in the section below, never here."
+          title="Bound venues · last / mid"
+          description="One row per bound capture contract. Hyperliquid's mid is the public /info quote; every other Last and Mid is decoded from the stored capture of the bound run (source and channels under Status). Green is inside the freshness bound, amber is stale, red means no usable tick — never an invented price."
         />
         <CardBody flush>
           {strip.ok ? (
             <DataTable
               columns={columns}
               data={rows}
-              numericColumns={["quote", "lastPartAge"]}
-              monoColumns={["runId"]}
+              numericColumns={["last", "mid", "quoteAge"]}
               emptyLabel="No bound venues."
             />
           ) : (
@@ -215,8 +305,8 @@ export function MarketsScreen({
         {soak === undefined ? null : (
           <CardDisclosure summary="COURSE-1 soak mark (kept out of the market table)">
             <p style={{ margin: 0 }}>
-              <span className="mono">{formatGroupedNumber(soak.quote)}</span> — {soak.quoteSource}.
-              It is a copied soak mark for {soak.product}, deliberately not blended with live public
+              <span className="mono">{formatGroupedNumber(soak.mid)}</span> — {soak.quoteSource}. It
+              is a copied soak mark for {soak.product}, deliberately not blended with live public
               quotes.
             </p>
           </CardDisclosure>

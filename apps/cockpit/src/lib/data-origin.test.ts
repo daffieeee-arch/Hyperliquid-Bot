@@ -161,7 +161,8 @@ describe("market tape rows", () => {
     expect(summary.origin).toBe("live");
     expect(summary.dataState).toBe("ok");
     expect(summary.published).toBe("2 parts");
-    expect(summary.lastData).toBe("18:00:05Z");
+    // Presented in Europe/Amsterdam (CEST in September); the UTC ISO stays in the tooltip.
+    expect(summary.lastData).toBe("20:00:05 CEST");
     expect(summary.lastDataAge).toBe("55s");
     expect(summary.volume).toMatch(/KB$/);
 
@@ -266,7 +267,7 @@ describe("overview stored-data attention", () => {
     );
     const readItem = view.attention.find((item) => item.id === "read-tape");
     expect(readItem).toMatchObject({ state: "error", target: "Markets" });
-    expect(readItem?.detail).toContain("18:00:30Z");
+    expect(readItem?.detail).toContain("20:00:30 CEST (18:00:30Z)");
     expect(readItem?.detail).toContain("2 consecutive failure(s)");
     expect(view.attention.some((item) => item.id === "tape")).toBe(true);
   });

@@ -28,7 +28,7 @@ type BookSide = Map<string, string>;
 
 type InstrumentState = {
   tape: InstrumentTape;
-  /** Kraken L2 top-of-book is reconstructed from snapshot + updates. */
+  /** Kraken / Bitvavo L2 top-of-book is reconstructed from snapshot + updates. */
   book: { bids: BookSide; asks: BookSide } | undefined;
   /** Bitvavo ticker sends partial updates; keep the last complete values. */
   ticker: { bid?: string; bidSize?: string; ask?: string; askSize?: string } | undefined;
@@ -62,12 +62,92 @@ function nsToIso(ns: bigint): string {
   return new Date(Number(ns / 1_000_000n)).toISOString();
 }
 
-function msToIso(value: unknown, fallback: string): string {
-  const raw = typeof value === "string" ? Number(value) : value;
-  if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) {
+/** Unit of an integer epoch timestamp; `auto` infers it from magnitude. */
+export type EpochUnit = "s" | "ms" | "us" | "ns" | "auto";
+
+/**
+ * Epoch range the tape accepts, 2000-01-01 .. 2100-01-01. Anything outside is
+ * a unit mix-up (µs read as ms renders as year +058685), never a real trade.
+ */
+const MIN_PLAUSIBLE_EPOCH_MS = Date.UTC(2000, 0, 1);
+const MAX_PLAUSIBLE_EPOCH_MS = Date.UTC(2100, 0, 1);
+
+const EPOCH_DIVISOR: Record<Exclude<EpochUnit, "auto" | "s">, bigint> = {
+  ms: 1n,
+  us: 1_000n,
+  ns: 1_000_000n,
+};
+
+function epochInteger(value: unknown): bigint | undefined {
+  if (typeof value === "bigint") {
+    return value;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return BigInt(Math.trunc(value));
+  }
+  if (typeof value === "string" && /^\d+$/.test(value.trim())) {
+    return BigInt(value.trim());
+  }
+  return undefined;
+}
+
+/**
+ * Magnitude-based unit inference. The plausible windows for s, ms, µs and ns
+ * do not overlap (2000..2100 spans 9.5e8..4.1e9 s), so a bare integer maps to
+ * exactly one unit or to none.
+ */
+function inferEpochUnit(raw: bigint): Exclude<EpochUnit, "auto"> | undefined {
+  if (raw < 100_000_000_000n) return "s";
+  if (raw < 100_000_000_000_000n) return "ms";
+  if (raw < 100_000_000_000_000_000n) return "us";
+  return "ns";
+}
+
+/**
+ * Convert a venue epoch timestamp to ISO or fall back to the capture receive
+ * time. Implausible results are rejected rather than displayed so a wrong unit
+ * can never put a five-digit year on the tape.
+ */
+export function epochToIso(value: unknown, unit: EpochUnit, fallback: string): string {
+  const raw = epochInteger(value);
+  if (raw === undefined || raw <= 0n) {
     return fallback;
   }
-  return new Date(raw).toISOString();
+  const resolved = unit === "auto" ? inferEpochUnit(raw) : unit;
+  if (resolved === undefined) {
+    return fallback;
+  }
+  const ms = resolved === "s" ? raw * 1_000n : raw / EPOCH_DIVISOR[resolved];
+  const asNumber = Number(ms);
+  if (asNumber < MIN_PLAUSIBLE_EPOCH_MS || asNumber >= MAX_PLAUSIBLE_EPOCH_MS) {
+    return fallback;
+  }
+  return new Date(asNumber).toISOString();
+}
+
+/**
+ * Map the collector's `timestamp_unit` marker to an epoch unit.
+ *
+ * Binance streams are milliseconds by default and microseconds only when the
+ * socket was opened with `timeUnit=MICROSECOND`; the DATA-1F collector does
+ * exactly that and records `"MICROSECONDS"` (the Python enum value). Unknown
+ * spellings fall back to magnitude inference instead of assuming ms.
+ */
+export function binanceTimestampUnit(marker: string | undefined): EpochUnit {
+  switch (marker?.trim().toLowerCase()) {
+    case "microseconds":
+    case "microsecond":
+    case "us":
+    case "µs":
+    case "μs":
+      return "us";
+    case "milliseconds":
+    case "millisecond":
+    case "ms":
+      return "ms";
+    default:
+      return "auto";
+  }
 }
 
 function isoOrFallback(value: unknown, fallback: string): string {
@@ -216,7 +296,7 @@ function applyHyperliquid(
         continue;
       }
       pushTrade(entry, {
-        at: msToIso(item.time, at),
+        at: epochToIso(item.time, "ms", at),
         price,
         size,
         side: side(item.side, ["b", "buy"], ["a", "sell"]),
@@ -231,7 +311,7 @@ function applyHyperliquid(
     if (bid !== undefined && ask !== undefined) {
       setBbo(
         entry,
-        msToIso(payload.data.time, at),
+        epochToIso(payload.data.time, "ms", at),
         bid,
         ask,
         isRecord(bidLevel) ? text(bidLevel.sz) : undefined,
@@ -270,12 +350,9 @@ function applyBinance(entry: InstrumentState, row: RawTapeRow, payload: unknown,
     const price = text(payload.price);
     const size = text(payload.quantity);
     if (price !== undefined && size !== undefined) {
-      const unit = text(payload.timestamp_unit);
-      const raw = text(payload.trade_time);
-      const eventAt =
-        raw === undefined ? at : msToIso(unit === "us" ? Number(raw) / 1000 : Number(raw), at);
+      const unit = binanceTimestampUnit(text(payload.timestamp_unit));
       pushTrade(entry, {
-        at: eventAt,
+        at: epochToIso(payload.trade_time, unit, at),
         price,
         size,
         side: side(payload.aggressor_side, ["buy"], ["sell"]),
@@ -292,7 +369,7 @@ function applyBinance(entry: InstrumentState, row: RawTapeRow, payload: unknown,
     return;
   }
   if (row.channel === "normalized_usdm_context") {
-    const context: TapeContext = { at: msToIso(payload.event_time, at) };
+    const context: TapeContext = { at: epochToIso(payload.event_time, "ms", at) };
     const mark = text(payload.mark_price);
     const index = text(payload.index_price);
     const funding = text(payload.funding_rate);
@@ -304,11 +381,72 @@ function applyBinance(entry: InstrumentState, row: RawTapeRow, payload: unknown,
   }
 }
 
+/**
+ * Bitvavo marker channels. The Standard feed (DATA-1D/1E early runs) writes
+ * `normalized_trades` / `normalized_ticker` / `normalized_book*`; the Market
+ * Data Pro collector writes the same frame shapes under `normalized_mdpro_*`
+ * so the two feeds can never be confused in research. The cockpit decodes
+ * both; the channel name stays visible in `channelsSeen`.
+ */
+const BITVAVO_TRADE_CHANNELS: readonly string[] = ["normalized_trades", "normalized_mdpro_trades"];
+const BITVAVO_TICKER_CHANNELS: readonly string[] = ["normalized_ticker", "normalized_mdpro_ticker"];
+const BITVAVO_BOOK_CHANNELS: readonly string[] = [
+  "normalized_book",
+  "normalized_book_snapshot",
+  "normalized_mdpro_book",
+];
+
+/**
+ * Fold one L2 frame into the instrument's top-of-book. `events` carry an
+ * explicit `side`; a zero quantity (or `action: "delete"`) removes the level;
+ * `message_type: "snapshot"` replaces the book. Shared by Kraken and Bitvavo,
+ * whose collectors normalise to the same shape.
+ */
+function applyBookFrame(
+  entry: InstrumentState,
+  payload: Record<string, unknown>,
+  at: string,
+): void {
+  if (!Array.isArray(payload.events)) {
+    return;
+  }
+  const book = entry.book ?? { bids: new Map<string, string>(), asks: new Map<string, string>() };
+  if (payload.message_type === "snapshot") {
+    book.bids.clear();
+    book.asks.clear();
+  }
+  for (const item of payload.events) {
+    if (!isRecord(item)) {
+      continue;
+    }
+    const price = text(item.price);
+    const qty = text(item.qty ?? item.quantity);
+    if (price === undefined || qty === undefined) {
+      continue;
+    }
+    const target = item.side === "bid" ? book.bids : item.side === "ask" ? book.asks : undefined;
+    if (target === undefined) {
+      continue;
+    }
+    if (Number(qty) === 0 || item.action === "delete") {
+      target.delete(price);
+    } else {
+      target.set(price, qty);
+    }
+  }
+  entry.book = book;
+  const bid = bestOf(book.bids, "max");
+  const ask = bestOf(book.asks, "min");
+  if (bid !== undefined && ask !== undefined) {
+    setBbo(entry, at, bid[0], ask[0], bid[1], ask[1]);
+  }
+}
+
 function applyBitvavo(entry: InstrumentState, row: RawTapeRow, payload: unknown, at: string): void {
   if (!isRecord(payload) || !isMarker(row)) {
     return;
   }
-  if (row.channel === "normalized_trades" && Array.isArray(payload.events)) {
+  if (BITVAVO_TRADE_CHANNELS.includes(row.channel) && Array.isArray(payload.events)) {
     for (const item of payload.events) {
       if (!isRecord(item)) {
         continue;
@@ -319,7 +457,7 @@ function applyBitvavo(entry: InstrumentState, row: RawTapeRow, payload: unknown,
         continue;
       }
       pushTrade(entry, {
-        at: msToIso(item.event_time_ms, at),
+        at: epochToIso(item.event_time_ms, "ms", at),
         price,
         size,
         side: side(item.taker_side, ["buy"], ["sell"]),
@@ -327,7 +465,13 @@ function applyBitvavo(entry: InstrumentState, row: RawTapeRow, payload: unknown,
     }
     return;
   }
-  if (row.channel === "normalized_ticker") {
+  if (BITVAVO_BOOK_CHANNELS.includes(row.channel)) {
+    // The collector labels the venue clock `venue_timestamp_ns`; the Standard
+    // feed may omit it or report ms, so the unit is inferred, never assumed.
+    applyBookFrame(entry, payload, epochToIso(payload.venue_timestamp_ns, "auto", at));
+    return;
+  }
+  if (BITVAVO_TICKER_CHANNELS.includes(row.channel)) {
     const ticker = entry.ticker ?? {};
     const bid = text(payload.bid_price);
     const bidSize = text(payload.bid_quantity);
@@ -383,37 +527,8 @@ function applyKraken(entry: InstrumentState, row: RawTapeRow, payload: unknown, 
     }
     return;
   }
-  if (row.channel === "normalized_book" && Array.isArray(payload.events)) {
-    const book = entry.book ?? { bids: new Map<string, string>(), asks: new Map<string, string>() };
-    if (payload.message_type === "snapshot") {
-      book.bids.clear();
-      book.asks.clear();
-    }
-    for (const item of payload.events) {
-      if (!isRecord(item)) {
-        continue;
-      }
-      const price = text(item.price);
-      const qty = text(item.qty);
-      if (price === undefined || qty === undefined) {
-        continue;
-      }
-      const target = item.side === "bid" ? book.bids : item.side === "ask" ? book.asks : undefined;
-      if (target === undefined) {
-        continue;
-      }
-      if (Number(qty) === 0) {
-        target.delete(price);
-      } else {
-        target.set(price, qty);
-      }
-    }
-    entry.book = book;
-    const bid = bestOf(book.bids, "max");
-    const ask = bestOf(book.asks, "min");
-    if (bid !== undefined && ask !== undefined) {
-      setBbo(entry, isoOrFallback(payload.message_timestamp, at), bid[0], ask[0], bid[1], ask[1]);
-    }
+  if (row.channel === "normalized_book") {
+    applyBookFrame(entry, payload, isoOrFallback(payload.message_timestamp, at));
   }
 }
 

@@ -7,7 +7,8 @@ import {
   type TapeSide,
   type VenueMarketTape,
 } from "./market-tape-types";
-import { clockLabel, formatAgeSeconds, secondsBetween } from "./poll-state";
+import { formatAgeSeconds, secondsBetween } from "./poll-state";
+import { localClockLabel } from "./time-display";
 import type { VenueCaptureChip, VenueCaptureStripResponse } from "./types";
 
 export const TAPE_VALUE_UNAVAILABLE = "—";
@@ -58,7 +59,8 @@ export function instrumentRows(tape: VenueMarketTape, observedAt: string): Instr
     lastPrice: instrument.lastTrade?.price ?? TAPE_VALUE_UNAVAILABLE,
     lastSize: instrument.lastTrade?.size ?? TAPE_VALUE_UNAVAILABLE,
     lastSide: instrument.lastTrade?.side ?? "—",
-    lastTradeAt: instrument.lastTrade === undefined ? "—" : clockLabel(instrument.lastTrade.at),
+    lastTradeAt:
+      instrument.lastTrade === undefined ? "—" : localClockLabel(instrument.lastTrade.at),
     bid: instrument.lastBbo?.bid ?? TAPE_VALUE_UNAVAILABLE,
     ask: instrument.lastBbo?.ask ?? TAPE_VALUE_UNAVAILABLE,
     spread: instrument.lastBbo?.spread ?? TAPE_VALUE_UNAVAILABLE,
@@ -117,8 +119,8 @@ export function summariseVenueTape(
     dataState,
     published: `${String(tape.parts.published)} part${tape.parts.published === 1 ? "" : "s"}`,
     volume: formatBytes(tape.parts.bytes),
-    newestPart: clockLabel(tape.parts.newestPartMtimeUtc),
-    lastData: clockLabel(tape.lastEventUtc),
+    newestPart: localClockLabel(tape.parts.newestPartMtimeUtc),
+    lastData: localClockLabel(tape.lastEventUtc),
     lastDataAge: formatAgeSeconds(tape.lastEventAgeS),
     publicationLag:
       tape.publicationLagS === undefined ? "n/a" : formatAgeSeconds(tape.publicationLagS),

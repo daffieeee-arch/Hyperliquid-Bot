@@ -7,9 +7,11 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import {
   applyTapeRow,
+  binanceTimestampUnit,
   classifyProduct,
   computeSpread,
   createVenueTapeState,
+  epochToIso,
   snapshotInstruments,
 } from "./market-tape-decode";
 import {
@@ -179,6 +181,189 @@ describe("market tape decoding", () => {
     expect(instruments[0]?.lastContext).toBeUndefined();
     expect(instruments[1]?.lastContext?.markPrice).toBe("101");
     expect(instruments[1]?.lastTrade).toBeUndefined();
+  });
+
+  it("reads Binance spot trade_time in the unit the collector recorded (MICROSECONDS)", () => {
+    // Binance streams are ms by default and µs only with `timeUnit=MICROSECOND`
+    // (official web-socket-streams doc); DATA-1F opens the socket that way and
+    // the Python marker stores the enum value "MICROSECONDS", not "us".
+    const state = createVenueTapeState();
+    applyTapeRow(
+      state,
+      row(
+        "binance",
+        "BTCUSDT-SPOT",
+        "normalized_spot_trade",
+        {
+          price: "109480.10",
+          quantity: "0.00200",
+          trade_time: "1788631201123456",
+          timestamp_unit: "MICROSECONDS",
+          aggressor_side: "buy",
+        },
+        1,
+        true,
+      ),
+    );
+    const [spot] = snapshotInstruments(state);
+    expect(spot?.lastTrade?.at).toBe("2026-09-05T18:00:01.123Z");
+    expect(spot?.lastTrade?.at.startsWith("+")).toBe(false);
+  });
+
+  it("never renders a five-digit year: implausible epochs fall back to the receive time", () => {
+    const receiveAt = "2026-09-05T18:00:07.000Z";
+    expect(epochToIso("1788631201123456", "ms", receiveAt)).toBe(receiveAt);
+    expect(epochToIso("1788631201123456", "us", receiveAt)).toBe("2026-09-05T18:00:01.123Z");
+    expect(epochToIso("1788631201123", "ms", receiveAt)).toBe("2026-09-05T18:00:01.123Z");
+    expect(epochToIso(1_788_631_201_123, "auto", receiveAt)).toBe("2026-09-05T18:00:01.123Z");
+    expect(epochToIso("1788631201123456", "auto", receiveAt)).toBe("2026-09-05T18:00:01.123Z");
+    expect(epochToIso("1788631201123456789", "auto", receiveAt)).toBe("2026-09-05T18:00:01.123Z");
+    expect(epochToIso("1788631201", "auto", receiveAt)).toBe("2026-09-05T18:00:01.000Z");
+    expect(epochToIso(1_788_631_201_123_456_789n, "ns", receiveAt)).toBe(
+      "2026-09-05T18:00:01.123Z",
+    );
+    expect(epochToIso("0", "ms", receiveAt)).toBe(receiveAt);
+    expect(epochToIso("not-a-number", "ms", receiveAt)).toBe(receiveAt);
+    expect(epochToIso(undefined, "us", receiveAt)).toBe(receiveAt);
+    expect(binanceTimestampUnit("MICROSECONDS")).toBe("us");
+    expect(binanceTimestampUnit("ms")).toBe("ms");
+    expect(binanceTimestampUnit("MILLISECONDS")).toBe("ms");
+    expect(binanceTimestampUnit(undefined)).toBe("auto");
+  });
+
+  it("decodes the Bitvavo Market Data Pro channels the DATA-1E collector actually writes", () => {
+    const state = createVenueTapeState();
+    applyTapeRow(
+      state,
+      row(
+        "bitvavo",
+        "BTC-EUR",
+        "normalized_mdpro_book",
+        {
+          event: "normalized_mdpro_book_frame",
+          source_channel: "mdpro_book_snapshot",
+          message_type: "snapshot",
+          venue_timestamp_ns: "1788631201000000000",
+          events: [
+            { side: "bid", action: "snapshot", price: "93800.1", quantity: "0.5" },
+            { side: "bid", action: "snapshot", price: "93799.0", quantity: "1.0" },
+            { side: "ask", action: "snapshot", price: "93812.4", quantity: "0.25" },
+            { side: "ask", action: "snapshot", price: "93813.0", quantity: "0.7" },
+          ],
+        },
+        1,
+        true,
+      ),
+    );
+    applyTapeRow(
+      state,
+      row(
+        "bitvavo",
+        "BTC-EUR",
+        "normalized_mdpro_book",
+        {
+          event: "normalized_mdpro_book_frame",
+          source_channel: "mdpro_book",
+          message_type: "update",
+          venue_timestamp_ns: "1788631202000000000",
+          events: [{ side: "ask", action: "delete", price: "93812.4", quantity: "0" }],
+        },
+        2,
+        true,
+      ),
+    );
+    applyTapeRow(
+      state,
+      row(
+        "bitvavo",
+        "BTC-EUR",
+        "normalized_mdpro_trades",
+        {
+          event: "normalized_mdpro_trade_frame",
+          source_channel: "mdpro_trades",
+          events: [
+            {
+              event_index: 0,
+              market: "BTC-EUR",
+              trade_id: "t-1",
+              price: "93810.5",
+              quantity: "0.01000000",
+              taker_side: "sell",
+              event_time_ms: "1788631203000",
+              event_time_ns: "1788631203000000000",
+            },
+          ],
+        },
+        3,
+        true,
+      ),
+    );
+    applyTapeRow(
+      state,
+      row(
+        "bitvavo",
+        "BTC-EUR",
+        "normalized_mdpro_ticker",
+        {
+          event: "normalized_mdpro_ticker_frame",
+          source_channel: "mdpro_ticker",
+          bid_price: "93801.0",
+          bid_quantity: "0.4",
+          ask_price: "93813.0",
+          ask_quantity: "0.7",
+          last_price: null,
+        },
+        4,
+        true,
+      ),
+    );
+    const [spot] = snapshotInstruments(state);
+    expect(spot).toMatchObject({ product: "BTC-EUR", kind: "spot", quote: "EUR" });
+    expect(spot?.tradeCount).toBe(1);
+    expect(spot?.lastTrade).toMatchObject({
+      price: "93810.5",
+      size: "0.01000000",
+      side: "sell",
+      at: "2026-09-05T18:00:03.000Z",
+    });
+    // Snapshot best ask 93812.4 was deleted by the update; the book falls to 93813.0.
+    expect(spot?.bboCount).toBe(3);
+    expect(spot?.lastBbo).toMatchObject({ bid: "93801.0", ask: "93813.0", spread: "12.0" });
+    expect(spot?.channelsSeen).toEqual([
+      "normalized_mdpro_book",
+      "normalized_mdpro_ticker",
+      "normalized_mdpro_trades",
+    ]);
+  });
+
+  it("reconstructs Bitvavo top-of-book from the book frames when no ticker was subscribed", () => {
+    const state = createVenueTapeState();
+    applyTapeRow(
+      state,
+      row(
+        "bitvavo",
+        "BTC-EUR",
+        "normalized_mdpro_book",
+        {
+          message_type: "snapshot",
+          venue_timestamp_ns: "1788631201000000000",
+          events: [
+            { side: "bid", action: "snapshot", price: "93800.1", quantity: "0.5" },
+            { side: "ask", action: "snapshot", price: "93812.4", quantity: "0.25" },
+          ],
+        },
+        1,
+        true,
+      ),
+    );
+    const [spot] = snapshotInstruments(state);
+    expect(spot?.lastBbo).toMatchObject({
+      at: "2026-09-05T18:00:01.000Z",
+      bid: "93800.1",
+      bidSize: "0.5",
+      ask: "93812.4",
+      askSize: "0.25",
+    });
   });
 
   it("ignores inbound frames for marker-based venues and unknown channels without failing", () => {

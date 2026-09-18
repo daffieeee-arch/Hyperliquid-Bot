@@ -98,7 +98,7 @@ describe("overview view", () => {
     const item = view.attention.find((entry) => entry.id === "read-research");
     expect(item?.state).toBe("error");
     expect(item?.href).toBe("/research");
-    expect(item?.detail).toMatch(/last successful read at 12:00:00Z/);
+    expect(item?.detail).toMatch(/last successful read at 14:00:00 CEST \(12:00:00Z\)/);
     expect(item?.detail).toMatch(/2 consecutive failure/);
     // The research summary itself is still the last good one, not blanked.
     expect(view.research.registryRows).toBe(research.registry.length);

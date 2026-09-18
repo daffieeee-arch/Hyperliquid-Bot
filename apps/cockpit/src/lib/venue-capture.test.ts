@@ -20,6 +20,7 @@ import { STALE_MTIME_REASON } from "./capture-freshness";
 import { loadVenueCaptureStrip } from "./venue-capture";
 
 const repoRoot = resolve(fileURLToPath(new URL("../../../../", import.meta.url)));
+const reconnectFixtureRoot = join(repoRoot, "tests", "fixtures", "market_tape", "artifact-root");
 const observedAt = "2026-09-04T13:49:45.000Z";
 
 function writeJson(path: string, payload: unknown): void {
@@ -48,6 +49,46 @@ function writeClaim(
 }
 
 describe("multi-venue capture-health strip", () => {
+  it("preserves #81 reconnect clusters and sanitized disconnect fields from fixtures", () => {
+    const strip = loadVenueCaptureStrip(
+      {
+        TRADING_MODE: "PAPER",
+        ARTIFACT_ROOT: reconnectFixtureRoot,
+        DATA1A_RUN_ID: "20260905t180000z-live-retained",
+        DATA1F_RUN_ID: "20260905t180100z-live-retained",
+        DATA1E_RUN_ID: "20260905t180200z-live-retained",
+        DATA1B_RUN_ID: "20260905t180300z-live-retained",
+      },
+      repoRoot,
+      {},
+      () => "2026-09-05T18:04:00.000Z",
+    );
+    const binance = strip.venues.find((venue) => venue.id === "binance");
+    const bitvavo = strip.venues.find((venue) => venue.id === "bitvavo");
+    const kraken = strip.venues.find((venue) => venue.id === "kraken");
+    expect(binance).toMatchObject({
+      reconnects: 4,
+      reconnect_clusters: 2,
+      close_code: 1008,
+      close_code_rcvd: 1008,
+      close_reason_rcvd: "Too many requests",
+    });
+    expect(bitvavo).toMatchObject({
+      reconnects: 1,
+      reconnect_clusters: 1,
+      exception_class: "ConnectionResetError",
+      errno: 104,
+    });
+    expect(kraken).toMatchObject({
+      reconnects: 6,
+      reconnect_clusters: 3,
+      close_code_rcvd: 1011,
+      close_code_sent: 1011,
+      close_reason_rcvd: "internal error",
+      close_reason_sent: "keepalive ping timeout",
+    });
+  });
+
   it("shows the DATA-1A fixture as STOPPED and fails closed for missing venues", () => {
     const strip = loadVenueCaptureStrip({ TRADING_MODE: "PAPER" }, repoRoot, {}, () => observedAt);
     expect(strip.venues.map((venue) => venue.id)).toEqual([...VENUE_CAPTURE_STRIP_ORDER]);
@@ -155,6 +196,7 @@ describe("multi-venue capture-health strip", () => {
     expect(binance?.part_count).toBe(1);
     expect(binance?.last_part_mtime_utc).toBe("2026-09-04T13:40:00.000Z");
     expect(binance?.tone).toBe("warn");
+    expect(binance?.reconnect_clusters).toBeUndefined();
   });
 
   it("keeps finished COMPLETED health as STOPPED even when last part mtime is stale", () => {

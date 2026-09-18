@@ -1,0 +1,38 @@
+{
+  "_fixture": "synthetic-reconnect-observability-v1",
+  "close_code": 1008,
+  "close_code_rcvd": 1008,
+  "close_reason_rcvd": "Too many requests",
+  "exception_class": "ConnectionClosedError",
+  "gaps": 2,
+  "kind": "capture-health",
+  "limitations": [
+    "Synthetic PAPER fixture; not runtime or profitability evidence."
+  ],
+  "path_contract": "data-1f-binance-btcusdt-v1",
+  "reconnect_clusters": 2,
+  "reconnects": 4,
+  "retained": true,
+  "run_id": "20260905t180100z-live-retained",
+  "schema": "data-1f-retained-capture-health-v1",
+  "status": "OPERATOR_STOP",
+  "transport_profiles": [
+    {
+      "close_code": 1008,
+      "close_code_rcvd": 1008,
+      "close_reason_rcvd": "Too many requests",
+      "exception_class": "ConnectionClosedError",
+      "gaps": 2,
+      "reconnect_clusters": 2,
+      "reconnects": 4,
+      "transport_profile": "spot"
+    },
+    {
+      "gaps": 0,
+      "reconnect_clusters": 0,
+      "reconnects": 0,
+      "transport_profile": "usdm_public"
+    }
+  ],
+  "twenty_four_seven": false
+}

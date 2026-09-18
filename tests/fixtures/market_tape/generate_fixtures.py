@@ -54,6 +54,7 @@ WRITER_TAG = "fixture00001"
 # Marks a directory as generator output; ``main`` only ever deletes roots that carry it.
 SENTINEL_NAME = ".cockpit-market-tape-fixture"
 SENTINEL_TEXT = "written by tests/fixtures/market_tape/generate_fixtures.py; safe to regenerate\n"
+HEALTH_FIXTURE_MARKER = "synthetic-reconnect-observability-v1"
 
 ROOT = DEFAULT_ROOT
 BASE_NS = DEFAULT_BASE_NS
@@ -155,6 +156,40 @@ def _claim(
             sort_keys=True,
         )
         + "\n",
+        encoding="utf-8",
+    )
+
+
+def _health(
+    run_dir: Path,
+    schema: str,
+    path_contract: str,
+    run_id: str,
+    *,
+    gaps: int,
+    reconnects: int,
+    reconnect_clusters: int,
+    transport_profiles: list[dict[str, object]],
+    **disconnect_fields: object,
+) -> None:
+    payload = {
+        "schema": schema,
+        "kind": "capture-health",
+        "path_contract": path_contract,
+        "run_id": run_id,
+        "status": "OPERATOR_STOP",
+        "retained": True,
+        "twenty_four_seven": False,
+        "gaps": gaps,
+        "reconnects": reconnects,
+        "reconnect_clusters": reconnect_clusters,
+        "transport_profiles": transport_profiles,
+        "limitations": ["Synthetic PAPER fixture; not runtime or profitability evidence."],
+        "_fixture": HEALTH_FIXTURE_MARKER,
+        **disconnect_fields,
+    }
+    (run_dir / "capture-health.json").write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
 
@@ -289,6 +324,37 @@ def binance() -> None:
         "binance",
         "BTCUSDT",
     )
+    _health(
+        run_dir,
+        "data-1f-retained-capture-health-v1",
+        "data-1f-binance-btcusdt-v1",
+        run_id,
+        gaps=2,
+        reconnects=4,
+        reconnect_clusters=2,
+        transport_profiles=[
+            {
+                "transport_profile": "spot",
+                "gaps": 2,
+                "reconnects": 4,
+                "reconnect_clusters": 2,
+                "exception_class": "ConnectionClosedError",
+                "close_code": 1008,
+                "close_code_rcvd": 1008,
+                "close_reason_rcvd": "Too many requests",
+            },
+            {
+                "transport_profile": "usdm_public",
+                "gaps": 0,
+                "reconnects": 0,
+                "reconnect_clusters": 0,
+            },
+        ],
+        exception_class="ConnectionClosedError",
+        close_code=1008,
+        close_code_rcvd=1008,
+        close_reason_rcvd="Too many requests",
+    )
     spot, usdm = "BTCUSDT-SPOT", "BTCUSDT-USDS-M-PERPETUAL"
     part1 = [
         _record(
@@ -373,6 +439,27 @@ def bitvavo() -> None:
         run_id,
         "bitvavo",
         "BTC-EUR",
+    )
+    _health(
+        run_dir,
+        "data-1e-retained-capture-health-v1",
+        "data-1e-bitvavo-btc-eur-v1",
+        run_id,
+        gaps=1,
+        reconnects=1,
+        reconnect_clusters=1,
+        transport_profiles=[
+            {
+                "transport_profile": "mdpro",
+                "gaps": 1,
+                "reconnects": 1,
+                "reconnect_clusters": 1,
+                "exception_class": "ConnectionResetError",
+                "errno": 104,
+            }
+        ],
+        exception_class="ConnectionResetError",
+        errno=104,
     )
     product = "BTC-EUR"
     part1 = [
@@ -463,6 +550,41 @@ def kraken() -> None:
         run_id,
         "kraken",
         "BTC/USD",
+    )
+    _health(
+        run_dir,
+        "data-1b-retained-capture-health-v1",
+        "data-1b-kraken-btc-usd-v1",
+        run_id,
+        gaps=6,
+        reconnects=6,
+        reconnect_clusters=3,
+        transport_profiles=[
+            {
+                "transport_profile": "public",
+                "gaps": 3,
+                "reconnects": 3,
+                "reconnect_clusters": 3,
+                "exception_class": "ConnectionClosedError",
+                "close_code": 1011,
+                "close_code_rcvd": 1011,
+                "close_code_sent": 1011,
+                "close_reason_rcvd": "internal error",
+                "close_reason_sent": "keepalive ping timeout",
+            },
+            {
+                "transport_profile": "l3",
+                "gaps": 3,
+                "reconnects": 3,
+                "reconnect_clusters": 3,
+            },
+        ],
+        exception_class="ConnectionClosedError",
+        close_code=1011,
+        close_code_rcvd=1011,
+        close_code_sent=1011,
+        close_reason_rcvd="internal error",
+        close_reason_sent="keepalive ping timeout",
     )
     product = "BTC/USD"
     part1 = [
@@ -715,7 +837,16 @@ def _reset_fixture_root() -> None:
         for path in ROOT.rglob("*.parquet")
         if path.name.startswith("part-") and WRITER_TAG not in path.name
     ]
-    if foreign or any(ROOT.rglob("capture-health.json")):
+    unsafe_health = []
+    for path in ROOT.rglob("capture-health.json"):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            unsafe_health.append(path)
+            continue
+        if not isinstance(payload, dict) or payload.get("_fixture") != HEALTH_FIXTURE_MARKER:
+            unsafe_health.append(path)
+    if foreign or unsafe_health:
         raise SystemExit(
             f"refusing to delete {ROOT}: it contains parts or health files not written "
             "by this generator."

@@ -86,6 +86,7 @@ segment; already published `raw/part-*.parquet` files remain readable.
 
 Public reconnects already loop until the duration ends. Authenticated L3, when
 enabled, still fails closed with no silent public-only downgrade.
+The first-connect WebSocket open timeout is 30 seconds for TerraPC multi-lane load.
 
 The 2026-08-31 authenticated smoke remains evidence only for bounded
 reachability. That smoke used historical depth-10.

@@ -1540,7 +1540,7 @@ async def _websocket_connection(
 ) -> AsyncIterator[WebSocketConnection]:
     async with connect(
         url,
-        open_timeout=10.0,
+        open_timeout=30.0,
         close_timeout=5.0,
         ping_interval=KRAKEN_WEBSOCKET_CLIENT_PING_INTERVAL,
         ping_timeout=KRAKEN_WEBSOCKET_CLIENT_PING_TIMEOUT,

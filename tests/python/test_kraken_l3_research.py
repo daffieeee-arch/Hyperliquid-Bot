@@ -840,7 +840,7 @@ def test_kraken_app_keepalive_is_official_ping_pong_and_not_a_channel() -> None:
 
 
 @pytest.mark.asyncio
-async def test_connection_factory_disables_protocol_ping(
+async def test_connection_factory_uses_extended_open_timeout_and_disables_protocol_ping(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, object] = {}
@@ -859,6 +859,7 @@ async def test_connection_factory_disables_protocol_ping(
     assert captured["uri"] == "wss://ws.kraken.com/v2"
     options = captured["options"]
     assert isinstance(options, dict)
+    assert options["open_timeout"] == 30.0
     assert options["ping_interval"] is None
     assert options["ping_timeout"] is None
     assert options["max_queue"] == 1024

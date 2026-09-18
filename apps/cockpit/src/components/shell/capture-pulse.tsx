@@ -9,7 +9,7 @@ import { useCockpitRefresh } from "../providers/cockpit-refresh";
 import { describeOriginSummary, stripOrigin } from "../../lib/data-origin";
 import { captureChipDataState, dataStateTone, worstDataState } from "../../lib/data-state";
 import type { VenueCaptureQuery } from "../../lib/paths";
-import { describePollRead, readAgeLabel } from "../../lib/poll-state";
+import { describePollRead, formatAgeSeconds, secondsBetween } from "../../lib/poll-state";
 import { describeRefreshFeedback } from "../../lib/refresh-activity";
 import { dualClockLabel } from "../../lib/time-display";
 import type { VenueCaptureStripResponse } from "../../lib/types";
@@ -38,7 +38,10 @@ export function CapturePulse({ query }: { query: VenueCaptureQuery }) {
   const strip = poll.data;
   const pending = !strip.ok && strip.error === PENDING && poll.error === undefined;
   const read = describePollRead(poll);
-  const readAge = readAgeLabel(poll, nowIso);
+  // Ticks from the last *successful* read only; a failed attempt never resets it.
+  const readAgeS = secondsBetween(poll.lastSuccessAt, nowIso);
+  const readLabel =
+    readAgeS === undefined ? read.label : `${read.label} · ${formatAgeSeconds(readAgeS)} ago`;
   const origin = stripOrigin(strip);
   const feedback = describeRefreshFeedback(activity, nowIso);
   const settledKey = activity.lastOutcome?.settledAt ?? "none";
@@ -92,17 +95,14 @@ export function CapturePulse({ query }: { query: VenueCaptureQuery }) {
         key={settledKey}
         tone={read.tone}
         className={
-          feedback.busy || activity.lastOutcome === null ? "topbar-wide" : "topbar-wide badge-pulse"
+          feedback.busy || activity.lastOutcome === null
+            ? "topbar-wide read-age"
+            : "topbar-wide read-age badge-pulse"
         }
         title={`${read.detail} Auto-refresh every ${String(intervalMs / 1000)}s${paused ? " (paused)" : ""}.`}
       >
-        {read.label}
+        {readLabel}
       </Badge>
-      {readAge === undefined ? null : (
-        <span className="eyebrow read-age topbar-wide" aria-live="off">
-          {readAge}
-        </span>
-      )}
       <span
         className={`refresh-feedback tone-${feedback.tone}`}
         title={`${feedback.detail} Auto-refresh every ${String(intervalMs / 1000)}s${paused ? " (paused)" : ""}.`}

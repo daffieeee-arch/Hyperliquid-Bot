@@ -451,6 +451,8 @@ body {
 
 /* Refresh feedback: always-visible last-refreshed label beside the button. */
 .refresh-feedback {
+  flex: 0 1 auto;
+  min-width: 5rem;
   font-size: var(--font-meta);
   font-weight: 600;
   letter-spacing: 0.04em;
@@ -462,7 +464,6 @@ body {
 
 .read-age {
   font-variant-numeric: tabular-nums;
-  white-space: nowrap;
 }
 
 .spin {
@@ -1003,6 +1004,10 @@ table.dt tbody tr:last-child td {
   white-space: normal;
   overflow-wrap: anywhere;
   max-width: 28rem;
+}
+
+.quote-detail-nowrap {
+  white-space: nowrap;
 }
 
 @media (max-width: 640px) {

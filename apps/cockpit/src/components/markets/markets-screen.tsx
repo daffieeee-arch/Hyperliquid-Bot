@@ -59,9 +59,17 @@ function quoteStateTone(state: MarketQuoteState): "ok" | "warn" | "down" {
   }
 }
 
-function Detail({ children, title }: { children: string; title?: string }) {
+function Detail({
+  children,
+  title,
+  nowrap = false,
+}: {
+  children: string;
+  title?: string;
+  nowrap?: boolean;
+}) {
   return (
-    <span className="quote-detail" title={title}>
+    <span className={nowrap ? "quote-detail quote-detail-nowrap" : "quote-detail"} title={title}>
       {children}
     </span>
   );
@@ -89,7 +97,7 @@ const columns: DataTableColumns<MarketRow> = helper.columns([
       <>
         <span className="mono quote-secondary">{row.original.instrument}</span>
         {row.original.instrument === row.original.product ? null : (
-          <Detail>{`contract ${row.original.product}`}</Detail>
+          <Detail nowrap>{`contract ${row.original.product}`}</Detail>
         )}
       </>
     ),
@@ -109,7 +117,7 @@ const columns: DataTableColumns<MarketRow> = helper.columns([
         <span className="quote-secondary" title={row.original.quoteAt}>
           {row.original.quoteAge}
         </span>
-        <Detail>{`part ${row.original.lastPartAge}`}</Detail>
+        <Detail nowrap>{`part ${row.original.lastPartAge}`}</Detail>
       </>
     ),
   }),
@@ -129,9 +137,9 @@ const columns: DataTableColumns<MarketRow> = helper.columns([
           {row.original.captureStatus === undefined ? null : (
             <Badge
               tone={dataStateTone(captureChipDataState(row.original.captureStatus))}
-              title={`capture ${row.original.captureStatus} · run ${row.original.runId}`}
+              title={`Capture health chip for run ${row.original.runId}; the quote chip on the left is about the stored tick itself.`}
             >
-              {row.original.captureStatus}
+              {`capture ${row.original.captureStatus}`}
             </Badge>
           )}
         </span>

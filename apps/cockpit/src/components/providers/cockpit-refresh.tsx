@@ -3,6 +3,18 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 
+import {
+  initialRefreshActivity,
+  refreshBegan,
+  refreshSettled,
+  type FetchSettlement,
+  type RefreshActivity,
+} from "../../lib/refresh-activity";
+import {
+  RefreshActivityContext,
+  type RefreshActivityTracker,
+} from "../../lib/use-refresh-activity";
+
 export const COCKPIT_REFRESH_INTERVAL_MS = 15_000;
 
 export type CockpitRefreshContextValue = {
@@ -12,6 +24,8 @@ export type CockpitRefreshContextValue = {
   lastTickIso: string | null;
   paused: boolean;
   intervalMs: number;
+  /** Requests in flight and the outcome of the last fully settled tick. */
+  activity: RefreshActivity;
   refreshNow: () => void;
   setPaused: (paused: boolean) => void;
 };
@@ -25,6 +39,10 @@ const CockpitRefreshContext = createContext<CockpitRefreshContextValue | null>(n
  * particular) sit on stale numbers while the rest of the page had already
  * moved on. Every polled panel now keys its fetch on this shared token, so a
  * tick — automatic or manual — refreshes the page as one coherent snapshot.
+ *
+ * Polls also report into an in-flight registry, so the topbar can disable
+ * the refresh control while a tick is running and then say whether that tick
+ * changed anything, was already current, or failed.
  */
 export function CockpitRefreshProvider({
   children,
@@ -36,6 +54,7 @@ export function CockpitRefreshProvider({
   const [token, setToken] = useState(0);
   const [lastTickIso, setLastTickIso] = useState<string | null>(null);
   const [paused, setPaused] = useState(false);
+  const [activity, setActivity] = useState<RefreshActivity>(initialRefreshActivity);
 
   const tick = useCallback(() => {
     setToken((current) => current + 1);
@@ -52,19 +71,42 @@ export function CockpitRefreshProvider({
     };
   }, [intervalMs, paused, tick]);
 
+  const tracker = useMemo<RefreshActivityTracker>(
+    () => ({
+      beginFetch: (fetchToken: number) => {
+        setActivity((current) => refreshBegan(current, fetchToken));
+        let settled = false;
+        return (settlement: FetchSettlement) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          const at = new Date().toISOString();
+          setActivity((current) => refreshSettled(current, fetchToken, settlement, at));
+        };
+      },
+    }),
+    [],
+  );
+
   const value = useMemo<CockpitRefreshContextValue>(
     () => ({
       token,
       lastTickIso,
       paused,
       intervalMs,
+      activity,
       refreshNow: tick,
       setPaused,
     }),
-    [intervalMs, lastTickIso, paused, tick, token],
+    [activity, intervalMs, lastTickIso, paused, tick, token],
   );
 
-  return <CockpitRefreshContext.Provider value={value}>{children}</CockpitRefreshContext.Provider>;
+  return (
+    <CockpitRefreshContext.Provider value={value}>
+      <RefreshActivityContext.Provider value={tracker}>{children}</RefreshActivityContext.Provider>
+    </CockpitRefreshContext.Provider>
+  );
 }
 
 export function useCockpitRefresh(): CockpitRefreshContextValue {

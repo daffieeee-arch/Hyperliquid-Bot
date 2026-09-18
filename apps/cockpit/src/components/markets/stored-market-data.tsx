@@ -22,7 +22,8 @@ import {
   type InstrumentRow,
   type VenueTapeSummary,
 } from "../../lib/market-tape-rows";
-import { clockLabel, type PollState } from "../../lib/poll-state";
+import type { PollState } from "../../lib/poll-state";
+import { localClockLabel } from "../../lib/time-display";
 import type { VenueCaptureStripResponse } from "../../lib/types";
 
 const helper = dataTableColumnHelper<InstrumentRow>();
@@ -121,7 +122,9 @@ function RecentTrades({ trades, quote }: { trades: TapeTrade[]; quote: string })
       <tbody>
         {trades.map((trade, index) => (
           <tr key={`${trade.at}-${String(index)}`}>
-            <td className="mono">{clockLabel(trade.at)}</td>
+            <td className="mono" title={trade.at}>
+              {localClockLabel(trade.at)}
+            </td>
             <td className={`tone-${sideTone(trade.side)}`}>{trade.side}</td>
             <td className="num mono">{formatGroupedNumber(trade.price)}</td>
             <td className="num mono">{trade.size}</td>

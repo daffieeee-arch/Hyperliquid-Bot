@@ -9,7 +9,8 @@ import {
   type MarketTapeResponse,
 } from "./market-tape-types";
 import type { PaperBotView, PaperRunLifecycle } from "./paper-bot";
-import { clockLabel, formatAgeSeconds, type PollState } from "./poll-state";
+import { formatAgeSeconds, type PollState } from "./poll-state";
+import { dualClockLabel } from "./time-display";
 import {
   RESEARCH_RUN_BINDING_NOTE,
   RESEARCH_UNAVAILABLE,
@@ -117,7 +118,7 @@ export function readFailureAttention(reads: OverviewReads): AttentionItem[] {
         ? meta.origin === "server"
           ? "Showing values from the server render."
           : "No successful read yet."
-        : `Showing values from the last successful read at ${clockLabel(meta.lastSuccessAt)}.`;
+        : `Showing values from the last successful read at ${dualClockLabel(meta.lastSuccessAt)}.`;
     const target = READ_TARGETS[key];
     items.push({
       id: `read-${key}`,

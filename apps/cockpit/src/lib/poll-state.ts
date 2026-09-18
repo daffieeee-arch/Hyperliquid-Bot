@@ -1,3 +1,5 @@
+import { dualClockLabel, localClockLabel, utcClockLabel } from "./time-display";
+
 /**
  * Client-side state of one polled resource.
  *
@@ -62,18 +64,6 @@ export function pollFailed<T>(previous: PollState<T>, error: unknown, at: string
   };
 }
 
-/** Compact clock label (HH:MM:SSZ) for a read timestamp; "—" when unknown. */
-export function clockLabel(iso: string | null | undefined): string {
-  if (iso === null || iso === undefined) {
-    return "—";
-  }
-  const parsed = Date.parse(iso);
-  if (!Number.isFinite(parsed)) {
-    return "—";
-  }
-  return `${new Date(parsed).toISOString().slice(11, 19)}Z`;
-}
-
 /** Whole seconds between two ISO times, or undefined when either is missing/invalid. */
 export function secondsBetween(
   earlierIso: string | undefined,
@@ -117,7 +107,8 @@ export function formatAgeSeconds(seconds: number | undefined): string {
  * One-line read status for a polled panel.
  *
  * Distinguishes "never fetched on the client yet" from "fetched OK" from
- * "last attempt failed, showing values from <time>".
+ * "last attempt failed, showing values from <time>". Labels are local
+ * (Europe/Amsterdam) clock time; the detail keeps the UTC form.
  */
 export function describePollRead(state: PollState<unknown>): {
   tone: "ok" | "down" | "muted";
@@ -130,11 +121,11 @@ export function describePollRead(state: PollState<unknown>): {
         ? state.origin === "server"
           ? "values from the server render"
           : "no successful read yet"
-        : `values from ${clockLabel(state.lastSuccessAt)}`;
+        : `values from ${dualClockLabel(state.lastSuccessAt)}`;
     return {
       tone: "down",
-      label: `read failed ${clockLabel(state.lastAttemptAt)}`,
-      detail: `${state.error} — ${shown}. ${String(state.failures)} consecutive failure(s).`,
+      label: `read failed ${localClockLabel(state.lastAttemptAt)}`,
+      detail: `${state.error} — ${shown}. ${String(state.failures)} consecutive failure(s). Attempt at ${utcClockLabel(state.lastAttemptAt)}.`,
     };
   }
   if (state.lastSuccessAt === undefined) {
@@ -146,7 +137,28 @@ export function describePollRead(state: PollState<unknown>): {
   }
   return {
     tone: "ok",
-    label: `read ${clockLabel(state.lastSuccessAt)}`,
-    detail: "Last successful read from the backend (browser clock).",
+    label: `read ${localClockLabel(state.lastSuccessAt)}`,
+    detail: `Last successful read from the backend at ${utcClockLabel(state.lastSuccessAt)} (browser clock).`,
   };
+}
+
+/**
+ * Ticking age of the last *successful* read, e.g. "updated 3s ago".
+ *
+ * `nowIso` comes from a client clock that ticks every second. The age is
+ * always measured from `lastSuccessAt`, never from the last attempt, so a
+ * failing panel keeps counting up from its last good data instead of looking
+ * fresh because the clock moved. Undefined before the first successful read
+ * or before the client clock has mounted.
+ */
+export function readAgeLabel(
+  state: PollState<unknown>,
+  nowIso: string | undefined,
+): string | undefined {
+  const seconds = secondsBetween(state.lastSuccessAt, nowIso);
+  if (seconds === undefined) {
+    return undefined;
+  }
+  const prefix = state.error === undefined ? "updated" : "last good read";
+  return `${prefix} ${formatAgeSeconds(seconds)} ago`;
 }

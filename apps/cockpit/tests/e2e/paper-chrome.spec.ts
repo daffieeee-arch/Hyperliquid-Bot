@@ -31,8 +31,8 @@ test.describe("PAPER cockpit chrome", () => {
     for (const path of ["/", "/markets", "/research", "/paper", "/system"]) {
       await page.goto(path);
 
-      // Topbar PAPER pill is the one status landmark; brand and footer repeat the mode.
-      await expect(page.getByRole("status")).toHaveText(/paper/i);
+      // Topbar PAPER pill (distinct from refresh feedback, which is also role=status).
+      await expect(page.locator(".paper-pill")).toHaveText(/paper/i);
       await expect(page.getByRole("banner")).toContainText(/paper/i);
       await expect(page.getByRole("contentinfo")).toContainText("PAPER ONLY");
       await expect(page.locator(".brand-copy").first()).toContainText("PAPER");

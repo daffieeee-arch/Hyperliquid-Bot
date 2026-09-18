@@ -6,10 +6,10 @@ Source code is developed on Windows/WSL2, tested in CI and packaged into immutab
 
 The runtime must not run directly from a mutable development checkout. Production-like services consume versioned images and persistent volumes.
 
-The architecture boundary is host-neutral Linux/OCI. A supported Ubuntu LTS VPS is the intended
-primary deployment profile; the existing TrueNAS SCALE environment remains optional. The local
-BTC-PERP vertical slice comes first. VPS provisioning, migration and the definitive runtime ADR
-are separate later work and are not authorized by this document correction.
+The architecture boundary is host-neutral Linux/OCI. **ADR-024** records a supported Ubuntu LTS
+VPS as the definitive primary PAPER runtime profile; the existing TrueNAS SCALE environment remains
+optional and protected. The local BTC-PERP vertical slice came first. ADR-024 does **not** authorize
+VPS provisioning, TerraPC cutover, or mutation of retained TrueNAS/ClickHouse/Grafana assets.
 
 ## Environment matrix
 
@@ -131,13 +131,12 @@ Each deployment profile receives a dedicated registry credential with package-re
 
 ## Primary Ubuntu LTS VPS profile
 
-The intended primary profile uses Linux/amd64 OCI images and Compose-compatible declarative
-configuration on a supported Ubuntu LTS VPS. Exact sizing, networking, storage, backup and
-recovery choices are deliberately deferred until the local vertical slice provides evidence and
-the definitive runtime ADR is accepted.
+**ADR-024** selects Linux/amd64 OCI images and Compose-compatible declarative configuration on a
+supported Ubuntu LTS VPS (prefer 24.04 LTS) as the definitive PAPER runtime profile. Deployments
+pin image digests; `PAPER` remains fail-closed; rollback is redeploy of a previous digest.
 
 A PAPER-only **reference** size for later multi-day market-data capture (not a cutover
-order; current retains stay on TerraPC WSL) is
+order; current retains stay on TerraPC WSL until CoS cutover) is
 [linux-vps-reference-profile.md](runbooks/linux-vps-reference-profile.md).
 
 ## Optional existing TrueNAS profile

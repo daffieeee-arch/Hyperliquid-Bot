@@ -52,10 +52,13 @@ The active sequence is:
 6. **Complete (PAPER path):** `hyperliquid_bot.paper_risk` applies documented
    risk-based sizing and fail-closed portfolio/exposure limits on the COURSE-1
    soak and D22-A pre-submit path. The frozen D01 publication smoke-risk
-   function is extended, not replaced. FastAPI health/readiness remains a
-   separate follow-up.
-7. after the local route passes, record the definitive runtime ADR and only then perform the VPS
-   migration.
+   function is extended, not replaced. A PAPER-only FastAPI `/health` and
+   `/ready` baseline exists in `hyperliquid_bot.control_service` (not wired to
+   cockpit, collectors, or LIVE).
+7. **Complete (decision only):** ADR-024 records the definitive PAPER runtime
+   profile (Ubuntu LTS VPS + Linux/amd64 OCI, digest-pinned, Compose-compatible).
+   It does **not** authorize provisioning, TerraPC cutover, or TrueNAS data
+   mutation; factual VPS migration remains a separate CoS step.
 
 The fit decision is not a benchmark exercise. It checks only the blocking product and safety
 questions: supportable pinned version, licensing, Python/runtime compatibility, Hyperliquid
@@ -489,6 +492,9 @@ Potential additions only when justified:
 
 ## Planning interpretation
 
-The goal is not to spend months before seeing results. The local vertical slice comes first, followed by the definitive runtime ADR and an Ubuntu LTS VPS PAPER deployment built from the same repository and CI pipeline. Production hardening and out-of-sample evidence then accumulate in parallel; TrueNAS remains optional.
+The goal is not to spend months before seeing results. The local vertical slice came first;
+**ADR-024** records the Ubuntu LTS VPS/OCI PAPER runtime decision. Factual VPS PAPER deployment from
+the same repository and CI pipeline remains a separate CoS step. Production hardening and
+out-of-sample evidence then accumulate in parallel; TrueNAS remains optional.
 
 Time ranges are engineering/research estimates, not guarantees of strategy profitability.

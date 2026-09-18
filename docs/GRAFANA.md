@@ -4,11 +4,12 @@
 
 Grafana is not the primary trading UI. It is the professional observability, research-analysis and forensic layer behind the trading cockpit.
 
-Grafana runs on the approved continuous runtime. The existing TrueNAS instance remains an optional
-profile and is not changed or migrated before the local slice and definitive runtime ADR.
-Dashboard definitions, datasource provisioning and alert rules are developed/versioned in Git and
-promoted with the software release. Hermes may also use Grafana MCP to create and refine project
-dashboards, provided those changes are exported back to version control.
+Grafana runs on the approved continuous runtime. **ADR-024** selects the Ubuntu LTS VPS/OCI
+profile for PAPER; the existing TrueNAS Grafana instance remains an optional protected profile and
+is not changed or migrated by that ADR. Dashboard definitions, datasource provisioning and alert
+rules are developed/versioned in Git and promoted with the software release. Hermes may also use
+Grafana MCP to create and refine project dashboards, provided those changes are exported back to
+version control.
 
 ## Stack
 

@@ -1514,7 +1514,10 @@ Official sources checked for this slice:
 
 ## Self-collected dataset
 
-After the local slice and definitive runtime ADR, realtime collectors should run on the approved 24/7 runtime and persist data to ClickHouse. This creates a dataset with the same receipt path and timestamp discipline the future live bot will use.
+After ADR-024 and an approved CoS cutover, realtime collectors should run on the approved 24/7
+runtime and persist data to ClickHouse. This creates a dataset with the same receipt path and
+timestamp discipline the future live bot will use. Until cutover, TerraPC WSL remains the interim
+retain path; ADR-024 does not authorize provisioning or TrueNAS mutation by itself.
 
 Recommended normalized schema per instrument/time bucket includes:
 

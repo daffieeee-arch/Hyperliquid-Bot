@@ -109,10 +109,10 @@ code, tests and ADR-022 remain intact and dormant. Reactivation needs a concrete
 new priority decision after the vertical slice; sunk implementation cost is not itself a consumer.
 
 The local slice precedes runtime-host work. Host-neutral Linux/amd64 OCI is the architecture
-boundary and a supported Ubuntu LTS VPS is the intended primary deployment profile. The factual
-VPS migration and definitive runtime ADR follow only after the local slice passes. TrueNAS remains
-an optional existing profile; this course correction neither migrates nor removes existing
-TrueNAS, ClickHouse or Grafana state.
+boundary. **ADR-024** records a supported Ubuntu LTS VPS as the definitive primary PAPER profile.
+Factual VPS provisioning and TerraPC cutover remain separate CoS steps and are not authorized by
+that ADR alone. TrueNAS remains an optional existing profile; ADR-024 neither migrates nor removes
+existing TrueNAS, ClickHouse or Grafana state.
 
 ## Environment separation
 
@@ -155,10 +155,10 @@ Owns:
 - runtime secrets;
 - monitoring, alerts, recovery and backups.
 
-These are separately configured deployments. The intended primary profile is a supported Ubuntu
-LTS VPS; the existing TrueNAS environment is optional. Provisioning and migration wait for the
-local vertical-slice exit gate and the definitive runtime ADR. Source code is never edited in
-place inside running containers.
+These are separately configured deployments. **ADR-024** selects a supported Ubuntu LTS VPS as the
+primary PAPER profile; the existing TrueNAS environment is optional and protected. Provisioning and
+cutover wait for explicit CoS approval after ADR-024. Source code is never edited in place inside
+running containers.
 
 ## Separation of concerns
 

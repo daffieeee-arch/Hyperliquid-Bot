@@ -62,8 +62,8 @@ raises rather than passing. Hard limits are never relaxed by this module.
 The bounded COURSE-1 / D22-A smoke book currently supplies a clean snapshot
 (starting cash, current position, mark). Daily, weekly and drawdown gates are
 implemented and unit-tested; they bind as soon as a caller provides realized
-PnL / peak equity. FastAPI health/readiness is a separate follow-up and is not
-part of this risk gate.
+PnL / peak equity. FastAPI `/health` and `/ready` live in
+`hyperliquid_bot.control_service` and are not part of this risk gate.
 
 ## Position sizing
 

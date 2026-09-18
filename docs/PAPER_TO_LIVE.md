@@ -131,10 +131,10 @@ Require:
 - no dependency on Windows, Codex, Hermes or an interactive session for continuous risk management;
 - stable runtime operating system preferred.
 
-The intended primary deployment profile is a supported Ubuntu LTS VPS. The existing TrueNAS 26
-BETA.3 profile, if retained, is acceptable for PAPER research but not preferred for material live
-capital without explicit documented risk acceptance and repeated recovery/soak testing. Actual VPS
-migration and the definitive runtime ADR follow the local vertical slice.
+The intended primary deployment profile is a supported Ubuntu LTS VPS (**ADR-024**). The existing
+TrueNAS 26 BETA.3 profile, if retained, is acceptable for PAPER research but not preferred for
+material live capital without explicit documented risk acceptance and repeated recovery/soak
+testing. Actual VPS provisioning and TerraPC cutover remain separate CoS steps after ADR-024.
 
 ## SMALL LIVE -> PRODUCTION
 

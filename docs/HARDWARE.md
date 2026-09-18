@@ -5,8 +5,8 @@
 The project deliberately separates development from continuous runtime operation:
 
 - **Windows workstation:** interactive development, Codex, frontend work, local tests, disposable containers and optional GPU research.
-- **Intended primary runtime profile:** a supported Ubuntu LTS VPS running Linux/amd64 OCI workloads, after the local vertical slice and definitive runtime ADR.
-- **Optional existing profile:** TrueNAS SCALE for retained datasets/services where keeping it is explicitly chosen.
+- **Intended primary runtime profile:** a supported Ubuntu LTS VPS running Linux/amd64 OCI workloads, per **ADR-024** (decision only; provisioning/cutover remain separate CoS steps).
+- **Optional existing profile:** TrueNAS SCALE for retained datasets/services where keeping it is explicitly chosen; not the capture host.
 
 The trading runtime must not depend on the Windows workstation remaining powered on.
 
@@ -90,10 +90,10 @@ Phase 1 must remain CPU-capable. No core collector, risk or execution process ma
 
 ## Primary runtime profile
 
-The architecture target is a host-neutral Linux/amd64 OCI runtime with a supported Ubuntu LTS VPS
-as the intended primary profile. VPS sizing and storage topology must be derived from the working
-local slice. Provisioning, factual migration and the definitive runtime ADR therefore wait until
-that slice passes.
+The architecture target is a host-neutral Linux/amd64 OCI runtime. **ADR-024** records a supported
+Ubuntu LTS VPS as the definitive primary PAPER profile. VPS sizing and storage topology follow the
+working local slice and the companion reference runbook. Provisioning and TerraPC cutover remain
+separate CoS steps; ADR-024 alone does not authorize them.
 
 The PAPER capture/ops **migration-target** size (four concurrent collectors, EU/Amsterdam
 or nearby, TrueNAS out of runtime scope) is recorded in

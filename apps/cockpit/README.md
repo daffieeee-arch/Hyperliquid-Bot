@@ -202,10 +202,8 @@ export ARTIFACT_ROOT="$HOME/Hyperliquid Project/data-capture"
 pnpm --filter @hyperliquid-bot/cockpit dev
 ```
 
-Before pinning a run id by hand, check what is actually on disk; the ids in
-older notes (`20260905t232635z-live-retained` for HL / Bitvavo / Kraken,
-`20260906t101559z-live-retained` for the restarted Binance) describe one
-moment and go stale as soon as a collector restarts:
+Before pinning a run ID by hand, check what is actually on disk. Recorded IDs
+describe one moment and go stale as soon as a collector restarts:
 
 ```bash
 ls -lt "$ARTIFACT_ROOT"/data-1f/binance/BTCUSDT/          # newest run dir first

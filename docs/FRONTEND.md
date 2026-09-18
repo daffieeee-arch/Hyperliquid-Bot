@@ -33,7 +33,7 @@ The browser never receives trading secrets.
 | D01 bind | `same_d01_smoke_risk` | soak fixture | **UNAVAILABLE** if preflight omitted |
 | BN `usdm_public` | documented DATA-1F profile + copied BN chip | n/a | G/R stay n/a without health JSON |
 | RESEARCH P0 | strip claims/health + optional `research-out/**/panel-summary.json` | none in-repo | **UNAVAILABLE** if missing; no edge / no strategy PnL |
-| TerraPC retain ids | operator docs / picker hint only | HL/BV/KR `20260905t232635z-live-retained`; BN `20260906t101559z-live-retained` | auto-detect still prefers a live retain |
+| Capture run IDs | operator docs / picker hint only | unset on VPS | auto-detect prefers a live retain |
 
 LAN phone: `PORT=3001 pnpm --filter @hyperliquid-bot/cockpit dev:lan` then
 `http://<LAN-IP>:3001` on the same Wi-Fi (the PC's LAN IP, for example

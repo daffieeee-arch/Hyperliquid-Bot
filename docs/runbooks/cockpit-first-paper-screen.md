@@ -194,9 +194,10 @@ unreadable/failed/not-written health file. **MISSING** is fail-closed empty (no
 root, run, directory, or claim). Part age and part count stay `n/a` on MISSING
 chips. Host clock must be sane.
 
-Cockpit CI lives in `.github/workflows/cockpit.yml`. It is a separate
-workflow so the hashed D01 publication file `.github/workflows/ci.yml`
-stays byte-identical.
+Cockpit CI lives in `.github/workflows/cockpit.yml` and shares the
+`.github/actions/setup-node-pnpm` composite with `ci.yml`. Changing
+`.github/workflows/ci.yml` updates the D01 publication integrity hash;
+see [CI](../CI.md).
 
 ## Fail closed
 

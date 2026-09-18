@@ -40,45 +40,61 @@ LAN phone: `PORT=3001 pnpm --filter @hyperliquid-bot/cockpit dev:lan` then
 `http://192.168.x.x:3001`). Collectors are never started or
 stopped from the cockpit.
 
-The first cockpit screen is a PAPER Operator Cockpit workstation (incremental
-upgrade of `apps/cockpit`, not a template replace). It reads COURSE-1 PAPER
-JSON, a four-venue capture-health strip, and a thin DATA-1A capture-health
-panel. Sticky chrome keeps the PAPER badge, freshness/age, compact venue
-chips, and hash nav. IA order:
+The cockpit is a routed PAPER operator workstation (incremental upgrade of
+`apps/cockpit`, not a template replace). A persistent sidebar carries the
+workspaces, a topbar carries the PAPER pill, capture pulse and the refresh
+control, and on mobile the sidebar collapses into a drawer. Routes:
 
-1. Fail-closed **PAPER** banner (no keys, no orders, no LIVE knobs).
-2. **Health:** existing four-venue strip + run picker + DATA-1A (behavior
-   unchanged) plus the second-row D01 / `paper_risk` bind, read-only capture
-   health (start/stop vetoed), and Binance `usdm_public` callout
-   (`btcusdt@bookTicker`; not mixed with soak PnL).
-3. **MARKETS:** public HL BTC-PERP mid plus public `candleSnapshot` chart when
-   the credentialless `/info` route answers; sibling last/BBO stay
-   **UNAVAILABLE**. A recharts KPI sparkline renders only from those public
+1. **`/` Overview:** the answer to "what should I look at". Four stat tiles
+   (capture, attention count, research verdict, assumed PnL), a
+   severity-ranked **attention list** that links into the workspace that can
+   explain each item, public market context, a PAPER digest, the bound
+   capture strip and a research-availability card.
+2. **`/markets`:** public HL BTC-PERP mid plus the public `candleSnapshot`
+   chart with a 5m/15m/1h/4h interval control; sibling last/BBO stay
+   **UNAVAILABLE**. A recharts sparkline renders only from real public
    closes. Public mid is labeled **not research truth**.
-4. **RESEARCH (Quant P0):** artifact / summary cards only (run registry from
-   claims, capture health, WP-Q1 sufficiency from
-   `research-out/**/panel-summary.json` via `GET /api/research-summaries`,
-   instrument identity, overlap clock). No live public mid chart. Missing
-   files stay **UNAVAILABLE**. No edge, no strategy PnL, no 72h claim
-   mid-run. H1 lead-lag stays an UNAVAILABLE stub
-   (`promotion_decision=forbidden`). Public mid ≠ research truth.
-5. **PAPER / DESK bot (COURSE-1 soak only):** What is PAPER + `run_id` + soak
-   claim path, labeled **COURSE-1 soak** (not DATA retain). Why is the last
-   risk outcome ACCEPT or a #65/D01 reject **gate name** plus short reason.
-   Results copy paper side/size/entry/mark and label **assumed_pnl** (not
-   venue-reconciled; D22-B blocked). Tape is last N intents/fills with
-   rejected rows and gate codes. Preflight strip is read-only: assumed
-   equity, documented 0.25% risk/trade, max lev/gross/net 1.0×, max 3
-   positions, plus copied soak notional/loss when present. DATA retain stays
-   a separate card. Capture-health / `usdm_public` stay on Health/MARKETS.
-6. **RISK** copied vs **UNAVAILABLE**, plus the documented #65 `paper_risk`
-   gate catalog and reduce-only-after-halt rule. Per-run halt state is
-   **UNAVAILABLE** (COURSE-1 JSON has no daily/weekly/drawdown snapshot).
+3. **`/research` (Quant P0):** artifact and summary viewer only — run
+   registry, capture health, WP-Q1 sufficiency, instrument identity and the
+   overlap clock. No live mid chart lives here. Missing files stay
+   **UNAVAILABLE**; there is no edge, no strategy PnL and no 72h claim
+   mid-run.
+4. **`/paper` (COURSE-1 soak only):** What ran, why the last decision was
+   accepted or rejected, assumed-overlay results, the intent tape and the
+   read-only preflight caps. DATA retain stays a separate identity card.
+5. **`/system`:** run binding and picker, DATA-1A detail, the D01 /
+   `paper_risk` bind, the Binance `usdm_public` callout, the reconstructable
+   risk overlay and the documented #65 gate catalog. Start/stop is vetoed.
 
-PAPER is badged and watermarked. The layout is dense and mobile-friendly.
-Inspiration is professional workstation IA, not a fork of a commercial
-exchange UI. Missing values stay **UNAVAILABLE**; the cockpit never invents
-prices, PnL, leverage, margin, liquidation, VaR, wallets, or L2 ladders.
+### Cross-cutting display rules
+
+- **One refresh clock.** `CockpitRefreshProvider` owns a single token; every
+  polled panel keys its fetch on it, so no zone can sit on stale numbers while
+  the rest of the page has moved on. The topbar shows the last tick and can
+  pause or force a refresh.
+- **Missing ≠ stale ≠ error.** `lib/data-state.ts` is the shared vocabulary:
+  `missing` was never written, `stale` is past the freshness bound, `error` is
+  present-but-unreadable, `pending` is written-at-stop. Notices and badges are
+  coloured from that enum, never ad hoc.
+- **Charts are created once.** The Lightweight Charts instance and series are
+  built on mount; refreshes call `series.setData` between a
+  `getVisibleLogicalRange` / `setVisibleLogicalRange` pair so zoom and pan
+  survive polling. Only first load and an interval change refit.
+- **Verdicts are allowlisted.** `researchVerdictTone` greens only an
+  explicitly positive verdict that is attributable to the bound runs;
+  `not_enough_data` and anything unrecognised never borrow the success colour.
+- **Summaries are attributed.** A `panel-summary.json` is matched to the bound
+  `run_id`; a non-matching summary is still shown but flagged `mismatched` or
+  `unknown` and never presented as a verdict about the current selection.
+- **Examples are not history.** Documented `paper_risk` gate examples are a
+  separate type from `IntentFillRow`, so an illustrative reject cannot be
+  appended to a real intent tape.
+
+PAPER is badged. The layout is dense and mobile-friendly. Inspiration is
+professional workstation IA (shadcn/ui blocks, Tabler, TailAdmin free tier),
+not a fork of a commercial exchange UI. Missing values stay **UNAVAILABLE**;
+the cockpit never invents prices, PnL, leverage, margin, liquidation, VaR,
+wallets, or L2 ladders.
 Later screens must keep using the create-only reconstructable contracts rather
 than inventing a second store:
 

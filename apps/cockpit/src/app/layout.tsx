@@ -1,7 +1,9 @@
 import { IBM_Plex_Mono, IBM_Plex_Sans } from "next/font/google";
-import type { Metadata } from "next";
-import type { ReactNode } from "react";
+import type { Metadata, Viewport } from "next";
+import { Suspense, type ReactNode } from "react";
 
+import { CockpitRefreshProvider } from "../components/providers/cockpit-refresh";
+import { AppShell } from "../components/shell/app-shell";
 import { ThemeProvider } from "../components/theme-provider";
 import { DEFAULT_COCKPIT_THEME } from "../lib/theme";
 
@@ -10,21 +12,27 @@ import "./globals.css";
 const plexSans = IBM_Plex_Sans({
   subsets: ["latin"],
   weight: ["400", "500", "600"],
-  variable: "--font-sans",
+  variable: "--font-plex-sans",
   display: "swap",
 });
 
 const plexMono = IBM_Plex_Mono({
   subsets: ["latin"],
   weight: ["400", "500", "600"],
-  variable: "--font-mono",
+  variable: "--font-plex-mono",
   display: "swap",
 });
 
 export const metadata: Metadata = {
   title: "PAPER Operator Cockpit — Hyperliquid BTC-PERP",
   description:
-    "PAPER-only Operator Cockpit: fail-closed mode banner, separate COURSE-1 soak vs DATA retain identity, assumed overlay that is not venue-reconciled, paper_risk gates, public HL mid/candles, and read-only capture health. No signing, no real capital, no invented prices or risk numbers.",
+    "PAPER-only operator cockpit: capture health, public market context, retained-run research artifacts and the COURSE-1 soak desk. No signing, no real capital, no invented prices or risk numbers.",
+};
+
+export const viewport: Viewport = {
+  themeColor: "#0a0c10",
+  width: "device-width",
+  initialScale: 1,
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
@@ -35,7 +43,13 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       className={`${plexSans.variable} ${plexMono.variable}`}
     >
       <body>
-        <ThemeProvider>{children}</ThemeProvider>
+        <ThemeProvider>
+          <CockpitRefreshProvider>
+            <Suspense fallback={null}>
+              <AppShell>{children}</AppShell>
+            </Suspense>
+          </CockpitRefreshProvider>
+        </ThemeProvider>
       </body>
     </html>
   );

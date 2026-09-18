@@ -12,8 +12,11 @@ No trade, withdrawal, transfer, or signing keys. No OKX. The VPS counterpart
 is [data1e-vps-retained-capture.md](data1e-vps-retained-capture.md).
 
 **Do not start a multi-day DATA-1E retain now.** This PR is prepare-only.
-Wait until CoS assigns this window. This document does **not** attach to,
-resume, or stop tmux `hl-capture` or `bn-capture`.
+Wait until CoS assigns this window via the joint Phase A checklist (smoke,
+STOP, Chupa explicit OK). MD Pro must not silently fall back to Standard.
+See [phase-a-72h-joint-retained-capture.md](phase-a-72h-joint-retained-capture.md).
+This document does **not** attach to, resume, or stop tmux `hl-capture` or
+`bn-capture`.
 
 ## Why not a Cloud Agent
 

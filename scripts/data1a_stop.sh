@@ -9,6 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/data1a_lib.sh"
 
 TMUX_SESSION="${TMUX_SESSION:-$(data1a_default_tmux_session)}"
+data1_refuse_test_env_live_stop "${TMUX_SESSION}"
 
 if ! command -v tmux >/dev/null 2>&1; then
   echo "tmux is not installed." >&2

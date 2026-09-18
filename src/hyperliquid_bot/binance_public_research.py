@@ -28,12 +28,15 @@ from websockets.asyncio.client import connect
 from websockets.exceptions import PayloadTooBig, WebSocketException
 
 from .binance_spot_trades import BinanceTimestampUnit, decode_binance_spot_trade
+from .binance_usdm_stream_contract import require_usdm_combined_stream_split
 from .capture_observability import (
+    DISCONNECT_LOG_SUFFIX,
     add_transport_counts,
     attach_observability_health,
     capture_log_path,
     capture_logger,
     configure_capture_logger,
+    disconnect_log_values,
     elapsed_from_report,
     transport_exception_fields,
 )
@@ -85,6 +88,10 @@ BINANCE_WEBSOCKET_MARKET_MAX_QUEUE: Final = 16
 # the mid-run liveness gate. Official Spot limit: 300 connections / 5 min / IP.
 BINANCE_RECONNECT_BACKOFF_CAP_SECONDS: Final = 24.0
 
+# Official market-data-only host (no user-data streams). Combined packing of
+# three channels is within the 1024-stream limit. 1008 is a server policy
+# close; log sanitized reason text before considering a host or packing change.
+# Do not invent proactive rotate or silent sampling.
 BINANCE_SPOT_WEBSOCKET_URL: Final = (
     "wss://data-stream.binance.vision:443/stream?streams="
     "btcusdt@trade/btcusdt@bookTicker/btcusdt@depth@100ms&timeUnit=MICROSECOND"
@@ -95,6 +102,10 @@ BINANCE_USDM_MARKET_WEBSOCKET_URL: Final = (
 )
 BINANCE_USDM_PUBLIC_WEBSOCKET_URL: Final = (
     "wss://fstream.binance.com/public/stream?streams=btcusdt@bookTicker"
+)
+require_usdm_combined_stream_split(
+    public_url=BINANCE_USDM_PUBLIC_WEBSOCKET_URL,
+    market_url=BINANCE_USDM_MARKET_WEBSOCKET_URL,
 )
 BINANCE_SPOT_DEPTH_URL: Final = (
     "https://data-api.binance.vision/api/v3/depth?symbol=BTCUSDT&limit=1000"
@@ -653,10 +664,9 @@ class BinancePublicResearchCollector:
                 failure_fields = transport_exception_fields(error)
                 del error
                 capture_logger().info(
-                    "binance disconnect transport_profile=%s exception_class=%s close_code=%s",
+                    "binance disconnect transport_profile=%s " + DISCONNECT_LOG_SUFFIX,
                     profile.name,
-                    failure_fields.get("exception_class"),
-                    failure_fields.get("close_code"),
+                    *disconnect_log_values(failure_fields),
                 )
                 await self._marker(
                     profile.product,
@@ -2103,6 +2113,7 @@ async def run_reconstructable_capture(
         "parquet_bytes": 0,
         "gaps": 0,
         "reconnects": 0,
+        "reconnect_clusters": 0,
         "elapsed_seconds": 0.0,
         "transport_profiles": [],
         "integrity_events": 0,

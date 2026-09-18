@@ -46,6 +46,13 @@ export const COCKPIT_THEME_LABELS: Record<CockpitTheme, string> = {
   hybrid: COCKPIT_THEME_INTENTS.hybrid.label,
 };
 
+/** Sidebar-width labels. The full name stays available as a tooltip. */
+export const COCKPIT_THEME_SHORT_LABELS: Record<CockpitTheme, string> = {
+  terminal: "Desk Dark",
+  workstation: "Critique",
+  hybrid: "Amber",
+};
+
 export function showDesignThemeVariants(): boolean {
   return process.env.NEXT_PUBLIC_COCKPIT_DESIGN_VARIANTS === "1";
 }

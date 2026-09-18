@@ -177,7 +177,8 @@ export type Data1AQuery = {
   data1a_run_id?: string;
 };
 
-const RUN_ID_PATTERN = /^[a-z0-9._-]{1,64}$/;
+// A run id is a single path segment; `.`/`..` would resolve to the venue dir.
+const RUN_ID_PATTERN = /^(?!\.{1,2}$)[a-z0-9._-]{1,64}$/;
 
 export function repoRootFromModuleUrl(moduleUrl: string = import.meta.url): string {
   return resolve(fileURLToPath(new URL("../../../../", moduleUrl)));

@@ -41,11 +41,13 @@ from websockets.asyncio.client import connect
 from websockets.exceptions import PayloadTooBig, WebSocketException
 
 from .capture_observability import (
+    DISCONNECT_LOG_SUFFIX,
     add_transport_counts,
     attach_observability_health,
     capture_log_path,
     capture_logger,
     configure_capture_logger,
+    disconnect_log_values,
     elapsed_from_report,
     transport_exception_fields,
 )
@@ -100,6 +102,13 @@ SUPPORTED_L3_DEPTHS: Final = frozenset({10, 100, 1000})
 CHECKSUM_PRICE_LEVELS: Final = 10
 DATA1B_CLAIM_SCHEMA: Final = "data-1b-retained-capture-claim-v1"
 DATA1B_HEALTH_SCHEMA: Final = "data-1b-retained-capture-health-v1"
+# Official Spot WS v2: send application {"method":"ping"} at least every 60s;
+# the server closes after about one minute of inactivity. Protocol-level
+# client Pings (library default 20/20) self-close with 1011 under joint load.
+KRAKEN_WEBSOCKET_CLIENT_PING_INTERVAL: Final[float | None] = None
+KRAKEN_WEBSOCKET_CLIENT_PING_TIMEOUT: Final[float | None] = None
+KRAKEN_APP_PING_INTERVAL_SECONDS: Final = 50.0
+KRAKEN_APP_PING_TEXT: Final = '{"method":"ping"}'
 KRAKEN_WS_API_KEY_ENV: Final = "KRAKEN_WS_API_KEY"
 KRAKEN_WS_API_SECRET_ENV: Final = "KRAKEN_WS_API_SECRET"
 KRAKEN_L3_OPTIONAL_ENV: Final = (KRAKEN_WS_API_KEY_ENV, KRAKEN_WS_API_SECRET_ENV)
@@ -325,6 +334,7 @@ class KrakenL3ResearchConfig:
     l3_depth: int = DEFAULT_L3_DEPTH
     reconnect_delay_seconds: float = 3.0
     max_application_payload_bytes: int = 8 * 1024 * 1024
+    app_ping_interval_seconds: float = KRAKEN_APP_PING_INTERVAL_SECONDS
 
     def __post_init__(self) -> None:
         if type(self.l2_depth) is not int or self.l2_depth not in SUPPORTED_L2_DEPTHS:
@@ -341,6 +351,11 @@ class KrakenL3ResearchConfig:
             or self.max_application_payload_bytes <= 0
         ):
             raise ValueError("max_application_payload_bytes must be a positive integer.")
+        if type(self.app_ping_interval_seconds) not in (int, float):
+            raise TypeError("app_ping_interval_seconds must be a built-in number.")
+        interval = float(self.app_ping_interval_seconds)
+        if not math.isfinite(interval) or interval <= 0.0 or interval > 60.0:
+            raise ValueError("app_ping_interval_seconds must be in (0, 60].")
 
 
 @dataclass(slots=True)
@@ -936,56 +951,64 @@ class KrakenL3ResearchCollector:
         acknowledged: set[str] = set()
         trade_state = _TradeState()
         book_state = _L2BookState(self._config.l2_depth)
-        while not stop_event.is_set():
-            captured = await self._receive_or_stop(connection, stop_event)
-            if captured is None:
-                break
-            document = await self._decode_inbound(captured, session_id, "public", token=None)
-            if _is_heartbeat(document):
-                continue
-            if document.get("channel") == "status":
-                await self._record_status(document, session_id, "public")
-                continue
-            if _is_subscription_response(document):
-                channel = await self._record_subscription_response(
-                    document,
-                    session_id,
-                    stream="public",
-                    authenticated=False,
-                    expected_channels=_PUBLIC_CHANNELS,
-                )
-                acknowledged.add(channel)
-                if acknowledged == _PUBLIC_CHANNELS:
-                    await self._append_marker(
+        ping_task = asyncio.create_task(
+            self._app_ping_until_stop(connection, stop_event),
+            name="kraken-public-app-ping",
+        )
+        try:
+            while not stop_event.is_set():
+                captured = await self._receive_or_stop(connection, stop_event)
+                if captured is None:
+                    break
+                document = await self._decode_inbound(captured, session_id, "public", token=None)
+                if _is_heartbeat(document) or _is_app_keepalive(document):
+                    continue
+                if document.get("channel") == "status":
+                    await self._record_status(document, session_id, "public")
+                    continue
+                if _is_subscription_response(document):
+                    channel = await self._record_subscription_response(
+                        document,
                         session_id,
-                        "subscription",
-                        "subscriptions_active",
                         stream="public",
-                        product=KRAKEN_RESEARCH_PRODUCT,
                         authenticated=False,
+                        expected_channels=_PUBLIC_CHANNELS,
                     )
-                continue
-            channel_value = document.get("channel")
-            if type(channel_value) is not str:
-                await self._schema_failure(session_id, "public", None)
-            channel = cast(str, channel_value)
-            if channel not in _PUBLIC_CHANNELS or channel not in acknowledged:
-                await self._schema_failure(session_id, "public", None)
-            raw_ordinal = await self._append_captured(
-                captured,
-                session_id=session_id,
-                channel=channel,
-            )
-            try:
-                normalized = (
-                    trade_state.normalize(document, raw_ordinal)
-                    if channel == "trade"
-                    else book_state.normalize(document, raw_ordinal)
+                    acknowledged.add(channel)
+                    if acknowledged == _PUBLIC_CHANNELS:
+                        await self._append_marker(
+                            session_id,
+                            "subscription",
+                            "subscriptions_active",
+                            stream="public",
+                            product=KRAKEN_RESEARCH_PRODUCT,
+                            authenticated=False,
+                        )
+                    continue
+                channel_value = document.get("channel")
+                if type(channel_value) is not str:
+                    await self._schema_failure(session_id, "public", None)
+                channel = cast(str, channel_value)
+                if channel not in _PUBLIC_CHANNELS or channel not in acknowledged:
+                    await self._schema_failure(session_id, "public", None)
+                raw_ordinal = await self._append_captured(
+                    captured,
+                    session_id=session_id,
+                    channel=channel,
                 )
-            except KrakenDataIntegrityError as error:
-                await self._integrity_failure(session_id, "public", raw_ordinal, error)
-                raise
-            await self._append_normalized(session_id, channel, normalized)
+                try:
+                    normalized = (
+                        trade_state.normalize(document, raw_ordinal)
+                        if channel == "trade"
+                        else book_state.normalize(document, raw_ordinal)
+                    )
+                except KrakenDataIntegrityError as error:
+                    await self._integrity_failure(session_id, "public", raw_ordinal, error)
+                    raise
+                await self._append_normalized(session_id, channel, normalized)
+        finally:
+            ping_task.cancel()
+            await asyncio.gather(ping_task, return_exceptions=True)
         if acknowledged != _PUBLIC_CHANNELS:
             await self._append_marker(
                 session_id,
@@ -1014,49 +1037,57 @@ class KrakenL3ResearchCollector:
     ) -> None:
         acknowledged = False
         book_state = _L3BookState(self._config.l3_depth)
-        while not stop_event.is_set():
-            captured = await self._receive_or_stop(connection, stop_event)
-            if captured is None:
-                break
-            document = await self._decode_inbound(captured, session_id, "l3", token=token)
-            if _is_heartbeat(document):
-                continue
-            if document.get("channel") == "status":
-                await self._record_status(document, session_id, "l3")
-                continue
-            if _is_subscription_response(document):
-                channel = await self._record_subscription_response(
-                    document,
-                    session_id,
-                    stream="l3",
-                    authenticated=True,
-                    expected_channels=frozenset({"level3"}),
+        ping_task = asyncio.create_task(
+            self._app_ping_until_stop(connection, stop_event),
+            name="kraken-l3-app-ping",
+        )
+        try:
+            while not stop_event.is_set():
+                captured = await self._receive_or_stop(connection, stop_event)
+                if captured is None:
+                    break
+                document = await self._decode_inbound(captured, session_id, "l3", token=token)
+                if _is_heartbeat(document) or _is_app_keepalive(document):
+                    continue
+                if document.get("channel") == "status":
+                    await self._record_status(document, session_id, "l3")
+                    continue
+                if _is_subscription_response(document):
+                    channel = await self._record_subscription_response(
+                        document,
+                        session_id,
+                        stream="l3",
+                        authenticated=True,
+                        expected_channels=frozenset({"level3"}),
+                    )
+                    if channel != "level3":
+                        raise KrakenAuthenticationError("Kraken L3 subscription failed.")
+                    acknowledged = True
+                    await self._append_marker(
+                        session_id,
+                        "subscription",
+                        "subscriptions_active",
+                        stream="l3",
+                        product=KRAKEN_RESEARCH_PRODUCT,
+                        authenticated=True,
+                    )
+                    continue
+                if document.get("channel") != "level3" or not acknowledged:
+                    await self._schema_failure(session_id, "l3", None)
+                raw_ordinal = await self._append_captured(
+                    captured,
+                    session_id=session_id,
+                    channel="level3",
                 )
-                if channel != "level3":
-                    raise KrakenAuthenticationError("Kraken L3 subscription failed.")
-                acknowledged = True
-                await self._append_marker(
-                    session_id,
-                    "subscription",
-                    "subscriptions_active",
-                    stream="l3",
-                    product=KRAKEN_RESEARCH_PRODUCT,
-                    authenticated=True,
-                )
-                continue
-            if document.get("channel") != "level3" or not acknowledged:
-                await self._schema_failure(session_id, "l3", None)
-            raw_ordinal = await self._append_captured(
-                captured,
-                session_id=session_id,
-                channel="level3",
-            )
-            try:
-                normalized = book_state.normalize(document, raw_ordinal)
-            except KrakenDataIntegrityError as error:
-                await self._integrity_failure(session_id, "l3", raw_ordinal, error)
-                raise
-            await self._append_normalized(session_id, "level3", normalized)
+                try:
+                    normalized = book_state.normalize(document, raw_ordinal)
+                except KrakenDataIntegrityError as error:
+                    await self._integrity_failure(session_id, "l3", raw_ordinal, error)
+                    raise
+                await self._append_normalized(session_id, "level3", normalized)
+        finally:
+            ping_task.cancel()
+            await asyncio.gather(ping_task, return_exceptions=True)
         if not acknowledged:
             await self._append_marker(
                 session_id,
@@ -1090,16 +1121,15 @@ class KrakenL3ResearchCollector:
             )
             if receive_task in done:
                 frame: str | bytes | None = None
-                unexpected_receive_failure = False
                 try:
                     frame = receive_task.result()
                 except asyncio.CancelledError:
                     raise
                 except (PayloadTooBig, WebSocketException, OSError):
                     raise
-                except Exception:
-                    unexpected_receive_failure = True
-                if unexpected_receive_failure or frame is None:
+                except Exception as error:
+                    raise OSError("Kraken WebSocket receive failed.") from error
+                if frame is None:
                     raise OSError("Kraken WebSocket receive failed.")
                 return capture_application_payload(
                     frame,
@@ -1344,10 +1374,9 @@ class KrakenL3ResearchCollector:
     ) -> None:
         fields = dict(failure_fields or {})
         capture_logger().info(
-            "kraken disconnect transport_profile=%s exception_class=%s close_code=%s",
+            "kraken disconnect transport_profile=%s " + DISCONNECT_LOG_SUFFIX,
             stream,
-            fields.get("exception_class"),
-            fields.get("close_code"),
+            *disconnect_log_values(fields),
         )
         await self._append_marker(
             session_id,
@@ -1429,6 +1458,25 @@ class KrakenL3ResearchCollector:
             raw_message_ordinal=raw_ordinal,
         )
 
+    async def _app_ping_until_stop(
+        self,
+        connection: WebSocketConnection,
+        stop_event: asyncio.Event,
+    ) -> None:
+        """Official Spot WS v2 application ping. No token; does not touch L3 auth."""
+
+        interval = float(self._config.app_ping_interval_seconds)
+        while not stop_event.is_set():
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=interval)
+                return
+            except TimeoutError:
+                pass
+            try:
+                await connection.send(KRAKEN_APP_PING_TEXT)
+            except (WebSocketException, OSError):
+                return
+
     async def _wait_to_reconnect(self, stop_event: asyncio.Event) -> None:
         if stop_event.is_set():
             return
@@ -1494,8 +1542,8 @@ async def _websocket_connection(
         url,
         open_timeout=10.0,
         close_timeout=5.0,
-        ping_interval=20.0,
-        ping_timeout=20.0,
+        ping_interval=KRAKEN_WEBSOCKET_CLIENT_PING_INTERVAL,
+        ping_timeout=KRAKEN_WEBSOCKET_CLIENT_PING_TIMEOUT,
         max_size=config.max_application_payload_bytes,
         max_queue=1024,
         logger=_TRANSPORT_PRIVACY_LOGGER,
@@ -1554,6 +1602,12 @@ def _is_subscription_response(document: dict[str, object]) -> bool:
 
 def _is_heartbeat(document: dict[str, object]) -> bool:
     return document.get("channel") == "heartbeat" and set(document) == {"channel"}
+
+
+def _is_app_keepalive(document: dict[str, object]) -> bool:
+    """Official application ping/pong. Distinct from protocol-level Ping frames."""
+
+    return document.get("method") in {"ping", "pong"}
 
 
 def _message_data(
@@ -1961,6 +2015,7 @@ async def run_reconstructable_capture(
         "parquet_bytes": 0,
         "gaps": 0,
         "reconnects": 0,
+        "reconnect_clusters": 0,
         "elapsed_seconds": 0.0,
         "transport_profiles": [],
         "integrity_events": 0,

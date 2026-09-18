@@ -107,26 +107,39 @@ The exact versions are selected during repository bootstrap after compatibility 
 
 ## Git and Codex workflow
 
-Normal task flow:
+Standard ship workflow for every development task (also encoded in
+`AGENTS.md`):
 
 ```text
-GitHub issue or explicit task
+confirm clean, synced Git state
         ↓
-feature branch / worktree
+fetch latest origin/main
         ↓
-Codex implementation
+feature branch / worktree (never commit on main)
         ↓
-local lint, typecheck and tests
+narrow implementation (no out-of-scope refactors)
         ↓
-review the diff
+add/update tests when behavior changes
         ↓
-push branch
+local lint, typecheck and relevant tests
         ↓
-GitHub pull request
+judge existing CI coverage; extend CI only if needed
         ↓
-CI
+commit and push
         ↓
-review and merge
+open pull request → main
+        ↓
+required CI green
+        ↓
+independent agent/model review when material or high-risk
+        ↓
+resolve blocking findings on the same branch; re-run CI
+        ↓
+squash-and-merge when CI green, no conflicts, blockers cleared
+        ↓
+delete merged branch / worktree only if no leftover work
+        ↓
+sync local main to origin/main
 ```
 
 Rules:
@@ -136,6 +149,12 @@ Rules:
 - keep each branch narrowly scoped;
 - architecture changes must update the relevant documentation/ADR;
 - generated code must pass deterministic tests rather than rely on an LLM review alone;
+- default merge method is Squash and Merge;
+- extend CI only when existing workflows do not already cover the change;
+  prefer the path-based / docs-only skip behavior in [CI](CI.md);
+- independent review is required for material or high-risk changes (execution,
+  risk, secrets, LIVE gates, infra/runtime, non-trivial strategy/data
+  contracts); trivial docs/chore PRs may skip it unless requested;
 - no deployment occurs merely because a pull request was merged.
 
 ## Local data policy
@@ -169,6 +188,10 @@ Where a later integration test genuinely needs a non-production secret, inject i
 ## Local versus runtime parity
 
 Parity is achieved through containers, contracts and tests—not by editing source directly on a runtime host.
+
+GitHub Actions Phase A, cockpit lint, and the PAPER API/browser regress
+suite are documented in [CI](CI.md). Local checks stay the same: `uv run
+pytest`, `pnpm run lint`, `pnpm --filter @hyperliquid-bot/cockpit run test`.
 
 Keep consistent across local, CI and every runtime profile:
 

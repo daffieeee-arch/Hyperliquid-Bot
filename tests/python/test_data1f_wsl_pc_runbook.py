@@ -24,7 +24,7 @@ def _script_env(
     extra: Mapping[str, str] | None = None,
     run_id: str = "20260904t000000z-live-retained",
     duration: str = "259200",
-    tmux_session: str = "bn-capture",
+    tmux_session: str = "pytest-bn-isolated",
 ) -> dict[str, str]:
     env = os.environ.copy()
     for name in (
@@ -70,7 +70,7 @@ def _run(
     args: tuple[str, ...] = (),
     run_id: str = "20260904t000000z-live-retained",
     duration: str = "259200",
-    tmux_session: str = "bn-capture",
+    tmux_session: str = "pytest-bn-isolated",
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["bash", str(SCRIPTS / script), *args],
@@ -143,6 +143,8 @@ def test_wsl_runbook_documents_known_good_operator_paths() -> None:
     assert "Cloud Agents are **unsuitable**" in text
     assert "must not SSH" in text
     assert "Do not start a multi-day DATA-1F retain now" in text
+    assert "phase-a-72h-joint-retained-capture.md" in text
+    assert "Chupa" in text
     assert "elapsed_seconds" in text
     assert "capture-<run_id>.log" in text
     assert "Protect a 72h evidence window" in text
@@ -217,7 +219,7 @@ def test_status_reports_tmux_and_parquet_part_count(tmp_path: Path) -> None:
     completed = _run("data1f_status.sh", tmp_path)
     assert completed.returncode == 0, completed.stderr
     stdout = completed.stdout
-    assert "tmux_session=bn-capture" in stdout
+    assert "tmux_session=pytest-bn-isolated" in stdout
     assert "tmux_alive=" in stdout
     assert "hl_capture_tmux_alive=" in stdout
     assert "run_id=20260904t000000z-live-retained" in stdout
@@ -246,7 +248,8 @@ def test_start_check_only_is_create_only(tmp_path: Path) -> None:
     assert completed.returncode == 0, completed.stderr
     assert "status=CHECK_ONLY" in completed.stdout
     assert "do_not_start_now=true" in completed.stdout
-    assert "wait_for_hl_and_cos=true" in completed.stdout
+    assert "wait_for_joint_phase_a=true" in completed.stdout
+    assert "wait_for_hl_and_cos=false" in completed.stdout
     assert "run_id=20260904t000000z-live-retained" in completed.stdout
     assert "signing=false" in completed.stdout
     run_dir = artifact_root / "data-1f" / "binance" / "BTCUSDT" / "20260904t000000z-live-retained"

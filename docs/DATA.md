@@ -277,8 +277,10 @@ ends at the requested duration or on SIGINT/SIGTERM, and a hard crash can lose t
 in-memory Parquet segment. End-of-run `capture-health.json` stores `duration_seconds` as the
 requested window and `elapsed_seconds` as wall-clock time until stop. `OPERATOR_STOP` with
 `elapsed_seconds` below `duration_seconds` is an operator interrupt, not a completed tape.
-Transport `gaps` / `reconnects` are also broken out under `transport_profiles`. Integrity
-events such as `sequence_gap` still fail the run and are not counted in transport `gaps`.
+Transport `gaps` / `reconnects` are also broken out under `transport_profiles`. When cheap,
+health also reports unique wall-clock `reconnect_clusters` (reconnects within 5 seconds count
+as one burst, so a simultaneous public+L3 drop is one cluster). Integrity events such as
+`sequence_gap` still fail the run and are not counted in transport `gaps`.
 
 The COURSE-1 live-public PAPER soak remains a separate 1–600 second bound. Do not
 treat that soak cap as the DATA-1A capture contract.
@@ -286,6 +288,10 @@ treat that soak cap as the DATA-1A capture contract.
 Operator commands, retain/stop/continue rules, and the git-safe sample exporter are
 in [DATA-1A VPS retained-capture runbook](runbooks/data1a-vps-retained-capture.md)
 and the [DATA-1A operator PC/WSL retained-capture runbook](runbooks/data1a-wsl-pc-retained-capture.md).
+The joint four-lane 72h Phase A campaign (prepare-only; smoke then Chupa OK)
+is [phase-a-72h-joint-retained-capture.md](runbooks/phase-a-72h-joint-retained-capture.md).
+DATA-2A short-pilot limits are not valid for that 72h profile. Hyperliquid
+ETH/SOL add-on configs exist and stay deferred at Phase A start.
 Cloud Agents are unsuitable for a multi-day retain. The later always-on host
 profile (not a migrate-today order) is
 [linux-vps-reference-profile.md](runbooks/linux-vps-reference-profile.md).
@@ -301,8 +307,9 @@ Preferred reconstructable layout (the path contract the Operator Cockpit reads):
   research.duckdb
 ```
 
-`capture-<run_id>.log` is the collector INFO log (session/disconnect/reconnect, close code and
-exception class only; no payloads or secrets). Optional tmux stdout copy:
+`capture-<run_id>.log` is the collector INFO log (session/disconnect/reconnect, close codes
+received vs sent, sanitized close-reason text, errno, and exception class; no payloads or
+secrets). Optional tmux stdout copy:
 `<artifact-root>/logs/capture-<run_id>.log`. After stop, `duration_seconds` is the requested
 window and `elapsed_seconds` is wall-clock time until stop.
 
@@ -559,9 +566,18 @@ to a local `venue_status` session marker rather than being classified as raw mar
 any inbound L3 bytes can be persisted, the active token is checked against the frame so an
 unexpected token echo fails closed. Every new public or L3 connection receives a new session ID.
 L3 reconnect also creates a new authentication boundary, discards old state and requires a fresh
-snapshot. Transport disconnects create gap markers; invalid auth, failed reconnect,
+snapshot. Transport disconnects create gap markers and persist `close_code_rcvd` vs
+`close_code_sent` plus sanitized close-reason text; invalid auth, failed reconnect,
 oversize/truncated input, malformed schema, ordering failure or checksum mismatch stops the combined
-capture. On a terminal failure, the peer stream exits through its stop boundary so an in-progress
+capture. Official Spot WebSocket v2 asks clients to send an application `{"method":"ping"}` at
+least every 60 seconds and closes idle sockets after about one minute; subscribed channels also
+emit `heartbeat` about once a second when quiet. DATA-1B therefore disables the Python
+`websockets` client keepalive (`ping_interval=None` / `ping_timeout=None`) — the library default
+`20/20` self-closed with **code 1011** under the Phase A joint smoke load — and sends the official
+application ping every **50 seconds**. Application `pong` is accepted and is not market data.
+Protocol-level client Pings are not Kraken's documented keepalive. This is not an L3 auth change;
+the ping payload has no token. **Apply path:** process-start state; restart the DATA-1B collector
+to pick it up. Do not start a retain from a Cloud Agent VM. On a terminal failure, the peer stream exits through its stop boundary so an in-progress
 atomic Parquet publication is not cancelled.
 
 A bounded run is successful only after both public subscription acknowledgements, a valid L2
@@ -658,7 +674,9 @@ Operator retain/stop/continue rules are in
 [DATA-1B operator PC/WSL retained-capture runbook](runbooks/data1b-wsl-pc-retained-capture.md).
 Cloud Agents are unsuitable for a multi-day retain and must not SSH to or stop TerraPC
 `hl-capture`, `bn-capture`, or `bv-capture`. **Do not start a multi-day DATA-1B retain
-until CoS assigns this window.** Never resume the same `run_id`.
+until CoS assigns this window** via the joint Phase A checklist
+([phase-a-72h-joint-retained-capture.md](runbooks/phase-a-72h-joint-retained-capture.md)).
+Never resume the same `run_id`.
 
 On 2026-08-31, a bounded phase 2 smoke completed two short authenticated BTC/EUR L3 sessions
 (historical EUR identity; current DATA-1B primary product is BTC/USD)
@@ -924,7 +942,13 @@ the snapshot boundary (`startMdSeqNo <= mdSeqNo < endMdSeqNo`), so that case fai
 of being skipped or partially replayed. Duplicate, stale, out-of-order, gap, identity, schema,
 buffer, truncation, sensitive-frame, or writer failures stop the capture and require a new
 snapshot. A reconnect creates a new session, new signature/authentication boundary, empty state,
-and fresh snapshot; it never falls back to Standard.
+and fresh snapshot; it never falls back to Standard. Official MD Pro documents
+`wss://ws-mdpro.bitvavo.com/v2/`, required authenticate-before-subscribe, and WebSocket
+`event=error` / `errorCode` (including 430 when no market-data events arrive). It does not
+document an application ping. Receive failures therefore re-raise `ConnectionClosedError` /
+`OSError` with the cause chain intact so `close_code`, sanitized reason, and `errno` reach
+disconnect markers; they are no longer rewritten as a bare `OSError("… receive failed.")`.
+Authentication still fails closed and never falls back to Standard.
 
 Fixtures are synthetic and credential-free adaptations of the official schemas. Phase 1 proves
 only deterministic authentication-message construction, redaction, snapshot/range validation,
@@ -974,7 +998,9 @@ Operator retain/stop/continue rules are in
 [DATA-1E operator PC/WSL retained-capture runbook](runbooks/data1e-wsl-pc-retained-capture.md).
 Cloud Agents are unsuitable for a multi-day retain and must not SSH to or stop TerraPC
 `hl-capture` or `bn-capture`. **Do not start a multi-day DATA-1E retain until CoS assigns
-this window.** Never resume the same `run_id`.
+this window** via the joint Phase A checklist
+([phase-a-72h-joint-retained-capture.md](runbooks/phase-a-72h-joint-retained-capture.md)).
+Never resume the same `run_id`.
 
 On 2026-08-31, the final bounded phase-2 smoke completed two short authenticated BTC-EUR Pro book
 sessions with one controlled session restart and no automatic reconnect. Each session received
@@ -1095,6 +1121,19 @@ explicitly approves a BN-only restart (CoS gates). Do not stop HL / BV / KR. Unt
 the current run can still finish a useful tape — it is not silent — but Quant
 `bn_gap_fraction` may stay high and H1 remain fail-closed.
 
+Spot disconnects now persist sanitized close-reason text (`close_reason_rcvd` /
+`close_reason_sent`) in addition to codes. Official Spot streams document both
+`wss://stream.binance.com:443` / `:9443` and the market-data-only host
+`wss://data-stream.binance.vision` (no user-data streams). Combined stream packing of the
+three required Spot channels is within the official 1024-stream limit. The 5 message/s
+incoming limit counts client PING/PONG/JSON control, not market-data frames. Close **1008**
+is a server policy close (overload / too-many-requests / payload-too-long in public reports);
+the documented 24-hour connection lifespan does not explain a ~5–5.5 minute cadence. DATA-1F
+keeps `data-stream.binance.vision` and the combined Spot URL. It does not invent a silent
+proactive rotate or drop samples: without the reason text a host or packing change would be
+guesswork. The USD-M `/public` vs `/market` fail-closed split and `max_queue=1024` on Spot
+and `/public` stay unchanged.
+
 The four source-linked, string-preserving research views are:
 
 ```text
@@ -1122,9 +1161,10 @@ Preferred reconstructable layout (create-only; Hypothesis `--binance-parquet-dir
   research.duckdb
 ```
 
-`capture-<run_id>.log` is the collector INFO log (session/disconnect/reconnect, close code and
-exception class only). It must be non-empty on a reconstructable run. It never contains payloads
-or secrets. Optional tmux stdout copy: `<artifact-root>/logs/capture-<run_id>.log`.
+`capture-<run_id>.log` is the collector INFO log (session/disconnect/reconnect, close codes
+received vs sent, sanitized close-reason text, errno, and exception class). It must be
+non-empty on a reconstructable run. It never contains payloads or secrets. Optional tmux
+stdout copy: `<artifact-root>/logs/capture-<run_id>.log`.
 `duration_seconds` remains the requested window; `elapsed_seconds` is wall-clock time until stop.
 Claim and health also record `required_streams`, `optional_streams`, and
 `required_stream_starvation_seconds` (60). A mid-run required-stream starve or an empty required
@@ -1143,7 +1183,9 @@ Operator retain/stop/continue rules are in
 [DATA-1F operator PC/WSL retained-capture runbook](runbooks/data1f-wsl-pc-retained-capture.md).
 Cloud Agents are unsuitable for a multi-day retain and must not SSH to or stop TerraPC
 `hl-capture`. **Do not start a multi-day DATA-1F retain until the live DATA-1A 72h series
-finishes and CoS assigns this window.**
+finishes and CoS assigns this window** — except the new joint Phase A campaign, which
+starts all four lanes together after smoke + Chupa OK
+([phase-a-72h-joint-retained-capture.md](runbooks/phase-a-72h-joint-retained-capture.md)).
 
 Spot `depth@100ms` is heavier than DATA-1A. A 60-second smoke wrote about 8 MB payload /
 1.6 MB Parquet; budget tens of GB for 72 hours. USDⓈ-M open interest remains one REST

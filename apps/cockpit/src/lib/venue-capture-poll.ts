@@ -72,3 +72,15 @@ export function venueCapturePollError(error: unknown): VenueCaptureStripResponse
     error: error instanceof Error ? error.message : "Multi-venue capture health is unavailable.",
   };
 }
+
+/** ISO mtime of the newest published Parquet part across the bound venues. */
+export function newestPartMtime(strip: VenueCaptureStripResponse): string | undefined {
+  if (!strip.ok) {
+    return undefined;
+  }
+  return strip.strip.venues
+    .map((venue) => venue.last_part_mtime_utc)
+    .filter((value): value is string => value !== undefined)
+    .sort()
+    .at(-1);
+}

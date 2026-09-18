@@ -300,6 +300,7 @@ export function loadData1ACaptureSnapshot(
     if (message.includes("DATA-1A run directory is missing:")) {
       throw new Error(
         `DATA-1A run directory is missing: ${resolved.runDir}. Set ARTIFACT_ROOT and DATA1A_RUN_ID (or COCKPIT_DATA1A_RUN_ID / ?data1a_run_id=) to an existing reconstructable capture. Counts are not invented.`,
+        { cause: error },
       );
     }
     throw error;

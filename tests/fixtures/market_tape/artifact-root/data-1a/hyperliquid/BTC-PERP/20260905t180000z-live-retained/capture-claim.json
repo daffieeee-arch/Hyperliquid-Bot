@@ -1,0 +1,12 @@
+{
+  "credentialless": true,
+  "path_contract": "data-1a-hyperliquid-btc-perp-v1",
+  "product": "BTC-PERP",
+  "retained": true,
+  "run_id": "20260905t180000z-live-retained",
+  "schema": "data-1a-retained-capture-claim-v1",
+  "signing": false,
+  "state": "STARTED_FAIL_CLOSED",
+  "twenty_four_seven": false,
+  "venue": "hyperliquid"
+}

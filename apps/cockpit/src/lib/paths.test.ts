@@ -36,7 +36,10 @@ const repoRoot = resolve(fileURLToPath(new URL("../../../../", import.meta.url))
 
 describe("COURSE-1 path contract", () => {
   it("joins the reconstructable live-public-paper layout", () => {
-    const runDir = course1CockpitRunDir("/home/chupa/Hyperliquid Project/data-capture", "sample-run");
+    const runDir = course1CockpitRunDir(
+      "/home/chupa/Hyperliquid Project/data-capture",
+      "sample-run",
+    );
     expect(runDir).toBe(
       "/home/chupa/Hyperliquid Project/data-capture/course1/live-public-paper/sample-run",
     );

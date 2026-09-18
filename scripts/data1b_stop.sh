@@ -10,6 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/data1b_lib.sh"
 
 TMUX_SESSION="${TMUX_SESSION:-$(data1b_default_tmux_session)}"
+data1_refuse_test_env_live_stop "${TMUX_SESSION}"
 
 data1b_refuse_protected_tmux_session "${TMUX_SESSION}"
 

@@ -4,6 +4,14 @@
 # Create-only. Never print secret values.
 # Never attach to, resume, or stop hl-capture, bn-capture, or bv-capture.
 
+_DATA1B_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=data1_operator_isolation.sh
+source "${_DATA1B_LIB_DIR}/data1_operator_isolation.sh"
+# shellcheck source=data1_bandwidth_lib.sh
+source "${_DATA1B_LIB_DIR}/data1_bandwidth_lib.sh"
+# shellcheck source=data1_phase_a_lib.sh
+source "${_DATA1B_LIB_DIR}/data1_phase_a_lib.sh"
+
 data1b_default_artifact_root() {
   printf '%s\n' "${HOME}/hyperliquid-artifacts/reconstructable"
 }

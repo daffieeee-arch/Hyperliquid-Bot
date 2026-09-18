@@ -1,12 +1,15 @@
 """Shared capture-health and transport-marker helpers.
 
-Public PAPER collectors only. Never logs payloads, close reasons, or secrets.
+Public PAPER collectors only. Never logs payloads or secrets. Sanitized
+WebSocket close-frame reason text is allowed; raw exception messages are not.
 """
 
 from __future__ import annotations
 
 import logging
 import math
+import re
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Final, cast
 
@@ -32,6 +35,17 @@ _INTEGRITY_GAP_EVENTS: Final = frozenset(
     }
 )
 _INTEGRITY_EVENT_SQL: Final = ", ".join(f"'{event}'" for event in sorted(_INTEGRITY_GAP_EVENTS))
+RECONNECT_CLUSTER_GAP_NS: Final = 5_000_000_000
+_MAX_CLOSE_REASON_CHARS: Final = 120
+_SECRETISH_CLOSE_REASON: Final = re.compile(
+    r"(?i)(?:token|secret|password|passwd|authorization|api[-_]?key|"
+    r"access[-_]?key|private[-_]?key|signature|bearer)"
+    r"|[A-Za-z0-9+/_-]{24,}"
+)
+DISCONNECT_LOG_SUFFIX: Final = (
+    "exception_class=%s close_code=%s close_code_rcvd=%s close_code_sent=%s "
+    "close_reason_rcvd=%s close_reason_sent=%s errno=%s"
+)
 
 
 def require_elapsed_seconds(value: object) -> float:
@@ -52,21 +66,110 @@ def elapsed_from_report(report: dict[str, object], fallback: float | None = None
     return require_elapsed_seconds(raw)
 
 
-def transport_exception_fields(error: BaseException) -> dict[str, int | str]:
-    """Persist close code and exception class only. Never include reason text.
+def sanitize_close_reason(value: object) -> str | None:
+    """Keep short printable venue close text. Redact credential-shaped values."""
 
-    Callers must not keep the exception object in frame locals across a later
-    raise; extract these fields and drop the exception reference.
+    if type(value) is not str:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if len(text) > _MAX_CLOSE_REASON_CHARS:
+        text = text[:_MAX_CLOSE_REASON_CHARS]
+    if not all(32 <= ord(character) <= 126 for character in text):
+        return "redacted"
+    if _SECRETISH_CLOSE_REASON.search(text) is not None:
+        return "redacted"
+    return text
+
+
+def disconnect_log_values(fields: Mapping[str, int | str]) -> tuple[object, ...]:
+    """Positional values for DISCONNECT_LOG_SUFFIX. Never include raw exceptions."""
+
+    return (
+        fields.get("exception_class"),
+        fields.get("close_code"),
+        fields.get("close_code_rcvd"),
+        fields.get("close_code_sent"),
+        fields.get("close_reason_rcvd"),
+        fields.get("close_reason_sent"),
+        fields.get("errno"),
+    )
+
+
+def count_wall_clock_clusters(
+    timestamps_ns: Sequence[int],
+    *,
+    gap_ns: int = RECONNECT_CLUSTER_GAP_NS,
+) -> int:
+    """Count unique reconnect bursts. Gaps larger than gap_ns start a new cluster."""
+
+    if type(gap_ns) is not int or gap_ns < 0:
+        raise ValueError("gap_ns must be a non-negative integer.")
+    if not timestamps_ns:
+        return 0
+    ordered = sorted(int(stamp) for stamp in timestamps_ns)
+    clusters = 1
+    previous = ordered[0]
+    for stamp in ordered[1:]:
+        if stamp - previous > gap_ns:
+            clusters += 1
+        previous = stamp
+    return clusters
+
+
+def transport_exception_fields(error: BaseException) -> dict[str, int | str]:
+    """Persist close codes, sanitized reasons, errno, and exception class.
+
+    Distinguishes rcvd (peer) vs sent (local) close frames. Walks __cause__ /
+    __context__ so a wrapper OSError cannot hide ConnectionClosedError. Callers
+    must not keep the exception object in frame locals across a later raise.
     """
 
     fields: dict[str, int | str] = {"exception_class": type(error).__name__}
-    received = getattr(error, "rcvd", None)
-    sent = getattr(error, "sent", None)
-    close_code = getattr(received, "code", None) if received is not None else None
-    if not isinstance(close_code, int):
-        close_code = getattr(sent, "code", None) if sent is not None else None
-    if isinstance(close_code, int):
-        fields["close_code"] = close_code
+    received_code: int | None = None
+    sent_code: int | None = None
+    received_reason: str | None = None
+    sent_reason: str | None = None
+    errno_value: int | None = None
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if errno_value is None:
+            raw_errno = getattr(current, "errno", None)
+            if isinstance(raw_errno, int):
+                errno_value = int(raw_errno)
+        received = getattr(current, "rcvd", None)
+        sent = getattr(current, "sent", None)
+        if received is not None and received_code is None:
+            code = getattr(received, "code", None)
+            if isinstance(code, int):
+                received_code = int(code)
+            reason = sanitize_close_reason(getattr(received, "reason", None))
+            if reason is not None:
+                received_reason = reason
+        if sent is not None and sent_code is None:
+            code = getattr(sent, "code", None)
+            if isinstance(code, int):
+                sent_code = int(code)
+            reason = sanitize_close_reason(getattr(sent, "reason", None))
+            if reason is not None:
+                sent_reason = reason
+        current = current.__cause__ if current.__cause__ is not None else current.__context__
+    if received_code is not None:
+        fields["close_code_rcvd"] = received_code
+        fields["close_code"] = received_code
+    if sent_code is not None:
+        fields["close_code_sent"] = sent_code
+        if "close_code" not in fields:
+            fields["close_code"] = sent_code
+    if received_reason is not None:
+        fields["close_reason_rcvd"] = received_reason
+    if sent_reason is not None:
+        fields["close_reason_sent"] = sent_reason
+    if errno_value is not None:
+        fields["errno"] = errno_value
     return fields
 
 
@@ -163,20 +266,66 @@ def add_transport_counts(
 
     gap_by_profile = {str(profile): int(count) for profile, count in gap_rows}
     reconnect_by_profile = {str(profile): int(count) for profile, count in reconnect_rows}
-    names = sorted(set(gap_by_profile) | set(reconnect_by_profile))
+    cluster_by_profile, reconnect_clusters = _reconnect_cluster_counts(
+        connection,
+        reconnect_event=reconnect_event,
+        profile_sql=profile_sql,
+    )
+    names = sorted(set(gap_by_profile) | set(reconnect_by_profile) | set(cluster_by_profile))
     profiles = [
         {
             "transport_profile": name,
             "gaps": gap_by_profile.get(name, 0),
             "reconnects": reconnect_by_profile.get(name, 0),
+            "reconnect_clusters": cluster_by_profile.get(name, 0),
         }
         for name in names
     ]
     report["gaps"] = sum(gap_by_profile.get(name, 0) for name in names)
     report["reconnects"] = sum(reconnect_by_profile.get(name, 0) for name in names)
+    report["reconnect_clusters"] = reconnect_clusters
     report["transport_profiles"] = profiles
     report["integrity_events"] = int(integrity_row[0])
     return report
+
+
+def _session_column_names(connection: duckdb.DuckDBPyConnection) -> set[str]:
+    return {str(row[0]) for row in connection.execute("DESCRIBE sessions").fetchall()}
+
+
+def _reconnect_cluster_counts(
+    connection: duckdb.DuckDBPyConnection,
+    *,
+    reconnect_event: str,
+    profile_sql: str,
+) -> tuple[dict[str, int], int]:
+    """Unique wall-clock reconnect bursts when sessions.received_utc_ns exists."""
+
+    if "received_utc_ns" not in _session_column_names(connection):
+        return {}, 0
+    rows = connection.execute(
+        f"""
+        SELECT received_utc_ns, {profile_sql} AS transport_profile
+        FROM sessions
+        WHERE event = ?
+        ORDER BY 1
+        """,
+        [reconnect_event],
+    ).fetchall()
+    stamps_by_profile: dict[str, list[int]] = {}
+    all_stamps: list[int] = []
+    for stamp, profile in rows:
+        try:
+            stamp_ns = int(stamp)
+        except (TypeError, ValueError):
+            continue
+        name = str(profile)
+        stamps_by_profile.setdefault(name, []).append(stamp_ns)
+        all_stamps.append(stamp_ns)
+    return (
+        {name: count_wall_clock_clusters(stamps) for name, stamps in stamps_by_profile.items()},
+        count_wall_clock_clusters(all_stamps),
+    )
 
 
 def attach_observability_health(
@@ -195,4 +344,7 @@ def attach_observability_health(
     integrity_events = report.get("integrity_events")
     if type(integrity_events) is int:
         health["integrity_events"] = integrity_events
+    reconnect_clusters = report.get("reconnect_clusters")
+    if type(reconnect_clusters) is int:
+        health["reconnect_clusters"] = reconnect_clusters
     return health

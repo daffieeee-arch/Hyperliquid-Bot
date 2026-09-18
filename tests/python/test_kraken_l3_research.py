@@ -18,14 +18,19 @@ from typing import cast
 
 import duckdb
 import pytest
+from websockets.exceptions import ConnectionClosedError
+from websockets.frames import Close
 
 from hyperliquid_bot.kraken_l3_research import (
     CHECKSUM_PRICE_LEVELS,
     DEFAULT_L2_DEPTH,
     DEFAULT_L3_DEPTH,
+    KRAKEN_APP_PING_TEXT,
     KRAKEN_RESEARCH_PRODUCT,
     KRAKEN_TOKEN_PATH,
     KRAKEN_TOKEN_URL,
+    KRAKEN_WEBSOCKET_CLIENT_PING_INTERVAL,
+    KRAKEN_WEBSOCKET_CLIENT_PING_TIMEOUT,
     KRAKEN_WS_API_KEY_ENV,
     KRAKEN_WS_API_SECRET_ENV,
     MAX_CAPTURE_SECONDS,
@@ -42,6 +47,8 @@ from hyperliquid_bot.kraken_l3_research import (
     KrakenWebSocketToken,
     WebSocketConnection,
     _argument_parser,
+    _connection_factory,
+    _is_app_keepalive,
     _L2BookState,
     _L3BookState,
     _require_bounded_duration,
@@ -191,7 +198,7 @@ class CompletionTracker:
 class FakeConnection:
     def __init__(
         self,
-        messages: Sequence[str | bytes],
+        messages: Sequence[str | bytes | BaseException],
         *,
         on_last: Callable[[], None] | None = None,
         disconnect_when_empty: bool = False,
@@ -219,6 +226,8 @@ class FakeConnection:
         message = self._messages.popleft()
         if not self._messages and self._on_last is not None:
             self._on_last()
+        if isinstance(message, BaseException):
+            raise message
         return message
 
 
@@ -816,6 +825,134 @@ async def test_l3_reconnect_gets_fresh_session_token_snapshot_and_gap_marker() -
     record_bytes = _all_record_bytes(sink.records)
     assert first_token.encode("utf-8") not in record_bytes
     assert second_token.encode("utf-8") not in record_bytes
+
+
+def test_kraken_app_keepalive_is_official_ping_pong_and_not_a_channel() -> None:
+    assert KRAKEN_WEBSOCKET_CLIENT_PING_INTERVAL is None
+    assert KRAKEN_WEBSOCKET_CLIENT_PING_TIMEOUT is None
+    assert json.loads(KRAKEN_APP_PING_TEXT) == {"method": "ping"}
+    assert _is_app_keepalive({"method": "pong", "req_id": "101"})
+    assert _is_app_keepalive({"method": "ping"})
+    assert not _is_app_keepalive({"channel": "heartbeat"})
+    assert not _is_app_keepalive({"method": "subscribe", "success": True})
+    with pytest.raises(ValueError, match="app_ping_interval"):
+        KrakenL3ResearchConfig(app_ping_interval_seconds=61.0)
+
+
+@pytest.mark.asyncio
+async def test_connection_factory_disables_protocol_ping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_connect(
+        uri: str, **options: object
+    ) -> AbstractAsyncContextManager[WebSocketConnection]:
+        captured["uri"] = uri
+        captured["options"] = options
+        return _fake_context(FakeConnection(()))
+
+    monkeypatch.setattr("hyperliquid_bot.kraken_l3_research.connect", fake_connect)
+    factory = _connection_factory("wss://ws.kraken.com/v2", KrakenL3ResearchConfig())
+    async with factory():
+        pass
+    assert captured["uri"] == "wss://ws.kraken.com/v2"
+    options = captured["options"]
+    assert isinstance(options, dict)
+    assert options["ping_interval"] is None
+    assert options["ping_timeout"] is None
+    assert options["max_queue"] == 1024
+
+
+@pytest.mark.asyncio
+async def test_public_and_l3_accept_official_pong_and_send_app_ping() -> None:
+    stop_event = asyncio.Event()
+    pong = json.dumps(
+        {
+            "method": "pong",
+            "req_id": 101,
+            "time_in": "2026-09-11T18:00:00.000001Z",
+            "time_out": "2026-09-11T18:00:00.000002Z",
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    public = FakeConnection(
+        [
+            _ack("trade"),
+            _ack("book"),
+            pong,
+            _fixture_text("book_snapshot.json"),
+        ],
+    )
+    level3 = FakeConnection(
+        [
+            _ack("level3"),
+            pong,
+            _fixture_text("level3_snapshot.json"),
+        ],
+    )
+    sink = MemorySink()
+    collector = KrakenL3ResearchCollector(
+        sink,
+        SyntheticTokenProvider([secrets.token_urlsafe(24)]),
+        config=KrakenL3ResearchConfig(
+            reconnect_delay_seconds=0.0,
+            app_ping_interval_seconds=0.05,
+        ),
+        public_connection_factory=ScriptedConnectionFactory([public]),
+        l3_connection_factory=ScriptedConnectionFactory([level3]),
+        session_id_factory=SessionIds(),
+    )
+
+    async def _stop_after_ping() -> None:
+        while KRAKEN_APP_PING_TEXT not in public.sent or KRAKEN_APP_PING_TEXT not in level3.sent:
+            await asyncio.sleep(0.01)
+        stop_event.set()
+
+    await asyncio.gather(collector.capture_for(2.0, stop_event=stop_event), _stop_after_ping())
+    assert KRAKEN_APP_PING_TEXT in public.sent
+    assert KRAKEN_APP_PING_TEXT in level3.sent
+    quality = _marker_documents(sink.records, channel="data_quality")
+    assert not any(event.get("event") == "schema_error" for event in quality)
+
+
+@pytest.mark.asyncio
+async def test_disconnect_records_rcvd_vs_sent_close_codes() -> None:
+    stop_event = asyncio.Event()
+    closed = ConnectionClosedError(
+        Close(1011, "internal error"),
+        Close(1011, "keepalive ping timeout"),
+        True,
+    )
+    public = FakeConnection(
+        [_ack("trade"), _ack("book"), _fixture_text("book_snapshot.json"), closed],
+    )
+    public_second = FakeConnection(
+        [_ack("trade"), _ack("book"), _fixture_text("book_snapshot.json")],
+        on_last=stop_event.set,
+    )
+    sink = MemorySink()
+    collector = KrakenL3ResearchCollector(
+        sink,
+        None,
+        config=KrakenL3ResearchConfig(reconnect_delay_seconds=0.0),
+        public_connection_factory=ScriptedConnectionFactory([public, public_second]),
+        session_id_factory=SessionIds(),
+    )
+    await collector.capture_for(2.0, stop_event=stop_event)
+    disconnected = [
+        event
+        for event in _marker_documents(sink.records, channel="session")
+        if event.get("event") == "disconnected"
+    ]
+    assert disconnected
+    assert disconnected[0]["exception_class"] == "ConnectionClosedError"
+    assert disconnected[0]["close_code"] == 1011
+    assert disconnected[0]["close_code_rcvd"] == 1011
+    assert disconnected[0]["close_code_sent"] == 1011
+    assert disconnected[0]["close_reason_rcvd"] == "internal error"
+    assert disconnected[0]["close_reason_sent"] == "keepalive ping timeout"
 
 
 @pytest.mark.asyncio

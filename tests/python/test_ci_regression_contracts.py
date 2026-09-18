@@ -27,7 +27,10 @@ from hyperliquid_bot.control_service.app import (
 from hyperliquid_bot.operator_stop_isolation import (
     PROTECTED_LIVE_SESSIONS,
     OperatorStopIsolationError,
+    isolated_fake_session,
+    require_session_is_not_live_in_test_env,
     require_sources_do_not_hardcode_live_stop_targets,
+    require_sources_do_not_use_broad_kills,
     require_stop_script_does_not_hardcode_live_targets,
 )
 
@@ -113,6 +116,29 @@ def test_committed_stop_scripts_do_not_hardcode_live_send_keys() -> None:
     require_sources_do_not_hardcode_live_stop_targets(
         (str(path.relative_to(REPO_ROOT)), path.read_text(encoding="utf-8"))
         for path in STOP_SCRIPTS
+    )
+    for path in STOP_SCRIPTS:
+        text = path.read_text(encoding="utf-8")
+        require_sources_do_not_use_broad_kills(text)
+        assert "data1_refuse_test_env_live_stop" in text
+
+
+def test_test_env_cannot_target_live_capture_sessions() -> None:
+    """pytest/CI targeting hl-capture (or bn/bv/kr) must fail closed."""
+
+    for session in PROTECTED_LIVE_SESSIONS:
+        with pytest.raises(OperatorStopIsolationError, match=session):
+            require_session_is_not_live_in_test_env(
+                session,
+                environment={"PYTEST_CURRENT_TEST": "tests/python/test_ci.py::test"},
+            )
+    require_session_is_not_live_in_test_env(
+        isolated_fake_session("hl"),
+        environment={"PYTEST_CURRENT_TEST": "tests/python/test_ci.py::test"},
+    )
+    require_session_is_not_live_in_test_env(
+        "hl-capture",
+        environment={},
     )
 
 

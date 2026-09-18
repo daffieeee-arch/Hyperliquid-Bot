@@ -7,7 +7,7 @@ dependencies = [
     "duckdb==1.5.5",
     "fastapi==0.141.1",
     "uvicorn==0.52.4",
-    "websockets==17.0.1",
+    "websockets==17.1",
 ]
 
 [dependency-groups]
@@ -16,7 +16,7 @@ dev = [
     "mypy==2.3.1",
     "pytest==9.1.1",
     "pytest-asyncio==1.4.0",
-    "ruff==0.16.4",
+    "ruff==0.16.6",
 ]
 
 [tool.uv]
@@ -27,7 +27,7 @@ required-version = "==0.12.5"
 entrypoint = "hyperliquid_bot.control_service.app:app"
 
 [tool.ruff]
-required-version = "==0.16.4"
+required-version = "==0.16.6"
 target-version = "py313"
 line-length = 100
 src = ["src", "tests/python"]

@@ -174,7 +174,7 @@ def test_wsl_runbook_documents_known_good_operator_paths() -> None:
     assert "tens of GB" in text
     vps = VPS_RUNBOOK.read_text(encoding="utf-8")
     assert "1 through 604800 seconds" in vps
-    assert "Do not start a multi-day DATA-1F retain now" in vps
+    assert "Do not start a multi-day DATA-1F retain without assignment" in vps
 
 
 def test_operator_scripts_are_executable_create_only_and_secret_free() -> None:

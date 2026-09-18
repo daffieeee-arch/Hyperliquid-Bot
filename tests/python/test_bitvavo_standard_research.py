@@ -981,8 +981,9 @@ def test_candles_subscription_ack_and_normalize() -> None:
     normalized = _normalize_candles(frame, 7, expected_interval="1m")
     assert normalized["source_channel"] == "candles"
     assert normalized["interval"] == "1m"
-    assert normalized["candles"][0]["open"] == "4999"
-    assert normalized["candles"][0]["volume"] == "0.45"
+    candles = cast(list[dict[str, object]], normalized["candles"])
+    assert candles[0]["open"] == "4999"
+    assert candles[0]["volume"] == "0.45"
 
 
 def test_data1d_capture_claim_never_uses_pro_paths(tmp_path: Path) -> None:
@@ -997,8 +998,9 @@ def test_data1d_capture_claim_never_uses_pro_paths(tmp_path: Path) -> None:
     assert claim["mdpro_fallback"] is False
     assert claim["data1e_path_fallback"] is False
     assert claim["credentialless"] is True
-    assert "data-1d" in claim["run_dir"]
-    assert "data-1e" not in claim["run_dir"]
+    run_dir = cast(str, claim["run_dir"])
+    assert "data-1d" in run_dir
+    assert "data-1e" not in run_dir
     candles_claim = data1d_capture_claim(
         run_id="sample-run",
         duration_seconds=60,
@@ -1009,4 +1011,4 @@ def test_data1d_capture_claim_never_uses_pro_paths(tmp_path: Path) -> None:
     assert candles_claim["include_candles"] is True
     assert candles_claim["candle_interval"] == "1h"
     assert candles_claim["retained"] is False
-    assert "candles" in candles_claim["channels"]
+    assert "candles" in cast(list[str], candles_claim["channels"])

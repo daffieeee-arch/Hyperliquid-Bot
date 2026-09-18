@@ -978,6 +978,40 @@ table.dt tbody tr:last-child td {
   border-bottom: 0;
 }
 
+/* Quote cells: primary Last/Mid are the numbers the operator reads first;
+   secondary spread/age/venue stay dense. Phones get a 16px minimum. */
+.quote-primary {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.005em;
+  color: var(--text-strong);
+}
+
+.quote-secondary {
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.quote-detail {
+  display: block;
+  margin-top: 0.12rem;
+  font-size: var(--font-meta);
+  line-height: 1.35;
+  color: var(--dim);
+  white-space: normal;
+  overflow-wrap: anywhere;
+  max-width: 28rem;
+}
+
+@media (max-width: 640px) {
+  .quote-primary {
+    font-size: 1rem;
+  }
+}
+
 .cell-id {
   font-family: var(--font-mono);
   font-size: 0.7rem;

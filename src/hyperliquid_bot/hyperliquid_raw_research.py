@@ -954,7 +954,8 @@ def _argument_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Also subscribe the optional Hyperliquid candle channel "
-            "(https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/websocket/subscriptions). "
+            "(https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/"
+            "api/websocket/subscriptions). "
             "Off by default; never implied by trades/bbo/l2Book/activeAssetCtx."
         ),
     )

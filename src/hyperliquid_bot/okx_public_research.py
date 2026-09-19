@@ -1,22 +1,44 @@
-"""Bounded public OKX BTC-USDT-SWAP exact-raw research capture."""
+"""Bounded public OKX BTC-USDT-SWAP exact-raw research capture.
+
+Duration may be a short smoke or a retained multi-day run. The process still
+stops at an explicit duration or operator signal; this is not a 24/7 service.
+"""
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import logging
+import math
 import re
+import signal
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from typing import Final, Protocol, cast
 
+import duckdb
 from websockets.asyncio.client import connect
 from websockets.exceptions import PayloadTooBig, WebSocketException
 
+from .capture_observability import (
+    add_transport_counts,
+    attach_observability_health,
+    capture_log_path,
+    capture_logger,
+    configure_capture_logger,
+    elapsed_from_report,
+)
+from .parquet_research import (
+    ParquetResearchWriter,
+    ParquetRotation,
+    create_research_catalog,
+)
 from .raw_research import (
     RAW_RESEARCH_SCHEMA_VERSION,
     CapturedApplicationPayload,
@@ -28,13 +50,22 @@ from .raw_research import (
     RawResearchSink,
     capture_application_payload,
 )
+from .reconstructable_paths import (
+    DATA1C_PATH_CONTRACT_ID,
+    DATA1C_PRODUCT,
+    Data1CRunPaths,
+    data1c_run_paths,
+)
 
 OKX_EEA_PUBLIC_WEBSOCKET_URL: Final = "wss://wseea.okx.com:8443/ws/v5/public"
 OKX_EEA_BUSINESS_WEBSOCKET_URL: Final = "wss://wseea.okx.com:8443/ws/v5/business"
 OKX_RESEARCH_VENUE: Final = "okx"
 OKX_RESEARCH_PRODUCT: Final = "BTC-USDT-SWAP"
 OKX_RESEARCH_INDEX: Final = "BTC-USDT"
-MAX_CAPTURE_SECONDS: Final = 600.0
+SMOKE_CAPTURE_SECONDS: Final = 600.0
+MAX_CAPTURE_SECONDS: Final = 7 * 24 * 60 * 60
+DATA1C_CLAIM_SCHEMA: Final = "data-1c-retained-capture-claim-v1"
+DATA1C_HEALTH_SCHEMA: Final = "data-1c-retained-capture-health-v1"
 
 _PING_TEXT: Final = "ping"
 _PONG_BYTES: Final = b"pong"
@@ -1268,9 +1299,336 @@ def _connection_factory(
     return lambda: _websocket_connection(url, config)
 
 
-def _require_bounded_duration(duration_seconds: object) -> None:
+def _require_bounded_duration(duration_seconds: object) -> float:
     if type(duration_seconds) not in (int, float):
         raise TypeError("duration_seconds must be a built-in number.")
     duration = float(cast(int | float, duration_seconds))
-    if not 1.0 <= duration <= MAX_CAPTURE_SECONDS:
+    if not math.isfinite(duration) or not 1.0 <= duration <= MAX_CAPTURE_SECONDS:
         raise ValueError(f"duration_seconds must be between 1 and {MAX_CAPTURE_SECONDS:g}.")
+    return duration
+
+
+def build_capture_report(database_path: Path, parquet_dir: Path) -> dict[str, object]:
+    """Return payload/file counts only; never emit captured payload contents."""
+
+    connection = duckdb.connect(str(database_path.resolve()), read_only=True)
+    try:
+        channel_rows = connection.execute(
+            """
+            SELECT channel, direction, count(*), sum(octet_length(payload_bytes))
+            FROM raw_records
+            GROUP BY channel, direction
+            ORDER BY channel, direction
+            """
+        ).fetchall()
+        totals = connection.execute(
+            "SELECT count(*), coalesce(sum(octet_length(payload_bytes)), 0) FROM raw_records"
+        ).fetchone()
+        if totals is None:
+            raise RuntimeError("DuckDB did not return the requested capture aggregates.")
+        total_events, total_payload_bytes = totals
+        report: dict[str, object] = {
+            "channels": [
+                {
+                    "channel": str(channel),
+                    "direction": str(direction),
+                    "events": int(events),
+                    "payload_bytes": int(payload_bytes),
+                }
+                for channel, direction, events, payload_bytes in channel_rows
+            ],
+            "events": int(total_events),
+            "payload_bytes": int(total_payload_bytes),
+        }
+        add_transport_counts(
+            connection,
+            report,
+            gap_event="gap_detected",
+            reconnect_event="reconnected",
+        )
+    finally:
+        connection.close()
+
+    parquet_files = tuple(sorted(parquet_dir.resolve().glob("*.parquet")))
+    parquet_bytes = sum(path.stat().st_size for path in parquet_files)
+    raw_bytes = int(total_payload_bytes)
+    report.update(
+        {
+            "parquet_files": len(parquet_files),
+            "parquet_bytes": parquet_bytes,
+            "raw_payload_to_parquet_ratio": (raw_bytes / parquet_bytes if parquet_bytes else None),
+        }
+    )
+    return report
+
+
+async def run_bounded_capture(
+    *,
+    output_dir: Path,
+    database_path: Path,
+    duration_seconds: float,
+    stop_event: asyncio.Event | None = None,
+    public_connection_factory: ConnectionFactory | None = None,
+    business_connection_factory: ConnectionFactory | None = None,
+) -> dict[str, object]:
+    """Run the no-credential capture, close Parquet, and build the DuckDB catalog."""
+
+    _require_bounded_duration(duration_seconds)
+    writer = ParquetResearchWriter(output_dir, rotation=ParquetRotation())
+    collector = OkxPublicResearchCollector(
+        writer,
+        public_connection_factory=public_connection_factory,
+        business_connection_factory=business_connection_factory,
+    )
+    try:
+        await collector.capture_for(duration_seconds, stop_event=stop_event)
+    finally:
+        await writer.aclose()
+    create_research_catalog(output_dir, database_path)
+    return build_capture_report(database_path, output_dir)
+
+
+def data1c_capture_claim(
+    *,
+    run_id: str,
+    duration_seconds: float,
+    paths: Data1CRunPaths,
+) -> dict[str, object]:
+    """Create-only start claim for a reconstructable DATA-1C run."""
+
+    duration = _require_bounded_duration(duration_seconds)
+    return {
+        "schema": DATA1C_CLAIM_SCHEMA,
+        "state": "STARTED_FAIL_CLOSED",
+        "path_contract": DATA1C_PATH_CONTRACT_ID,
+        "run_id": run_id,
+        "venue": OKX_RESEARCH_VENUE,
+        "product": DATA1C_PRODUCT,
+        "feed": "okx-public-btc-usdt-swap-trades-bbo-books-ctx",
+        "public_websocket_url": OKX_EEA_PUBLIC_WEBSOCKET_URL,
+        "business_websocket_url": OKX_EEA_BUSINESS_WEBSOCKET_URL,
+        "credentialless": True,
+        "signing": False,
+        "duration_seconds": duration,
+        "smoke_duration_seconds": SMOKE_CAPTURE_SECONDS,
+        "max_duration_seconds": MAX_CAPTURE_SECONDS,
+        "retained": duration > SMOKE_CAPTURE_SECONDS,
+        "twenty_four_seven": False,
+        "resume_policy": "never resume or overwrite an existing DATA-1C run directory",
+        "raw_dir": paths.raw_dir.as_posix(),
+        "database_path": paths.database_path.as_posix(),
+        "prepare_only_until_cos_assign": True,
+    }
+
+
+def data1c_capture_health(
+    *,
+    run_id: str,
+    duration_seconds: float,
+    status: str,
+    report: dict[str, object],
+) -> dict[str, object]:
+    """Create-only end health for a reconstructable DATA-1C run."""
+
+    if status not in {"COMPLETED", "OPERATOR_STOP", "FAILED"}:
+        raise ValueError("DATA-1C capture-health status is outside the documented bound.")
+    duration = _require_bounded_duration(duration_seconds)
+    elapsed = elapsed_from_report(report)
+    return attach_observability_health(
+        {
+            "schema": DATA1C_HEALTH_SCHEMA,
+            "kind": "capture-health",
+            "path_contract": DATA1C_PATH_CONTRACT_ID,
+            "run_id": run_id,
+            "status": status,
+            "duration_seconds": duration,
+            "retained": duration > SMOKE_CAPTURE_SECONDS,
+            "twenty_four_seven": False,
+            "credentialless": True,
+            "events": report.get("events"),
+            "payload_bytes": report.get("payload_bytes"),
+            "parquet_files": report.get("parquet_files"),
+            "parquet_bytes": report.get("parquet_bytes"),
+            "gaps": report.get("gaps"),
+            "reconnects": report.get("reconnects"),
+            "limitations": [
+                "Published Parquet parts are reconstructable; a crash can lose the "
+                "in-memory segment.",
+                "This is not 24/7 service evidence or a trading edge.",
+                "Public EEA sockets only; no VIP, API keys, signing, or RPI books.",
+            ],
+        },
+        report,
+        elapsed_seconds=elapsed,
+    )
+
+
+def _write_create_only_json(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("x", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=True, sort_keys=True, indent=2) + "\n")
+
+
+async def run_reconstructable_capture(
+    *,
+    artifact_root: Path,
+    run_id: str,
+    duration_seconds: float,
+    stop_event: asyncio.Event | None = None,
+    operator_stop: Callable[[], bool] | None = None,
+    public_connection_factory: ConnectionFactory | None = None,
+    business_connection_factory: ConnectionFactory | None = None,
+) -> dict[str, object]:
+    """Write DATA-1C Parquet/DuckDB to the documented reconstructable path."""
+
+    paths = data1c_run_paths(artifact_root, run_id)
+    if paths.run_dir.exists():
+        raise FileExistsError(f"DATA-1C refuses to reuse existing run directory: {paths.run_dir}")
+    paths.run_dir.mkdir(parents=True, exist_ok=False)
+    paths.raw_dir.mkdir(exist_ok=False)
+    log_path = capture_log_path(paths.run_dir, run_id)
+    configure_capture_logger(log_path)
+    capture_logger().info(
+        "data1c start run_id=%s requested_duration_seconds=%s log=%s",
+        run_id,
+        duration_seconds,
+        log_path,
+    )
+    _write_create_only_json(
+        paths.capture_claim_path,
+        data1c_capture_claim(run_id=run_id, duration_seconds=duration_seconds, paths=paths),
+    )
+    report: dict[str, object] = {
+        "events": 0,
+        "payload_bytes": 0,
+        "parquet_files": 0,
+        "parquet_bytes": 0,
+        "gaps": 0,
+        "reconnects": 0,
+        "elapsed_seconds": 0.0,
+        "transport_profiles": [],
+        "integrity_events": 0,
+    }
+    status = "FAILED"
+    started = time.monotonic()
+    try:
+        report = await run_bounded_capture(
+            output_dir=paths.raw_dir,
+            database_path=paths.database_path,
+            duration_seconds=duration_seconds,
+            stop_event=stop_event,
+            public_connection_factory=public_connection_factory,
+            business_connection_factory=business_connection_factory,
+        )
+        if operator_stop is not None and operator_stop():
+            status = "OPERATOR_STOP"
+        else:
+            status = "COMPLETED"
+    finally:
+        report = {**report, "elapsed_seconds": round(time.monotonic() - started, 6)}
+        capture_logger().info(
+            "data1c stop run_id=%s status=%s requested_duration_seconds=%s elapsed_seconds=%s",
+            run_id,
+            status,
+            duration_seconds,
+            report["elapsed_seconds"],
+        )
+        if not paths.capture_health_path.exists():
+            _write_create_only_json(
+                paths.capture_health_path,
+                data1c_capture_health(
+                    run_id=run_id,
+                    duration_seconds=duration_seconds,
+                    status=status,
+                    report=report,
+                ),
+            )
+    return {
+        **report,
+        "run_id": run_id,
+        "path_contract": DATA1C_PATH_CONTRACT_ID,
+        "run_dir": str(paths.run_dir),
+        "raw_dir": str(paths.raw_dir),
+        "database_path": str(paths.database_path),
+        "status": status,
+        "twenty_four_seven": False,
+    }
+
+
+def _argument_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Public OKX BTC-USDT-SWAP exact-raw research capture (EEA public + business). "
+            "Duration may exceed the historical 600s smoke cap up to 7 days. "
+            "Prepare-only until CoS assigns a retain. This is not a 24/7 service."
+        )
+    )
+    parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--database", type=Path)
+    parser.add_argument("--artifact-root", type=Path)
+    parser.add_argument("--run-id")
+    parser.add_argument("--duration-seconds", required=True, type=float)
+    return parser
+
+
+def _resolve_cli_mode(args: argparse.Namespace) -> str:
+    reconstructable = args.artifact_root is not None or args.run_id is not None
+    ad_hoc = args.output_dir is not None or args.database is not None
+    if reconstructable and ad_hoc:
+        raise ValueError(
+            "Use either --artifact-root/--run-id or --output-dir/--database, not both."
+        )
+    if reconstructable:
+        if args.artifact_root is None or args.run_id is None:
+            raise ValueError("Reconstructable capture requires both --artifact-root and --run-id.")
+        return "reconstructable"
+    if args.output_dir is None or args.database is None:
+        raise ValueError(
+            "Ad-hoc capture requires --output-dir and --database; "
+            "preferred reconstructable mode uses --artifact-root and --run-id."
+        )
+    return "ad_hoc"
+
+
+async def _run_from_args(args: argparse.Namespace) -> dict[str, object]:
+    stop_event = asyncio.Event()
+    operator_stopped = False
+
+    def _request_operator_stop() -> None:
+        nonlocal operator_stopped
+        operator_stopped = True
+        stop_event.set()
+
+    try:
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, _request_operator_stop)
+    except (NotImplementedError, RuntimeError):
+        pass
+
+    mode = _resolve_cli_mode(args)
+    if mode == "reconstructable":
+        return await run_reconstructable_capture(
+            artifact_root=cast(Path, args.artifact_root),
+            run_id=cast(str, args.run_id),
+            duration_seconds=cast(float, args.duration_seconds),
+            stop_event=stop_event,
+            operator_stop=lambda: operator_stopped,
+        )
+    return await run_bounded_capture(
+        output_dir=cast(Path, args.output_dir),
+        database_path=cast(Path, args.database),
+        duration_seconds=cast(float, args.duration_seconds),
+        stop_event=stop_event,
+    )
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _argument_parser().parse_args(argv)
+    report = asyncio.run(_run_from_args(args))
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

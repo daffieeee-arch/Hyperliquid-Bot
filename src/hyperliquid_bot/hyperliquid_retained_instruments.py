@@ -1,10 +1,12 @@
 """Explicit Hyperliquid retained-capture instrument configs.
 
-Official mainnet public WebSocket (reviewed 2026-09-11):
+Official mainnet public WebSocket (reviewed 2026-09-19):
 
 - URL: ``wss://api.hyperliquid.xyz/ws``
 - Subscribe: ``{"method":"subscribe","subscription":{"type":<channel>,"coin":<coin>}}``
 - Channels used here: ``trades``, ``bbo``, ``l2Book``, ``activeAssetCtx``
+- Optional flagged candles: ``{"type":"candle","coin":<coin>,"interval":<interval>}``
+  (official intervals include ``1m``; off by default, never implied by the core set)
 - Docs: https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/websocket
 - Subscriptions: https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/websocket/subscriptions
 - Timeouts: https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/websocket/timeouts-and-heartbeats
@@ -25,6 +27,24 @@ HYPERLIQUID_MAINNET_WEBSOCKET_URL: Final = "wss://api.hyperliquid.xyz/ws"
 HYPERLIQUID_REQUIRED_COIN: Final = "BTC"
 HYPERLIQUID_OPTIONAL_ADDON_COINS: Final = ("ETH", "SOL")
 HYPERLIQUID_RETAINED_CHANNELS: Final = ("trades", "bbo", "l2Book", "activeAssetCtx")
+HYPERLIQUID_OPTIONAL_CANDLE_CHANNEL: Final = "candle"
+HYPERLIQUID_CANDLE_INTERVALS: Final = (
+    "1m",
+    "3m",
+    "5m",
+    "15m",
+    "30m",
+    "1h",
+    "2h",
+    "4h",
+    "8h",
+    "12h",
+    "1d",
+    "3d",
+    "1w",
+    "1M",
+)
+DEFAULT_CANDLE_INTERVAL: Final = "1m"
 HYPERLIQUID_QUOTE_ASSET: Final = "USDC"
 HYPERLIQUID_ADDON_START_POLICY_DEFERRED: Final = "deferred_at_start"
 HYPERLIQUID_ADDON_START_POLICY_ENABLED: Final = "enabled"
@@ -71,9 +91,16 @@ class HyperliquidSubscription:
     coin: str
     channel: str
     payload_bytes: bytes
+    interval: str | None = None
 
     @property
     def identity(self) -> tuple[str, str]:
+        """Ack identity: ``(type, coin)`` or ``(candle, coin:interval)``."""
+
+        if self.channel == HYPERLIQUID_OPTIONAL_CANDLE_CHANNEL:
+            if self.interval is None:
+                raise HyperliquidInstrumentConfigError("candle subscriptions require an interval")
+            return (self.channel, f"{self.coin}:{self.interval}")
         return (self.channel, self.coin)
 
 
@@ -84,6 +111,8 @@ class HyperliquidRetainedInstrumentPlan:
     required: HyperliquidRetainedInstrument
     addons: tuple[HyperliquidRetainedInstrument, ...]
     addon_start_policy: AddonStartPolicy
+    include_candles: bool = False
+    candle_interval: str = DEFAULT_CANDLE_INTERVAL
     websocket_url: str = HYPERLIQUID_MAINNET_WEBSOCKET_URL
 
     def __post_init__(self) -> None:
@@ -101,6 +130,15 @@ class HyperliquidRetainedInstrumentPlan:
             HYPERLIQUID_ADDON_START_POLICY_ENABLED,
         ):
             raise HyperliquidInstrumentConfigError("addon_start_policy is not a documented value")
+        if type(self.include_candles) is not bool:
+            raise HyperliquidInstrumentConfigError("include_candles must be a bool")
+        if (
+            type(self.candle_interval) is not str
+            or self.candle_interval not in HYPERLIQUID_CANDLE_INTERVALS
+        ):
+            raise HyperliquidInstrumentConfigError(
+                "candle_interval must be one of the official Hyperliquid candle intervals"
+            )
 
     @property
     def started_instruments(self) -> tuple[HyperliquidRetainedInstrument, ...]:
@@ -120,11 +158,18 @@ class HyperliquidRetainedInstrumentPlan:
 
     @property
     def subscriptions(self) -> tuple[HyperliquidSubscription, ...]:
-        return tuple(
+        market = tuple(
             official_subscription(instrument.coin, channel)
             for instrument in self.started_instruments
             for channel in instrument.channels
         )
+        if not self.include_candles:
+            return market
+        candles = tuple(
+            official_candle_subscription(instrument.coin, self.candle_interval)
+            for instrument in self.started_instruments
+        )
+        return market + candles
 
     @property
     def expected_subscription_identities(self) -> frozenset[tuple[str, str]]:
@@ -133,6 +178,13 @@ class HyperliquidRetainedInstrumentPlan:
     @property
     def expected_channels(self) -> frozenset[str]:
         return frozenset(channel for channel, _coin in self.expected_subscription_identities)
+
+    @property
+    def feed_name(self) -> str:
+        base = "hyperliquid-public-btc-perp-trades-bbo-l2-ctx"
+        if not self.include_candles:
+            return base
+        return f"{base}-candles-{self.candle_interval}"
 
 
 def official_subscription(coin: str, channel: str) -> HyperliquidSubscription:
@@ -149,6 +201,30 @@ def official_subscription(coin: str, channel: str) -> HyperliquidSubscription:
         coin=coin,
         channel=channel,
         payload_bytes=payload.encode("utf-8"),
+    )
+
+
+def official_candle_subscription(coin: str, interval: str) -> HyperliquidSubscription:
+    """Build the official candle subscribe payload for one coin and interval."""
+
+    if coin not in (HYPERLIQUID_REQUIRED_COIN, *HYPERLIQUID_OPTIONAL_ADDON_COINS):
+        raise HyperliquidInstrumentConfigError(f"unsupported Hyperliquid retained coin {coin!r}")
+    if interval not in HYPERLIQUID_CANDLE_INTERVALS:
+        raise HyperliquidInstrumentConfigError(
+            "candle interval must be one of the official Hyperliquid candle intervals"
+        )
+    payload = (
+        '{"method":"subscribe","subscription":{"type":"candle","coin":"'
+        + coin
+        + '","interval":"'
+        + interval
+        + '"}}'
+    )
+    return HyperliquidSubscription(
+        coin=coin,
+        channel=HYPERLIQUID_OPTIONAL_CANDLE_CHANNEL,
+        payload_bytes=payload.encode("utf-8"),
+        interval=interval,
     )
 
 
@@ -223,9 +299,21 @@ def build_hyperliquid_retained_plan(
     *,
     addon_coins: object = (),
     enable_addons: bool = False,
+    include_candles: bool = False,
+    candle_interval: str = DEFAULT_CANDLE_INTERVAL,
 ) -> HyperliquidRetainedInstrumentPlan:
-    """Build a DATA-1A plan. BTC is always present. Add-ons default to deferred."""
+    """Build a DATA-1A plan. BTC is always present. Add-ons and candles default off."""
 
+    if type(include_candles) is not bool:
+        raise HyperliquidInstrumentConfigError("include_candles must be a bool")
+    if type(candle_interval) is not str or candle_interval not in HYPERLIQUID_CANDLE_INTERVALS:
+        raise HyperliquidInstrumentConfigError(
+            "candle_interval must be one of the official Hyperliquid candle intervals"
+        )
+    if not include_candles and candle_interval != DEFAULT_CANDLE_INTERVAL:
+        raise HyperliquidInstrumentConfigError(
+            "candle_interval requires include_candles"
+        )
     coins = parse_addon_coins(addon_coins)
     addons = tuple(hyperliquid_retained_instrument(coin) for coin in coins)
     policy: AddonStartPolicy = (
@@ -237,6 +325,8 @@ def build_hyperliquid_retained_plan(
         required=hyperliquid_retained_instrument(HYPERLIQUID_REQUIRED_COIN),
         addons=addons,
         addon_start_policy=policy,
+        include_candles=include_candles,
+        candle_interval=candle_interval,
     )
     if HYPERLIQUID_REQUIRED_COIN not in plan.started_coins:
         raise HyperliquidInstrumentConfigError("plan dropped the required BTC channels")

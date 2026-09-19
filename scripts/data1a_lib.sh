@@ -109,3 +109,14 @@ data1a_parquet_part_count() {
   fi
   find "${raw_dir}" -maxdepth 1 -type f -name 'part-*.parquet' | wc -l | tr -d ' '
 }
+
+data1a_include_candles_flag() {
+  case "${INCLUDE_CANDLES:-0}" in
+    1|true|yes|YES|True) printf '%s\n' "yes" ;;
+    *) printf '%s\n' "no" ;;
+  esac
+}
+
+data1a_candle_interval() {
+  printf '%s\n' "${CANDLE_INTERVAL:-1m}"
+}

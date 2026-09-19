@@ -247,7 +247,10 @@ remain downstream. Nothing was deployed, and SHADOW/LIVE remain disabled.
 ## D10 — multi-venue market data and feed coverage: DATA-1A local slice
 
 DATA-1A is a separate, bounded research path for the four public Hyperliquid BTC perpetual
-subscriptions `trades`, `bbo`, default `l2Book` and `activeAssetCtx`. It deliberately does not
+subscriptions `trades`, `bbo`, default `l2Book` and `activeAssetCtx`. Optional official WS
+`candle` (intervals include `1m`) may be enabled with `--include-candles` /
+`INCLUDE_CANDLES=1` and an official `--candle-interval`; candles are **off by default** and
+never implied by the core set. It deliberately does not
 extend the dormant canonical/provenance contracts or the existing trades-only collector. It uses
 no account, API key, wallet or signing capability and cannot submit orders.
 
@@ -296,9 +299,32 @@ The joint four-lane 72h Phase A campaign (prepare-only; smoke then Chupa OK)
 is [phase-a-72h-joint-retained-capture.md](runbooks/phase-a-72h-joint-retained-capture.md).
 DATA-2A short-pilot limits are not valid for that 72h profile. Hyperliquid
 ETH/SOL add-on configs exist and stay deferred at Phase A start.
+Optional Hyperliquid WS `candle` (official intervals including `1m`) is
+flagged via `--include-candles` / `INCLUDE_CANDLES=1` and stays **off by
+default**; enable only after the current 72h joint retain ends (new `run_id`).
 Cloud Agents are unsuitable for a multi-day retain. The later always-on host
 profile (not a migrate-today order) is
 [linux-vps-reference-profile.md](runbooks/linux-vps-reference-profile.md).
+
+#### Future multi-asset disk budget (operator estimate, not measured)
+
+If a later 72h campaign also enabled ETH/SOL add-ons on Binance (DATA-1F),
+Bitvavo Standard/Pro (DATA-1D/E), and Kraken (DATA-1B) — **not implemented in
+this feed PR** — rough operator budgets scale near-linearly with the BTC-only
+lanes already documented:
+
+| Lane (BTC-only today) | 72h BTC budget (existing docs) | +ETH+SOL rough (×3 instruments) |
+| --- | --- | --- |
+| DATA-1F Binance | tens of GB | ~60–150 GB |
+| DATA-1E Bitvavo MD Pro | low-single to low-tens GB | ~10–40 GB |
+| DATA-1D Bitvavo Standard | ~3–5 GB | ~9–15 GB |
+| DATA-1B Kraken | low-single to low-tens GB | ~10–40 GB |
+| Combined four-lane Phase A | ~93 GiB (BTC) | **~180–350 GiB** if ETH+SOL were also on BN/BV/KR |
+
+Hyperliquid ETH/SOL add-ons are already configured but deferred; enabling them
+triples HL `l2Book` snapshot cadence on top of the optional 1m candles flag.
+Keep ≥50 GiB free-space reserve (or 20% of the campaign budget if larger).
+These figures are planning ceilings, not measured VPS rates.
 
 Preferred reconstructable layout (the path contract the Operator Cockpit reads):
 
@@ -709,14 +735,23 @@ Official contracts used for this slice:
 
 ### DATA-1C — OKX BTC-USDT-SWAP public research slice
 
-Phase 1 of DATA-1C under D10 — multi-venue market data and feed coverage is an offline-only,
+Phase 1 of DATA-1C under D10 — multi-venue market data and feed coverage is a
 credential-free adapter for the EEA production contracts. It fixes the product to
 `BTC-USDT-SWAP` and uses the public socket at
 `wss://wseea.okx.com:8443/ws/v5/public` for `bbo-tbt`, ordinary `books`, `funding-rate`,
 `open-interest`, `mark-price`, and the `BTC-USDT` `index-tickers` reference. Individual
 `trades-all` messages use the separate public business socket at
 `wss://wseea.okx.com:8443/ws/v5/business`. No VIP channel, API key, account, signing, execution
-path, SDK, MCP, command, or live smoke is part of this phase.
+path, SDK, MCP, command, or live smoke is required for the prepare-only path.
+
+Duration may be a short smoke (≤600s) or a retained run up to **604800s** (7 days);
+the operator 72h window is **259200s**. Reconstructable artifacts use
+`data-1c/okx/BTC-USDT-SWAP/<run_id>/` and tmux `okx-capture`. Operator helpers:
+`scripts/data1c_{start,status,stop}.sh`. **Prepare-only:** do not start a multi-day
+DATA-1C retain until CoS assigns the window; never touch Phase A sessions.
+VPS and WSL runbooks:
+[data1c-vps-retained-capture.md](runbooks/data1c-vps-retained-capture.md),
+[data1c-wsl-pc-retained-capture.md](runbooks/data1c-wsl-pc-retained-capture.md).
 
 Every received application frame is timestamped and copied to immutable bytes at callback entry
 before JSON decoding, then written through the shared DATA-1A raw record and ZSTD-Parquet writer.

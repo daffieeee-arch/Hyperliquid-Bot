@@ -34,6 +34,8 @@ from .capture_observability import (
     transport_exception_fields,
 )
 from .hyperliquid_retained_instruments import (
+    DEFAULT_CANDLE_INTERVAL,
+    HYPERLIQUID_CANDLE_INTERVALS,
     HyperliquidRetainedInstrumentPlan,
     build_hyperliquid_retained_plan,
 )
@@ -76,14 +78,12 @@ _MARKET_DATA_CHANNELS: Final = frozenset({"trades", "bbo", "l2Book", "activeAsse
 _GREETING: Final = b"Websocket connection established."
 _PING_TEXT: Final = '{"method":"ping"}'
 _DEFAULT_BTC_PLAN: Final = build_hyperliquid_retained_plan()
+_CONTROL_INBOUND_CHANNELS: Final = frozenset({"subscriptionResponse", "pong"})
 _SUBSCRIPTION_PAYLOADS: Final = tuple(
     (item.channel, item.payload_bytes) for item in _DEFAULT_BTC_PLAN.subscriptions
 )
 _EXPECTED_SUBSCRIPTIONS: Final = _DEFAULT_BTC_PLAN.expected_channels
-_EXPECTED_INBOUND_CHANNELS: Final = _EXPECTED_SUBSCRIPTIONS | {
-    "subscriptionResponse",
-    "pong",
-}
+_EXPECTED_INBOUND_CHANNELS: Final = _EXPECTED_SUBSCRIPTIONS | _CONTROL_INBOUND_CHANNELS
 
 _TRANSPORT_PRIVACY_LOGGER: Final = logging.Logger(
     "hyperliquid_bot.hyperliquid_raw_research_transport",
@@ -183,6 +183,9 @@ class HyperliquidRawResearchCollector:
             session_id_factory if session_id_factory is not None else lambda: uuid.uuid4().hex
         )
         self._message_ordinal = 0
+
+    def _expected_inbound_channels(self) -> frozenset[str]:
+        return self._instrument_plan.expected_channels | _CONTROL_INBOUND_CHANNELS
 
     async def capture_for(
         self,
@@ -341,6 +344,11 @@ class HyperliquidRawResearchCollector:
                 "subscription_sent",
                 subscription_type=subscription.channel,
                 coin=subscription.coin,
+                **(
+                    {"interval": subscription.interval}
+                    if subscription.interval is not None
+                    else {}
+                ),
             )
 
     async def _receive_session(
@@ -502,7 +510,7 @@ class HyperliquidRawResearchCollector:
                 reason=quality_reason,
                 raw_message_ordinal=raw_ordinal,
             )
-        elif channel not in _EXPECTED_INBOUND_CHANNELS and channel != "session":
+        elif channel not in self._expected_inbound_channels() and channel != "session":
             await self._append_marker(
                 session_id,
                 "data_quality",
@@ -633,6 +641,11 @@ def _subscription_identity_from_response(
     coin = subscription.get("coin")
     if type(subscription_type) is not str or type(coin) is not str:
         return None
+    if subscription_type == "candle":
+        interval = subscription.get("interval")
+        if type(interval) is not str or not interval:
+            return None
+        return (subscription_type, f"{coin}:{interval}")
     return (subscription_type, coin)
 
 
@@ -734,7 +747,7 @@ def data1a_capture_claim(
         "run_id": run_id,
         "venue": HYPERLIQUID_RESEARCH_VENUE,
         "product": HYPERLIQUID_RESEARCH_PRODUCT,
-        "feed": "hyperliquid-public-btc-perp-trades-bbo-l2-ctx",
+        "feed": plan.feed_name,
         "websocket_url": HYPERLIQUID_MAINNET_WEBSOCKET_URL,
         "heartbeat_interval_seconds": 45.0,
         "receive_timeout_seconds": 60.0,
@@ -751,6 +764,8 @@ def data1a_capture_claim(
         "addon_coins": list(item.coin for item in plan.addons),
         "addon_start_policy": plan.addon_start_policy,
         "deferred_addon_coins": list(plan.deferred_addon_coins),
+        "include_candles": plan.include_candles,
+        "candle_interval": plan.candle_interval if plan.include_candles else None,
         "resume_policy": "never resume or overwrite an existing DATA-1A run directory",
         "raw_dir": paths.raw_dir.as_posix(),
         "database_path": paths.database_path.as_posix(),
@@ -917,7 +932,8 @@ def _argument_parser() -> argparse.ArgumentParser:
         description=(
             "Public Hyperliquid BTC-PERP exact-raw research capture. "
             "Duration may exceed the historical 600s smoke cap up to 7 days. "
-            "This is not a 24/7 service."
+            "Optional candles via --include-candles (official WS candle intervals; "
+            "off by default). This is not a 24/7 service."
         )
     )
     parser.add_argument("--output-dir", type=Path)
@@ -934,6 +950,21 @@ def _argument_parser() -> argparse.ArgumentParser:
         "--enable-addons",
         action="store_true",
         help="Subscribe to --addon-coins. Default Phase A policy is deferred_at_start.",
+    )
+    parser.add_argument(
+        "--include-candles",
+        action="store_true",
+        help=(
+            "Also subscribe the optional Hyperliquid candle channel "
+            "(https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/websocket/subscriptions). "
+            "Off by default; never implied by trades/bbo/l2Book/activeAssetCtx."
+        ),
+    )
+    parser.add_argument(
+        "--candle-interval",
+        default=DEFAULT_CANDLE_INTERVAL,
+        choices=list(HYPERLIQUID_CANDLE_INTERVALS),
+        help="Candle interval when --include-candles is set (default: 1m).",
     )
     return parser
 
@@ -973,9 +1004,15 @@ async def _run_from_args(args: argparse.Namespace) -> dict[str, object]:
     except (NotImplementedError, RuntimeError):
         pass
 
+    include_candles = bool(args.include_candles)
+    candle_interval = cast(str, args.candle_interval)
+    if not include_candles and candle_interval != DEFAULT_CANDLE_INTERVAL:
+        raise ValueError("--candle-interval requires --include-candles.")
     instrument_plan = build_hyperliquid_retained_plan(
         addon_coins=cast(str, args.addon_coins),
         enable_addons=bool(args.enable_addons),
+        include_candles=include_candles,
+        candle_interval=candle_interval,
     )
     mode = _resolve_cli_mode(args)
     if mode == "reconstructable":

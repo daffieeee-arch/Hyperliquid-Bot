@@ -12,7 +12,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 TEST_HOME = "/home/chupa"
 
 
-@pytest.mark.parametrize("lane", ("a", "b", "e", "f"))
+@pytest.mark.parametrize("lane", ("a", "b", "c", "e", "f"))
 @pytest.mark.parametrize(
     ("function_suffix", "relative_path"),
     (
@@ -38,7 +38,7 @@ def test_capture_helpers_default_to_primary_vps_paths(
     assert completed.stdout.strip() == f"{TEST_HOME}/{relative_path}"
 
 
-@pytest.mark.parametrize("lane", ("a", "b", "e", "f"))
+@pytest.mark.parametrize("lane", ("a", "b", "c", "e", "f"))
 def test_start_helpers_accept_spaced_vps_defaults(tmp_path: Path, lane: str) -> None:
     home = tmp_path / "home"
     repo_root = home / "Hyperliquid Project" / "Hyperliquid-Bot"
@@ -50,6 +50,8 @@ def test_start_helpers_accept_spaced_vps_defaults(tmp_path: Path, lane: str) -> 
         "HOME": str(home),
         "DURATION_SECONDS": "60",
         "RUN_ID": f"test-data1{lane}-vps-defaults",
+        # Never collide with live Phase A tmux names on the VPS.
+        "TMUX_SESSION": f"pytest-data1{lane}-isolated",
     }
 
     completed = subprocess.run(
@@ -66,7 +68,7 @@ def test_start_helpers_accept_spaced_vps_defaults(tmp_path: Path, lane: str) -> 
     assert "status=CHECK_ONLY" in completed.stdout
 
 
-@pytest.mark.parametrize("lane", ("a", "b", "e", "f"))
+@pytest.mark.parametrize("lane", ("a", "b", "c", "e", "f"))
 def test_start_helpers_shell_quote_spaced_vps_paths(lane: str) -> None:
     text = (REPO_ROOT / "scripts" / f"data1{lane}_start.sh").read_text(encoding="utf-8")
 

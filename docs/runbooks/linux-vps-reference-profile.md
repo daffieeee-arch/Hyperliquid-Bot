@@ -10,6 +10,7 @@ The VPS operator runbooks are the primary start/status/stop guides:
 
 - [data1a-vps-retained-capture.md](data1a-vps-retained-capture.md)
 - [data1f-vps-retained-capture.md](data1f-vps-retained-capture.md)
+- [data1d-vps-retained-capture.md](data1d-vps-retained-capture.md)
 - [data1e-vps-retained-capture.md](data1e-vps-retained-capture.md)
 - [data1b-vps-retained-capture.md](data1b-vps-retained-capture.md)
 
@@ -105,6 +106,7 @@ per-venue **operator budgets** and watch growth:
 | DATA-1F Binance | 60 s smoke ≈ 8 MB payload / 1.6 MB Parquet; **budget tens of GB for 72 h**. Spot `depth@100ms` is the heavy feed. | [DATA.md](../DATA.md) |
 | DATA-1B Kraken | Public 72 h L2+trades at depth 100: **low-single-digit to low-tens of GB**, KB/s–tens-of-KB/s. More if optional L3. Operator budget, not a measured rate. | [DATA.md](../DATA.md) |
 | DATA-1E Bitvavo | No published 72 h disk budget. Depth-1000 book + trades; treat as **at least Kraken-class**, not Binance-class, until measured. | DATA-1E runbooks |
+| DATA-1D Bitvavo Standard | Operator budget **~3-5 GB / 72 h** for trades/ticker/book (+ optional candles). Distinct from Pro (`bv-std-capture` / `data-1d/`). | DATA-1D runbooks |
 
 Assumptions for sizing (not measurements):
 
@@ -162,6 +164,7 @@ Create-only layout:
 <artifact-root>/
   data-1a/hyperliquid/BTC-PERP/<run_id>/
   data-1f/binance/BTCUSDT/<run_id>/
+  data-1d/bitvavo/BTC-EUR/<run_id>/
   data-1e/bitvavo/BTC-EUR/<run_id>/
   data-1b/kraken/BTC-USD/<run_id>/
   logs/capture-<run_id>.log          # optional tmux stdout copy
@@ -177,7 +180,7 @@ Each run directory:
   research.duckdb                    # rebuilt at collector stop
 ```
 
-Helpers: `data1a_run_paths`, `data1f_run_paths`, `data1e_run_paths`,
+Helpers: `data1a_run_paths`, `data1f_run_paths`, `data1d_run_paths`, `data1e_run_paths`,
 `data1b_run_paths`. `run_id` is 1–64 lowercase ASCII letters, digits, dot,
 dash, or underscore. Never resume or overwrite an existing run directory.
 

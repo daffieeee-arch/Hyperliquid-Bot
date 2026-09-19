@@ -892,7 +892,7 @@ def test_capture_application_payload_keeps_bytes_and_callback_clock_order() -> N
     assert captured.payload_bytes == frame
 
 
-@pytest.mark.parametrize("duration", [0, 0.5, 601, True, "60"])
+@pytest.mark.parametrize("duration", [0, 0.5, 604801, True, "60"])
 @pytest.mark.asyncio
 async def test_capture_duration_is_strictly_bounded(duration: object) -> None:
     collector = BitvavoStandardResearchCollector(
@@ -903,3 +903,112 @@ async def test_capture_duration_is_strictly_bounded(duration: object) -> None:
     expected = TypeError if type(duration) not in (int, float) else ValueError
     with pytest.raises(expected):
         await collector.capture_for(cast(float, duration))
+
+
+def test_retained_duration_raises_the_historical_smoke_cap() -> None:
+    from hyperliquid_bot.bitvavo_standard_research import (
+        MAX_CAPTURE_SECONDS,
+        RETAINED_MAX_RECONNECTS,
+        SMOKE_CAPTURE_SECONDS,
+        _config_for_duration,
+        _require_bounded_duration,
+        data1d_feed_name,
+        standard_subscription_channels,
+        standard_subscription_payload_text,
+    )
+
+    assert SMOKE_CAPTURE_SECONDS == 600.0
+    assert MAX_CAPTURE_SECONDS == 7 * 24 * 60 * 60
+    assert _require_bounded_duration(259200) == 259200.0
+    assert _require_bounded_duration(MAX_CAPTURE_SECONDS) == float(MAX_CAPTURE_SECONDS)
+    with pytest.raises(ValueError):
+        _require_bounded_duration(MAX_CAPTURE_SECONDS + 1)
+    assert _config_for_duration(600.0).max_reconnects == 1
+    assert _config_for_duration(600.1).max_reconnects == RETAINED_MAX_RECONNECTS
+    assert standard_subscription_channels() == ("trades", "ticker", "book")
+    assert standard_subscription_channels(include_candles=True) == (
+        "trades",
+        "ticker",
+        "book",
+        "candles",
+    )
+    payload = json.loads(
+        standard_subscription_payload_text(include_candles=True, candle_interval="1m")
+    )
+    assert payload["channels"][-1] == {
+        "interval": ["1m"],
+        "markets": ["BTC-EUR"],
+        "name": "candles",
+    }
+    assert data1d_feed_name() == "bitvavo-standard-btc-eur-trades-ticker-book"
+    assert data1d_feed_name(include_candles=True, candle_interval="5m") == (
+        "bitvavo-standard-btc-eur-trades-ticker-book-candles-5m"
+    )
+    assert "mdpro" not in data1d_feed_name()
+
+
+def test_candles_subscription_ack_and_normalize() -> None:
+    from hyperliquid_bot.bitvavo_standard_research import _normalize_candles
+
+    ack = _document(
+        json.dumps(
+            {
+                "event": "subscribed",
+                "subscriptions": {"candles": {"1m": ["BTC-EUR"]}},
+            },
+            separators=(",", ":"),
+        )
+    )
+    assert _subscription_channels(
+        ack,
+        allowed_channels=frozenset({"trades", "ticker", "book", "candles"}),
+        candle_interval="1m",
+    ) == {"candles"}
+    with pytest.raises(BitvavoDataIntegrityError, match="scope"):
+        _subscription_channels(ack)
+
+    frame = _document(
+        json.dumps(
+            {
+                "event": "candles",
+                "market": "BTC-EUR",
+                "interval": "1m",
+                "candle": [["1538784000000", "4999", "5012", "4999", "5012", "0.45"]],
+            },
+            separators=(",", ":"),
+        )
+    )
+    normalized = _normalize_candles(frame, 7, expected_interval="1m")
+    assert normalized["source_channel"] == "candles"
+    assert normalized["interval"] == "1m"
+    candles = cast(list[dict[str, object]], normalized["candles"])
+    assert candles[0]["open"] == "4999"
+    assert candles[0]["volume"] == "0.45"
+
+
+def test_data1d_capture_claim_never_uses_pro_paths(tmp_path: Path) -> None:
+    from hyperliquid_bot.bitvavo_standard_research import data1d_capture_claim
+    from hyperliquid_bot.reconstructable_paths import data1d_run_paths
+
+    paths = data1d_run_paths(tmp_path, "sample-run")
+    claim = data1d_capture_claim(run_id="sample-run", duration_seconds=259200, paths=paths)
+    assert claim["schema"] == "data-1d-retained-capture-claim-v1"
+    assert claim["path_contract"] == "data-1d-bitvavo-btc-eur-v1"
+    assert claim["retained"] is True
+    assert claim["mdpro_fallback"] is False
+    assert claim["data1e_path_fallback"] is False
+    assert claim["credentialless"] is True
+    run_dir = cast(str, claim["run_dir"])
+    assert "data-1d" in run_dir
+    assert "data-1e" not in run_dir
+    candles_claim = data1d_capture_claim(
+        run_id="sample-run",
+        duration_seconds=60,
+        paths=paths,
+        include_candles=True,
+        candle_interval="1h",
+    )
+    assert candles_claim["include_candles"] is True
+    assert candles_claim["candle_interval"] == "1h"
+    assert candles_claim["retained"] is False
+    assert "candles" in cast(list[str], candles_claim["channels"])

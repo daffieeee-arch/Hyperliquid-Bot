@@ -1,4 +1,4 @@
-"""Create-only reconstructable path contracts for DATA-1A/B/E/F and COURSE-1.
+"""Create-only reconstructable path contracts for DATA-1A/B/D/E/F and COURSE-1.
 
 These paths are the only layout Cockpit should later read. The functions never
 create directories, write files, or claim 24/7 service.
@@ -13,6 +13,7 @@ from typing import Final
 DATA1A_PATH_CONTRACT_ID: Final = "data-1a-hyperliquid-btc-perp-v1"
 DATA1B_PATH_CONTRACT_ID: Final = "data-1b-kraken-btc-usd-v1"
 DATA1B_RETIRED_PATH_CONTRACT_ID: Final = "data-1b-kraken-btc-eur-v1"
+DATA1D_PATH_CONTRACT_ID: Final = "data-1d-bitvavo-btc-eur-v1"
 DATA1E_PATH_CONTRACT_ID: Final = "data-1e-bitvavo-btc-eur-v1"
 DATA1F_PATH_CONTRACT_ID: Final = "data-1f-binance-btcusdt-v1"
 COURSE1_PATH_CONTRACT_ID: Final = "course1-live-public-paper-cockpit-v1"
@@ -27,6 +28,9 @@ DATA1B_RETIRED_PRODUCT: Final = "BTC-EUR"
 DATA1B_RETIRED_WIRE_PRODUCT: Final = "BTC/EUR"
 DATA1B_RELATIVE_PREFIX: Final = ("data-1b", DATA1B_VENUE, DATA1B_PRODUCT)
 DATA1B_RETIRED_RELATIVE_PREFIX: Final = ("data-1b", DATA1B_VENUE, DATA1B_RETIRED_PRODUCT)
+DATA1D_VENUE: Final = "bitvavo"
+DATA1D_PRODUCT: Final = "BTC-EUR"
+DATA1D_RELATIVE_PREFIX: Final = ("data-1d", DATA1D_VENUE, DATA1D_PRODUCT)
 DATA1E_VENUE: Final = "bitvavo"
 DATA1E_PRODUCT: Final = "BTC-EUR"
 DATA1E_RELATIVE_PREFIX: Final = ("data-1e", DATA1E_VENUE, DATA1E_PRODUCT)
@@ -70,6 +74,14 @@ DATA1A_PATH_CONTRACT: Final = """\
 
 DATA1B_PATH_CONTRACT: Final = """\
 <artifact-root>/data-1b/kraken/BTC-USD/<run_id>/
+  capture-claim.json
+  capture-health.json
+  raw/part-*.parquet
+  research.duckdb
+"""
+
+DATA1D_PATH_CONTRACT: Final = """\
+<artifact-root>/data-1d/bitvavo/BTC-EUR/<run_id>/
   capture-claim.json
   capture-health.json
   raw/part-*.parquet
@@ -134,6 +146,21 @@ def require_artifact_root(artifact_root: object) -> Path:
 @dataclass(frozen=True, slots=True)
 class Data1BRunPaths:
     """Resolved DATA-1B reconstructable layout for one Kraken BTC-USD run."""
+
+    contract_id: str
+    run_id: str
+    artifact_root: Path
+    run_dir: Path
+    raw_dir: Path
+    database_path: Path
+    capture_claim_path: Path
+    capture_health_path: Path
+    parquet_glob: str
+
+
+@dataclass(frozen=True, slots=True)
+class Data1DRunPaths:
+    """Resolved DATA-1D reconstructable layout for one Bitvavo Standard BTC-EUR run."""
 
     contract_id: str
     run_id: str
@@ -227,6 +254,26 @@ def data1b_run_paths(artifact_root: Path, run_id: str) -> Data1BRunPaths:
     raw_dir = run_dir / DATA1A_RAW_DIR_NAME
     return Data1BRunPaths(
         contract_id=DATA1B_PATH_CONTRACT_ID,
+        run_id=identity,
+        artifact_root=root,
+        run_dir=run_dir,
+        raw_dir=raw_dir,
+        database_path=run_dir / DATA1A_DATABASE_NAME,
+        capture_claim_path=run_dir / DATA1A_CLAIM_NAME,
+        capture_health_path=run_dir / DATA1A_HEALTH_NAME,
+        parquet_glob=DATA1A_PARQUET_GLOB,
+    )
+
+
+def data1d_run_paths(artifact_root: Path, run_id: str) -> Data1DRunPaths:
+    """Return the reconstructable DATA-1D directory contract. Never DATA-1E Pro."""
+
+    root = require_artifact_root(artifact_root)
+    identity = require_run_id(run_id)
+    run_dir = root.joinpath(*DATA1D_RELATIVE_PREFIX, identity)
+    raw_dir = run_dir / DATA1A_RAW_DIR_NAME
+    return Data1DRunPaths(
+        contract_id=DATA1D_PATH_CONTRACT_ID,
         run_id=identity,
         artifact_root=root,
         run_dir=run_dir,

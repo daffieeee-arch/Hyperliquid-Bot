@@ -799,7 +799,13 @@ Official contracts used for this slice:
 Phase 1 of DATA-1D under D10 — multi-venue market data and feed coverage is an offline-only,
 credential-free adapter for public Bitvavo Standard data at `wss://ws.bitvavo.com/v2/`. Its fixed
 scope is `BTC-EUR`: individual `trades`, incremental `ticker` BBO/last-price fields, and price-level `book`
-updates joined to a public WebSocket `getBook` snapshot with depth 1,000. It does not authenticate,
+updates joined to a public WebSocket `getBook` snapshot with depth 1,000. Optional Standard
+`candles` may be enabled with `--include-candles` and an official candle interval
+(`1m`–`1d`); candles are off by default and never implied by the trades/ticker/book set.
+Duration may be a short smoke (≤600s) or a retained run up to **604800s** (7 days); the
+operator 72h window is **259200s**. Reconstructable artifacts use
+`data-1d/bitvavo/BTC-EUR/<run_id>/` and tmux `bv-std-capture` — never DATA-1E Pro paths,
+never tmux `bv-capture`, and never the MD Pro socket. It does not authenticate,
 use an account, call a trading or account action, use the Market Data Pro endpoint, or silently
 substitute Standard data for Pro evidence. No SDK or new dependency is needed.
 
@@ -877,11 +883,16 @@ Official contracts checked for this slice:
 - https://docs.bitvavo.com/docs/websocket-api/trades-subscription/
 - https://docs.bitvavo.com/docs/websocket-api/ticker-subscription/
 - https://docs.bitvavo.com/docs/websocket-api/book-subscription/
+- https://docs.bitvavo.com/docs/websocket-api/candles-subscription/
 - https://docs.bitvavo.com/docs/websocket-api/get-order-book/
 - https://docs.bitvavo.com/docs/manage-order-book/
 - https://docs.bitvavo.com/docs/faqs/
 - https://docs.bitvavo.com/docs/rate-limits/
 - https://docs.bitvavo.com/api-specs/exchange-websocket-api.yaml
+
+Operator retain runbooks: [data1d-vps-retained-capture.md](runbooks/data1d-vps-retained-capture.md),
+[data1d-wsl-pc-retained-capture.md](runbooks/data1d-wsl-pc-retained-capture.md).
+Disk estimate for a 72h Standard retain: about **+3-5 GB** (operator budget).
 
 ### DATA-1E — Bitvavo Market Data Pro BTC-EUR research slice
 

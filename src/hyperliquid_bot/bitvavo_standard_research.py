@@ -1,22 +1,44 @@
-"""Bounded public Bitvavo Standard BTC-EUR exact-raw research capture."""
+"""Bounded public Bitvavo Standard BTC-EUR exact-raw research capture.
+
+Credential-free Standard WebSocket at ``wss://ws.bitvavo.com/v2/`` for
+``BTC-EUR``: ``trades``, ``ticker``, and ``book`` (depth 1000). Optional
+``candles`` is flagged (``--include-candles``) and off by default. Duration may
+be a short smoke or a retained multi-day run up to 7 days. This path never
+falls back to DATA-1E Market Data Pro artifact layouts or the Pro socket.
+"""
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import logging
+import math
+import os
 import re
+import signal
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from typing import Final, Protocol, cast
 
+import duckdb
 from websockets.asyncio.client import connect
 from websockets.exceptions import PayloadTooBig, WebSocketException
 
+from .capture_observability import (
+    add_transport_counts,
+    attach_observability_health,
+    capture_log_path,
+    capture_logger,
+    configure_capture_logger,
+    elapsed_from_report,
+)
+from .parquet_research import ParquetResearchWriter, ParquetRotation, create_research_catalog
 from .raw_research import (
     RAW_RESEARCH_SCHEMA_VERSION,
     CapturedApplicationPayload,
@@ -28,26 +50,64 @@ from .raw_research import (
     RawResearchSink,
     capture_application_payload,
 )
+from .reconstructable_paths import (
+    DATA1D_PATH_CONTRACT_ID,
+    DATA1D_PRODUCT,
+    Data1DRunPaths,
+    data1d_run_paths,
+)
 
 BITVAVO_STANDARD_WEBSOCKET_URL: Final = "wss://ws.bitvavo.com/v2/"
 BITVAVO_RESEARCH_VENUE: Final = "bitvavo"
 BITVAVO_RESEARCH_PRODUCT: Final = "BTC-EUR"
 BITVAVO_FEED_PRODUCT: Final = "standard"
-MAX_CAPTURE_SECONDS: Final = 600.0
+SMOKE_CAPTURE_SECONDS: Final = 600.0
+MAX_CAPTURE_SECONDS: Final = 7 * 24 * 60 * 60
+RETAINED_MAX_RECONNECTS: Final = 10_080
+DATA1D_CLAIM_SCHEMA: Final = "data-1d-retained-capture-claim-v1"
+DATA1D_HEALTH_SCHEMA: Final = "data-1d-retained-capture-health-v1"
+BITVAVO_CANDLE_INTERVALS: Final = (
+    "1m",
+    "5m",
+    "15m",
+    "30m",
+    "1h",
+    "2h",
+    "4h",
+    "6h",
+    "8h",
+    "12h",
+    "1d",
+)
+BITVAVO_OPTIONAL_CANDLES_CHANNEL: Final = "candles"
+DEFAULT_CANDLE_INTERVAL: Final = "1m"
+_REQUIRED_SUBSCRIPTION_CHANNELS: Final = ("trades", "ticker", "book")
+_SUBSCRIPTION_CHANNELS: Final = _REQUIRED_SUBSCRIPTION_CHANNELS
+PROTECTED_TRADE_KEY_ENV: Final = (
+    "HYPERLIQUID_PK",
+    "HYPERLIQUID_TESTNET_PK",
+    "HYPERLIQUID_VAULT",
+    "HYPERLIQUID_TESTNET_VAULT",
+    "HYPERLIQUID_ACCOUNT_ADDRESS",
+    "BINANCE_API_KEY",
+    "BINANCE_API_SECRET",
+    "BINANCE_SECRET",
+    "BINANCE_API_KEY_TESTNET",
+    "BINANCE_TESTNET_API_SECRET",
+    "BITVAVO_API_KEY",
+    "BITVAVO_API_SECRET",
+    "BITVAVO_ACCESS_KEY",
+    "BITVAVO_SECRET",
+    "BITVAVO_SIGNING_KEY",
+    "KRAKEN_API_KEY",
+    "KRAKEN_API_SECRET",
+    "OKX_API_KEY",
+    "OKX_SECRET_KEY",
+    "OKX_PASSPHRASE",
+)
 
 _DECIMAL_TEXT: Final = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?\Z")
-_SUBSCRIPTION_CHANNELS: Final = ("trades", "ticker", "book")
-_SUBSCRIPTION_PAYLOAD_TEXT: Final = json.dumps(
-    {
-        "action": "subscribe",
-        "channels": [
-            {"name": channel, "markets": [BITVAVO_RESEARCH_PRODUCT]}
-            for channel in _SUBSCRIPTION_CHANNELS
-        ],
-    },
-    separators=(",", ":"),
-    sort_keys=True,
-)
+_UNSIGNED_INTEGER_TEXT: Final = re.compile(r"(?:0|[1-9][0-9]*)\Z")
 
 _TRANSPORT_PRIVACY_LOGGER: Final = logging.Logger(
     "hyperliquid_bot.bitvavo_standard_research_transport",
@@ -107,6 +167,8 @@ class BitvavoStandardResearchConfig:
     max_buffered_book_updates: int = 10_000
     max_snapshot_requests: int = 3
     max_reconnects: int = 1
+    include_candles: bool = False
+    candle_interval: str = DEFAULT_CANDLE_INTERVAL
 
     def __post_init__(self) -> None:
         if (
@@ -125,6 +187,19 @@ class BitvavoStandardResearchConfig:
             raise ValueError("max_snapshot_requests must be a positive integer.")
         if type(self.max_reconnects) is not int or self.max_reconnects < 0:
             raise ValueError("max_reconnects must be a non-negative integer.")
+        if type(self.include_candles) is not bool:
+            raise ValueError("include_candles must be a bool.")
+        if (
+            type(self.candle_interval) is not str
+            or self.candle_interval not in BITVAVO_CANDLE_INTERVALS
+        ):
+            raise ValueError(
+                "candle_interval must be one of the official Bitvavo Standard candle intervals."
+            )
+
+    @property
+    def subscription_channel_names(self) -> tuple[str, ...]:
+        return standard_subscription_channels(include_candles=self.include_candles)
 
 
 @dataclass(frozen=True, slots=True)
@@ -363,19 +438,23 @@ class BitvavoStandardResearchCollector:
         connection: WebSocketConnection,
         session_id: str,
     ) -> None:
+        payload_text = standard_subscription_payload_text(
+            include_candles=self._config.include_candles,
+            candle_interval=self._config.candle_interval,
+        )
         captured = capture_application_payload(
-            _SUBSCRIPTION_PAYLOAD_TEXT,
+            payload_text,
             utc_ns=self._utc_ns,
             monotonic_ns=self._monotonic_ns,
         )
-        await connection.send(_SUBSCRIPTION_PAYLOAD_TEXT)
+        await connection.send(payload_text)
         await self._append_captured(
             captured,
             session_id=session_id,
             channel="subscription",
             direction=MessageDirection.OUTBOUND,
         )
-        for channel in _SUBSCRIPTION_CHANNELS:
+        for channel in self._config.subscription_channel_names:
             await self._append_marker(
                 session_id,
                 "subscription",
@@ -433,7 +512,7 @@ class BitvavoStandardResearchCollector:
         *,
         is_reconnect: bool,
     ) -> None:
-        expected_channels = frozenset(_SUBSCRIPTION_CHANNELS)
+        expected_channels = frozenset(self._config.subscription_channel_names)
         acknowledged: set[str] = set()
         subscriptions_active_marked = False
         book_state = _BookState(
@@ -483,7 +562,11 @@ class BitvavoStandardResearchCollector:
                     snapshot_requests,
                 )
                 continue
-            if channel in {"trades", "ticker", "book"} and channel not in acknowledged:
+            if (
+                channel in {*expected_channels, "book_snapshot"}
+                and channel in expected_channels
+                and channel not in acknowledged
+            ):
                 await self._quality_failure(
                     session_id,
                     raw_ordinal,
@@ -499,6 +582,14 @@ class BitvavoStandardResearchCollector:
                     normalized_frames = (_normalize_trade(document, raw_ordinal),)
                 elif channel == "ticker":
                     normalized_frames = (_normalize_ticker(document, raw_ordinal),)
+                elif channel == "candles":
+                    normalized_frames = (
+                        _normalize_candles(
+                            document,
+                            raw_ordinal,
+                            expected_interval=self._config.candle_interval,
+                        ),
+                    )
                 elif channel == "book":
                     normalized_update = book_state.ingest_update(document, raw_ordinal)
                     normalized_frames = () if normalized_update is None else (normalized_update,)
@@ -601,7 +692,7 @@ class BitvavoStandardResearchCollector:
         snapshot_requests: int,
     ) -> tuple[int | None, int]:
         if (
-            acknowledged == set(_SUBSCRIPTION_CHANNELS)
+            acknowledged == set(self._config.subscription_channel_names)
             and book_state.has_buffered_update
             and not book_state.has_snapshot
             and outstanding_request_id is None
@@ -714,7 +805,13 @@ class BitvavoStandardResearchCollector:
         raw_ordinal: int,
     ) -> frozenset[str]:
         try:
-            acknowledged = _subscription_channels(document)
+            acknowledged = _subscription_channels(
+                document,
+                allowed_channels=frozenset(self._config.subscription_channel_names),
+                candle_interval=(
+                    self._config.candle_interval if self._config.include_candles else None
+                ),
+            )
         except BitvavoDataIntegrityError as error:
             await self._quality_failure(session_id, raw_ordinal, error)
             raise AssertionError("unreachable subscription response failure") from None
@@ -1063,15 +1160,91 @@ def _book_events(
     return events
 
 
-def _subscription_channels(document: dict[str, object]) -> frozenset[str]:
+def _normalize_candles(
+    document: dict[str, object],
+    raw_ordinal: int,
+    *,
+    expected_interval: str,
+) -> dict[str, object]:
+    if document.get("event") != "candles":
+        raise BitvavoDataIntegrityError("Bitvavo candles event validation failed.")
+    if document.get("market") != BITVAVO_RESEARCH_PRODUCT:
+        raise BitvavoDataIntegrityError("Bitvavo candles market validation failed.")
+    interval = _required_text(document, "interval")
+    if interval != expected_interval:
+        raise BitvavoDataIntegrityError("Bitvavo candles interval validation failed.")
+    raw_candles = document.get("candle")
+    if type(raw_candles) is not list or not raw_candles:
+        raise BitvavoDataIntegrityError("Bitvavo candles payload schema validation failed.")
+    candles: list[dict[str, object]] = []
+    for entry in cast(list[object], raw_candles):
+        if type(entry) is not list or len(entry) != 6:
+            raise BitvavoDataIntegrityError("Bitvavo candle row schema validation failed.")
+        row = cast(list[object], entry)
+        candles.append(
+            {
+                "timestamp_ms": _candle_timestamp_text(row[0]),
+                "open": _decimal_value(row[1], allow_zero=False),
+                "high": _decimal_value(row[2], allow_zero=False),
+                "low": _decimal_value(row[3], allow_zero=False),
+                "close": _decimal_value(row[4], allow_zero=False),
+                "volume": _decimal_value(row[5], allow_zero=True),
+            }
+        )
+    return {
+        "event": "normalized_candles_frame",
+        "source_channel": "candles",
+        "raw_message_ordinal": raw_ordinal,
+        "market": BITVAVO_RESEARCH_PRODUCT,
+        "interval": interval,
+        "candles": candles,
+    }
+
+
+def _candle_timestamp_text(value: object) -> str:
+    if type(value) is str and _UNSIGNED_INTEGER_TEXT.fullmatch(value) is not None:
+        return value
+    if type(value) is _IntegerLexeme and value.isascii() and value.isdigit():
+        return str(value)
+    raise BitvavoDataIntegrityError("Bitvavo candle timestamp schema validation failed.")
+
+
+def _subscription_channels(
+    document: dict[str, object],
+    *,
+    allowed_channels: frozenset[str] | None = None,
+    candle_interval: str | None = None,
+) -> frozenset[str]:
     event = document.get("event")
     subscriptions = _object(document.get("subscriptions"))
+    allowed = (
+        frozenset(_REQUIRED_SUBSCRIPTION_CHANNELS) if allowed_channels is None else allowed_channels
+    )
     if event not in {"subscribed", "book"}:
         raise BitvavoDataIntegrityError("Bitvavo subscription response schema validation failed.")
-    if not subscriptions or set(subscriptions) - set(_SUBSCRIPTION_CHANNELS):
+    if not subscriptions or set(subscriptions) - set(allowed):
         raise BitvavoDataIntegrityError("Bitvavo subscription response scope validation failed.")
     acknowledged: set[str] = set()
     for channel, markets in subscriptions.items():
+        if channel == BITVAVO_OPTIONAL_CANDLES_CHANNEL:
+            if candle_interval is None:
+                raise BitvavoDataIntegrityError(
+                    "Bitvavo subscription response scope validation failed."
+                )
+            if type(markets) is not dict:
+                raise BitvavoDataIntegrityError(
+                    "Bitvavo candles subscription schema validation failed."
+                )
+            interval_map = cast(dict[str, object], markets)
+            if set(interval_map) != {candle_interval}:
+                raise BitvavoDataIntegrityError(
+                    "Bitvavo candles subscription interval validation failed."
+                )
+            market_list = interval_map[candle_interval]
+            if type(market_list) is not list or market_list != [BITVAVO_RESEARCH_PRODUCT]:
+                raise BitvavoDataIntegrityError("Bitvavo subscription market validation failed.")
+            acknowledged.add(channel)
+            continue
         if type(markets) is not list or markets != [BITVAVO_RESEARCH_PRODUCT]:
             raise BitvavoDataIntegrityError("Bitvavo subscription market validation failed.")
         acknowledged.add(channel)
@@ -1102,7 +1275,12 @@ def _classify_document(document: dict[str, object]) -> str:
     if document.get("action") == "getBook" and "response" in document:
         return "book_snapshot"
     event = document.get("event")
-    channel_by_event = {"trade": "trades", "ticker": "ticker", "book": "book"}
+    channel_by_event = {
+        "trade": "trades",
+        "ticker": "ticker",
+        "book": "book",
+        "candles": "candles",
+    }
     if type(event) is str and event in channel_by_event:
         return channel_by_event[event]
     raise BitvavoDataIntegrityError("Bitvavo inbound frame had no allowed channel identity.")
@@ -1204,9 +1382,491 @@ def _connection_factory(config: BitvavoStandardResearchConfig) -> ConnectionFact
     return lambda: _websocket_connection(config)
 
 
-def _require_bounded_duration(duration_seconds: object) -> None:
+def _require_bounded_duration(duration_seconds: object) -> float:
     if type(duration_seconds) not in (int, float):
         raise TypeError("duration_seconds must be a built-in number.")
     duration = float(cast(int | float, duration_seconds))
-    if not 1.0 <= duration <= MAX_CAPTURE_SECONDS:
+    if not math.isfinite(duration) or not 1.0 <= duration <= MAX_CAPTURE_SECONDS:
         raise ValueError(f"duration_seconds must be between 1 and {MAX_CAPTURE_SECONDS:g}.")
+    return duration
+
+
+def standard_subscription_channels(*, include_candles: bool = False) -> tuple[str, ...]:
+    """Return the Standard subscribe set. Candles are optional and flagged."""
+
+    if type(include_candles) is not bool:
+        raise ValueError("include_candles must be a bool.")
+    if include_candles:
+        return (*_REQUIRED_SUBSCRIPTION_CHANNELS, BITVAVO_OPTIONAL_CANDLES_CHANNEL)
+    return _REQUIRED_SUBSCRIPTION_CHANNELS
+
+
+def standard_subscription_payload_text(
+    *,
+    include_candles: bool = False,
+    candle_interval: str = DEFAULT_CANDLE_INTERVAL,
+) -> str:
+    """Deterministic Standard subscribe payload for BTC-EUR."""
+
+    if type(include_candles) is not bool:
+        raise ValueError("include_candles must be a bool.")
+    if type(candle_interval) is not str or candle_interval not in BITVAVO_CANDLE_INTERVALS:
+        raise ValueError(
+            "candle_interval must be one of the official Bitvavo Standard candle intervals."
+        )
+    channels: list[dict[str, object]] = [
+        {"markets": [BITVAVO_RESEARCH_PRODUCT], "name": name}
+        for name in _REQUIRED_SUBSCRIPTION_CHANNELS
+    ]
+    if include_candles:
+        channels.append(
+            {
+                "interval": [candle_interval],
+                "markets": [BITVAVO_RESEARCH_PRODUCT],
+                "name": BITVAVO_OPTIONAL_CANDLES_CHANNEL,
+            }
+        )
+    return json.dumps(
+        {"action": "subscribe", "channels": channels},
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def data1d_feed_name(
+    *,
+    include_candles: bool = False,
+    candle_interval: str = DEFAULT_CANDLE_INTERVAL,
+) -> str:
+    """Fail-closed Standard feed identity. Never a DATA-1E Pro feed string."""
+
+    if include_candles:
+        return f"bitvavo-standard-btc-eur-trades-ticker-book-candles-{candle_interval}"
+    return "bitvavo-standard-btc-eur-trades-ticker-book"
+
+
+def _config_for_duration(
+    duration_seconds: float,
+    *,
+    include_candles: bool = False,
+    candle_interval: str = DEFAULT_CANDLE_INTERVAL,
+) -> BitvavoStandardResearchConfig:
+    """Smoke keeps the Phase-1 reconnect cap; retained runs retry until duration ends."""
+
+    duration = _require_bounded_duration(duration_seconds)
+    if duration <= SMOKE_CAPTURE_SECONDS:
+        return BitvavoStandardResearchConfig(
+            include_candles=include_candles,
+            candle_interval=candle_interval,
+        )
+    return BitvavoStandardResearchConfig(
+        max_reconnects=RETAINED_MAX_RECONNECTS,
+        include_candles=include_candles,
+        candle_interval=candle_interval,
+    )
+
+
+def refuse_protected_trade_keys(environ: Mapping[str, str] | None = None) -> None:
+    """Fail closed when trade/signing key names are set. Values are never included."""
+
+    source = os.environ if environ is None else environ
+    for name in PROTECTED_TRADE_KEY_ENV:
+        if source.get(name):
+            raise BitvavoCaptureError(
+                f"Refuse: protected environment name {name} is set. Value not printed."
+            )
+
+
+def build_capture_report(database_path: Path, parquet_dir: Path) -> dict[str, object]:
+    """Return payload/file counts only; never emit captured payload contents."""
+
+    connection = duckdb.connect(str(database_path.resolve()), read_only=True)
+    try:
+        channel_rows = connection.execute(
+            """
+            SELECT channel, direction, count(*), sum(octet_length(payload_bytes))
+            FROM raw_records
+            GROUP BY channel, direction
+            ORDER BY channel, direction
+            """
+        ).fetchall()
+        totals = connection.execute(
+            "SELECT count(*), coalesce(sum(octet_length(payload_bytes)), 0) FROM raw_records"
+        ).fetchone()
+        if totals is None:
+            raise RuntimeError("DuckDB did not return the requested capture aggregates.")
+        total_events, total_payload_bytes = totals
+        report = {
+            "channels": [
+                {
+                    "channel": str(channel),
+                    "direction": str(direction),
+                    "events": int(events),
+                    "payload_bytes": int(payload_bytes),
+                }
+                for channel, direction, events, payload_bytes in channel_rows
+            ],
+            "events": int(total_events),
+            "payload_bytes": int(total_payload_bytes),
+        }
+        add_transport_counts(
+            connection,
+            report,
+            gap_event="gap_detected",
+            reconnect_event="reconnected",
+        )
+    finally:
+        connection.close()
+
+    parquet_files = tuple(sorted(parquet_dir.resolve().glob("*.parquet")))
+    parquet_bytes = sum(path.stat().st_size for path in parquet_files)
+    raw_bytes = int(total_payload_bytes)
+    report.update(
+        {
+            "parquet_files": len(parquet_files),
+            "parquet_bytes": parquet_bytes,
+            "raw_payload_to_parquet_ratio": (raw_bytes / parquet_bytes if parquet_bytes else None),
+        }
+    )
+    return report
+
+
+async def run_bounded_capture(
+    *,
+    output_dir: Path,
+    database_path: Path,
+    duration_seconds: float,
+    stop_event: asyncio.Event | None = None,
+    collector_factory: Callable[[RawResearchSink], BitvavoStandardResearchCollector] | None = None,
+    include_candles: bool = False,
+    candle_interval: str = DEFAULT_CANDLE_INTERVAL,
+) -> dict[str, object]:
+    """Run the public Standard capture, close Parquet, and build the DuckDB catalog."""
+
+    duration = _require_bounded_duration(duration_seconds)
+    writer = ParquetResearchWriter(output_dir, rotation=ParquetRotation())
+    active = (
+        collector_factory(writer)
+        if collector_factory is not None
+        else BitvavoStandardResearchCollector(
+            writer,
+            config=_config_for_duration(
+                duration,
+                include_candles=include_candles,
+                candle_interval=candle_interval,
+            ),
+        )
+    )
+    try:
+        await active.capture_for(duration, stop_event=stop_event)
+    finally:
+        await writer.aclose()
+    create_research_catalog(output_dir, database_path)
+    return build_capture_report(database_path, output_dir)
+
+
+def data1d_capture_claim(
+    *,
+    run_id: str,
+    duration_seconds: float,
+    paths: Data1DRunPaths,
+    include_candles: bool = False,
+    candle_interval: str = DEFAULT_CANDLE_INTERVAL,
+) -> dict[str, object]:
+    duration = _require_bounded_duration(duration_seconds)
+    channels = list(standard_subscription_channels(include_candles=include_candles))
+    return {
+        "schema": DATA1D_CLAIM_SCHEMA,
+        "run_id": run_id,
+        "path_contract": DATA1D_PATH_CONTRACT_ID,
+        "venue": BITVAVO_RESEARCH_VENUE,
+        "product": DATA1D_PRODUCT,
+        "feed": data1d_feed_name(
+            include_candles=include_candles,
+            candle_interval=candle_interval,
+        ),
+        "feed_product": BITVAVO_FEED_PRODUCT,
+        "websocket_url": BITVAVO_STANDARD_WEBSOCKET_URL,
+        "channels": channels,
+        "include_candles": include_candles,
+        "candle_interval": candle_interval if include_candles else None,
+        "credentialless": True,
+        "authenticated": False,
+        "signing": False,
+        "mdpro_fallback": False,
+        "data1e_path_fallback": False,
+        "duration_seconds": duration,
+        "smoke_duration_seconds": SMOKE_CAPTURE_SECONDS,
+        "max_duration_seconds": MAX_CAPTURE_SECONDS,
+        "retained": duration > SMOKE_CAPTURE_SECONDS,
+        "run_dir": str(paths.run_dir),
+        "raw_dir": str(paths.raw_dir),
+        "database_path": str(paths.database_path),
+        "twenty_four_seven": False,
+    }
+
+
+def data1d_capture_health(
+    *,
+    run_id: str,
+    duration_seconds: float,
+    status: str,
+    report: dict[str, object],
+    include_candles: bool = False,
+    candle_interval: str = DEFAULT_CANDLE_INTERVAL,
+) -> dict[str, object]:
+    duration = _require_bounded_duration(duration_seconds)
+    channels = list(standard_subscription_channels(include_candles=include_candles))
+    elapsed = elapsed_from_report(report)
+    return attach_observability_health(
+        {
+            "schema": DATA1D_HEALTH_SCHEMA,
+            "run_id": run_id,
+            "path_contract": DATA1D_PATH_CONTRACT_ID,
+            "status": status,
+            "duration_seconds": duration,
+            "retained": duration > SMOKE_CAPTURE_SECONDS,
+            "credentialless": True,
+            "authenticated": False,
+            "signing": False,
+            "feed": data1d_feed_name(
+                include_candles=include_candles,
+                candle_interval=candle_interval,
+            ),
+            "feed_product": BITVAVO_FEED_PRODUCT,
+            "channels": channels,
+            "include_candles": include_candles,
+            "candle_interval": candle_interval if include_candles else None,
+            "mdpro_fallback": False,
+            "data1e_path_fallback": False,
+            "events": report.get("events"),
+            "payload_bytes": report.get("payload_bytes"),
+            "parquet_files": report.get("parquet_files"),
+            "parquet_bytes": report.get("parquet_bytes"),
+            "gaps": report.get("gaps"),
+            "reconnects": report.get("reconnects"),
+            "limitations": [
+                "Published Parquet parts are reconstructable; a crash can lose the "
+                "in-memory segment.",
+                "This is not 24/7 service evidence or a trading edge.",
+                "Bitvavo Standard is credential-free public L2 plus trades/ticker; "
+                "optional candles are flagged and never implied by the default set.",
+                "This capture never writes DATA-1E Pro paths and never uses the MD Pro socket.",
+                "Standard and Pro may coexist only with distinct tmux sessions and artifact roots.",
+            ],
+        },
+        report,
+        elapsed_seconds=elapsed,
+    )
+
+
+def _write_create_only_json(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("x", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=True, sort_keys=True, indent=2) + "\n")
+
+
+async def run_reconstructable_capture(
+    *,
+    artifact_root: Path,
+    run_id: str,
+    duration_seconds: float,
+    stop_event: asyncio.Event | None = None,
+    operator_stop: Callable[[], bool] | None = None,
+    collector_factory: Callable[[RawResearchSink], BitvavoStandardResearchCollector] | None = None,
+    include_candles: bool = False,
+    candle_interval: str = DEFAULT_CANDLE_INTERVAL,
+) -> dict[str, object]:
+    """Write DATA-1D Parquet/DuckDB to the documented reconstructable path."""
+
+    refuse_protected_trade_keys()
+    paths = data1d_run_paths(artifact_root, run_id)
+    if "data-1e" in paths.run_dir.parts:
+        raise RuntimeError("DATA-1D refuses DATA-1E Pro artifact path segments.")
+    if paths.run_dir.exists():
+        raise FileExistsError(f"DATA-1D refuses to reuse existing run directory: {paths.run_dir}")
+    paths.run_dir.mkdir(parents=True, exist_ok=False)
+    paths.raw_dir.mkdir(exist_ok=False)
+    log_path = capture_log_path(paths.run_dir, run_id)
+    configure_capture_logger(log_path)
+    capture_logger().info(
+        "data1d start run_id=%s requested_duration_seconds=%s log=%s",
+        run_id,
+        duration_seconds,
+        log_path,
+    )
+    _write_create_only_json(
+        paths.capture_claim_path,
+        data1d_capture_claim(
+            run_id=run_id,
+            duration_seconds=duration_seconds,
+            paths=paths,
+            include_candles=include_candles,
+            candle_interval=candle_interval,
+        ),
+    )
+    report: dict[str, object] = {
+        "events": 0,
+        "payload_bytes": 0,
+        "parquet_files": 0,
+        "parquet_bytes": 0,
+        "gaps": 0,
+        "reconnects": 0,
+        "reconnect_clusters": 0,
+        "elapsed_seconds": 0.0,
+        "transport_profiles": [],
+        "integrity_events": 0,
+    }
+    status = "FAILED"
+    started = time.monotonic()
+    try:
+        report = await run_bounded_capture(
+            output_dir=paths.raw_dir,
+            database_path=paths.database_path,
+            duration_seconds=duration_seconds,
+            stop_event=stop_event,
+            collector_factory=collector_factory,
+            include_candles=include_candles,
+            candle_interval=candle_interval,
+        )
+        if operator_stop is not None and operator_stop():
+            status = "OPERATOR_STOP"
+        else:
+            status = "COMPLETED"
+    finally:
+        report = {**report, "elapsed_seconds": round(time.monotonic() - started, 6)}
+        capture_logger().info(
+            "data1d stop run_id=%s status=%s requested_duration_seconds=%s elapsed_seconds=%s",
+            run_id,
+            status,
+            duration_seconds,
+            report["elapsed_seconds"],
+        )
+        if not paths.capture_health_path.exists():
+            _write_create_only_json(
+                paths.capture_health_path,
+                data1d_capture_health(
+                    run_id=run_id,
+                    duration_seconds=duration_seconds,
+                    status=status,
+                    report=report,
+                    include_candles=include_candles,
+                    candle_interval=candle_interval,
+                ),
+            )
+    return {
+        **report,
+        "run_id": run_id,
+        "path_contract": DATA1D_PATH_CONTRACT_ID,
+        "run_dir": str(paths.run_dir),
+        "raw_dir": str(paths.raw_dir),
+        "database_path": str(paths.database_path),
+        "status": status,
+        "twenty_four_seven": False,
+    }
+
+
+def _argument_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Public Bitvavo Standard BTC-EUR exact-raw research capture. "
+            "Default channels: trades, ticker, book (depth 1000). Optional candles via "
+            "--include-candles and --candle-interval (official Standard WebSocket intervals). "
+            "Duration may exceed the historical 600s smoke cap up to 7 days. "
+            "Never falls back to DATA-1E Market Data Pro paths or the Pro socket. "
+            "This is not a 24/7 service. Do not start a multi-day retain from a Cloud Agent."
+        )
+    )
+    parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--database", type=Path)
+    parser.add_argument("--artifact-root", type=Path)
+    parser.add_argument("--run-id")
+    parser.add_argument("--duration-seconds", required=True, type=float)
+    parser.add_argument(
+        "--include-candles",
+        action="store_true",
+        default=False,
+        help=(
+            "Also subscribe the optional Standard candles channel "
+            "(https://docs.bitvavo.com/docs/websocket-api/candles-subscription/)."
+        ),
+    )
+    parser.add_argument(
+        "--candle-interval",
+        default=DEFAULT_CANDLE_INTERVAL,
+        choices=BITVAVO_CANDLE_INTERVALS,
+        help="Candle interval when --include-candles is set (default: 1m).",
+    )
+    return parser
+
+
+def _resolve_cli_mode(args: argparse.Namespace) -> str:
+    reconstructable = args.artifact_root is not None or args.run_id is not None
+    ad_hoc = args.output_dir is not None or args.database is not None
+    if reconstructable and ad_hoc:
+        raise ValueError(
+            "Use either --artifact-root/--run-id or --output-dir/--database, not both."
+        )
+    if reconstructable:
+        if args.artifact_root is None or args.run_id is None:
+            raise ValueError("Reconstructable capture requires both --artifact-root and --run-id.")
+        return "reconstructable"
+    if args.output_dir is None or args.database is None:
+        raise ValueError(
+            "Ad-hoc capture requires --output-dir and --database; "
+            "preferred reconstructable mode uses --artifact-root and --run-id."
+        )
+    return "ad_hoc"
+
+
+async def _run_from_args(args: argparse.Namespace) -> dict[str, object]:
+    stop_event = asyncio.Event()
+    operator_stopped = False
+
+    def _request_operator_stop() -> None:
+        nonlocal operator_stopped
+        operator_stopped = True
+        stop_event.set()
+
+    try:
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, _request_operator_stop)
+    except (NotImplementedError, RuntimeError):
+        pass
+
+    refuse_protected_trade_keys()
+    include_candles = bool(args.include_candles)
+    candle_interval = cast(str, args.candle_interval)
+    if not include_candles and candle_interval != DEFAULT_CANDLE_INTERVAL:
+        raise ValueError("--candle-interval requires --include-candles.")
+    mode = _resolve_cli_mode(args)
+    if mode == "reconstructable":
+        return await run_reconstructable_capture(
+            artifact_root=cast(Path, args.artifact_root),
+            run_id=cast(str, args.run_id),
+            duration_seconds=cast(float, args.duration_seconds),
+            stop_event=stop_event,
+            operator_stop=lambda: operator_stopped,
+            include_candles=include_candles,
+            candle_interval=candle_interval,
+        )
+    return await run_bounded_capture(
+        output_dir=cast(Path, args.output_dir),
+        database_path=cast(Path, args.database),
+        duration_seconds=cast(float, args.duration_seconds),
+        stop_event=stop_event,
+        include_candles=include_candles,
+        candle_interval=candle_interval,
+    )
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _argument_parser().parse_args(argv)
+    report = asyncio.run(_run_from_args(args))
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

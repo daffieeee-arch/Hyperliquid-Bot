@@ -153,6 +153,14 @@ pnpm --filter @hyperliquid-bot/cockpit dev
 
 Open `http://127.0.0.1:3000`.
 
+### VPS: Tailscale Serve (preferred remote access)
+
+On the Netcup VPS, keep `next dev` on **localhost only**. Remote browsers use
+Tailscale Serve — URL pattern `https://chupa.<tailnet>.ts.net` — never a
+public `:3000`. List that Serve hostname in `next.config.ts`
+`allowedDevOrigins` (already set for the active tailnet host). SSH forward to
+`127.0.0.1:3000` remains valid when Serve is off.
+
 LAN phone on the same Wi-Fi (not cellular). Official Next.js `next dev`
 `-H` / `--hostname` binds the hostname; `0.0.0.0` listens on all interfaces.
 `PORT` must be set in the shell (Next.js starts the HTTP server before `.env`

@@ -78,6 +78,14 @@ Open `http://127.0.0.1:3000`. Fixture PAPER JSON and the DATA-1A sample run
 are enough to render DESK + MARKETS + RISK; sibling venue quotes and
 leverage/margin/liquidation/VaR stay UNAVAILABLE.
 
+### Remote VPS access via Tailscale Serve
+
+On the Netcup VPS, keep the cockpit on **localhost** (`127.0.0.1:3000`). Use
+Tailscale Serve for a private HTTPS URL of the form
+`https://chupa.<tailnet>.ts.net` (never a public `:3000`). Ensure
+`apps/cockpit/next.config.ts` `allowedDevOrigins` includes that Serve host.
+SSH port-forward to `127.0.0.1:3000` is fine when Serve is not configured.
+
 ## Point at VPS / reconstructable artifacts later
 
 ```bash

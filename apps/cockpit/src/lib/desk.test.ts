@@ -3,10 +3,12 @@ import { describe, expect, it } from "vitest";
 import {
   DESK_MODE,
   DESK_UNAVAILABLE,
+  PHASE_A_CLAIMED_SECONDS,
   countCaptureStatuses,
   deskCaptureGlance,
   deskGlanceLine,
   deskPaperIdentity,
+  deskPhaseAProgressLine,
 } from "./desk";
 import { DEFAULT_CAPTURE_FRESH_MAX_S } from "./capture-freshness";
 import {
@@ -160,5 +162,36 @@ describe("DESK identity and capture glance", () => {
       ok: false,
       error: "Cockpit first screen is PAPER-only and fails closed.",
     });
+  });
+});
+
+describe("deskPhaseAProgressLine", () => {
+  it("appends HL elapsed vs the claimed 72h window from a timestamp-shaped run_id", () => {
+    const line = deskPhaseAProgressLine({ ok: true, strip: boundStrip });
+    // 20260905t232635z → 2026-09-05T23:26:35Z; observed 2026-09-06T10:16:00Z → 38965s
+    expect(line).toBe(
+      `2 live · 1 stale · 0 stopped · 0 degraded · 1 missing · fresh ≤ 180s · HL 38965s / ${String(PHASE_A_CLAIMED_SECONDS)}s (15%)`,
+    );
+  });
+
+  it("fails closed to unavailable when the strip is down", () => {
+    expect(
+      deskPhaseAProgressLine({
+        ok: false,
+        error: "Cockpit first screen is PAPER-only and fails closed.",
+      }),
+    ).toBe(DESK_UNAVAILABLE);
+  });
+
+  it("keeps the glance line when HL has no timestamp-shaped run_id", () => {
+    const strip = {
+      ...boundStrip,
+      venues: boundStrip.venues.map((venue) =>
+        venue.id === "hl" ? { ...venue, run_id: "sample-run" } : venue,
+      ),
+    };
+    expect(deskPhaseAProgressLine({ ok: true, strip })).toBe(
+      "2 live · 1 stale · 0 stopped · 0 degraded · 1 missing · fresh ≤ 180s",
+    );
   });
 });

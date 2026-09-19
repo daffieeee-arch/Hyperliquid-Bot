@@ -30,6 +30,7 @@ import {
   stripOrigin,
 } from "../../lib/data-origin";
 import { dataStateTone } from "../../lib/data-state";
+import { deskPhaseAProgressLine } from "../../lib/desk";
 import { formatGroupedNumber } from "../../lib/display";
 import { newestTapeEvent } from "../../lib/market-tape-rows";
 import type { MarketTapeResponse } from "../../lib/market-tape-types";
@@ -87,6 +88,7 @@ export function OverviewScreen({
       ),
     [paperPoll, paperView, research, researchPoll, strip, stripPoll, tape, tapePoll],
   );
+  const phaseALine = useMemo(() => deskPhaseAProgressLine(strip), [strip]);
   const anyReadFailed =
     stripPoll.error !== undefined ||
     researchPoll.error !== undefined ||
@@ -153,11 +155,7 @@ export function OverviewScreen({
           }
           tone={dataStateTone(view.capture.worst)}
           icon={<Activity size={14} aria-hidden="true" />}
-          meta={
-            view.capture.error === undefined
-              ? `live · ${String(view.capture.stale)} stale · ${String(view.capture.missing)} missing · ${String(view.capture.degraded)} degraded · fresh ≤ ${String(view.capture.freshMaxS)}s`
-              : view.capture.error
-          }
+          meta={view.capture.error === undefined ? phaseALine : view.capture.error}
         />
         <Stat
           label="Needs attention"

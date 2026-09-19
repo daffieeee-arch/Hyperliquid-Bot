@@ -21,9 +21,11 @@ import {
   dataStateTone,
   worstDataState,
 } from "../../lib/data-state";
+import { deskPhaseAProgressLine } from "../../lib/desk";
 import {
   data1aCaptureHealthPresentation,
   presentCopiedNumber,
+  presentData1ADuration,
   presentGapReconnectClusters,
 } from "../../lib/display";
 import { newestTapeEvent } from "../../lib/market-tape-rows";
@@ -31,8 +33,9 @@ import type { MarketTapeResponse } from "../../lib/market-tape-types";
 import type { VenueCaptureQuery } from "../../lib/paths";
 import { PAPER_HARD_LIMIT_GATES } from "../../lib/paper-risk-gates";
 import type { PaperRiskGate } from "../../lib/paper-risk-gates";
-import type { RiskField, RiskView } from "../../lib/risk";
-import type { SecondRowView } from "../../lib/second-row";
+import { withLiveStripRisk, type RiskField, type RiskView } from "../../lib/risk";
+import { withLiveStripSecondRow, type SecondRowView } from "../../lib/second-row";
+import { dualClockLabel, localClockLabel } from "../../lib/time-display";
 import type { Data1ACaptureResponse, VenueCaptureStripResponse } from "../../lib/types";
 import { useData1ACapturePoll } from "../../lib/use-data1a-capture";
 import { useMarketTape } from "../../lib/use-market-tape";
@@ -112,8 +115,12 @@ export function SystemScreen({
   const origin = stripOrigin(strip);
   const [riskFilter, setRiskFilter] = useState<"all" | "copied" | "unavailable">("all");
 
+  const liveRisk = useMemo(() => withLiveStripRisk(risk, strip), [risk, strip]);
+  const liveSecondRow = useMemo(() => withLiveStripSecondRow(secondRow, strip), [secondRow, strip]);
+  const phaseALine = useMemo(() => deskPhaseAProgressLine(strip), [strip]);
+
   const riskRows = useMemo(() => {
-    const all = [...risk.copied, ...risk.unavailable];
+    const all = [...liveRisk.copied, ...liveRisk.unavailable];
     if (riskFilter === "copied") {
       return all.filter((field) => field.kind !== "unavailable");
     }
@@ -121,12 +128,17 @@ export function SystemScreen({
       return all.filter((field) => field.kind === "unavailable");
     }
     return all;
-  }, [risk.copied, risk.unavailable, riskFilter]);
+  }, [liveRisk.copied, liveRisk.unavailable, riskFilter]);
 
   const presentation = data1a.ok ? data1aCaptureHealthPresentation(data1a.snapshot) : undefined;
   const worstState = strip.ok
     ? worstDataState(strip.strip.venues.map((venue) => captureChipDataState(venue.status)))
     : "error";
+  const lastPartAmsterdam =
+    data1a.ok && data1a.snapshot.parts.last_part_mtime_utc !== undefined
+      ? dualClockLabel(data1a.snapshot.parts.last_part_mtime_utc)
+      : "n/a";
+  const durationLine = data1a.ok ? presentData1ADuration(data1a.snapshot) : undefined;
 
   return (
     <div className="stack">
@@ -171,6 +183,33 @@ export function SystemScreen({
         </Notice>
       )}
 
+      <div className="grid grid-sm-2 grid-lg-3">
+        <Stat
+          label="Phase A capture"
+          value={
+            strip.ok
+              ? `${String(strip.strip.venues.filter((venue) => venue.live).length)}/${String(strip.strip.venues.length)}`
+              : "—"
+          }
+          tone={dataStateTone(worstState)}
+          compact
+          meta={phaseALine}
+        />
+        <Stat
+          label="Capture freshness"
+          value={liveRisk.captureLine === "UNAVAILABLE" ? "—" : "live strip"}
+          tone={stripPoll.degraded ? "warn" : "ok"}
+          compact
+          meta={liveSecondRow.capture.glanceLine}
+        />
+        <Stat
+          label="DATA-1A duration"
+          value={durationLine ?? "—"}
+          compact
+          meta={data1a.ok ? `last part ${lastPartAmsterdam}` : "Capture snapshot unavailable."}
+        />
+      </div>
+
       <Card>
         <CardHeader
           title="Bound capture runs"
@@ -190,7 +229,11 @@ export function SystemScreen({
                 ...strip.strip.provenance.rows.map((row) => ({
                   label: `${row.chip} ${row.series}`,
                   value: row.run_id,
-                  detail: `binding: ${row.binding_source}${row.started_at_utc === undefined ? "" : ` · started ${row.started_at_utc}`}`,
+                  detail: `binding: ${row.binding_source}${
+                    row.started_at_utc === undefined
+                      ? ""
+                      : ` · started ${localClockLabel(row.started_at_utc)}`
+                  }`,
                 })),
                 {
                   label: "Overlap",
@@ -248,11 +291,7 @@ export function SystemScreen({
           label="Parquet parts"
           value={data1a.ok ? presentCopiedNumber(data1a.snapshot.parts.count) : "—"}
           compact
-          meta={
-            data1a.ok
-              ? `last ${data1a.snapshot.parts.last_part_mtime_utc ?? "n/a"}`
-              : "Capture snapshot unavailable."
-          }
+          meta={data1a.ok ? `last ${lastPartAmsterdam}` : "Capture snapshot unavailable."}
         />
         <Stat
           label="Gaps · reconnects"
@@ -278,35 +317,35 @@ export function SystemScreen({
 
       <div className="grid grid-lg-2">
         <Card>
-          <CardHeader title="D01 / paper_risk bind" description={secondRow.bind.source} />
+          <CardHeader title="D01 / paper_risk bind" description={liveSecondRow.bind.source} />
           <CardBody>
             <KvList
               rows={[
-                { label: "Bound", value: secondRow.bind.bound },
-                { label: "Strategy class", value: secondRow.bind.strategyClass },
-                { label: "Same D01 smoke risk", value: secondRow.bind.sameD01SmokeRisk },
-                { label: "paper_risk catalog", value: secondRow.bind.paperRiskCatalog },
+                { label: "Bound", value: liveSecondRow.bind.bound },
+                { label: "Strategy class", value: liveSecondRow.bind.strategyClass },
+                { label: "Same D01 smoke risk", value: liveSecondRow.bind.sameD01SmokeRisk },
+                { label: "paper_risk catalog", value: liveSecondRow.bind.paperRiskCatalog },
               ]}
             />
-            <p className="card-desc">{secondRow.bind.note}</p>
+            <p className="card-desc">{liveSecondRow.bind.note}</p>
           </CardBody>
         </Card>
 
         <Card>
-          <CardHeader title="Binance usdm_public" description={secondRow.binance.note} />
+          <CardHeader title="Binance usdm_public" description={liveSecondRow.binance.note} />
           <CardBody>
             <KvList
               rows={[
-                { label: "Profile", value: secondRow.binance.profile },
-                { label: "Channel", value: secondRow.binance.channel },
-                { label: "run_id", value: secondRow.binance.runId },
-                { label: "Status", value: secondRow.binance.status },
-                { label: "Last part age", value: secondRow.binance.lastPartAge },
+                { label: "Profile", value: liveSecondRow.binance.profile },
+                { label: "Channel", value: liveSecondRow.binance.channel },
+                { label: "run_id", value: liveSecondRow.binance.runId },
+                { label: "Status", value: liveSecondRow.binance.status },
+                { label: "Last part age", value: liveSecondRow.binance.lastPartAge },
                 {
                   label: "Gaps · reconnects",
-                  value: secondRow.binance.gapsReconnects,
+                  value: liveSecondRow.binance.gapsReconnects,
                 },
-                { label: "Binding", value: secondRow.binance.binding },
+                { label: "Binding", value: liveSecondRow.binance.binding },
               ]}
             />
           </CardBody>
@@ -362,7 +401,7 @@ export function SystemScreen({
       <Card>
         <CardHeader
           title="Reconstructable risk overlay"
-          description={`${risk.captureLine} · assumed overlay is never venue-reconciled`}
+          description={`${liveRisk.captureLine} · assumed overlay is never venue-reconciled`}
           actions={
             <div className="seg" role="group" aria-label="Filter risk fields">
               {(["all", "copied", "unavailable"] as const).map((option) => (
@@ -381,10 +420,10 @@ export function SystemScreen({
           }
         />
         <CardBody flush>
-          {risk.error === undefined ? null : (
+          {liveRisk.error === undefined ? null : (
             <div style={{ padding: "0.85rem 0.85rem 0" }}>
               <Notice state="missing" title="PAPER overlay unavailable">
-                {risk.error}
+                {liveRisk.error}
               </Notice>
             </div>
           )}

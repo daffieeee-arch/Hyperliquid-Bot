@@ -14,6 +14,7 @@ import {
   RISK_UNAVAILABLE_REASON,
   buildRiskView,
   unavailableRiskFields,
+  withLiveStripRisk,
 } from "./risk";
 import {
   TERRAPC_BINANCE_ACTIVE_RETAIN_RUN_ID,
@@ -234,5 +235,26 @@ describe("RISK first PAPER slice", () => {
       kind: "unavailable",
     });
     expect(view.assumedNetPnl).toBe("-0.0126583080 USDC");
+  });
+
+  it("refreshes capture freshness from the live strip without inventing PnL or mids", () => {
+    const snapshot = loadPaperRunSnapshot({ TRADING_MODE: "PAPER" }, repoRoot);
+    const initial = buildRiskView(snapshot, undefined, {
+      ok: false,
+      error: "Cockpit first screen is PAPER-only and fails closed.",
+    });
+    expect(initial.captureLine).toBe(RISK_UNAVAILABLE);
+
+    const live = withLiveStripRisk(initial, { ok: true, strip: boundStrip });
+    expect(live.assumedNetPnl).toBe(initial.assumedNetPnl);
+    expect(live.positionBtc).toBe(initial.positionBtc);
+    expect(live.captureLine).toBe(
+      "2 live · 1 stale · 0 stopped · 0 degraded · 1 missing · fresh ≤ 180s",
+    );
+    expect(field(live, "capture")).toMatchObject({
+      value: "2 live · 1 stale · 0 stopped · 0 degraded · 1 missing · fresh ≤ 180s",
+      kind: "copied",
+    });
+    expect(JSON.stringify(live)).not.toContain("invented");
   });
 });

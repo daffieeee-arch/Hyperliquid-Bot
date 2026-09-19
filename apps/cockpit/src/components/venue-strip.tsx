@@ -4,6 +4,7 @@ import { Badge } from "./ui/badge";
 import { Notice } from "./ui/notice";
 import { captureChipDataState, dataStateTone } from "../lib/data-state";
 import { presentCopiedText } from "../lib/display";
+import { dualClockLabel } from "../lib/time-display";
 import type { VenueCaptureStripResponse } from "../lib/types";
 
 /**
@@ -62,7 +63,14 @@ export function VenueStrip({
               <span className="mono" style={{ fontSize: "0.82rem" }}>
                 {venue.product}
               </span>
-              <span className="eyebrow spacer" title="Age of the newest parquet part">
+              <span
+                className="eyebrow spacer"
+                title={
+                  venue.last_part_mtime_utc === undefined
+                    ? "Age of the newest parquet part"
+                    : `Newest part ${dualClockLabel(venue.last_part_mtime_utc)}`
+                }
+              >
                 {venue.last_part_age}
               </span>
             </div>

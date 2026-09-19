@@ -11,6 +11,7 @@ import {
   BINANCE_USDM_PUBLIC_PROFILE,
   SECOND_ROW_UNAVAILABLE,
   buildSecondRowView,
+  withLiveStripSecondRow,
 } from "./second-row";
 import { TERRAPC_BINANCE_ACTIVE_RETAIN_RUN_ID } from "./terrapc-defaults";
 import type { VenueCaptureChip, VenueCaptureStrip } from "./types";
@@ -104,5 +105,22 @@ describe("second-row operator cards", () => {
     expect(view.capture.glanceLine).toBe(SECOND_ROW_UNAVAILABLE);
     expect(view.binance.status).toBe(SECOND_ROW_UNAVAILABLE);
     expect(view.binance.profile).toBe(BINANCE_USDM_PUBLIC_PROFILE);
+  });
+
+  it("keeps COURSE-1 bind while refreshing capture and Binance from the live strip", () => {
+    const snapshot = loadPaperRunSnapshot({ TRADING_MODE: "PAPER" }, repoRoot);
+    const initial = buildSecondRowView(snapshot, {
+      ok: false,
+      error: "strip unavailable",
+    });
+    expect(initial.capture.glanceLine).toBe(SECOND_ROW_UNAVAILABLE);
+    expect(initial.binance.status).toBe(SECOND_ROW_UNAVAILABLE);
+
+    const live = withLiveStripSecondRow(initial, { ok: true, strip });
+    expect(live.bind).toEqual(initial.bind);
+    expect(live.capture.glanceLine).toMatch(/1 live · 1 stale/);
+    expect(live.binance.runId).toBe(TERRAPC_BINANCE_ACTIVE_RETAIN_RUN_ID);
+    expect(live.binance.status).toBe("STALE");
+    expect(live.binance.gapsReconnects).toBe("0 gaps · 2 raw / 1 clusters");
   });
 });

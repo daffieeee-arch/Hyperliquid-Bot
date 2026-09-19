@@ -262,3 +262,26 @@ export function buildRiskView(
     unavailable,
   };
 }
+
+/**
+ * Keep PAPER overlay fields from the first paint, but refresh capture freshness
+ * from the live venue strip so System & risk tracks Phase A like Markets.
+ */
+export function withLiveStripRisk(risk: RiskView, strip: VenueCaptureStripResponse): RiskView {
+  const glance = deskCaptureGlance(strip);
+  const captureLine = riskCaptureLine(glance);
+  const capture = captureField(glance);
+  let sawCapture = false;
+  const copied = risk.copied.map((field) => {
+    if (field.id !== "capture") {
+      return field;
+    }
+    sawCapture = true;
+    return capture;
+  });
+  return {
+    ...risk,
+    captureLine,
+    copied: sawCapture ? copied : [...copied, capture],
+  };
+}

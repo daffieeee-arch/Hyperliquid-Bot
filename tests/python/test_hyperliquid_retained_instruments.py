@@ -99,3 +99,23 @@ def test_parse_addon_coins_refuses_btc_and_unknowns() -> None:
         parse_addon_coins("BTC,ETH")
     with pytest.raises(HyperliquidInstrumentConfigError, match="subset"):
         parse_addon_coins("DOGE")
+
+
+def test_optional_candles_off_by_default_and_official_1m_payload() -> None:
+    from hyperliquid_bot.hyperliquid_retained_instruments import official_candle_subscription
+
+    default = build_hyperliquid_retained_plan()
+    assert default.include_candles is False
+    assert "candle" not in default.expected_channels
+    assert default.feed_name == "hyperliquid-public-btc-perp-trades-bbo-l2-ctx"
+
+    with_candles = build_hyperliquid_retained_plan(include_candles=True, candle_interval="1m")
+    assert with_candles.include_candles is True
+    assert ("candle", "BTC:1m") in with_candles.expected_subscription_identities
+    payload = official_candle_subscription("BTC", "1m").payload_bytes.decode("utf-8")
+    assert payload == (
+        '{"method":"subscribe","subscription":{"type":"candle","coin":"BTC","interval":"1m"}}'
+    )
+    assert with_candles.feed_name.endswith("-candles-1m")
+    with pytest.raises(HyperliquidInstrumentConfigError, match="include_candles"):
+        build_hyperliquid_retained_plan(include_candles=False, candle_interval="5m")

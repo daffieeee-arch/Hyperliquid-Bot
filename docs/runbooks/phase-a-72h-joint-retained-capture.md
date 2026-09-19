@@ -86,6 +86,11 @@ PYTHONPATH=src uv run --frozen python -m hyperliquid_bot.hyperliquid_raw_researc
   --enable-addons
 ```
 
+Optional official WS `candle` (including `1m`) is also flagged and **off by
+default** (`--include-candles` / `INCLUDE_CANDLES=1`). Enable only on a **new
+`run_id` after** the current Phase A 72h ends — never mid-run. See
+[data1a-vps-retained-capture.md](data1a-vps-retained-capture.md).
+
 ## Collectors stay independent of Cursor / Codex / chat
 
 Use the existing detached **tmux** sessions (`hl-capture`, `bn-capture`,

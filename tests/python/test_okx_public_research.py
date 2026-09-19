@@ -952,7 +952,7 @@ def test_config_bounds(config_kwargs: dict[str, object]) -> None:
         OkxPublicResearchConfig(**config_kwargs)  # type: ignore[arg-type]
 
 
-@pytest.mark.parametrize("duration", [0.0, 600.1, -1.0])
+@pytest.mark.parametrize("duration", [0.0, 604800.1, -1.0])
 @pytest.mark.asyncio
 async def test_capture_duration_is_strictly_bounded(duration: float) -> None:
     collector = OkxPublicResearchCollector(
@@ -961,5 +961,5 @@ async def test_capture_duration_is_strictly_bounded(duration: float) -> None:
         business_connection_factory=ScriptedConnectionFactory([]),
     )
 
-    with pytest.raises(ValueError, match="between 1 and 600"):
+    with pytest.raises(ValueError, match="between 1 and 604800"):
         await collector.capture_for(duration)

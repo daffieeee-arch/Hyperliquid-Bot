@@ -110,6 +110,30 @@ an operator interrupt, not a completed tape. Collector log:
 Heartbeat: application `{"method":"ping"}` every 45s plus a 60s receive
 timeout. A ~3h disconnect is not a missed 60s idle ping.
 
+## Optional 1m candles (enable only AFTER current Phase A 72h)
+
+Official Hyperliquid WS candle subscription
+(`type=candle`, `coin`, `interval`; intervals include `1m`):
+https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/websocket/subscriptions
+
+Candles are **off by default**. Do **not** enable mid-run on the live Phase A
+`hl-capture` session. After that 72h ends (new `run_id` only):
+
+```bash
+# New run_id only. Never resume or overwrite the Phase A directory.
+export INCLUDE_CANDLES=1
+export CANDLE_INTERVAL=1m   # optional; default 1m
+export DURATION_SECONDS=259200
+export RUN_ID="$(date -u +%Y%m%dt%H%M%Sz)-live-retained-candles"
+bash "$REPO_ROOT/scripts/data1a_start.sh"
+# or directly:
+# PYTHONPATH=src uv run --frozen python -m hyperliquid_bot.hyperliquid_raw_research \
+#   --artifact-root "$ARTIFACT_ROOT" --run-id "$RUN_ID" --duration-seconds 259200 \
+#   --include-candles --candle-interval 1m
+```
+
+`INCLUDE_CANDLES` unset / `0` keeps the historical BTC trades/bbo/l2/ctx set.
+
 ## How to stop
 
 ```bash

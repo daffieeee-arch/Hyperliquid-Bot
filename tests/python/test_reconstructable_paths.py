@@ -18,6 +18,8 @@ from hyperliquid_bot.reconstructable_paths import (
     DATA1B_RETIRED_PATH_CONTRACT_ID,
     DATA1B_RETIRED_PRODUCT,
     DATA1B_WIRE_PRODUCT,
+    DATA1C_PATH_CONTRACT,
+    DATA1C_PATH_CONTRACT_ID,
     DATA1D_PATH_CONTRACT,
     DATA1D_PATH_CONTRACT_ID,
     DATA1E_PATH_CONTRACT,
@@ -28,6 +30,7 @@ from hyperliquid_bot.reconstructable_paths import (
     data1a_run_paths,
     data1b_retired_eur_run_dir,
     data1b_run_paths,
+    data1c_run_paths,
     data1d_run_paths,
     data1e_run_paths,
     data1f_run_paths,
@@ -72,6 +75,19 @@ def test_data1b_path_contract_is_stable() -> None:
     assert "<artifact-root>/data-1b/kraken/BTC-USD/<run_id>/" in DATA1B_PATH_CONTRACT
     assert "raw/part-*.parquet" in DATA1B_PATH_CONTRACT
     assert "research.duckdb" in DATA1B_PATH_CONTRACT
+
+
+def test_data1c_path_contract_is_stable() -> None:
+    root = Path("/var/reconstructable")
+    paths = data1c_run_paths(root, "sample-run")
+    assert paths.contract_id == DATA1C_PATH_CONTRACT_ID
+    assert DATA1C_PATH_CONTRACT_ID == "data-1c-okx-btc-usdt-swap-v1"
+    assert paths.run_dir == root / "data-1c" / "okx" / "BTC-USDT-SWAP" / "sample-run"
+    assert paths.raw_dir == paths.run_dir / "raw"
+    assert paths.database_path == paths.run_dir / "research.duckdb"
+    assert paths.capture_claim_path == paths.run_dir / "capture-claim.json"
+    assert paths.capture_health_path == paths.run_dir / "capture-health.json"
+    assert "<artifact-root>/data-1c/okx/BTC-USDT-SWAP/<run_id>/" in DATA1C_PATH_CONTRACT
 
 
 def test_data1d_path_contract_is_stable() -> None:

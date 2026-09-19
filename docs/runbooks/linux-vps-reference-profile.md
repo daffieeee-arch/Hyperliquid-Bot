@@ -10,6 +10,7 @@ The VPS operator runbooks are the primary start/status/stop guides:
 
 - [data1a-vps-retained-capture.md](data1a-vps-retained-capture.md)
 - [data1f-vps-retained-capture.md](data1f-vps-retained-capture.md)
+- [data1c-vps-retained-capture.md](data1c-vps-retained-capture.md) (prepare-only; do not start during Phase A)
 - [data1d-vps-retained-capture.md](data1d-vps-retained-capture.md)
 - [data1e-vps-retained-capture.md](data1e-vps-retained-capture.md)
 - [data1b-vps-retained-capture.md](data1b-vps-retained-capture.md)

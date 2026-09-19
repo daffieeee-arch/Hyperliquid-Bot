@@ -102,3 +102,19 @@ export function buildSecondRowView(
     },
   };
 }
+
+/**
+ * Keep COURSE-1 bind from first paint; refresh capture glance + Binance from
+ * the live venue strip so System tracks Phase A freshness like Markets.
+ */
+export function withLiveStripSecondRow(
+  view: SecondRowView,
+  strip: VenueCaptureStripResponse,
+): SecondRowView {
+  const refreshed = buildSecondRowView(undefined, strip);
+  return {
+    bind: view.bind,
+    capture: refreshed.capture,
+    binance: refreshed.binance,
+  };
+}

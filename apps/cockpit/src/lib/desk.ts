@@ -1,5 +1,9 @@
 import { DEFAULT_CAPTURE_FRESH_MAX_S } from "./capture-freshness";
-import { paperRunSourceLabel, presentCopiedText } from "./display";
+import {
+  elapsedSecondsSinceRunId,
+  paperRunSourceLabel,
+  presentCopiedText,
+} from "./display";
 import type {
   PaperRunSnapshot,
   VenueCaptureChip,
@@ -10,6 +14,7 @@ import type {
 
 export const DESK_MODE = "PAPER" as const;
 export const DESK_UNAVAILABLE = "unavailable";
+export const PHASE_A_CLAIMED_SECONDS = 259_200;
 
 export type DeskPaperIdentity = {
   mode: typeof DESK_MODE;
@@ -148,4 +153,36 @@ export function deskCaptureGlance(result: VenueCaptureStripResponse): DeskCaptur
     return { ok: false, error: result.error };
   }
   return deskCaptureGlanceFromStrip(result.strip);
+}
+
+/**
+ * Dense Phase A progress for DESK/Overview: live/stale counts plus HL elapsed
+ * vs the claimed 72h window when the bound HL run_id is timestamp-shaped.
+ * Never invents PnL or mids.
+ */
+export function deskPhaseAProgressLine(
+  strip: VenueCaptureStripResponse,
+  options?: {
+    claimedDurationSeconds?: number;
+    observedAt?: string;
+  },
+): string {
+  if (!strip.ok) {
+    return DESK_UNAVAILABLE;
+  }
+  const claimedDurationSeconds = options?.claimedDurationSeconds ?? PHASE_A_CLAIMED_SECONDS;
+  const counts = countCaptureStatuses(strip.strip.venues);
+  const base = deskGlanceLine(counts, strip.strip.fresh_max_s);
+  const hl = strip.strip.venues.find((venue) => venue.id === "hl");
+  const runId = hl?.run_id;
+  if (runId === undefined || runId === "") {
+    return base;
+  }
+  const observed = options?.observedAt ?? strip.strip.observed_at;
+  const elapsed = elapsedSecondsSinceRunId(runId, observed);
+  if (elapsed === undefined || claimedDurationSeconds <= 0) {
+    return base;
+  }
+  const pct = Math.min(100, Math.floor((elapsed / claimedDurationSeconds) * 100));
+  return `${base} · HL ${String(elapsed)}s / ${String(claimedDurationSeconds)}s (${String(pct)}%)`;
 }

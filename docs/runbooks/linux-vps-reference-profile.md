@@ -198,28 +198,32 @@ Do not start collectors until CoS assigns the window.
 3. **Clock sync** (`systemd-timesyncd` or `chrony`). Cockpit freshness is
    `now - last_part_mtime <= COCKPIT_CAPTURE_FRESH_MAX_S` (default 180 s).
    A wrong host clock produces false STALE/RUNNING.
-4. **tmux** sessions, same names as TerraPC: `hl-capture`, `bn-capture`,
-   `bv-capture`, `kr-capture`. Detached tmux is the default retain supervisor.
-5. **systemd** only if CoS wants a unit: `Type=simple`, `KillSignal=SIGINT`,
+4. **tmux** sessions, same names as historical TerraPC notes: `hl-capture`,
+   `bn-capture`, `bv-capture`, `kr-capture` (plus optional `bv-std-capture`).
+   Detached tmux on the **Netcup VPS** is the active Phase A retain supervisor.
+5. **Cockpit:** localhost-only `next dev` + Tailscale Serve
+   (`https://chupa.<tailnet>.ts.net`); never public `:3000`. See
+   [FRONTEND.md](../FRONTEND.md) and [cockpit-first-paper-screen.md](cockpit-first-paper-screen.md).
+6. **systemd** only if CoS wants a unit: `Type=simple`, `KillSignal=SIGINT`,
    `Restart=no`. Never `Restart=always` and never `systemctl stop` during an
    assigned evidence window.
-6. **unattended-upgrades** for security patches, carefully: allow automatic
+7. **unattended-upgrades** for security patches, carefully: allow automatic
    package updates; **disable automatic reboot** for the duration of an
    assigned evidence window. Reboot only after `capture-health.json` exists
    or CoS orders a stop.
-7. **No `OPERATOR_STOP` during an evidence window.** Do not send SIGINT,
+8. **No `OPERATOR_STOP` during an evidence window.** Do not send SIGINT,
    SIGTERM, `tmux kill-session`, or Cloud-Agent SSH. After stop, read
    `elapsed_seconds` separately from requested `duration_seconds`.
    `OPERATOR_STOP` with a shorter elapsed time is an interrupt, not a
    completed tape.
-8. **Env files mode `600`**, owned by the capture user, outside git.
+9. **Env files mode `600`**, owned by the capture user, outside git.
    Never commit keys. Values are never printed or logged.
-9. Fail closed if protected trade/signing names are present
+10. Fail closed if protected trade/signing names are present
    (`HYPERLIQUID_PK`, generic `BITVAVO_API_*`, generic `KRAKEN_API_*`,
    and the lists in the WSL runbooks). DATA-1E View-only
    `BITVAVO_MDPRO_API_KEY` / `BITVAVO_MDPRO_API_SECRET` and optional
    Kraken WS names are the only later data-plane secrets.
-10. `unset TRADING_MODE` and `unset D41_EXECUTION_MODE` before starting a
+11. `unset TRADING_MODE` and `unset D41_EXECUTION_MODE` before starting a
     collector. PAPER is irrelevant to these public/view-only writers;
     they never sign.
 
@@ -230,13 +234,16 @@ Use the matching `data1*-vps-retained-capture.md` with the primary
 
 | Netcup Ubuntu VPS (primary) | TerraPC/WSL2 (secondary) |
 | --- | --- |
+| **Active Phase A 72h evidence host** (`chupa`) | Historical / PARTIAL Phase A only — not current evidence |
 | Assigned multi-day PAPER captures | Optional fallback captures only when explicitly assigned |
 | Cursor Remote SSH / `agent` / Codex CLI development | Optional WSL/GPU development |
-| Primary cockpit and artifact root | Optional read-only cockpit |
+| Primary cockpit (localhost + Tailscale Serve) and artifact root | Optional read-only cockpit |
 | VPS runbooks | WSL-named fallback runbooks |
 
 Do not copy a live DuckDB catalog or append to published parquet when moving a
-capture between hosts. Start a new `run_id`.
+capture between hosts. Start a new `run_id`. Cloud Agents must not SSH to
+TerraPC or stop live VPS sessions `hl-capture` / `bn-capture` / `bv-capture` /
+`bv-std-capture` / `kr-capture`.
 
 ## Secrets
 

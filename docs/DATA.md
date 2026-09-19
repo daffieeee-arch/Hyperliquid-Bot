@@ -38,8 +38,11 @@ The selected durable runtime store is the system of record for:
 Development tasks must not directly mutate the durable runtime database.
 Read-only analysis may be permitted, while large experiments run through a
 controlled research worker or bounded export. The Netcup Ubuntu 24.04 LTS VPS
-is the primary multi-day PAPER capture host recorded in
-[linux-vps-reference-profile.md](runbooks/linux-vps-reference-profile.md).
+(`chupa`) is the primary multi-day PAPER capture host and the **active Phase A
+72h evidence host**
+([linux-vps-reference-profile.md](runbooks/linux-vps-reference-profile.md),
+[phase-a-72h-joint-retained-capture.md](runbooks/phase-a-72h-joint-retained-capture.md)).
+TerraPC/WSL Phase A work is historical / PARTIAL only.
 
 ### Fixture policy
 

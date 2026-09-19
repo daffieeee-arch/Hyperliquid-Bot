@@ -1,13 +1,19 @@
 # Phase A — joint 72h PAPER retained capture (primary VPS)
 
-Status: **prepare-only**. This document is the campaign runbook for one
-bounded, overlapping 72-hour PAPER retain of the four production lanes that
-already have start/status/stop helpers. Cloud Agents must not start this
-campaign or send `C-c` to live sessions. Run it on the Netcup Ubuntu 24.04
-LTS VPS only after the explicit operator gate.
+Status: **active evidence host = Netcup Ubuntu 24.04 LTS VPS (`chupa`)**.
+This document is the campaign runbook for one bounded, overlapping 72-hour
+PAPER retain of the four production lanes that already have
+start/status/stop helpers. Cloud Agents must not start this campaign or send
+`C-c` to live sessions.
 
-This is a **new** campaign. Prior mid-window `OPERATOR_STOP` retains are not
-success evidence and must not be resumed or overwritten.
+**TerraPC / WSL Phase A attempts are historical / PARTIAL only.** They are not
+the current evidence tape and must not be resumed, overwritten, or treated as
+the assigned 72h retain. Operator work for this campaign runs on the Netcup
+VPS after the explicit operator gate.
+
+This is a **new** campaign relative to those TerraPC partials. Prior
+mid-window `OPERATOR_STOP` retains are not success evidence and must not be
+resumed or overwritten.
 
 ## In scope
 
@@ -296,7 +302,7 @@ stop a live 72h tape. `OPERATOR_STOP` with `elapsed_seconds` <
 ./scripts/data1b_stop.sh
 ```
 
-## Residual risks (not started from this document)
+## Residual risks
 
 - `trickle` is userspace and can miss some sockets; attest a cgroup/netns
   limiter if measurement shows leak-through.
@@ -304,4 +310,6 @@ stop a live 72h tape. `OPERATOR_STOP` with `elapsed_seconds` <
 - Kraken public `trade` can be quiet; L3 requires data-only WS keys.
 - Bitvavo MD Pro is a distinct product; Standard is not a fallback.
 - ETH/SOL remain deferred; enabling them is a new bandwidth decision.
-- This campaign has **not** started. Pin, smoke, Chupa OK, then 72h.
+- **Active evidence host is the Netcup VPS.** TerraPC Phase A retains are
+  historical / PARTIAL only. Do not stop mid-window VPS sessions; do not
+  treat TerraPC partials as the assigned 72h tape.

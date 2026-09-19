@@ -209,11 +209,31 @@ and open `http://<LAN-IP>:3001` (the PC's LAN IP) — not cellular. See `docs/DA
 `docs/runbooks/cockpit-first-paper-screen.md`, `apps/cockpit/README.md`, and
 `vertical_slices/course1_live_public_paper/README.md`.
 
+### Cockpit access: localhost + Tailscale Serve (never public :3000)
+
+On the Netcup VPS, bind the PAPER cockpit to **localhost only**. Remote browser
+access uses **Tailscale Serve**, not a public firewall hole on port 3000.
+
+```bash
+# On the VPS (tmux session cockpit or equivalent):
+pnpm --filter @hyperliquid-bot/cockpit dev
+# listens on http://127.0.0.1:3000 — do not expose :3000 to the public internet
+
+# Tailscale Serve (example MagicDNS pattern):
+#   https://chupa.<tailnet>.ts.net  →  http://127.0.0.1:3000
+# Next.js allowedDevOrigins must list that Serve host (see apps/cockpit/next.config.ts).
+```
+
+URL pattern: `https://chupa.<tailnet>.ts.net` (tailnet-private HTTPS). Never open
+`0.0.0.0:3000` to the provider public IP for the cockpit. SSH port-forward to
+`127.0.0.1:3000` remains a valid alternative when Serve is not used.
+
 ## Development model
 
 Frontend development happens primarily on the Netcup Ubuntu 24.04 LTS VPS.
 Use Cursor Remote SSH or a CLI agent there and forward the Next.js port over
-SSH when browser access is needed. TerraPC/WSL2 remains a secondary option.
+SSH when browser access is needed, or use Tailscale Serve as above.
+TerraPC/WSL2 remains a secondary option.
 
 The local frontend uses:
 

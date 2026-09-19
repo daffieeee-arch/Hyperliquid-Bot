@@ -10,7 +10,8 @@ RUNBOOK = REPO_ROOT / "docs" / "runbooks" / "phase-a-72h-joint-retained-capture.
 
 def test_phase_a_runbook_covers_four_lanes_and_hard_lessons() -> None:
     text = RUNBOOK.read_text(encoding="utf-8")
-    assert "prepare-only" in text
+    assert "active evidence host" in text.lower() or "Active evidence host" in text
+    assert "PARTIAL" in text
     assert "DATA-1A" in text and "DATA-1F" in text
     assert "DATA-1E" in text and "DATA-1B" in text
     assert "hl-capture" in text
@@ -41,4 +42,5 @@ def test_phase_a_runbook_covers_four_lanes_and_hard_lessons() -> None:
     assert "docs.kraken.com" in text
     assert "BTC/USD" in text
     assert "not BTC/EUR" in text or "not BTC/EUR" in text.lower()
-    assert "campaign has **not** started" in text or "has **not** started" in text
+    assert "TerraPC" in text
+    assert "historical" in text.lower()

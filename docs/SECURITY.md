@@ -118,6 +118,13 @@ Prefer:
 - separate paper/shadow/live networks or namespaces;
 - explicit outbound access requirements.
 
+### Cockpit on the VPS (PAPER)
+
+Bind `next dev` to **localhost only** (`127.0.0.1:3000`). Remote operator
+browsers reach it through **Tailscale Serve** at
+`https://chupa.<tailnet>.ts.net` (tailnet-private), with that hostname listed
+in Next.js `allowedDevOrigins`. Do **not** publish port 3000 on the provider
+public IP. SSH local forwarding to `127.0.0.1:3000` is an acceptable fallback.
 Grafana, Codex, research workers and the frontend do not receive exchange private keys.
 
 ## MCP capability model

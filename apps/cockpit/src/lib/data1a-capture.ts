@@ -2,7 +2,11 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { bindVenueCaptureRun } from "./capture-runs";
-import { DEFAULT_CAPTURE_FRESH_MAX_S, resolveCaptureFreshMaxSeconds } from "./capture-freshness";
+import {
+  DEFAULT_CAPTURE_FRESH_MAX_S,
+  isLastPartFresh,
+  resolveCaptureFreshMaxSeconds,
+} from "./capture-freshness";
 import { listPublishedParquetParts } from "./parquet-parts";
 
 export { listPublishedParquetParts };
@@ -166,7 +170,11 @@ function refuseTwentyFourSeven(source: JsonObject, path: string, refuseLabel: st
   return false;
 }
 
-function loadClaim(runDir: string, contract: VenueCaptureContract): Data1ACaptureClaim {
+function loadClaim(
+  runDir: string,
+  contract: VenueCaptureContract,
+  options: { allowMissingState?: boolean } = {},
+): Data1ACaptureClaim {
   const path = join(runDir, "capture-claim.json");
   const raw = readJsonObject(path);
   if (raw.schema !== contract.claimSchema) {
@@ -181,11 +189,22 @@ function loadClaim(runDir: string, contract: VenueCaptureContract): Data1ACaptur
       `${path} claims signing; the ${contract.refuseLabel} cockpit view refuses that.`,
     );
   }
+  const stateValue = raw.state;
+  let state: string;
+  if (typeof stateValue === "string" && stateValue !== "") {
+    state = stateValue;
+  } else if (options.allowMissingState === true) {
+    // In-flight retains that omitted state (e.g. early DATA-1D) still surface as
+    // RUNNING when fresh parquet parts exist; presentation does not invent mids.
+    state = "STARTED_FAIL_CLOSED";
+  } else {
+    throw new Error(`${path} is missing non-empty string field state.`);
+  }
   return {
     schema: contract.claimSchema,
     path_contract: contract.pathContractId,
     run_id: requireText(raw, "run_id", path),
-    state: requireText(raw, "state", path),
+    state,
     retained: requireBoolean(raw, "retained", path),
     twenty_four_seven: refuseTwentyFourSeven(raw, path, contract.refuseLabel),
     credentialless: optionalBoolean(raw, "credentialless", path),
@@ -272,7 +291,24 @@ export function loadCaptureSnapshotForContract(
       `${contract.refuseLabel} run directory is missing: ${resolved.runDir}. Set ARTIFACT_ROOT and the venue run_id to an existing reconstructable capture. Counts are not invented.`,
     );
   }
-  const claim = loadClaim(resolved.runDir, contract);
+  const observedAt = now();
+  const parts = listPublishedParquetParts(join(resolved.runDir, "raw"));
+  let claim: Data1ACaptureClaim;
+  try {
+    claim = loadClaim(resolved.runDir, contract);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "";
+    const missingState = /missing non-empty string field state/.test(message);
+    const partsLookLive =
+      parts.raw_dir_present &&
+      (parts.count ?? 0) > 0 &&
+      parts.last_part_mtime_utc !== undefined &&
+      isLastPartFresh(parts.last_part_mtime_utc, observedAt, freshMaxSeconds);
+    if (!missingState || !partsLookLive) {
+      throw error;
+    }
+    claim = loadClaim(resolved.runDir, contract, { allowMissingState: true });
+  }
   if (!skipResolvedRunIdMatch(resolved.source) && claim.run_id !== resolved.runId) {
     throw new Error(
       `capture-claim.json run_id ${claim.run_id} does not match resolved run_id ${resolved.runId}.`,
@@ -292,14 +328,14 @@ export function loadCaptureSnapshotForContract(
     runDir: resolved.runDir,
     runId: claim.run_id,
     source: resolved.source,
-    observed_at: now(),
+    observed_at: observedAt,
     fresh_max_s: freshMaxSeconds,
     path_contract: contract.pathContractId,
     claim,
     health: healthState.health,
     health_missing: healthState.health_missing,
     health_error: healthState.health_error,
-    parts: listPublishedParquetParts(join(resolved.runDir, "raw")),
+    parts,
     duckdb_present: existsSync(join(resolved.runDir, "research.duckdb")),
   };
 }

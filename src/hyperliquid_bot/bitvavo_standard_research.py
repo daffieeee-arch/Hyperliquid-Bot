@@ -1595,6 +1595,7 @@ def data1d_capture_claim(
     channels = list(standard_subscription_channels(include_candles=include_candles))
     return {
         "schema": DATA1D_CLAIM_SCHEMA,
+        "state": "STARTED_FAIL_CLOSED",
         "run_id": run_id,
         "path_contract": DATA1D_PATH_CONTRACT_ID,
         "venue": BITVAVO_RESEARCH_VENUE,

@@ -345,9 +345,7 @@ class HyperliquidRawResearchCollector:
                 subscription_type=subscription.channel,
                 coin=subscription.coin,
                 **(
-                    {"interval": subscription.interval}
-                    if subscription.interval is not None
-                    else {}
+                    {"interval": subscription.interval} if subscription.interval is not None else {}
                 ),
             )
 

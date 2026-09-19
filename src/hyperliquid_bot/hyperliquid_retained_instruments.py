@@ -311,9 +311,7 @@ def build_hyperliquid_retained_plan(
             "candle_interval must be one of the official Hyperliquid candle intervals"
         )
     if not include_candles and candle_interval != DEFAULT_CANDLE_INTERVAL:
-        raise HyperliquidInstrumentConfigError(
-            "candle_interval requires include_candles"
-        )
+        raise HyperliquidInstrumentConfigError("candle_interval requires include_candles")
     coins = parse_addon_coins(addon_coins)
     addons = tuple(hyperliquid_retained_instrument(coin) for coin in coins)
     policy: AddonStartPolicy = (

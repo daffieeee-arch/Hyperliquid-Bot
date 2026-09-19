@@ -34,10 +34,7 @@ import type { VenueCaptureQuery } from "../../lib/paths";
 import { PAPER_HARD_LIMIT_GATES } from "../../lib/paper-risk-gates";
 import type { PaperRiskGate } from "../../lib/paper-risk-gates";
 import { withLiveStripRisk, type RiskField, type RiskView } from "../../lib/risk";
-import {
-  withLiveStripSecondRow,
-  type SecondRowView,
-} from "../../lib/second-row";
+import { withLiveStripSecondRow, type SecondRowView } from "../../lib/second-row";
 import { dualClockLabel, localClockLabel } from "../../lib/time-display";
 import type { Data1ACaptureResponse, VenueCaptureStripResponse } from "../../lib/types";
 import { useData1ACapturePoll } from "../../lib/use-data1a-capture";
@@ -119,10 +116,7 @@ export function SystemScreen({
   const [riskFilter, setRiskFilter] = useState<"all" | "copied" | "unavailable">("all");
 
   const liveRisk = useMemo(() => withLiveStripRisk(risk, strip), [risk, strip]);
-  const liveSecondRow = useMemo(
-    () => withLiveStripSecondRow(secondRow, strip),
-    [secondRow, strip],
-  );
+  const liveSecondRow = useMemo(() => withLiveStripSecondRow(secondRow, strip), [secondRow, strip]);
   const phaseALine = useMemo(() => deskPhaseAProgressLine(strip), [strip]);
 
   const riskRows = useMemo(() => {
@@ -212,11 +206,7 @@ export function SystemScreen({
           label="DATA-1A duration"
           value={durationLine ?? "—"}
           compact
-          meta={
-            data1a.ok
-              ? `last part ${lastPartAmsterdam}`
-              : "Capture snapshot unavailable."
-          }
+          meta={data1a.ok ? `last part ${lastPartAmsterdam}` : "Capture snapshot unavailable."}
         />
       </div>
 
@@ -301,11 +291,7 @@ export function SystemScreen({
           label="Parquet parts"
           value={data1a.ok ? presentCopiedNumber(data1a.snapshot.parts.count) : "—"}
           compact
-          meta={
-            data1a.ok
-              ? `last ${lastPartAmsterdam}`
-              : "Capture snapshot unavailable."
-          }
+          meta={data1a.ok ? `last ${lastPartAmsterdam}` : "Capture snapshot unavailable."}
         />
         <Stat
           label="Gaps · reconnects"

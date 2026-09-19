@@ -1,9 +1,5 @@
 import { DEFAULT_CAPTURE_FRESH_MAX_S } from "./capture-freshness";
-import {
-  elapsedSecondsSinceRunId,
-  paperRunSourceLabel,
-  presentCopiedText,
-} from "./display";
+import { elapsedSecondsSinceRunId, paperRunSourceLabel, presentCopiedText } from "./display";
 import type {
   PaperRunSnapshot,
   VenueCaptureChip,

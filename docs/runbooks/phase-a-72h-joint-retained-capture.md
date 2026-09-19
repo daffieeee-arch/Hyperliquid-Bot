@@ -35,8 +35,12 @@ Primary per-lane detail is in the VPS runbooks:
 
 OKX, Deribit, and Polymarket retained capture (research modules only — do not
 claim eight venues ready). No Coinbase, Aster, or new venues. No historical
-bulk download. No LIVE / orders / wallets / VPN. Cloud Agents must not start
-or stop collectors.
+bulk download **into live run dirs**. Offline Vision / OHLCVT research archives
+live under `~/Hyperliquid Project/hist-archives/` (sibling of `data-capture/`)
+and are documented in
+[hist-archives-research-warehouse.md](hist-archives-research-warehouse.md) —
+do not merge them into Phase A `run_id` trees. No LIVE / orders / wallets / VPN.
+Cloud Agents must not start or stop collectors.
 
 ## Official contracts checked (2026-09-11)
 

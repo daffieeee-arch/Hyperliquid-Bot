@@ -39,7 +39,10 @@ Use for:
 - large ClickHouse scans;
 - longer historical studies;
 - continuous paper data;
-- low-priority batch research against the authoritative self-collected dataset.
+- low-priority batch research against the authoritative self-collected dataset;
+- read-only DuckDB SQL against the VPS offline hist warehouse
+  (`~/Hyperliquid Project/hist-archives/`; see
+  [hist-archives-research-warehouse.md](runbooks/hist-archives-research-warehouse.md)).
 
 The research worker has explicit CPU/RAM/I/O limits and cannot share failure fate with collectors or trading/risk services.
 

@@ -540,6 +540,94 @@ def bitvavo() -> None:
     _write_part(run_dir / "raw", 1, part1)
 
 
+def bitvavo_standard() -> None:
+    """DATA-1D Bitvavo Standard — distinct path/series from MD Pro (DATA-1E)."""
+    run_id = _run_id(90)
+    run_dir = ROOT / "data-1d" / "bitvavo" / "BTC-EUR" / run_id
+    _claim(
+        run_dir,
+        "data-1d-retained-capture-claim-v1",
+        "data-1d-bitvavo-btc-eur-v1",
+        run_id,
+        "bitvavo",
+        "BTC-EUR",
+    )
+    _health(
+        run_dir,
+        "data-1d-retained-capture-health-v1",
+        "data-1d-bitvavo-btc-eur-v1",
+        run_id,
+        gaps=0,
+        reconnects=0,
+        reconnect_clusters=0,
+        transport_profiles=[
+            {
+                "transport_profile": "standard",
+                "gaps": 0,
+                "reconnects": 0,
+                "reconnect_clusters": 0,
+            }
+        ],
+    )
+    product = "BTC-EUR"
+    part1 = [
+        _record(
+            "bitvavo",
+            product,
+            "trades",
+            1,
+            {"event": "trade", "market": "BTC-EUR", "price": "93750.0", "amount": "0.02"},
+        ),
+        _marker(
+            "bitvavo",
+            product,
+            "normalized_trades",
+            2,
+            {
+                "raw_message_ordinal": 1,
+                "source_channel": "trades",
+                "market": "BTC-EUR",
+                "events": [
+                    {
+                        "event_index": 0,
+                        "market": "BTC-EUR",
+                        "trade_id": "std-t-1",
+                        "price": "93750.0",
+                        "quantity": "0.02000000",
+                        "taker_side": "buy",
+                        "event_time_ms": str(_ms(1)),
+                        "event_time_ns": str(_ms(1) * 1_000_000),
+                    }
+                ],
+            },
+        ),
+        _record(
+            "bitvavo",
+            product,
+            "ticker",
+            3,
+            {"event": "ticker", "market": "BTC-EUR", "bestBid": "93740.0", "bestAsk": "93755.0"},
+        ),
+        _marker(
+            "bitvavo",
+            product,
+            "normalized_ticker",
+            4,
+            {
+                "raw_message_ordinal": 3,
+                "source_channel": "ticker",
+                "market": "BTC-EUR",
+                "bid_price": "93740.0",
+                "bid_quantity": "0.4",
+                "ask_price": "93755.0",
+                "ask_quantity": "0.35",
+                "last_price": "93750.0",
+            },
+        ),
+    ]
+    _write_part(run_dir / "raw", 1, part1)
+
+
 def kraken() -> None:
     run_id = _run_id(180)
     run_dir = ROOT / "data-1b" / "kraken" / "BTC-USD" / run_id
@@ -806,6 +894,7 @@ def main(argv: list[str] | None = None) -> None:
     _reset_fixture_root()
     hyperliquid()
     binance()
+    bitvavo_standard()
     bitvavo()
     kraken()
     (ROOT / SENTINEL_NAME).write_text(SENTINEL_TEXT, encoding="utf-8")

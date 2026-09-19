@@ -34,6 +34,7 @@ const tapeEnv = {
   ARTIFACT_ROOT: fixtureRoot,
   COCKPIT_DATA1A_RUN_ID: "20260905t180000z-live-retained",
   COCKPIT_DATA1F_RUN_ID: "20260905t180100z-live-retained",
+  COCKPIT_DATA1D_RUN_ID: "20260905t180130z-live-retained",
   COCKPIT_DATA1E_RUN_ID: "20260905t180200z-live-retained",
   COCKPIT_DATA1B_RUN_ID: "20260905t180300z-live-retained",
 };

@@ -67,6 +67,7 @@ describe("GET /api/market-tape", () => {
     vi.stubEnv("TRADING_MODE", "PAPER");
     vi.stubEnv("ARTIFACT_ROOT", fixtureRoot);
     vi.stubEnv("COCKPIT_DATA1A_RUN_ID", "20260905t180000z-live-retained");
+    vi.stubEnv("COCKPIT_DATA1D_RUN_ID", "20260905t180130z-live-retained");
     vi.stubEnv("COCKPIT_DATA1E_RUN_ID", "20260905t180200z-live-retained");
     vi.stubEnv("COCKPIT_DATA1B_RUN_ID", "20260905t180300z-live-retained");
     // Binance restarted: the query names a run that does not exist on disk.
@@ -88,6 +89,8 @@ describe("GET /api/market-tape", () => {
       bindingSource: "query",
       instruments: [],
     });
+    expect(byId.get("bitvavo-std")?.series).toBe("DATA-1D");
+    expect(byId.get("bitvavo-std")?.instruments[0]?.quote).toBe("EUR");
     expect(byId.get("bitvavo")?.instruments[0]?.quote).toBe("EUR");
     expect(byId.get("kraken")?.instruments[0]?.quote).toBe("USD");
 

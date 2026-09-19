@@ -199,17 +199,22 @@ export type CaptureRunCandidate = {
 };
 
 export type VenueCaptureCatalog = {
-  id: "hl" | "binance" | "bitvavo" | "kraken";
-  chip: "HL" | "BINANCE" | "BITVAVO" | "KRAKEN";
-  series: "DATA-1A" | "DATA-1B" | "DATA-1E" | "DATA-1F";
-  query_key: "data1a_run_id" | "data1b_run_id" | "data1e_run_id" | "data1f_run_id";
+  id: "hl" | "binance" | "bitvavo-std" | "bitvavo" | "kraken";
+  chip: "HL" | "BINANCE" | "BV-STD" | "BITVAVO" | "KRAKEN";
+  series: "DATA-1A" | "DATA-1B" | "DATA-1D" | "DATA-1E" | "DATA-1F";
+  query_key:
+    | "data1a_run_id"
+    | "data1b_run_id"
+    | "data1d_run_id"
+    | "data1e_run_id"
+    | "data1f_run_id";
   candidates: CaptureRunCandidate[];
 };
 
 export type CaptureRunProvenanceRow = {
-  id: "hl" | "binance" | "bitvavo" | "kraken";
-  chip: "HL" | "BINANCE" | "BITVAVO" | "KRAKEN";
-  series: "DATA-1A" | "DATA-1B" | "DATA-1E" | "DATA-1F";
+  id: "hl" | "binance" | "bitvavo-std" | "bitvavo" | "kraken";
+  chip: "HL" | "BINANCE" | "BV-STD" | "BITVAVO" | "KRAKEN";
+  series: "DATA-1A" | "DATA-1B" | "DATA-1D" | "DATA-1E" | "DATA-1F";
   run_id: string;
   binding_source: CaptureBindingSource;
   started_at_utc?: string;
@@ -244,9 +249,9 @@ export type Data1ACaptureResponse =
 export type VenueCaptureChipStatus = "RUNNING" | "STALE" | "DEGRADED" | "STOPPED" | "MISSING";
 
 export type VenueCaptureChip = {
-  id: "hl" | "binance" | "bitvavo" | "kraken";
-  chip: "HL" | "BINANCE" | "BITVAVO" | "KRAKEN";
-  series: "DATA-1A" | "DATA-1B" | "DATA-1E" | "DATA-1F";
+  id: "hl" | "binance" | "bitvavo-std" | "bitvavo" | "kraken";
+  chip: "HL" | "BINANCE" | "BV-STD" | "BITVAVO" | "KRAKEN";
+  series: "DATA-1A" | "DATA-1B" | "DATA-1D" | "DATA-1E" | "DATA-1F";
   venue: string;
   product: string;
   path_contract: string;

@@ -18,6 +18,7 @@ export async function GET(request: Request): Promise<NextResponse> {
     const strip = loadVenueCaptureStrip(process.env, findRepoRoot(), {
       data1a_run_id: firstQueryValue(url.searchParams.get("data1a_run_id") ?? undefined),
       data1b_run_id: firstQueryValue(url.searchParams.get("data1b_run_id") ?? undefined),
+      data1d_run_id: firstQueryValue(url.searchParams.get("data1d_run_id") ?? undefined),
       data1e_run_id: firstQueryValue(url.searchParams.get("data1e_run_id") ?? undefined),
       data1f_run_id: firstQueryValue(url.searchParams.get("data1f_run_id") ?? undefined),
     });

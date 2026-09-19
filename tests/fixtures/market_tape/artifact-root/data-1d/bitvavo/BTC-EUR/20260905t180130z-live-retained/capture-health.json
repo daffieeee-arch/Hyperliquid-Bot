@@ -1,0 +1,24 @@
+{
+  "_fixture": "synthetic-reconnect-observability-v1",
+  "gaps": 0,
+  "kind": "capture-health",
+  "limitations": [
+    "Synthetic PAPER fixture; not runtime or profitability evidence."
+  ],
+  "path_contract": "data-1d-bitvavo-btc-eur-v1",
+  "reconnect_clusters": 0,
+  "reconnects": 0,
+  "retained": true,
+  "run_id": "20260905t180130z-live-retained",
+  "schema": "data-1d-retained-capture-health-v1",
+  "status": "OPERATOR_STOP",
+  "transport_profiles": [
+    {
+      "gaps": 0,
+      "reconnect_clusters": 0,
+      "reconnects": 0,
+      "transport_profile": "standard"
+    }
+  ],
+  "twenty_four_seven": false
+}

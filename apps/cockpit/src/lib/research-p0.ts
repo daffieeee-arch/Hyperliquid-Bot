@@ -114,7 +114,13 @@ export function buildResearchIdentity(): ResearchIdentityRow[] {
       product: "BTCUSDT",
       impulse: `${BINANCE_IMPULSE_DEFAULT} default · usdm_agg · spot (explicit switch)`,
     },
-    { id: "bitvavo", venue: "BV", product: "BTC-EUR", impulse: "spot book (+trades)" },
+    {
+      id: "bitvavo-std",
+      venue: "BV-STD",
+      product: "BTC-EUR",
+      impulse: "Standard public L2 / trades / ticker (credentialless)",
+    },
+    { id: "bitvavo", venue: "BV", product: "BTC-EUR", impulse: "MD Pro spot book (+trades)" },
     { id: "kraken", venue: "KR", product: "BTC-USD", impulse: "L2 / L3 / trades separate" },
   ];
 }
@@ -123,9 +129,10 @@ export function buildOverlapClock(strip: VenueCaptureStrip | undefined): Researc
   const rows = strip?.provenance.rows ?? [];
   const hl = rows.find((row) => row.id === "hl")?.run_id;
   const bn = rows.find((row) => row.id === "binance")?.run_id;
+  const bvStd = rows.find((row) => row.id === "bitvavo-std")?.run_id;
   const bv = rows.find((row) => row.id === "bitvavo")?.run_id;
   const kr = rows.find((row) => row.id === "kraken")?.run_id;
-  const shared = [hl, bv, kr].filter((id) => id !== undefined);
+  const shared = [hl, bvStd, bv, kr].filter((id) => id !== undefined);
   const hlBvKr =
     shared.length === 0
       ? RESEARCH_UNAVAILABLE
@@ -161,6 +168,9 @@ const RUN_ID_FIELDS: Record<string, SummaryVenue> = {
   hyperliquid_run_id: "hl",
   bn_run_id: "binance",
   binance_run_id: "binance",
+  bv_std_run_id: "bitvavo-std",
+  bitvavo_std_run_id: "bitvavo-std",
+  bitvavo_standard_run_id: "bitvavo-std",
   bv_run_id: "bitvavo",
   bitvavo_run_id: "bitvavo",
   kr_run_id: "kraken",
@@ -173,6 +183,10 @@ const VENUE_KEYS: Record<string, SummaryVenue> = {
   hyperliquid: "hl",
   bn: "binance",
   binance: "binance",
+  "bv-std": "bitvavo-std",
+  bv_std: "bitvavo-std",
+  bitvavo_std: "bitvavo-std",
+  bitvavo_standard: "bitvavo-std",
   bv: "bitvavo",
   bitvavo: "bitvavo",
   kr: "kraken",
@@ -184,6 +198,9 @@ const PRODUCT_FIELDS: Record<string, SummaryVenue> = {
   hyperliquid_product: "hl",
   bn_product: "binance",
   binance_product: "binance",
+  bv_std_product: "bitvavo-std",
+  bitvavo_std_product: "bitvavo-std",
+  bitvavo_standard_product: "bitvavo-std",
   bv_product: "bitvavo",
   bitvavo_product: "bitvavo",
   kr_product: "kraken",

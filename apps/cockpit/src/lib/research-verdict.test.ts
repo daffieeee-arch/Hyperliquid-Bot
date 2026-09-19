@@ -38,21 +38,32 @@ function chip(
   const products: Record<VenueCaptureChip["id"], string> = {
     hl: "BTC-PERP",
     binance: "BTCUSDT",
+    "bitvavo-std": "BTC-EUR",
     bitvavo: "BTC-EUR",
     kraken: "BTC-USD",
   };
   return {
     id,
     chip:
-      id === "hl" ? "HL" : id === "binance" ? "BINANCE" : id === "bitvavo" ? "BITVAVO" : "KRAKEN",
+      id === "hl"
+        ? "HL"
+        : id === "binance"
+          ? "BINANCE"
+          : id === "bitvavo-std"
+            ? "BV-STD"
+            : id === "bitvavo"
+              ? "BITVAVO"
+              : "KRAKEN",
     series:
       id === "hl"
         ? "DATA-1A"
         : id === "binance"
           ? "DATA-1F"
-          : id === "bitvavo"
-            ? "DATA-1E"
-            : "DATA-1B",
+          : id === "bitvavo-std"
+            ? "DATA-1D"
+            : id === "bitvavo"
+              ? "DATA-1E"
+              : "DATA-1B",
     venue: id,
     product: products[id],
     path_contract: `${id}-contract`,

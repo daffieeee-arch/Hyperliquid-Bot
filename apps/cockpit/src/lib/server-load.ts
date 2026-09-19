@@ -29,6 +29,7 @@ export function cockpitQuery(params: CockpitSearchParams): VenueCaptureQuery {
   return {
     data1a_run_id: firstQueryValue(params.data1a_run_id),
     data1b_run_id: firstQueryValue(params.data1b_run_id),
+    data1d_run_id: firstQueryValue(params.data1d_run_id),
     data1e_run_id: firstQueryValue(params.data1e_run_id),
     data1f_run_id: firstQueryValue(params.data1f_run_id),
   };

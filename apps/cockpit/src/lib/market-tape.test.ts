@@ -27,6 +27,7 @@ const repoRoot = resolve(fileURLToPath(new URL("../../../../", import.meta.url))
 const fixtureRoot = join(repoRoot, "tests", "fixtures", "market_tape", "artifact-root");
 const HL_RUN = "20260905t180000z-live-retained";
 const BN_RUN = "20260905t180100z-live-retained";
+const BV_STD_RUN = "20260905t180130z-live-retained";
 const BV_RUN = "20260905t180200z-live-retained";
 const KR_RUN = "20260905t180300z-live-retained";
 const observedAt = "2026-09-05T18:01:00.000Z";
@@ -36,6 +37,7 @@ const env = {
   ARTIFACT_ROOT: fixtureRoot,
   COCKPIT_DATA1A_RUN_ID: HL_RUN,
   COCKPIT_DATA1F_RUN_ID: BN_RUN,
+  COCKPIT_DATA1D_RUN_ID: BV_STD_RUN,
   COCKPIT_DATA1E_RUN_ID: BV_RUN,
   COCKPIT_DATA1B_RUN_ID: KR_RUN,
 };
@@ -391,8 +393,8 @@ describe("market tape decoding", () => {
 describe("market tape reader", () => {
   it("reads published DuckDB/ZSTD parts for every venue from the fixture root", async () => {
     const strip = await loadMarketTapeStrip(env, repoRoot, {}, () => observedAt);
-    expect(strip.venues.map((venue) => venue.status)).toEqual(["ok", "ok", "ok", "ok"]);
-    expect(strip.cache.partsParsedThisCall).toBe(5);
+    expect(strip.venues.map((venue) => venue.status)).toEqual(["ok", "ok", "ok", "ok", "ok"]);
+    expect(strip.cache.partsParsedThisCall).toBe(6);
 
     const hl = strip.venues[0];
     expect(hl?.runId).toBe(HL_RUN);
@@ -427,7 +429,23 @@ describe("market tape reader", () => {
       fundingRate: "0.00010000",
     });
 
-    const bv = strip.venues[2];
+    const bvStd = strip.venues[2];
+    expect(bvStd?.id).toBe("bitvavo-std");
+    expect(bvStd?.series).toBe("DATA-1D");
+    expect(bvStd?.instruments[0]).toMatchObject({
+      product: "BTC-EUR",
+      quote: "EUR",
+      kind: "spot",
+    });
+    expect(bvStd?.instruments[0]?.lastTrade).toMatchObject({ price: "93750.0", side: "buy" });
+    expect(bvStd?.instruments[0]?.lastBbo).toMatchObject({
+      bid: "93740.0",
+      ask: "93755.0",
+    });
+
+    const bv = strip.venues[3];
+    expect(bv?.id).toBe("bitvavo");
+    expect(bv?.series).toBe("DATA-1E");
     expect(bv?.instruments[0]).toMatchObject({ product: "BTC-EUR", quote: "EUR", kind: "spot" });
     // Partial ticker update replaced only the ask; the bid carried over.
     expect(bv?.instruments[0]?.lastBbo).toMatchObject({
@@ -437,7 +455,7 @@ describe("market tape reader", () => {
     });
     expect(bv?.instruments[0]?.lastTrade).toMatchObject({ price: "93810.5", side: "sell" });
 
-    const kr = strip.venues[3];
+    const kr = strip.venues[4];
     expect(kr?.instruments[0]).toMatchObject({ product: "BTC/USD", quote: "USD", kind: "spot" });
     // Snapshot best ask 109452 was deleted by the update; next best is 109453; bid 109451 arrived.
     expect(kr?.instruments[0]?.lastBbo).toMatchObject({

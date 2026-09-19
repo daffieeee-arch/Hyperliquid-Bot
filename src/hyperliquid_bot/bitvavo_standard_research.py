@@ -1166,7 +1166,8 @@ def _normalize_candles(
     *,
     expected_interval: str,
 ) -> dict[str, object]:
-    if document.get("event") != "candles":
+    # Docs show event "candles"; production Standard WS has also sent singular "candle".
+    if document.get("event") not in {"candle", "candles"}:
         raise BitvavoDataIntegrityError("Bitvavo candles event validation failed.")
     if document.get("market") != BITVAVO_RESEARCH_PRODUCT:
         raise BitvavoDataIntegrityError("Bitvavo candles market validation failed.")
@@ -1178,19 +1179,7 @@ def _normalize_candles(
         raise BitvavoDataIntegrityError("Bitvavo candles payload schema validation failed.")
     candles: list[dict[str, object]] = []
     for entry in cast(list[object], raw_candles):
-        if type(entry) is not list or len(entry) != 6:
-            raise BitvavoDataIntegrityError("Bitvavo candle row schema validation failed.")
-        row = cast(list[object], entry)
-        candles.append(
-            {
-                "timestamp_ms": _candle_timestamp_text(row[0]),
-                "open": _decimal_value(row[1], allow_zero=False),
-                "high": _decimal_value(row[2], allow_zero=False),
-                "low": _decimal_value(row[3], allow_zero=False),
-                "close": _decimal_value(row[4], allow_zero=False),
-                "volume": _decimal_value(row[5], allow_zero=True),
-            }
-        )
+        candles.append(_normalize_candle_row(entry))
     return {
         "event": "normalized_candles_frame",
         "source_channel": "candles",
@@ -1199,6 +1188,33 @@ def _normalize_candles(
         "interval": interval,
         "candles": candles,
     }
+
+
+def _normalize_candle_row(entry: object) -> dict[str, object]:
+    """Normalize one candle row from array wire form or object form."""
+    if type(entry) is list:
+        if len(entry) != 6:
+            raise BitvavoDataIntegrityError("Bitvavo candle row schema validation failed.")
+        cells = cast(list[object], entry)
+        return {
+            "timestamp_ms": _candle_timestamp_text(cells[0]),
+            "open": _decimal_value(cells[1], allow_zero=False),
+            "high": _decimal_value(cells[2], allow_zero=False),
+            "low": _decimal_value(cells[3], allow_zero=False),
+            "close": _decimal_value(cells[4], allow_zero=False),
+            "volume": _decimal_value(cells[5], allow_zero=True),
+        }
+    if type(entry) is dict:
+        fields = cast(dict[str, object], entry)
+        return {
+            "timestamp_ms": _candle_timestamp_text(fields.get("timestamp")),
+            "open": _decimal_value(fields.get("open"), allow_zero=False),
+            "high": _decimal_value(fields.get("high"), allow_zero=False),
+            "low": _decimal_value(fields.get("low"), allow_zero=False),
+            "close": _decimal_value(fields.get("close"), allow_zero=False),
+            "volume": _decimal_value(fields.get("volume"), allow_zero=True),
+        }
+    raise BitvavoDataIntegrityError("Bitvavo candle row schema validation failed.")
 
 
 def _candle_timestamp_text(value: object) -> str:
@@ -1279,6 +1295,8 @@ def _classify_document(document: dict[str, object]) -> str:
         "trade": "trades",
         "ticker": "ticker",
         "book": "book",
+        # Docs: "candles"; production Standard WS has also emitted singular "candle".
+        "candle": "candles",
         "candles": "candles",
     }
     if type(event) is str and event in channel_by_event:

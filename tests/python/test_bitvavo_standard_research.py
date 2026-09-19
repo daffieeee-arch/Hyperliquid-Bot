@@ -948,7 +948,7 @@ def test_retained_duration_raises_the_historical_smoke_cap() -> None:
 
 
 def test_candles_subscription_ack_and_normalize() -> None:
-    from hyperliquid_bot.bitvavo_standard_research import _normalize_candles
+    from hyperliquid_bot.bitvavo_standard_research import _classify_document, _normalize_candles
 
     ack = _document(
         json.dumps(
@@ -978,12 +978,67 @@ def test_candles_subscription_ack_and_normalize() -> None:
             separators=(",", ":"),
         )
     )
+    assert _classify_document(frame) == "candles"
     normalized = _normalize_candles(frame, 7, expected_interval="1m")
     assert normalized["source_channel"] == "candles"
     assert normalized["interval"] == "1m"
     candles = cast(list[dict[str, object]], normalized["candles"])
     assert candles[0]["open"] == "4999"
     assert candles[0]["volume"] == "0.45"
+
+    object_row_frame = _document(
+        json.dumps(
+            {
+                "event": "candles",
+                "market": "BTC-EUR",
+                "interval": "1m",
+                "candle": [
+                    {
+                        "timestamp": "1538784000000",
+                        "open": "4999",
+                        "high": "5012",
+                        "low": "4999",
+                        "close": "5012",
+                        "volume": "0.45",
+                    }
+                ],
+            },
+            separators=(",", ":"),
+        )
+    )
+    object_normalized = _normalize_candles(object_row_frame, 8, expected_interval="1m")
+    object_candles = cast(list[dict[str, object]], object_normalized["candles"])
+    assert object_candles[0]["timestamp_ms"] == "1538784000000"
+    assert object_candles[0]["close"] == "5012"
+
+
+def test_production_singular_candle_event_array_rows_classify_and_normalize() -> None:
+    """Regression: Phase A std-candles run failed on singular event name.
+
+    Exact inbound bytes from
+    ``20260919t001418z-vps-phase-a-std-candles`` raw ordinal 695.
+    Docs advertise ``event:"candles"``; Bitvavo production sent ``event:"candle"``.
+    """
+    from hyperliquid_bot.bitvavo_standard_research import _classify_document, _normalize_candles
+
+    production_bytes = (
+        b'{"event":"candle","market":"BTC-EUR","interval":"1m",'
+        b'"candle":[[1789776840000,"70380","70389","70380","70389","0.00077932"]]}'
+    )
+    document = _document(production_bytes)
+    assert document["event"] == "candle"
+    assert _classify_document(document) == "candles"
+    normalized = _normalize_candles(document, 695, expected_interval="1m")
+    assert normalized["source_channel"] == "candles"
+    assert normalized["interval"] == "1m"
+    assert normalized["raw_message_ordinal"] == 695
+    candles = cast(list[dict[str, object]], normalized["candles"])
+    assert candles[0]["timestamp_ms"] == "1789776840000"
+    assert candles[0]["open"] == "70380"
+    assert candles[0]["high"] == "70389"
+    assert candles[0]["low"] == "70380"
+    assert candles[0]["close"] == "70389"
+    assert candles[0]["volume"] == "0.00077932"
 
 
 def test_data1d_capture_claim_never_uses_pro_paths(tmp_path: Path) -> None:

@@ -3,7 +3,8 @@ import {
   STALE_MTIME_REASON,
   isLastPartFresh,
 } from "./capture-freshness";
-import { isTerrapcActiveRetain, type TerrapcVenueId } from "./terrapc-defaults";
+import { isTerrapcActiveRetain } from "./terrapc-defaults";
+import type { VenueCaptureId } from "./paths";
 import type { CaptureBindingSource, CaptureRunCandidate, VenueCaptureChipStatus } from "./types";
 
 export type SignedTone = "up" | "down" | "flat" | "unknown";
@@ -197,7 +198,7 @@ export function presentLastPartMtime(mtimeUtc: string | undefined): string {
 }
 
 export function captureRunOptionLabel(
-  venueId: TerrapcVenueId,
+  venueId: VenueCaptureId,
   candidate: CaptureRunCandidate,
 ): string {
   const tags: string[] = [];
@@ -206,7 +207,10 @@ export function captureRunOptionLabel(
   } else if (candidate.has_health) {
     tags.push("stopped");
   }
-  if (isTerrapcActiveRetain(venueId, candidate.run_id)) {
+  if (
+    (venueId === "hl" || venueId === "binance" || venueId === "bitvavo" || venueId === "kraken") &&
+    isTerrapcActiveRetain(venueId, candidate.run_id)
+  ) {
     tags.push("TerraPC");
   }
   return tags.length === 0 ? candidate.run_id : `${candidate.run_id} · ${tags.join(" · ")}`;

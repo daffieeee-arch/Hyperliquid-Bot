@@ -12,6 +12,7 @@ import {
   COURSE1_PATH_CONTRACT_ID,
   DATA1A_PATH_CONTRACT_ID,
   DATA1B_PATH_CONTRACT_ID,
+  DATA1D_PATH_CONTRACT_ID,
   DATA1E_PATH_CONTRACT_ID,
   DATA1F_PATH_CONTRACT_ID,
   VENUE_CAPTURE_CONTRACTS,
@@ -210,6 +211,15 @@ describe("DATA-1A path contract", () => {
     );
     expect(
       venueCockpitRunDir(
+        VENUE_CAPTURE_CONTRACTS["bitvavo-std"],
+        "/home/chupa/Hyperliquid Project/data-capture",
+        "20260904t000000z-live-retained",
+      ),
+    ).toBe(
+      "/home/chupa/Hyperliquid Project/data-capture/data-1d/bitvavo/BTC-EUR/20260904t000000z-live-retained",
+    );
+    expect(
+      venueCockpitRunDir(
         VENUE_CAPTURE_CONTRACTS.bitvavo,
         "/home/chupa/Hyperliquid Project/data-capture",
         "20260904t000000z-live-retained",
@@ -227,9 +237,16 @@ describe("DATA-1A path contract", () => {
       "/home/chupa/Hyperliquid Project/data-capture/data-1b/kraken/BTC-USD/20260904t000000z-live-retained",
     );
     expect(DATA1F_PATH_CONTRACT_ID).toBe("data-1f-binance-btcusdt-v1");
+    expect(DATA1D_PATH_CONTRACT_ID).toBe("data-1d-bitvavo-btc-eur-v1");
     expect(DATA1E_PATH_CONTRACT_ID).toBe("data-1e-bitvavo-btc-eur-v1");
     expect(DATA1B_PATH_CONTRACT_ID).toBe("data-1b-kraken-btc-usd-v1");
-    expect(VENUE_CAPTURE_STRIP_ORDER).toEqual(["hl", "binance", "bitvavo", "kraken"]);
+    expect(VENUE_CAPTURE_STRIP_ORDER).toEqual([
+      "hl",
+      "binance",
+      "bitvavo-std",
+      "bitvavo",
+      "kraken",
+    ]);
   });
 
   it("resolves a Binance path-contract run and fails closed without a run_id", () => {

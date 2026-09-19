@@ -38,12 +38,21 @@ const panelReady = {
 describe("research P0", () => {
   it("keeps instrument identity explicit and never blends Spot with USDM", () => {
     const identity = buildResearchIdentity();
-    expect(identity.map((row) => row.id)).toEqual(["hl", "binance", "bitvavo", "kraken"]);
+    expect(identity.map((row) => row.id)).toEqual([
+      "hl",
+      "binance",
+      "bitvavo-std",
+      "bitvavo",
+      "kraken",
+    ]);
     expect(identity[0]?.product).toBe("BTC-PERP");
     expect(identity[1]?.impulse).toContain(BINANCE_IMPULSE_DEFAULT);
     expect(identity[1]?.impulse).toContain("explicit switch");
     expect(identity[2]?.product).toBe("BTC-EUR");
-    expect(identity[3]?.product).toBe("BTC-USD");
+    expect(identity[2]?.venue).toBe("BV-STD");
+    expect(identity[3]?.product).toBe("BTC-EUR");
+    expect(identity[3]?.venue).toBe("BV");
+    expect(identity[4]?.product).toBe("BTC-USD");
     expect(BINANCE_IDENTITY_WARNING).toMatch(/Never blend Spot and USDM/);
     expect(H1_LEADLAG_NOTE).toMatch(/promotion_decision=forbidden/);
   });

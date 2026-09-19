@@ -21,6 +21,10 @@ export const DATA1B_PATH_CONTRACT_ID = "data-1b-kraken-btc-usd-v1";
 export const DATA1B_CLAIM_SCHEMA = "data-1b-retained-capture-claim-v1";
 export const DATA1B_HEALTH_SCHEMA = "data-1b-retained-capture-health-v1";
 export const DATA1B_RELATIVE_PREFIX = ["data-1b", "kraken", "BTC-USD"] as const;
+export const DATA1D_PATH_CONTRACT_ID = "data-1d-bitvavo-btc-eur-v1";
+export const DATA1D_CLAIM_SCHEMA = "data-1d-retained-capture-claim-v1";
+export const DATA1D_HEALTH_SCHEMA = "data-1d-retained-capture-health-v1";
+export const DATA1D_RELATIVE_PREFIX = ["data-1d", "bitvavo", "BTC-EUR"] as const;
 export const DATA1E_PATH_CONTRACT_ID = "data-1e-bitvavo-btc-eur-v1";
 export const DATA1E_CLAIM_SCHEMA = "data-1e-retained-capture-claim-v1";
 export const DATA1E_HEALTH_SCHEMA = "data-1e-retained-capture-health-v1";
@@ -45,15 +49,16 @@ export const DATA1A_LIVE_EVIDENCE_RELATIVE_DIR = join(
   "20260904t001700z-live-retained",
 );
 
-export type VenueCaptureId = "hl" | "binance" | "bitvavo" | "kraken";
-export type VenueCaptureChipLabel = "HL" | "BINANCE" | "BITVAVO" | "KRAKEN";
-export type VenueCaptureSeries = "DATA-1A" | "DATA-1B" | "DATA-1E" | "DATA-1F";
+export type VenueCaptureId = "hl" | "binance" | "bitvavo-std" | "bitvavo" | "kraken";
+export type VenueCaptureChipLabel = "HL" | "BINANCE" | "BV-STD" | "BITVAVO" | "KRAKEN";
+export type VenueCaptureSeries = "DATA-1A" | "DATA-1B" | "DATA-1D" | "DATA-1E" | "DATA-1F";
 export type CaptureRunSource =
   "data1a-run-dir" | "venue-run-dir" | "path-contract" | "auto-detect" | "default-fixture";
 
 export type VenueCaptureQuery = {
   data1a_run_id?: string;
   data1b_run_id?: string;
+  data1d_run_id?: string;
   data1e_run_id?: string;
   data1f_run_id?: string;
 };
@@ -105,6 +110,21 @@ export const VENUE_CAPTURE_CONTRACTS: Record<VenueCaptureId, VenueCaptureContrac
     envRunDirKey: "COCKPIT_DATA1F_RUN_DIR",
     refuseLabel: "DATA-1F",
   },
+  "bitvavo-std": {
+    id: "bitvavo-std",
+    chip: "BV-STD",
+    series: "DATA-1D",
+    venue: "bitvavo",
+    product: "BTC-EUR",
+    pathContractId: DATA1D_PATH_CONTRACT_ID,
+    claimSchema: DATA1D_CLAIM_SCHEMA,
+    healthSchema: DATA1D_HEALTH_SCHEMA,
+    relativePrefix: DATA1D_RELATIVE_PREFIX,
+    queryRunIdKey: "data1d_run_id",
+    envRunIdKeys: ["COCKPIT_DATA1D_RUN_ID", "DATA1D_RUN_ID"],
+    envRunDirKey: "COCKPIT_DATA1D_RUN_DIR",
+    refuseLabel: "DATA-1D",
+  },
   bitvavo: {
     id: "bitvavo",
     chip: "BITVAVO",
@@ -140,6 +160,7 @@ export const VENUE_CAPTURE_CONTRACTS: Record<VenueCaptureId, VenueCaptureContrac
 export const VENUE_CAPTURE_STRIP_ORDER: readonly VenueCaptureId[] = [
   "hl",
   "binance",
+  "bitvavo-std",
   "bitvavo",
   "kraken",
 ];

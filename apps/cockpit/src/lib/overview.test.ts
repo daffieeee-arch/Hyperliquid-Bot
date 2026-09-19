@@ -55,7 +55,7 @@ describe("cockpit navigation", () => {
 describe("overview view", () => {
   it("summarises capture, research and PAPER from the default fixtures", () => {
     const { view } = fixtureOverview();
-    expect(view.capture.bound).toBe(4);
+    expect(view.capture.bound).toBe(5);
     expect(view.capture.error).toBeUndefined();
     expect(view.paper.runId).toBe("20260904t001800z-live-paper");
     expect(view.paper.lastOutcome).toBe("ACCEPT");

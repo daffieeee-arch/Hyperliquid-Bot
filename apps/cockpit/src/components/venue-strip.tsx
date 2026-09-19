@@ -31,7 +31,7 @@ export function VenueStrip({
   }
 
   return (
-    <div className="grid grid-sm-2 grid-lg-4" style={{ gap: "0.6rem" }}>
+    <div className="grid grid-sm-2 grid-lg-5" style={{ gap: "0.6rem" }}>
       {strip.strip.venues.map((venue) => {
         const state = captureChipDataState(venue.status);
         const tone = dataStateTone(state);

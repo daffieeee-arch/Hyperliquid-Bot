@@ -46,7 +46,7 @@ export function RunPicker({
   }
 
   return (
-    <form className="grid grid-sm-2 grid-lg-4" aria-label="Capture run picker">
+    <form className="grid grid-sm-2 grid-lg-5" aria-label="Capture run picker">
       {catalog.map((entry) => {
         const bound = venues.find((venue) => venue.id === entry.id);
         const selected = selectedRunId(entry, query, bound);

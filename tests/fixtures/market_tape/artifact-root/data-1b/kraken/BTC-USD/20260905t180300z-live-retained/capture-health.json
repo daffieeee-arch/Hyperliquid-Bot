@@ -8,7 +8,9 @@
   "exception_class": "ConnectionClosedError",
   "gaps": 6,
   "kind": "capture-health",
-  "limitations": ["Synthetic PAPER fixture; not runtime or profitability evidence."],
+  "limitations": [
+    "Synthetic PAPER fixture; not runtime or profitability evidence."
+  ],
   "path_contract": "data-1b-kraken-btc-usd-v1",
   "reconnect_clusters": 3,
   "reconnects": 6,

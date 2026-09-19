@@ -9,6 +9,7 @@ const NO_STORE: RequestInit = {
 export const VENUE_CAPTURE_QUERY_KEYS: readonly (keyof VenueCaptureQuery)[] = [
   "data1a_run_id",
   "data1b_run_id",
+  "data1d_run_id",
   "data1e_run_id",
   "data1f_run_id",
 ];

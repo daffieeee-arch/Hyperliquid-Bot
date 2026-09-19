@@ -9,6 +9,8 @@ import {
   CANONICAL_DATA1A_FIXTURE_RUN_ID,
   DATA1B_CLAIM_SCHEMA,
   DATA1B_PATH_CONTRACT_ID,
+  DATA1D_CLAIM_SCHEMA,
+  DATA1D_PATH_CONTRACT_ID,
   DATA1E_CLAIM_SCHEMA,
   DATA1E_PATH_CONTRACT_ID,
   DATA1F_CLAIM_SCHEMA,
@@ -56,6 +58,7 @@ describe("multi-venue capture-health strip", () => {
         ARTIFACT_ROOT: reconnectFixtureRoot,
         DATA1A_RUN_ID: "20260905t180000z-live-retained",
         DATA1F_RUN_ID: "20260905t180100z-live-retained",
+        DATA1D_RUN_ID: "20260905t180130z-live-retained",
         DATA1E_RUN_ID: "20260905t180200z-live-retained",
         DATA1B_RUN_ID: "20260905t180300z-live-retained",
       },
@@ -92,7 +95,7 @@ describe("multi-venue capture-health strip", () => {
   it("shows the DATA-1A fixture as STOPPED and fails closed for missing venues", () => {
     const strip = loadVenueCaptureStrip({ TRADING_MODE: "PAPER" }, repoRoot, {}, () => observedAt);
     expect(strip.venues.map((venue) => venue.id)).toEqual([...VENUE_CAPTURE_STRIP_ORDER]);
-    const [hl, binance, bitvavo, kraken] = strip.venues;
+    const [hl, binance, bitvavoStd, bitvavo, kraken] = strip.venues;
     expect(hl?.chip).toBe("HL");
     expect(hl?.status).toBe("STOPPED");
     expect(hl?.run_id).toBe(CANONICAL_DATA1A_FIXTURE_RUN_ID);
@@ -102,9 +105,11 @@ describe("multi-venue capture-health strip", () => {
     expect(hl?.status_detail).toBe("COMPLETED");
     expect(strip.fresh_max_s).toBe(180);
     expect(binance?.status).toBe("MISSING");
+    expect(bitvavoStd?.status).toBe("MISSING");
     expect(bitvavo?.status).toBe("MISSING");
     expect(kraken?.status).toBe("MISSING");
     expect(binance?.part_count).toBeUndefined();
+    expect(bitvavoStd?.chip).toBe("BV-STD");
     expect(bitvavo?.last_part_age).toBe("n/a");
     expect(kraken?.error).toMatch(/not pointed|run_id|fail closed/i);
   });
@@ -294,10 +299,11 @@ describe("multi-venue capture-health strip", () => {
     expect(hl?.reconnects).toBeUndefined();
   });
 
-  it("loads all four path-contract venues without inventing a missing claim", () => {
-    const artifactRoot = mkdtempSync(join(tmpdir(), "venue-four-"));
+  it("loads all five path-contract venues without inventing a missing claim", () => {
+    const artifactRoot = mkdtempSync(join(tmpdir(), "venue-five-"));
     const hlId = "hl-run";
     const bnId = "bn-run";
+    const bvStdId = "bv-std-run";
     const bvId = "bv-run";
     const krId = "kr-run";
     writeClaim(
@@ -322,6 +328,12 @@ describe("multi-venue capture-health strip", () => {
       twenty_four_seven: false,
     });
     writeClaim(
+      join(artifactRoot, "data-1d", "bitvavo", "BTC-EUR", bvStdId),
+      DATA1D_CLAIM_SCHEMA,
+      DATA1D_PATH_CONTRACT_ID,
+      bvStdId,
+    );
+    writeClaim(
       join(artifactRoot, "data-1e", "bitvavo", "BTC-EUR", bvId),
       DATA1E_CLAIM_SCHEMA,
       DATA1E_PATH_CONTRACT_ID,
@@ -340,6 +352,7 @@ describe("multi-venue capture-health strip", () => {
         ARTIFACT_ROOT: artifactRoot,
         DATA1A_RUN_ID: hlId,
         DATA1F_RUN_ID: bnId,
+        DATA1D_RUN_ID: bvStdId,
         DATA1E_RUN_ID: bvId,
         DATA1B_RUN_ID: krId,
       },
@@ -352,8 +365,13 @@ describe("multi-venue capture-health strip", () => {
       "STOPPED",
       "DEGRADED",
       "DEGRADED",
+      "DEGRADED",
     ]);
     expect(strip.venues[1]?.status_detail).toBe("COMPLETED");
+    expect(strip.venues[2]?.id).toBe("bitvavo-std");
+    expect(strip.venues[2]?.series).toBe("DATA-1D");
+    expect(strip.venues[3]?.id).toBe("bitvavo");
+    expect(strip.venues[3]?.series).toBe("DATA-1E");
     expect(strip.venues.every((venue) => venue.part_count === undefined)).toBe(true);
   });
 

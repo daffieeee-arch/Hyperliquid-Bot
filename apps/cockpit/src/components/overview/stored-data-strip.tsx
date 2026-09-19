@@ -59,7 +59,7 @@ export function StoredDataStrip({
   }
   const summaries = venueTapeSummaries(tape, strip);
   return (
-    <div className="grid grid-sm-2 grid-lg-4" style={{ gap: "0.6rem" }}>
+    <div className="grid grid-sm-2 grid-lg-5" style={{ gap: "0.6rem" }}>
       {summaries.map((summary) => (
         <div
           key={summary.tape.id}

@@ -1048,6 +1048,7 @@ def test_data1d_capture_claim_never_uses_pro_paths(tmp_path: Path) -> None:
     paths = data1d_run_paths(tmp_path, "sample-run")
     claim = data1d_capture_claim(run_id="sample-run", duration_seconds=259200, paths=paths)
     assert claim["schema"] == "data-1d-retained-capture-claim-v1"
+    assert claim["state"] == "STARTED_FAIL_CLOSED"
     assert claim["path_contract"] == "data-1d-bitvavo-btc-eur-v1"
     assert claim["retained"] is True
     assert claim["mdpro_fallback"] is False

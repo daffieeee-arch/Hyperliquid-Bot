@@ -469,4 +469,78 @@ describe("multi-venue capture-health strip", () => {
       ),
     ).toThrow(/COCKPIT_CAPTURE_FRESH_MAX_S/);
   });
+
+  it("soft-loads DATA-1D claims that omit state when fresh parquet parts exist", () => {
+    const artifactRoot = mkdtempSync(join(tmpdir(), "venue-std-state-"));
+    const runId = "20260919t003959z-vps-phase-a-std-candles";
+    const runDir = join(artifactRoot, "data-1d", "bitvavo", "BTC-EUR", runId);
+    mkdirSync(join(runDir, "raw"), { recursive: true });
+    writeJson(join(runDir, "capture-claim.json"), {
+      schema: DATA1D_CLAIM_SCHEMA,
+      path_contract: DATA1D_PATH_CONTRACT_ID,
+      run_id: runId,
+      // Intentionally omit state — production Standard retain before the writer fix.
+      retained: true,
+      twenty_four_seven: false,
+      credentialless: true,
+      signing: false,
+      venue: "bitvavo",
+      product: "BTC-EUR",
+    });
+    const part = join(runDir, "raw", "part-000001-000000000001-000000000010-abc.parquet");
+    writeFileSync(part, "std-part", { encoding: "utf8" });
+    utimesSync(part, new Date("2026-09-04T13:49:33Z"), new Date("2026-09-04T13:49:33Z"));
+
+    const strip = loadVenueCaptureStrip(
+      {
+        TRADING_MODE: "PAPER",
+        ARTIFACT_ROOT: artifactRoot,
+        DATA1D_RUN_ID: runId,
+      },
+      repoRoot,
+      {},
+      () => observedAt,
+    );
+    const std = strip.venues.find((venue) => venue.id === "bitvavo-std");
+    expect(std).toMatchObject({
+      status: "RUNNING",
+      series: "DATA-1D",
+      chip: "BV-STD",
+      run_id: runId,
+      live: true,
+      part_count: 1,
+    });
+    expect(std?.status_detail).toMatch(/health JSON pending/i);
+    expect(std?.error).toBe("capture-health.json is not written yet");
+  });
+
+  it("still fails closed when DATA-1D omits state and has no fresh parquet parts", () => {
+    const artifactRoot = mkdtempSync(join(tmpdir(), "venue-std-nostate-"));
+    const runId = "std-no-parts";
+    const runDir = join(artifactRoot, "data-1d", "bitvavo", "BTC-EUR", runId);
+    mkdirSync(runDir, { recursive: true });
+    writeJson(join(runDir, "capture-claim.json"), {
+      schema: DATA1D_CLAIM_SCHEMA,
+      path_contract: DATA1D_PATH_CONTRACT_ID,
+      run_id: runId,
+      retained: true,
+      twenty_four_seven: false,
+      signing: false,
+    });
+
+    const strip = loadVenueCaptureStrip(
+      {
+        TRADING_MODE: "PAPER",
+        ARTIFACT_ROOT: artifactRoot,
+        DATA1D_RUN_ID: runId,
+      },
+      repoRoot,
+      {},
+      () => observedAt,
+    );
+    const std = strip.venues.find((venue) => venue.id === "bitvavo-std");
+    expect(std?.status).toBe("MISSING");
+    expect(std?.error).toMatch(/missing non-empty string field state/);
+    expect(std?.part_count).toBeUndefined();
+  });
 });

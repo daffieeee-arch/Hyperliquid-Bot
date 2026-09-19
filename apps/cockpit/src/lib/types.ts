@@ -203,11 +203,7 @@ export type VenueCaptureCatalog = {
   chip: "HL" | "BINANCE" | "BV-STD" | "BITVAVO" | "KRAKEN";
   series: "DATA-1A" | "DATA-1B" | "DATA-1D" | "DATA-1E" | "DATA-1F";
   query_key:
-    | "data1a_run_id"
-    | "data1b_run_id"
-    | "data1d_run_id"
-    | "data1e_run_id"
-    | "data1f_run_id";
+    "data1a_run_id" | "data1b_run_id" | "data1d_run_id" | "data1e_run_id" | "data1f_run_id";
   candidates: CaptureRunCandidate[];
 };
 

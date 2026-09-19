@@ -208,10 +208,7 @@ export function captureRunOptionLabel(
     tags.push("stopped");
   }
   if (
-    (venueId === "hl" ||
-      venueId === "binance" ||
-      venueId === "bitvavo" ||
-      venueId === "kraken") &&
+    (venueId === "hl" || venueId === "binance" || venueId === "bitvavo" || venueId === "kraken") &&
     isTerrapcActiveRetain(venueId, candidate.run_id)
   ) {
     tags.push("TerraPC");

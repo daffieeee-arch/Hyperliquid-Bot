@@ -337,7 +337,10 @@ Deliverables:
 - event-driven backtest framework;
 - experiment registry;
 - Bitvavo public-data adapter for spot research;
-- Kraken public/MCP paper integration when it serves a concrete experiment.
+- Kraken public/MCP paper integration when it serves a concrete experiment;
+- offline hist warehouse on VPS `chupa` (`~/Hyperliquid Project/hist-archives/`)
+  for Vision BTCUSDT + Kraken OHLCVT research SQL — sibling of live retain, not
+  a substitute ([hist-archives-research-warehouse.md](runbooks/hist-archives-research-warehouse.md)).
 
 Possible parallel status:
 

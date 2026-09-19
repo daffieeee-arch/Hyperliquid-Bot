@@ -1562,6 +1562,35 @@ Official sources checked for this slice:
 - https://polymarket.com/tos
 - https://institutional.polymarket.com/
 
+## Offline historical research warehouse (VPS)
+
+Free-data offline archives for long-horizon research live on the Netcup VPS
+(`chupa`) as a **sibling** of live retain — not inside `data-capture/`:
+
+```text
+~/Hyperliquid Project/hist-archives/
+```
+
+Current contents (operator-managed on disk; **not** committed to git):
+
+- **Binance Vision** BTCUSDT — spot + USD-M monthly aggTrades, 1m/1h klines, and
+  UM funding ZIPs from [data.binance.vision](https://data.binance.vision/),
+  converted to ZSTD Parquet;
+- **Kraken OHLCVT** XBTUSD multi-interval CSVs from Kraken's downloadable
+  historical OHLCVT archive
+  ([support article](https://support.kraken.com/articles/360047124832-downloadable-historical-ohlcvt-open-high-low-close-volume-trades-data)),
+  converted to Parquet;
+- a DuckDB catalog (`research.duckdb`) with `hist_*` views over those Parquets.
+
+This warehouse **does not replace** live WebSocket retain (DATA-1A/1B/1E/1F/1D).
+Bitvavo MD Pro / Standard L2–L3 and Kraken L3 remain **live-capture only** —
+Vision and OHLCVT do not provide those books. Never merge hist Parquet into live
+`run_id` trees; never stop Phase A collectors to “make room” for ETL.
+
+Operator runbook:
+[hist-archives-research-warehouse.md](runbooks/hist-archives-research-warehouse.md).
+Repo pointer (no binaries): [scripts/research/README.md](../scripts/research/README.md).
+
 ## Self-collected dataset
 
 Realtime collectors should run on the approved Netcup 24/7 runtime and

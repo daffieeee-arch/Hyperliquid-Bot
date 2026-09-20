@@ -2064,7 +2064,9 @@ async def run_reconstructable_capture(
         elapsed = round(time.monotonic() - started, 6)
         # Fail-closed stops can skip the normal DuckDB rebuild; reconstruct counts
         # from published Parquet so health matches disk (events/reconnects/gaps).
-        if int(report.get("events") or 0) == 0 and any(paths.raw_dir.glob("*.parquet")):
+        events_raw = report.get("events", 0)
+        events_count = events_raw if isinstance(events_raw, int) else 0
+        if events_count == 0 and any(paths.raw_dir.glob("*.parquet")):
             try:
                 if not paths.database_path.exists():
                     create_research_catalog(paths.raw_dir, paths.database_path)

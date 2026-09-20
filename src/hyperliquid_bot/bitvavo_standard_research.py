@@ -61,6 +61,12 @@ BITVAVO_STANDARD_WEBSOCKET_URL: Final = "wss://ws.bitvavo.com/v2/"
 BITVAVO_RESEARCH_VENUE: Final = "bitvavo"
 BITVAVO_RESEARCH_PRODUCT: Final = "BTC-EUR"
 BITVAVO_FEED_PRODUCT: Final = "standard"
+# Official Exchange WS docs do not mandate client-driven ping for public market
+# data (https://docs.bitvavo.com/docs/websocket-api/introduction/). Library
+# default ping_interval=20 / ping_timeout=10 closes with 1011 keepalive timeout.
+# Match DATA-1F / DATA-1E: None keeps auto-pong for any server pings.
+BITVAVO_STANDARD_WEBSOCKET_CLIENT_PING_INTERVAL: Final[float | None] = None
+BITVAVO_STANDARD_WEBSOCKET_CLIENT_PING_TIMEOUT: Final[float | None] = None
 SMOKE_CAPTURE_SECONDS: Final = 600.0
 MAX_CAPTURE_SECONDS: Final = 7 * 24 * 60 * 60
 RETAINED_MAX_RECONNECTS: Final = 10_080
@@ -1387,8 +1393,8 @@ async def _websocket_connection(
         BITVAVO_STANDARD_WEBSOCKET_URL,
         open_timeout=10.0,
         close_timeout=5.0,
-        ping_interval=20.0,
-        ping_timeout=10.0,
+        ping_interval=BITVAVO_STANDARD_WEBSOCKET_CLIENT_PING_INTERVAL,
+        ping_timeout=BITVAVO_STANDARD_WEBSOCKET_CLIENT_PING_TIMEOUT,
         max_size=config.max_application_payload_bytes,
         max_queue=1024,
         logger=_TRANSPORT_PRIVACY_LOGGER,

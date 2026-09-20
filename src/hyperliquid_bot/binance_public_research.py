@@ -40,6 +40,7 @@ from .capture_observability import (
     elapsed_from_report,
     transport_exception_fields,
 )
+from .capture_operator_alert import emit_capture_operator_alert
 from .parquet_research import ParquetResearchWriter, ParquetRotation, create_research_catalog
 from .raw_research import (
     RAW_RESEARCH_SCHEMA_VERSION,
@@ -72,6 +73,9 @@ DATA1F_HEALTH_SCHEMA: Final = "data-1f-retained-capture-health-v1"
 # streams require a pong within one minute of the server ping (every ~20s).
 # Official USD-M Connect: server ping every 3 minutes, pong within 10 minutes.
 # Required DATA-1F streams update much faster (100ms-1s or real-time).
+# Mid-run silence past this bound on a previously observed required stream is a
+# per-profile liveness_gap + forced reconnect (not a whole-capture kill). Empty
+# required streams at stop / never-observed streams still fail closed.
 REQUIRED_STREAM_STARVATION_SECONDS: Final = 60.0
 # Disable websockets client keepalive Pings. The library default
 # (ping_interval=20, ping_timeout=20) closes with code 1011 when a client
@@ -161,6 +165,15 @@ class BinanceSinkError(BinanceCaptureError):
 
 class _BinanceServerShutdown(BinanceCaptureError):
     """Documented Spot server shutdown that requires a fresh connection."""
+
+
+class _BinanceRequiredStreamStarved(BinanceCaptureError):
+    """Mid-run required-stream silence; outer loop force-reconnects the profile."""
+
+    def __init__(self, *, stream: str, silence_seconds: float) -> None:
+        super().__init__("Binance required public stream was starved.")
+        self.stream = stream
+        self.silence_seconds = silence_seconds
 
 
 class _IntegerLexeme(str):
@@ -597,6 +610,44 @@ class BinancePublicResearchCollector:
                 raise
             except asyncio.CancelledError:
                 raise
+            except _BinanceRequiredStreamStarved as starved:
+                if reconnects >= self._config.max_reconnects:
+                    stop_event.set()
+                    await self._raise_required_stream_liveness(
+                        profile,
+                        session_id,
+                        reason="required_stream_starved",
+                        stream=starved.stream,
+                        silence_seconds=starved.silence_seconds,
+                    )
+                reconnects += 1
+                self._reset_profile_stream_watch(profile)
+                capture_logger().info(
+                    "binance reconnect transport_profile=%s attempt=%s "
+                    "reason=required_stream_starved stream=%s",
+                    profile.name,
+                    reconnects,
+                    starved.stream,
+                )
+                await self._marker(
+                    profile.product,
+                    "session",
+                    session_id,
+                    {
+                        "event": "reconnect",
+                        "attempt": reconnects,
+                        "transport_profile": profile.name,
+                        "reason": "required_stream_starved",
+                        "stream": starved.stream,
+                    },
+                )
+                await _wait_or_stop(
+                    _reconnect_wait_seconds(
+                        self._config.reconnect_delay_seconds,
+                        reconnects,
+                    ),
+                    stop_event,
+                )
             except _BinanceServerShutdown:
                 await self._marker(
                     profile.product,
@@ -904,6 +955,14 @@ class BinancePublicResearchCollector:
     def _mark_profile_watch_start(self, profile: _StreamProfile) -> None:
         self._profile_watch_started_monotonic.setdefault(profile.name, time.monotonic())
 
+    def _reset_profile_stream_watch(self, profile: _StreamProfile) -> None:
+        """Fresh silence window after a forced profile reconnect."""
+
+        now = time.monotonic()
+        self._profile_watch_started_monotonic[profile.name] = now
+        for stream in profile.required_streams:
+            self._required_last_seen_monotonic.pop((profile.name, stream), None)
+
     def _note_required_stream(self, profile: _StreamProfile, stream: str) -> None:
         if stream in profile.required_streams:
             self._required_last_seen_monotonic[(profile.name, stream)] = time.monotonic()
@@ -948,12 +1007,54 @@ class BinancePublicResearchCollector:
         if starved is None:
             return
         stream, silence_seconds = starved
+        if self._profile_required_complete(profile):
+            await self._emit_required_stream_liveness_gap(
+                profile,
+                session_id,
+                stream=stream,
+                silence_seconds=silence_seconds,
+            )
+            raise _BinanceRequiredStreamStarved(
+                stream=stream,
+                silence_seconds=silence_seconds,
+            )
         await self._raise_required_stream_liveness(
             profile,
             session_id,
             reason="required_stream_starved",
             stream=stream,
             silence_seconds=silence_seconds,
+        )
+
+    async def _emit_required_stream_liveness_gap(
+        self,
+        profile: _StreamProfile,
+        session_id: str,
+        *,
+        stream: str,
+        silence_seconds: float,
+    ) -> None:
+        extra: dict[str, object] = {
+            "transport_profile": profile.name,
+            "threshold_seconds": float(self._config.required_stream_starvation_seconds),
+            "stream": stream,
+            "silence_seconds": round(silence_seconds, 6),
+            "continuity": "force_profile_reconnect",
+        }
+        capture_logger().info(
+            "binance liveness_gap transport_profile=%s reason=required_stream_starved "
+            "stream=%s silence_seconds=%s",
+            profile.name,
+            stream,
+            round(silence_seconds, 6),
+        )
+        await self._quality(
+            profile.product,
+            session_id,
+            "gap",
+            "required_stream_starved",
+            None,
+            extra=extra,
         )
 
     async def _raise_required_stream_liveness(
@@ -2057,13 +2158,18 @@ def data1f_capture_health(
                 "GB over 72h.",
                 "USD-M open interest is one REST observation at start, not a history.",
                 "Public stream only; no API keys, signing, or extra venues.",
-                "Transport gaps exclude fail-closed integrity events such as sequence_gap "
-                "or liveness_error.",
+                "Transport gaps include mid-run required-stream silence that force-"
+                "reconnects one transport profile (reason=required_stream_starved); "
+                "they exclude fail-closed integrity events such as sequence_gap or "
+                "never-observed / reconnect-exhausted liveness_error.",
                 "USD-M bookTicker uses a dedicated /public combined socket; "
                 "aggTrade/markPrice/forceOrder stay on /market and are not mixed.",
                 "Required-stream application silence past "
-                f"{REQUIRED_STREAM_STARVATION_SECONDS:g}s fails closed mid-run with "
-                "liveness_error; OPERATOR_STOP cannot accept an empty required stream.",
+                f"{REQUIRED_STREAM_STARVATION_SECONDS:g}s on a previously observed "
+                "stream records a liveness gap and force-reconnects that profile; "
+                "USD-M server ping (~3 min) can outlive this app bound while the "
+                "socket still looks alive. Empty required streams at stop still "
+                "fail closed with liveness_error; OPERATOR_STOP cannot accept them.",
                 "USD-M forceOrder is optional; liquidation silence is not starvation.",
             ],
         },
@@ -2120,6 +2226,7 @@ async def run_reconstructable_capture(
     }
     status = "FAILED"
     started = time.monotonic()
+    terminal_error: BaseException | None = None
     try:
         report = await run_bounded_capture(
             output_dir=paths.raw_dir,
@@ -2132,7 +2239,8 @@ async def run_reconstructable_capture(
             status = "OPERATOR_STOP"
         else:
             status = "COMPLETED"
-    except BaseException:
+    except BaseException as error:
+        terminal_error = error
         if paths.database_path.exists():
             report = build_capture_report(paths.database_path, paths.raw_dir)
         raise
@@ -2154,6 +2262,13 @@ async def run_reconstructable_capture(
                     status=status,
                     report=report,
                 ),
+            )
+        if status == "FAILED":
+            emit_capture_operator_alert(
+                venue=BINANCE_RESEARCH_VENUE,
+                run_id=run_id,
+                status=status,
+                error=terminal_error,
             )
     return {
         **report,

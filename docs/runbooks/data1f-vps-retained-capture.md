@@ -115,18 +115,24 @@ kill -TERM "${COLLECTOR_PID}"
 Expected health statuses: `COMPLETED`, `OPERATOR_STOP`, or `FAILED`.
 `elapsed_seconds` must be read separately from requested `duration_seconds`.
 Required-stream application silence past 60s (`required_stream_starvation_seconds`)
-fails closed mid-run with `liveness_error` and status `FAILED`; that is not a
-transport `gap`. Official Spot JSON/SBE: server ping ~20s, pong within 1 minute,
+on a **previously observed** stream records a transport `gap`
+(`reason=required_stream_starved`) and force-reconnects that profile only — it
+does **not** fail the whole multi-socket retain. Empty / never-observed required
+streams, or starve after the reconnect bound is exhausted, still fail closed mid-
+run with `liveness_error` and status `FAILED`; that is not a transport `gap`.
+Official Spot JSON/SBE: server ping ~20s, pong within 1 minute,
 connection ~24h, `serverShutdown`. Official USD-M Connect: server ping every 3
-minutes, pong within 10 minutes. Required update speeds are real-time or
-100ms–1s. Set `ping_interval=None` (Binance server ping only; library auto-pong).
-A leftover client keepalive Ping times out as **close_code=1011** on `/public`
-bookTicker. Gaps stay recorded. Mild reconnect backoff (cap 24s) stays under the
-300 connections / 5 minutes / IP limit. `forceOrder` silence is optional and
-is not starvation. An empty required stream must not be accepted as a healthy
-retain on `OPERATOR_STOP`. Apply path: BN process restart; prefer after the
-current 72h retain unless Chupa explicitly OKs a BN-only restart. Live HL/BV/KR
-untouched.
+minutes, pong within 10 minutes (≫ the 60s app bound). Required update speeds are
+real-time or 100ms–1s. Set `ping_interval=None` (Binance server ping only; library
+auto-pong). A leftover client keepalive Ping times out as **close_code=1011** on
+`/public` bookTicker. Gaps stay recorded. Mild reconnect backoff (cap 24s) stays
+under the 300 connections / 5 minutes / IP limit. `forceOrder` silence is optional
+and is not starvation. An empty required stream must not be accepted as a healthy
+retain on `OPERATOR_STOP`. Terminal `FAILED` emits one event-driven
+`capture_operator_alert` (and optional `CAPTURE_ALERT_WEBHOOK_URL` POST ≤2s);
+ochtendbriefing stays separate — no polling cron. Apply path: BN process restart;
+prefer after the current 72h retain unless Chupa explicitly OKs a BN-only restart.
+Live HL/BV/KR untouched.
 
 ## How to continue later (there is no resume)
 

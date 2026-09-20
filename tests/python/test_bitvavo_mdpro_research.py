@@ -27,6 +27,8 @@ from hyperliquid_bot.bitvavo_mdpro_research import (
     BITVAVO_MDPRO_FEED_PRODUCT,
     BITVAVO_MDPRO_PRODUCT,
     BITVAVO_MDPRO_SIGNATURE_PATH,
+    BITVAVO_MDPRO_WEBSOCKET_CLIENT_PING_INTERVAL,
+    BITVAVO_MDPRO_WEBSOCKET_CLIENT_PING_TIMEOUT,
     BITVAVO_MDPRO_WEBSOCKET_URL,
     MAX_CAPTURE_SECONDS,
     RETAINED_MAX_RECONNECTS,
@@ -51,6 +53,7 @@ from hyperliquid_bot.bitvavo_mdpro_research import (
     _normalize_trade,
     _require_bounded_duration,
     _resolve_cli_mode,
+    _subscription_ack_should_ignore,
     _subscription_acknowledged_channels,
     data1e_capture_claim,
     data1e_capture_health,
@@ -333,6 +336,8 @@ async def _capture_transport_error(
 def test_fixed_scope_and_small_credential_surface() -> None:
     assert BITVAVO_MDPRO_WEBSOCKET_URL == "wss://ws-mdpro.bitvavo.com/v2/"
     assert "ws.bitvavo.com" not in BITVAVO_MDPRO_WEBSOCKET_URL
+    assert BITVAVO_MDPRO_WEBSOCKET_CLIENT_PING_INTERVAL is None
+    assert BITVAVO_MDPRO_WEBSOCKET_CLIENT_PING_TIMEOUT is None
     assert BITVAVO_MDPRO_PRODUCT == "BTC-EUR"
     assert BITVAVO_MDPRO_FEED_PRODUCT == "market_data_pro"
     assert BITVAVO_MDPRO_BOOK_DEPTH == 1000
@@ -394,6 +399,76 @@ def test_pro_subscription_ack_accepts_combined_and_incremental_official_forms() 
         _document('{"event":"subscribed","subscriptions":{"trades":["ETH-EUR"]}}'),
         expected=expected,
     )
+
+
+def test_subscription_ack_ignores_racing_market_frames() -> None:
+    trade = _document(_trade())
+    assert _subscription_ack_should_ignore(trade)
+    assert not _subscription_acknowledged_channels(
+        trade,
+        expected=frozenset({"book", "trades"}),
+    )
+
+
+@pytest.mark.asyncio
+async def test_subscribe_ack_race_then_success_is_not_fatal() -> None:
+    stop_event = asyncio.Event()
+    frames = [
+        _auth_ack(),
+        _trade(),
+        _pro_ack("book", "trades"),
+        _snapshot(100, nonce=100),
+        _book_update(
+            101,
+            102,
+            nonce=101,
+            bids=[["4999.900000000000000001", "0"]],
+            asks=[["5001.100000000000000001", "0.017000000000000001"]],
+        ),
+    ]
+    sink = MemorySink()
+    collector = BitvavoMdProResearchCollector(
+        sink,
+        _credentials(),
+        connection_factory=ScriptedConnectionFactory(
+            [FakeConnection(frames, on_last=stop_event.set)]
+        ),
+        session_id_factory=SessionIds(),
+    )
+    await collector.capture_for(5.0, stop_event=stop_event)
+    assert any(record.channel == "mdpro_book" for record in sink.records)
+
+
+@pytest.mark.asyncio
+async def test_subscribe_failure_is_retryable_not_auth_error() -> None:
+    first = FakeConnection(
+        [
+            _auth_ack(),
+            json.dumps(
+                {"event": "error", "errorCode": 105, "error": "rate"},
+                separators=(",", ":"),
+            ),
+        ]
+    )
+    stop_event = asyncio.Event()
+    second = FakeConnection(
+        _successful_messages(snapshot_sequence=200),
+        on_last=stop_event.set,
+    )
+    factory = ScriptedConnectionFactory([first, second])
+    sink = MemorySink()
+    collector = BitvavoMdProResearchCollector(
+        sink,
+        _credentials(),
+        config=BitvavoMdProResearchConfig(reconnect_delay_seconds=0, max_reconnects=2),
+        connection_factory=factory,
+        session_id_factory=SessionIds(),
+    )
+    await collector.capture_for(5.0, stop_event=stop_event)
+    assert factory.calls == 2
+    quality = _marker_documents(sink.records, channel="data_quality")
+    assert any(item["event"] == "subscription_failed" for item in quality)
+    assert any(item["event"] == "gap_detected" for item in quality)
 
 
 def test_credentials_sign_exact_official_preimage_and_repr_is_redacted() -> None:

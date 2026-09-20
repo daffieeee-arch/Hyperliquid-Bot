@@ -288,11 +288,16 @@ When the assigned goal is a 72-hour reconstructable tape (`DURATION_SECONDS=2592
   use `max_queue=1024` so HF frames do not stall the default 16-frame buffer.
   Gaps remain recorded.
   Mild reconnect backoff (cap 24s) stays under the 300 connections / 5 minutes /
-  IP limit and under the 60s starve bound. Application silence past
-  `required_stream_starvation_seconds` (60s) fails closed with
-  `liveness_error` and health status `FAILED`. `forceOrder` is optional;
-  liquidation silence is not starvation. An empty required stream must not pass
-  as a healthy retain on `OPERATOR_STOP`.
+  IP limit and under the 60s starve bound.   Application silence past `required_stream_starvation_seconds` (60s) on a
+  previously observed required stream records a transport `gap`
+  (`reason=required_stream_starved`) and force-reconnects that profile only.
+  Empty / never-observed streams, or starve after the reconnect bound is
+  exhausted, still fail closed with `liveness_error` and health status
+  `FAILED`. `forceOrder` is optional; liquidation silence is not starvation.
+  An empty required stream must not pass as a healthy retain on
+  `OPERATOR_STOP`. Terminal `FAILED` emits one event-driven
+  `capture_operator_alert` (optional `CAPTURE_ALERT_WEBHOOK_URL`); no polling
+  cron.
 - **Apply path:** this keepalive fix needs a BN process restart. Prefer after the
   current 72h retain unless Chupa explicitly OKs a BN-only restart (CoS gates).
   Do not stop `hl-capture` / `bv-capture` / `kr-capture`. Until restart, the

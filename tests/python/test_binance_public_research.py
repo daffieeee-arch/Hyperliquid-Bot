@@ -742,7 +742,7 @@ async def test_empty_required_stream_operator_stop_writes_failed_health(
 
 
 @pytest.mark.asyncio
-async def test_mid_run_required_stream_starvation_fails_closed() -> None:
+async def test_mid_run_required_stream_starvation_fails_closed_when_reconnects_exhausted() -> None:
     sink = MemorySink()
     collector = _hanging_collector(
         sink,
@@ -757,11 +757,16 @@ async def test_mid_run_required_stream_starvation_fails_closed() -> None:
         ),
         public_messages=(_fixture_text("public_usdm_book_ticker_frame.json"),),
         starvation_seconds=0.05,
+        max_reconnects=0,
     )
     with pytest.raises(BinanceDataIntegrityError, match="starved") as raised:
         await collector.capture_for(10)
     assert raised.value.quality_event == "liveness_error"
     quality = _local_documents(sink.records, "data_quality")
+    assert any(
+        marker["event"] == "gap" and marker["reason"] == "required_stream_starved"
+        for marker in quality
+    )
     starved = [
         marker
         for marker in quality
@@ -771,7 +776,84 @@ async def test_mid_run_required_stream_starvation_fails_closed() -> None:
     assert starved[0]["threshold_seconds"] == 0.05
     assert "stream" in starved[0]
     assert float(cast(float, starved[0]["silence_seconds"])) >= 0.05
-    assert not any(marker["event"] == "gap" for marker in quality)
+
+
+@pytest.mark.asyncio
+async def test_mid_run_required_stream_starvation_force_reconnects_profile() -> None:
+    stop_event = asyncio.Event()
+    public_first = FakeConnection((_fixture_text("public_usdm_book_ticker_frame.json"),))
+    public_second = FakeConnection(
+        (_fixture_text("public_usdm_book_ticker_frame.json"),),
+        on_last=stop_event.set,
+    )
+
+    class RepeatingRequiredConnection:
+        def __init__(self, frames: Sequence[str]) -> None:
+            self._cycle = tuple(frames)
+            self._index = 0
+
+        async def recv(self) -> str | bytes:
+            await asyncio.sleep(0.01)
+            if stop_event.is_set():
+                await asyncio.Event().wait()
+            frame = self._cycle[self._index]
+            self._index = (self._index + 1) % len(self._cycle)
+            return frame
+
+    async def spot_snapshot() -> CapturedApplicationPayload:
+        return _captured("public_spot_depth_snapshot.json", utc_ns=200, monotonic_ns=201)
+
+    async def open_interest() -> CapturedApplicationPayload:
+        return _captured("public_usdm_open_interest.json", utc_ns=202, monotonic_ns=203)
+
+    sink = MemorySink()
+    collector = BinancePublicResearchCollector(
+        sink,
+        config=BinancePublicResearchConfig(
+            reconnect_delay_seconds=0,
+            max_reconnects=2,
+            required_stream_starvation_seconds=0.05,
+        ),
+        spot_connection_factory=ScriptedConnectionFactory(
+            (
+                RepeatingRequiredConnection(
+                    (
+                        _fixture_text("public_spot_trade_frame.json"),
+                        _fixture_text("public_spot_book_ticker_frame.json"),
+                        _fixture_text("public_spot_depth_frame.json"),
+                    )
+                ),
+            )
+        ),
+        usdm_market_connection_factory=ScriptedConnectionFactory(
+            (
+                RepeatingRequiredConnection(
+                    (
+                        _fixture_text("public_usdm_agg_trade_frame.json"),
+                        _fixture_text("public_usdm_mark_price_frame.json"),
+                    )
+                ),
+            )
+        ),
+        usdm_public_connection_factory=ScriptedConnectionFactory((public_first, public_second)),
+        spot_depth_fetcher=spot_snapshot,
+        usdm_open_interest_fetcher=open_interest,
+        utc_ns=Counter(1000),
+        monotonic_ns=Counter(2000),
+        session_id_factory=SessionIds(),
+    )
+    await collector.capture_for(10, stop_event=stop_event)
+    quality = _local_documents(sink.records, "data_quality")
+    assert any(
+        marker["event"] == "gap" and marker["reason"] == "required_stream_starved"
+        for marker in quality
+    )
+    assert not any(marker["event"] == "liveness_error" for marker in quality)
+    sessions = _local_documents(sink.records, "session")
+    assert any(
+        marker["event"] == "reconnect" and marker.get("reason") == "required_stream_starved"
+        for marker in sessions
+    )
 
 
 @pytest.mark.asyncio

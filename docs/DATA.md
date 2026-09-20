@@ -1217,9 +1217,13 @@ non-empty on a reconstructable run. It never contains payloads or secrets. Optio
 stdout copy: `<artifact-root>/logs/capture-<run_id>.log`.
 `duration_seconds` remains the requested window; `elapsed_seconds` is wall-clock time until stop.
 Claim and health also record `required_streams`, `optional_streams`, and
-`required_stream_starvation_seconds` (60). A mid-run required-stream starve or an empty required
-stream at stop writes `liveness_error` and status `FAILED`; that count is `integrity_events`, not
-transport `gaps`.
+`required_stream_starvation_seconds` (60). Mid-run silence past that bound on a
+**previously observed** required stream records a transport `gap` with
+`reason=required_stream_starved`, force-reconnects that profile only, and keeps
+writing Parquet on the other sockets (USD-M server ping can be ≫60s while the
+WS still looks alive). An empty / never-observed required stream at stop, or
+starve after the reconnect bound is exhausted, still writes `liveness_error` and
+status `FAILED`; those integrity counts are not transport `gaps`.
 
 ```bash
 PYTHONPATH=src uv run --frozen python -m hyperliquid_bot.binance_public_research \

@@ -108,6 +108,17 @@ kill -TERM "${COLLECTOR_PID}"
 Expected health statuses: `COMPLETED`, `OPERATOR_STOP`, or `FAILED`.
 `elapsed_seconds` must be read separately from requested `duration_seconds`.
 
+Retained resilience (vs short smoke): client websocket ping is disabled
+(`ping_interval=None`; MD Pro docs require authenticate-then-subscribe and do
+not mandate client pings —
+https://docs.bitvavo.com/docs/ws-market-data-pro-api/introduction/). Subscribe-
+ack races and venue error frames reconnect with full re-auth; credential
+authenticate failures stay fail-closed. Terminal `FAILED` emits one event-driven
+`capture_operator_alert` log line and, when `CAPTURE_ALERT_WEBHOOK_URL` is set,
+one short HTTP POST (≤2s, failures swallowed). Point that webhook at the Grok
+Bot / CoS capture-fail endpoint; ochtendbriefing stays separate. Do **not** add
+interval watchdogs or `*/15` polls.
+
 ## How to continue later (there is no resume)
 
 ```text

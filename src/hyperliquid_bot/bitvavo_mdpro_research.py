@@ -44,6 +44,7 @@ from .capture_observability import (
     elapsed_from_report,
     transport_exception_fields,
 )
+from .capture_operator_alert import emit_capture_operator_alert
 from .parquet_research import ParquetResearchWriter, ParquetRotation, create_research_catalog
 from .raw_research import (
     RAW_RESEARCH_SCHEMA_VERSION,
@@ -71,6 +72,13 @@ BITVAVO_MDPRO_BOOK_DEPTH: Final = 1000
 BITVAVO_MDPRO_REQUIRED_CHANNELS: Final = ("book", "trades")
 BITVAVO_MDPRO_OPTIONAL_TICKER_CHANNEL: Final = "ticker"
 BITVAVO_MDPRO_SIGNATURE_PATH: Final = "/v2/websocket"
+# Official MD Pro docs require authenticate-then-subscribe and do not mandate
+# client-driven websocket ping
+# (https://docs.bitvavo.com/docs/ws-market-data-pro-api/introduction/).
+# Library default ping_interval=20 / ping_timeout=10 closes with 1011
+# "keepalive ping timeout". Match DATA-1F: None keeps auto-pong for server pings.
+BITVAVO_MDPRO_WEBSOCKET_CLIENT_PING_INTERVAL: Final[float | None] = None
+BITVAVO_MDPRO_WEBSOCKET_CLIENT_PING_TIMEOUT: Final[float | None] = None
 SMOKE_CAPTURE_SECONDS: Final = 600.0
 MAX_CAPTURE_SECONDS: Final = 7 * 24 * 60 * 60
 RETAINED_MAX_RECONNECTS: Final = 10_080
@@ -141,7 +149,7 @@ class BitvavoMdProCaptureError(RuntimeError):
 
 
 class BitvavoMdProAuthenticationError(BitvavoMdProCaptureError):
-    """Authentication or authenticated feed access failed closed."""
+    """Credential or authenticate-ack failure. Not reconnectable."""
 
 
 class BitvavoMdProDataIntegrityError(BitvavoMdProCaptureError):
@@ -154,6 +162,10 @@ class BitvavoMdProDataIntegrityError(BitvavoMdProCaptureError):
 
 class BitvavoMdProTransportError(BitvavoMdProCaptureError):
     """A required connection or bounded reconnect failed."""
+
+
+class BitvavoMdProSubscriptionError(BitvavoMdProTransportError):
+    """Subscribe/ack race or protocol rejection. Retained runs may reconnect."""
 
 
 class BitvavoMdProSinkError(BitvavoMdProCaptureError):
@@ -533,6 +545,9 @@ class BitvavoMdProResearchCollector:
                 raise
             except PayloadTooBig:
                 failure = "truncation"
+            except BitvavoMdProSubscriptionError:
+                failure = "subscription"
+                disconnect_fields = {"exception_class": "BitvavoMdProSubscriptionError"}
             except (
                 BitvavoMdProAuthenticationError,
                 BitvavoMdProDataIntegrityError,
@@ -556,14 +571,25 @@ class BitvavoMdProResearchCollector:
                 raise BitvavoMdProTransportError(
                     "Bitvavo Market Data Pro transport boundary failed."
                 ) from None
-            if failure == "transport":
+            if failure in {"transport", "subscription"}:
                 if not connected:
                     await self._connection_failed(session_id, previous_session_id)
+                    if failure == "subscription":
+                        raise BitvavoMdProSubscriptionError(
+                            "Bitvavo Market Data Pro subscription failed before connect."
+                        ) from None
                     raise BitvavoMdProTransportError(
                         "Bitvavo Market Data Pro connection failed."
                     ) from None
-                await self._disconnected(session_id, disconnect_fields)
+                if failure == "subscription":
+                    await self._subscription_failed_reconnectable(session_id)
+                else:
+                    await self._disconnected(session_id, disconnect_fields)
                 if reconnects >= self._config.max_reconnects:
+                    if failure == "subscription":
+                        raise BitvavoMdProSubscriptionError(
+                            "Bitvavo Market Data Pro subscription reconnect bound was exhausted."
+                        ) from None
                     raise BitvavoMdProTransportError(
                         "Bitvavo Market Data Pro reconnect bound was exhausted."
                     ) from None
@@ -801,6 +827,7 @@ class BitvavoMdProResearchCollector:
         acknowledged: set[str] = set()
         while acknowledged != expected:
             failed = False
+            retryable = False
             captured: CapturedApplicationPayload | None = None
             document: dict[str, object] | None = None
             newly: frozenset[str] = frozenset()
@@ -812,15 +839,27 @@ class BitvavoMdProResearchCollector:
                     failed = True
                 else:
                     document = _decode_json_object(captured.payload_bytes)
-                    newly = _subscription_acknowledged_channels(document, expected=expected)
-                    failed = (
-                        self._credentials._contains_sensitive_decoded_material(document)
-                        or not newly
-                    )
+                    if self._credentials._contains_sensitive_decoded_material(document):
+                        failed = True
+                    else:
+                        newly = _subscription_acknowledged_channels(document, expected=expected)
+                        if newly:
+                            pass
+                        elif _subscription_ack_should_ignore(document):
+                            continue
+                        elif _subscription_ack_is_venue_error(document):
+                            retryable = True
+                            failed = True
+                        else:
+                            # Unexpected control shape after subscribe — treat as
+                            # reconnectable protocol race, not a credential failure.
+                            retryable = True
+                            failed = True
             except asyncio.CancelledError:
                 raise
             except Exception:
                 failed = True
+                retryable = True
             finally:
                 captured = None
                 document = None
@@ -830,8 +869,16 @@ class BitvavoMdProResearchCollector:
                     "data_quality",
                     "subscription_failed",
                     stream=BITVAVO_MDPRO_FEED_PRODUCT,
-                    reason="authenticated_pro_subscription_rejected_or_invalid",
+                    reason=(
+                        "authenticated_pro_subscription_rejected_or_invalid"
+                        if retryable
+                        else "authenticated_pro_subscription_secret_rejected"
+                    ),
                 )
+                if retryable:
+                    raise BitvavoMdProSubscriptionError(
+                        "Bitvavo Market Data Pro subscription failed."
+                    ) from None
                 raise BitvavoMdProAuthenticationError(
                     "Bitvavo Market Data Pro subscription failed."
                 ) from None
@@ -1148,6 +1195,29 @@ class BitvavoMdProResearchCollector:
             transport_profile=BITVAVO_MDPRO_FEED_PRODUCT,
             reason="transport_disconnect; missed Pro L2 history is not reconstructable",
             **fields,
+        )
+
+    async def _subscription_failed_reconnectable(self, session_id: str) -> None:
+        capture_logger().info(
+            "bitvavo subscription_gap transport_profile=%s reason=subscription_ack_failed",
+            BITVAVO_MDPRO_FEED_PRODUCT,
+        )
+        await self._append_marker(
+            session_id,
+            "session",
+            "disconnected",
+            stream=BITVAVO_MDPRO_FEED_PRODUCT,
+            transport_profile=BITVAVO_MDPRO_FEED_PRODUCT,
+            reason="subscription_ack_failed",
+            exception_class="BitvavoMdProSubscriptionError",
+        )
+        await self._append_marker(
+            session_id,
+            "data_quality",
+            "gap_detected",
+            stream=BITVAVO_MDPRO_FEED_PRODUCT,
+            transport_profile=BITVAVO_MDPRO_FEED_PRODUCT,
+            reason="subscription_ack_failed; reconnect will re-auth and re-subscribe",
         )
 
     async def _connection_failed(
@@ -1471,6 +1541,28 @@ def _subscription_acknowledged_channels(
     return frozenset(acknowledged)
 
 
+def _subscription_ack_is_venue_error(document: dict[str, object]) -> bool:
+    return "error" in document or "errorCode" in document or document.get("event") == "error"
+
+
+def _subscription_ack_should_ignore(document: dict[str, object]) -> bool:
+    """Ignore market/snapshot frames that can race ahead of the subscribe ack."""
+
+    if _subscription_ack_is_venue_error(document):
+        return False
+    if set(document) == {"event", "subscriptions"} and document.get("event") in {
+        "book",
+        "subscribed",
+    }:
+        return False
+    event = document.get("event")
+    if type(event) is str and event in _MARKET_CHANNEL_BY_EVENT:
+        return True
+    if document.get("action") == "getBook" and "response" in document:
+        return True
+    return False
+
+
 def _classify_market_document(document: dict[str, object]) -> str:
     if (
         "error" in document
@@ -1608,8 +1700,8 @@ async def _websocket_connection(
         BITVAVO_MDPRO_WEBSOCKET_URL,
         open_timeout=10.0,
         close_timeout=5.0,
-        ping_interval=20.0,
-        ping_timeout=10.0,
+        ping_interval=BITVAVO_MDPRO_WEBSOCKET_CLIENT_PING_INTERVAL,
+        ping_timeout=BITVAVO_MDPRO_WEBSOCKET_CLIENT_PING_TIMEOUT,
         max_size=config.max_application_payload_bytes,
         max_queue=1024,
         logger=_TRANSPORT_PRIVACY_LOGGER,
@@ -1883,6 +1975,10 @@ def data1e_capture_health(
                 "This capture never falls back to DATA-1D Standard.",
                 "Keys enter only through BITVAVO_MDPRO_API_KEY and BITVAVO_MDPRO_API_SECRET.",
                 "Trade, withdrawal, transfer, or signing key names fail closed.",
+                "Client websocket ping is disabled (ping_interval=None); MD Pro docs "
+                "require authenticate-then-subscribe and do not mandate client pings. "
+                "Subscribe-ack races reconnect with re-auth; credential authenticate "
+                "failures stay fail-closed.",
             ],
         },
         report,
@@ -1946,6 +2042,7 @@ async def run_reconstructable_capture(
     }
     status = "FAILED"
     started = time.monotonic()
+    terminal_error: BaseException | None = None
     try:
         report = await run_bounded_capture(
             output_dir=paths.raw_dir,
@@ -1960,14 +2057,35 @@ async def run_reconstructable_capture(
             status = "OPERATOR_STOP"
         else:
             status = "COMPLETED"
+    except BaseException as error:
+        terminal_error = error
+        raise
     finally:
-        report = {**report, "elapsed_seconds": round(time.monotonic() - started, 6)}
+        elapsed = round(time.monotonic() - started, 6)
+        # Fail-closed stops can skip the normal DuckDB rebuild; reconstruct counts
+        # from published Parquet so health matches disk (events/reconnects/gaps).
+        if int(report.get("events") or 0) == 0 and any(paths.raw_dir.glob("*.parquet")):
+            try:
+                if not paths.database_path.exists():
+                    create_research_catalog(paths.raw_dir, paths.database_path)
+                if paths.database_path.exists():
+                    rebuilt = build_capture_report(paths.database_path, paths.raw_dir)
+                    report = {**rebuilt, "elapsed_seconds": elapsed}
+            except Exception:
+                report = {**report, "elapsed_seconds": elapsed}
+        else:
+            report = {**report, "elapsed_seconds": elapsed}
         capture_logger().info(
-            "data1e stop run_id=%s status=%s requested_duration_seconds=%s elapsed_seconds=%s",
+            "data1e stop run_id=%s status=%s requested_duration_seconds=%s elapsed_seconds=%s "
+            "events=%s reconnects=%s gaps=%s parquet_files=%s",
             run_id,
             status,
             duration_seconds,
             report["elapsed_seconds"],
+            report.get("events"),
+            report.get("reconnects"),
+            report.get("gaps"),
+            report.get("parquet_files"),
         )
         if not paths.capture_health_path.exists():
             _write_create_only_json(
@@ -1979,6 +2097,13 @@ async def run_reconstructable_capture(
                     report=report,
                     include_ticker=include_ticker,
                 ),
+            )
+        if status == "FAILED":
+            emit_capture_operator_alert(
+                venue=BITVAVO_MDPRO_VENUE,
+                run_id=run_id,
+                status=status,
+                error=terminal_error,
             )
     return {
         **report,

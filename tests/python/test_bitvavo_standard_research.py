@@ -19,6 +19,8 @@ from websockets.exceptions import PayloadTooBig
 from hyperliquid_bot.bitvavo_standard_research import (
     BITVAVO_FEED_PRODUCT,
     BITVAVO_RESEARCH_PRODUCT,
+    BITVAVO_STANDARD_WEBSOCKET_CLIENT_PING_INTERVAL,
+    BITVAVO_STANDARD_WEBSOCKET_CLIENT_PING_TIMEOUT,
     BITVAVO_STANDARD_WEBSOCKET_URL,
     BitvavoDataIntegrityError,
     BitvavoSinkError,
@@ -27,6 +29,7 @@ from hyperliquid_bot.bitvavo_standard_research import (
     BitvavoTransportError,
     WebSocketConnection,
     _BookState,
+    _connection_factory,
     _decode_json_object,
     _normalize_ticker,
     _normalize_trade,
@@ -234,8 +237,42 @@ def test_fixed_public_scope_has_no_credential_or_pro_surface() -> None:
     assert BITVAVO_STANDARD_WEBSOCKET_URL == "wss://ws.bitvavo.com/v2/"
     assert BITVAVO_RESEARCH_PRODUCT == "BTC-EUR"
     assert BITVAVO_FEED_PRODUCT == "standard"
+    # Official Exchange WS docs do not mandate client-driven ping for public
+    # market data: https://docs.bitvavo.com/docs/websocket-api/introduction/
+    # Match DATA-1E / DATA-1F: disable library keepalive self-closes (1011).
+    assert BITVAVO_STANDARD_WEBSOCKET_CLIENT_PING_INTERVAL is None
+    assert BITVAVO_STANDARD_WEBSOCKET_CLIENT_PING_TIMEOUT is None
     signature = inspect.signature(BitvavoStandardResearchCollector)
     assert not ({"key", "secret", "token", "credential", "auth"} & set(signature.parameters))
+
+
+@pytest.mark.asyncio
+async def test_connection_factory_disables_client_driven_websocket_ping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_connect(
+        uri: str, **options: object
+    ) -> AbstractAsyncContextManager[WebSocketConnection]:
+        captured["uri"] = uri
+        captured["options"] = options
+
+        @asynccontextmanager
+        async def context() -> AsyncIterator[WebSocketConnection]:
+            yield FakeConnection(())
+
+        return context()
+
+    monkeypatch.setattr("hyperliquid_bot.bitvavo_standard_research.connect", fake_connect)
+    factory = _connection_factory(BitvavoStandardResearchConfig())
+    async with factory():
+        pass
+    assert captured["uri"] == BITVAVO_STANDARD_WEBSOCKET_URL
+    options = captured["options"]
+    assert isinstance(options, dict)
+    assert options["ping_interval"] is None
+    assert options["ping_timeout"] is None
 
 
 def test_subscription_acknowledgements_are_structural_and_exact_scope() -> None:

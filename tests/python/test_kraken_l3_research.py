@@ -51,6 +51,7 @@ from hyperliquid_bot.kraken_l3_research import (
     _is_app_keepalive,
     _L2BookState,
     _L3BookState,
+    _optional_status_connection_id,
     _require_bounded_duration,
     _resolve_cli_mode,
     _TradeState,
@@ -126,19 +127,25 @@ def _ack(
     return json.dumps(document, separators=(",", ":"), sort_keys=True)
 
 
-def _status(connection_id: int) -> str:
+# Official Kraken WS v2 status example connection_id (uint64-range debugging id):
+# https://docs.kraken.com/api/docs/websocket-v2/status
+KRAKEN_OFFICIAL_STATUS_CONNECTION_ID = 13834774380200032777
+KRAKEN_OFFICIAL_STATUS_CONNECTION_ID_TEXT = "13834774380200032777"
+
+
+def _status(connection_id: int | str | None = 101, *, omit_connection_id: bool = False) -> str:
+    data: dict[str, object] = {
+        "api_version": "v2",
+        "system": "online",
+        "version": "2.0.10",
+    }
+    if not omit_connection_id:
+        data["connection_id"] = connection_id
     return json.dumps(
         {
             "channel": "status",
             "type": "update",
-            "data": [
-                {
-                    "api_version": "v2",
-                    "connection_id": connection_id,
-                    "system": "online",
-                    "version": "2.0.10",
-                }
-            ],
+            "data": [data],
         },
         separators=(",", ":"),
         sort_keys=True,
@@ -863,6 +870,141 @@ async def test_connection_factory_uses_extended_open_timeout_and_disables_protoc
     assert options["ping_interval"] is None
     assert options["ping_timeout"] is None
     assert options["max_queue"] == 1024
+
+
+def test_optional_status_connection_id_accepts_int_and_digit_string() -> None:
+    """Official status.connection_id is integer (debugging); coerce without fail-closed.
+
+    https://docs.kraken.com/api/docs/websocket-v2/status
+    """
+
+    assert (
+        _optional_status_connection_id({"connection_id": KRAKEN_OFFICIAL_STATUS_CONNECTION_ID})
+        == KRAKEN_OFFICIAL_STATUS_CONNECTION_ID_TEXT
+    )
+    assert (
+        _optional_status_connection_id({"connection_id": KRAKEN_OFFICIAL_STATUS_CONNECTION_ID_TEXT})
+        == KRAKEN_OFFICIAL_STATUS_CONNECTION_ID_TEXT
+    )
+    assert _optional_status_connection_id({"connection_id": 101}) == "101"
+    assert _optional_status_connection_id({"connection_id": "202"}) == "202"
+    assert _optional_status_connection_id({}) is None
+    assert _optional_status_connection_id({"connection_id": None}) is None
+    assert _optional_status_connection_id({"connection_id": -1}) is None
+    assert _optional_status_connection_id({"connection_id": "1.0"}) is None
+    assert _optional_status_connection_id({"connection_id": True}) is None
+
+
+@pytest.mark.asyncio
+async def test_status_control_plane_soft_skips_unusable_connection_id() -> None:
+    """Control-plane status quirks must not abort the retain (market integrity still hard).
+
+    Official status docs: connection_id is for debugging only.
+    https://docs.kraken.com/api/docs/websocket-v2/status
+    """
+
+    stop_event = asyncio.Event()
+    tracker = CompletionTracker(stop_event, {"public"})
+    official = _status(KRAKEN_OFFICIAL_STATUS_CONNECTION_ID)
+    missing = _status(omit_connection_id=True)
+    null_id = _status(None)
+    floatish = json.dumps(
+        {
+            "channel": "status",
+            "type": "update",
+            "data": [
+                {
+                    "api_version": "v2",
+                    "connection_id": "1.3834774380200033e+19",
+                    "system": "online",
+                    "version": "2.0.10",
+                }
+            ],
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    public = FakeConnection(
+        [
+            official,
+            missing,
+            null_id,
+            floatish,
+            _ack("trade"),
+            _ack("book"),
+            _fixture_text("trade_update.json"),
+            _fixture_text("book_snapshot.json"),
+            _fixture_text("book_update.json"),
+        ],
+        on_last=lambda: tracker.mark("public"),
+    )
+    sink = MemorySink()
+    collector = KrakenL3ResearchCollector(
+        sink,
+        SyntheticTokenProvider([secrets.token_urlsafe(24)]),
+        config=KrakenL3ResearchConfig(reconnect_delay_seconds=0.0),
+        public_connection_factory=ScriptedConnectionFactory([public]),
+        l3_connection_factory=ScriptedConnectionFactory([]),
+        session_id_factory=SessionIds(),
+    )
+
+    await collector._receive_public(public, "public-session-status", stop_event)
+
+    session_markers = _marker_documents(sink.records, channel="session")
+    quality_markers = _marker_documents(sink.records, channel="data_quality")
+    venue_statuses = [event for event in session_markers if event.get("event") == "venue_status"]
+    assert any(
+        event.get("connection_id") == KRAKEN_OFFICIAL_STATUS_CONNECTION_ID_TEXT
+        and event.get("system") == "online"
+        for event in venue_statuses
+    )
+    soft_skips = [
+        event for event in quality_markers if event.get("event") == "status_connection_id_skipped"
+    ]
+    assert len(soft_skips) >= 3
+    assert not any(event.get("event") == "schema_error" for event in quality_markers)
+    assert any(record.channel == "trade" for record in sink.records)
+    assert any(record.channel == "book" for record in sink.records)
+
+
+@pytest.mark.asyncio
+async def test_unusable_status_envelope_soft_skips_without_process_death() -> None:
+    stop_event = asyncio.Event()
+    tracker = CompletionTracker(stop_event, {"public"})
+    bad_envelope = json.dumps(
+        {"channel": "status", "type": "update", "data": []},
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    public = FakeConnection(
+        [
+            bad_envelope,
+            _status(303),
+            _ack("trade"),
+            _ack("book"),
+            _fixture_text("trade_update.json"),
+            _fixture_text("book_snapshot.json"),
+        ],
+        on_last=lambda: tracker.mark("public"),
+    )
+    sink = MemorySink()
+    collector = KrakenL3ResearchCollector(
+        sink,
+        SyntheticTokenProvider([secrets.token_urlsafe(24)]),
+        public_connection_factory=ScriptedConnectionFactory([public]),
+        l3_connection_factory=ScriptedConnectionFactory([]),
+        session_id_factory=SessionIds(),
+    )
+
+    await collector._receive_public(public, "public-session-bad-status", stop_event)
+
+    quality_markers = _marker_documents(sink.records, channel="data_quality")
+    assert any(
+        event.get("event") == "status_control_skipped"
+        and event.get("reason") == "status_envelope_unusable"
+        for event in quality_markers
+    )
+    assert not any(event.get("event") == "schema_error" for event in quality_markers)
 
 
 @pytest.mark.asyncio

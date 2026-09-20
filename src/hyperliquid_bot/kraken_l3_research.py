@@ -1226,31 +1226,60 @@ class KrakenL3ResearchCollector:
         session_id: str,
         stream: str,
     ) -> None:
+        """Persist venue status for debugging. Never fail-closed the capture.
+
+        Official status channel is control-plane metadata (connection_id is for
+        debugging): https://docs.kraken.com/api/docs/websocket-v2/status
+        """
+
         try:
             message_type, data = _message_data(document, "status")
             if message_type != "update" or len(data) != 1:
-                raise KrakenDataIntegrityError("Kraken status schema validation failed.")
+                raise ValueError("status envelope")
             status = _object(data[0], "status data item")
             system = _required_text(status, "system")
             api_version = _required_text(status, "api_version")
             service_version = _required_text(status, "version")
-            connection_id = _unsigned_integer_text(status, "connection_id")
             if system not in {"online", "cancel_only", "maintenance", "post_only"}:
-                raise KrakenDataIntegrityError("Kraken status schema validation failed.")
+                raise ValueError("status system")
             if api_version != "v2":
-                raise KrakenDataIntegrityError("Kraken status schema validation failed.")
-        except KrakenDataIntegrityError:
-            await self._schema_failure(session_id, stream, None)
+                raise ValueError("status api_version")
+        except (KrakenDataIntegrityError, ValueError, TypeError):
+            await self._append_marker(
+                session_id,
+                "data_quality",
+                "status_control_skipped",
+                stream=stream,
+                reason="status_envelope_unusable",
+            )
             return
+
+        connection_id = _optional_status_connection_id(status)
+        if connection_id is None:
+            await self._append_marker(
+                session_id,
+                "data_quality",
+                "status_connection_id_skipped",
+                stream=stream,
+                reason="connection_id_unusable_or_missing",
+            )
+        fields: dict[str, object] = {
+            "stream": stream,
+            "system": system,
+            "api_version": api_version,
+            "service_version": service_version,
+        }
+        if connection_id is not None:
+            fields["connection_id"] = connection_id
+        if "upcoming_maintenance" in status:
+            fields["upcoming_maintenance_present"] = True
+        if "emergency" in status:
+            fields["emergency_present"] = True
         await self._append_marker(
             session_id,
             "session",
             "venue_status",
-            stream=stream,
-            system=system,
-            api_version=api_version,
-            connection_id=connection_id,
-            service_version=service_version,
+            **fields,
         )
 
     async def _append_normalized(
@@ -1678,6 +1707,27 @@ def _unsigned_integer_text(document: dict[str, object], field: str) -> str:
     if type(value) is not str or not value.isascii() or not value.isdigit():
         raise KrakenDataIntegrityError("Kraken integer field schema validation failed.")
     return value
+
+
+def _optional_status_connection_id(document: dict[str, object]) -> str | None:
+    """Coerce official status.connection_id (integer, for debugging) to digit text.
+
+    Accepts Python int (including uint64-range) or ASCII digit strings from
+    parse_int=str. Missing/unusable values return None — never fail-closed.
+    Official example: 13834774380200032777
+    (https://docs.kraken.com/api/docs/websocket-v2/status).
+    """
+
+    if "connection_id" not in document:
+        return None
+    value = document.get("connection_id")
+    if type(value) is int:
+        if value < 0:
+            return None
+        return str(value)
+    if type(value) is str and value.isascii() and value.isdigit():
+        return value
+    return None
 
 
 def _uint32(document: dict[str, object], field: str) -> int:

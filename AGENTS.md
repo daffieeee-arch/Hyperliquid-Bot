@@ -60,19 +60,24 @@ repository change):
 7. Commit and push the branch.
 8. Open a pull request targeting `main`.
 9. Let all required CI checks complete successfully.
-10. For material or high-risk changes (execution, risk, secrets, LIVE gates,
-    infra/runtime, non-trivial strategy/data contracts), obtain an independent
-    review from a separate agent/model before merge. Skip independent review
-    for trivial docs/chore PRs unless the user asks.
-11. Resolve blocking review findings on the same branch; re-run the relevant
+10. **Bugbot review is standard** for feature PRs on this project. After the
+    PR exists (or after material follow-up commits), run the Bugbot review
+    subagent on the branch changes (`review-bugbot` / Task `bugbot`). Address
+    blocking findings on the same branch, push, and re-run Bugbot when the
+    diff changed materially. Skip only for trivial docs/chore PRs unless the
+    user asks for Bugbot anyway.
+11. For material or high-risk changes (execution, risk, secrets, LIVE gates,
+    infra/runtime, non-trivial strategy/data contracts), also obtain any
+    additional independent review the user requests before merge.
+12. Resolve blocking review findings on the same branch; re-run the relevant
     tests and CI.
-12. Stop at Ready: do **not** squash-merge feature PRs yourself. Cursor Cloud
+13. Stop at Ready: do **not** squash-merge feature PRs yourself. Cursor Cloud
     Agents open PRs and fix CI/review findings only.
-13. **Chief of Staff (CoS / Grok Bot)** reviews feature PRs and squash-merges
+14. **Chief of Staff (CoS / Grok Bot)** reviews feature PRs and squash-merges
     them when the review is OK, CI is green, and the PR is mergeable.
     Dependabot PRs may be CoS auto-merged on green CI without a full feature
     review. LIVE/capital still needs Chupa's explicit approval.
-14. After CoS merge, delete the merged feature branch and any associated
+15. After CoS merge, delete the merged feature branch and any associated
     worktree only after confirming they hold no uncommitted or unmerged work
     (ops/CoS), then synchronize the Netcup VPS `main` checkout with
     `origin/main` when a deploy is needed.

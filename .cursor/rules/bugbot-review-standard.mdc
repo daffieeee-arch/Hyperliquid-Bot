@@ -1,0 +1,17 @@
+---
+description: Bugbot review is standard in the Hyperliquid-Bot ship workflow
+alwaysApply: true
+---
+
+# Bugbot review (standard)
+
+For this repository, **Bugbot review is part of the normal development workflow**, not an optional extra.
+
+When opening or updating a feature PR:
+
+1. After the PR exists (and after material follow-up commits), run the Bugbot review subagent on **branch changes** via the `review-bugbot` skill / Task `bugbot`.
+2. Summarize findings for the user; fix blocking findings on the same branch; push; re-run Bugbot when the diff changed materially.
+3. Skip Bugbot only for trivial docs/chore PRs unless the user asks for it anyway.
+4. Do not treat CI green alone as sufficient review for feature PRs — Bugbot runs before Ready/CoS merge.
+
+Canonical workflow text: `AGENTS.md` → Development workflow (Bugbot step).

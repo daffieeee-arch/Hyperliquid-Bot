@@ -48,14 +48,13 @@ const QUOTE_STATE_LABEL: Record<MarketQuoteState, string> = {
   unavailable: "UNAVAILABLE",
 };
 
-function quoteStateTone(state: MarketQuoteState): "ok" | "warn" | "down" {
+function quoteStateTone(state: MarketQuoteState): "ok" | "warn" {
   switch (state) {
     case "ok":
       return "ok";
     case "stale":
-      return "warn";
     case "unavailable":
-      return "down";
+      return "warn";
     default: {
       const exhaustive: never = state;
       throw new Error(`Unhandled quote state: ${String(exhaustive)}`);
@@ -79,6 +78,21 @@ function Detail({
   );
 }
 
+function quoteSourceLabel(row: MarketRow): string {
+  switch (row.quoteKind) {
+    case "stored-tape":
+      return "stored capture";
+    case "soak-mark":
+      return "soak mark";
+    case "unavailable":
+      return "no capture quote";
+    default: {
+      const exhaustive: never = row.quoteKind;
+      throw new Error(`Unhandled quote kind: ${String(exhaustive)}`);
+    }
+  }
+}
+
 function QuoteWhen({ row }: { row: MarketRow }) {
   const nowIso = useNow();
   const clock = localClockLabel(row.quoteAt);
@@ -88,11 +102,11 @@ function QuoteWhen({ row }: { row: MarketRow }) {
       : updatedAgoLabel(row.quoteAt, nowIso, `updated ${row.quoteAge} ago`);
   return (
     <>
-      <span className="quote-secondary" title={row.quoteAt === undefined ? undefined : clock}>
+      <span className="quote-secondary" title={row.quoteSource}>
         {clock}
       </span>
       <Detail nowrap>{ago}</Detail>
-      <Detail nowrap>{`part ${row.lastPartAge}`}</Detail>
+      <Detail nowrap>{quoteSourceLabel(row)}</Detail>
     </>
   );
 }
@@ -297,7 +311,7 @@ export function MarketsScreen({
       <Card>
         <CardHeader
           title="Bound venues · last / mid"
-          description="One row per bound capture contract, including Hyperliquid. Last is the newest stored trade. Mid is the stored best bid/offer midpoint. Green is inside the freshness bound, amber is stale, red means no usable tick. A down or gapped venue stays UNAVAILABLE and does not clear the others. Prices are never invented."
+          description="One row per bound capture contract, including Hyperliquid. Last is the newest stored trade. Mid is the stored best bid/offer midpoint. Green is inside the 180s freshness bound, amber is stale or UNAVAILABLE. A down or gapped venue stays UNAVAILABLE and does not clear the others. Prices are never invented."
         />
         <CardBody flush>
           {strip.ok ? (

@@ -38,6 +38,7 @@ from .capture_observability import (
     configure_capture_logger,
     elapsed_from_report,
 )
+from .capture_operator_alert import emit_capture_operator_alert
 from .parquet_research import ParquetResearchWriter, ParquetRotation, create_research_catalog
 from .raw_research import (
     RAW_RESEARCH_SCHEMA_VERSION,
@@ -67,6 +68,8 @@ BITVAVO_FEED_PRODUCT: Final = "standard"
 # Match DATA-1F / DATA-1E: None keeps auto-pong for any server pings.
 BITVAVO_STANDARD_WEBSOCKET_CLIENT_PING_INTERVAL: Final[float | None] = None
 BITVAVO_STANDARD_WEBSOCKET_CLIENT_PING_TIMEOUT: Final[float | None] = None
+# Docs do not require client ping; soft-reconnect when market frames go silent.
+BITVAVO_STANDARD_APPLICATION_IDLE_RECONNECT_SECONDS: Final = 180.0
 SMOKE_CAPTURE_SECONDS: Final = 600.0
 MAX_CAPTURE_SECONDS: Final = 7 * 24 * 60 * 60
 RETAINED_MAX_RECONNECTS: Final = 10_080
@@ -424,11 +427,24 @@ class BitvavoStandardResearchCollector:
                 ) from None
             except (BitvavoSinkError, BitvavoDataIntegrityError):
                 raise
-            except (WebSocketException, OSError):
+            except (WebSocketException, OSError) as error:
+                idle_reconnect = (
+                    isinstance(error, ConnectionError)
+                    and str(error) == "application idle reconnect"
+                )
+                del error
                 if not connected:
                     await self._connection_failed(session_id, previous_session_id)
-                    raise BitvavoTransportError("Bitvavo public connection failed.") from None
-                await self._disconnected(session_id)
+                elif idle_reconnect:
+                    await self._append_marker(
+                        session_id,
+                        "session",
+                        "disconnected",
+                        stream=BITVAVO_FEED_PRODUCT,
+                        reason="application_idle",
+                    )
+                else:
+                    await self._disconnected(session_id)
                 if reconnects >= self._config.max_reconnects:
                     raise BitvavoTransportError(
                         "Bitvavo public reconnect bound was exhausted."
@@ -526,11 +542,43 @@ class BitvavoStandardResearchCollector:
         )
         snapshot_requests = 0
         outstanding_request_id: int | None = None
+        session_healthy = False
+        last_market_monotonic_ns = self._monotonic_ns()
 
         while not stop_event.is_set():
-            captured = await self._receive_or_stop(connection, stop_event)
+            timeout_seconds: float | None = None
+            if session_healthy:
+                idle_budget = BITVAVO_STANDARD_APPLICATION_IDLE_RECONNECT_SECONDS
+                elapsed = (self._monotonic_ns() - last_market_monotonic_ns) / 1_000_000_000
+                remaining = idle_budget - elapsed
+                if remaining <= 0:
+                    await self._append_marker(
+                        session_id,
+                        "data_quality",
+                        "gap_detected",
+                        stream=BITVAVO_FEED_PRODUCT,
+                        reason="application_idle",
+                    )
+                    raise ConnectionError("application idle reconnect")
+                timeout_seconds = max(remaining, 0.01)
+            captured = await self._receive_or_stop(
+                connection,
+                stop_event,
+                timeout_seconds=timeout_seconds,
+            )
             if captured is None:
-                break
+                if stop_event.is_set():
+                    break
+                if session_healthy:
+                    await self._append_marker(
+                        session_id,
+                        "data_quality",
+                        "gap_detected",
+                        stream=BITVAVO_FEED_PRODUCT,
+                        reason="application_idle",
+                    )
+                    raise ConnectionError("application idle reconnect")
+                continue
             raw_ordinal, channel, document = await self._record_inbound(captured, session_id)
 
             if channel == "error":
@@ -657,6 +705,12 @@ class BitvavoStandardResearchCollector:
                     normalized,
                 )
 
+            if channel in {*expected_channels, "book_snapshot"}:
+                last_market_monotonic_ns = self._monotonic_ns()
+            if subscriptions_active_marked and book_state.has_snapshot and not session_healthy:
+                session_healthy = True
+                last_market_monotonic_ns = self._monotonic_ns()
+
             outstanding_request_id, snapshot_requests = await self._maybe_request_snapshot(
                 connection,
                 session_id,
@@ -725,6 +779,8 @@ class BitvavoStandardResearchCollector:
         self,
         connection: WebSocketConnection,
         stop_event: asyncio.Event,
+        *,
+        timeout_seconds: float | None = None,
     ) -> CapturedApplicationPayload | None:
         receive_task = asyncio.create_task(
             self._receive_captured(connection),
@@ -734,6 +790,7 @@ class BitvavoStandardResearchCollector:
         try:
             done, _ = await asyncio.wait(
                 (receive_task, stop_task),
+                timeout=timeout_seconds,
                 return_when=asyncio.FIRST_COMPLETED,
             )
             if receive_task in done:
@@ -1744,6 +1801,7 @@ async def run_reconstructable_capture(
     }
     status = "FAILED"
     started = time.monotonic()
+    terminal_error: BaseException | None = None
     try:
         report = await run_bounded_capture(
             output_dir=paths.raw_dir,
@@ -1758,14 +1816,37 @@ async def run_reconstructable_capture(
             status = "OPERATOR_STOP"
         else:
             status = "COMPLETED"
+    except BaseException as error:
+        terminal_error = error
+        raise
     finally:
-        report = {**report, "elapsed_seconds": round(time.monotonic() - started, 6)}
+        elapsed = round(time.monotonic() - started, 6)
+        # Fail-closed stops can skip the normal DuckDB rebuild; reconstruct counts
+        # from published Parquet so health matches disk (events/reconnects/gaps).
+        events_raw = report.get("events", 0)
+        events_count = events_raw if isinstance(events_raw, int) else 0
+        if events_count == 0 and any(paths.raw_dir.glob("*.parquet")):
+            try:
+                if not paths.database_path.exists():
+                    create_research_catalog(paths.raw_dir, paths.database_path)
+                if paths.database_path.exists():
+                    rebuilt = build_capture_report(paths.database_path, paths.raw_dir)
+                    report = {**rebuilt, "elapsed_seconds": elapsed}
+            except Exception:
+                report = {**report, "elapsed_seconds": elapsed}
+        else:
+            report = {**report, "elapsed_seconds": elapsed}
         capture_logger().info(
-            "data1d stop run_id=%s status=%s requested_duration_seconds=%s elapsed_seconds=%s",
+            "data1d stop run_id=%s status=%s requested_duration_seconds=%s elapsed_seconds=%s "
+            "events=%s reconnects=%s gaps=%s parquet_files=%s",
             run_id,
             status,
             duration_seconds,
             report["elapsed_seconds"],
+            report.get("events"),
+            report.get("reconnects"),
+            report.get("gaps"),
+            report.get("parquet_files"),
         )
         if not paths.capture_health_path.exists():
             _write_create_only_json(
@@ -1778,6 +1859,13 @@ async def run_reconstructable_capture(
                     include_candles=include_candles,
                     candle_interval=candle_interval,
                 ),
+            )
+        if status == "FAILED":
+            emit_capture_operator_alert(
+                venue=BITVAVO_RESEARCH_VENUE,
+                run_id=run_id,
+                status=status,
+                error=terminal_error,
             )
     return {
         **report,

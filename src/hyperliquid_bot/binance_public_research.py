@@ -86,8 +86,10 @@ BINANCE_WEBSOCKET_CLIENT_PING_TIMEOUT: Final[float | None] = None
 # websockets default incoming queue is 16. Spot depth@100ms and USD-M
 # /public bookTicker can fill that under load (live 1011 asymmetry:
 # usdm_public >> spot >> usdm_market). Match the HL/OKX raw collectors.
+# Keep market queue high too: three profiles share one event loop, and a
+# shallow queue plus blocked processing surfaces as Spot 1008 Pong timeout.
 BINANCE_WEBSOCKET_HIGH_FREQUENCY_MAX_QUEUE: Final = 1024
-BINANCE_WEBSOCKET_MARKET_MAX_QUEUE: Final = 16
+BINANCE_WEBSOCKET_MARKET_MAX_QUEUE: Final = 1024
 # Cap below required_stream_starvation_seconds so backoff cannot starve
 # the mid-run liveness gate. Official Spot limit: 300 connections / 5 min / IP.
 BINANCE_RECONNECT_BACKOFF_CAP_SECONDS: Final = 24.0
@@ -476,30 +478,30 @@ class BinancePublicResearchCollector:
         _require_bounded_duration(duration_seconds)
         external_stop = stop_event
         internal_stop = asyncio.Event()
-        tasks = (
-            asyncio.create_task(
-                self._run_stream(
-                    _SPOT_PROFILE,
-                    self._spot_connection_factory,
-                    internal_stop,
-                )
-            ),
-            asyncio.create_task(
-                self._run_stream(
-                    _USDM_MARKET_PROFILE,
-                    self._usdm_market_connection_factory,
-                    internal_stop,
-                )
-            ),
-            asyncio.create_task(
-                self._run_stream(
-                    _USDM_PUBLIC_PROFILE,
-                    self._usdm_public_connection_factory,
-                    internal_stop,
-                )
-            ),
-            asyncio.create_task(self._capture_open_interest(internal_stop)),
+        spot_task = asyncio.create_task(
+            self._run_stream(
+                _SPOT_PROFILE,
+                self._spot_connection_factory,
+                internal_stop,
+            )
         )
+        market_task = asyncio.create_task(
+            self._run_stream(
+                _USDM_MARKET_PROFILE,
+                self._usdm_market_connection_factory,
+                internal_stop,
+            )
+        )
+        public_task = asyncio.create_task(
+            self._run_stream(
+                _USDM_PUBLIC_PROFILE,
+                self._usdm_public_connection_factory,
+                internal_stop,
+            )
+        )
+        oi_task = asyncio.create_task(self._capture_open_interest(internal_stop))
+        stream_tasks = (spot_task, market_task, public_task)
+        tasks = (*stream_tasks, oi_task)
         timer = asyncio.create_task(asyncio.sleep(float(duration_seconds)))
         external_wait = (
             asyncio.create_task(external_stop.wait()) if external_stop is not None else None
@@ -509,32 +511,43 @@ class BinancePublicResearchCollector:
         if external_wait is not None:
             watchers.add(cast(asyncio.Task[object], external_wait))
 
-        failure: BaseException | None = None
+        profile_failures: list[BaseException] = []
         try:
             while not internal_stop.is_set():
                 done, _ = await asyncio.wait(watchers, return_when=asyncio.FIRST_COMPLETED)
                 if timer in done or (external_wait is not None and external_wait in done):
                     internal_stop.set()
                     break
-                for task in tasks:
+                for task in stream_tasks:
                     if task not in done:
                         continue
                     task_error = task.exception()
                     if task_error is not None:
-                        failure = task_error
-                    elif task is not tasks[3]:
-                        failure = BinanceTransportError(
-                            "Binance required public stream ended unexpectedly."
+                        profile_failures.append(task_error)
+                        capture_logger().info(
+                            "binance profile_task_failed error_class=%s",
+                            type(task_error).__name__,
                         )
-                    if failure is not None:
-                        internal_stop.set()
-                        break
-                if failure is not None:
+                    else:
+                        profile_failures.append(
+                            BinanceTransportError(
+                                "Binance required public stream ended unexpectedly."
+                            )
+                        )
+                    watchers.discard(cast(asyncio.Task[object], task))
+                if oi_task in done:
+                    # Open-interest is best-effort context; never kill market sockets.
+                    watchers.discard(cast(asyncio.Task[object], oi_task))
+                watchers.difference_update(
+                    {item for item in done if item not in {timer, external_wait}}
+                )
+                if all(task.done() for task in stream_tasks):
+                    internal_stop.set()
                     break
-                watchers.difference_update(done)
         finally:
             internal_stop.set()
-            await asyncio.gather(*tasks, return_exceptions=True)
+            stream_results = await asyncio.gather(*stream_tasks, return_exceptions=True)
+            await asyncio.gather(oi_task, return_exceptions=True)
             timer.cancel()
             if external_wait is not None:
                 external_wait.cancel()
@@ -544,12 +557,22 @@ class BinancePublicResearchCollector:
                 with suppress(asyncio.CancelledError):
                     await external_wait
 
-        if failure is not None:
-            raise failure
-        for task in tasks:
-            task_error = task.exception()
-            if task_error is not None:
-                raise task_error
+        for result in stream_results:
+            if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
+                if not any(result is existing for existing in profile_failures):
+                    profile_failures.append(result)
+
+        for error in profile_failures:
+            if isinstance(error, (BinanceDataIntegrityError, BinanceSinkError)):
+                raise error
+
+        # Transport-only deaths stay profile-local: fail the retain only when every
+        # required websocket profile died.
+        if len(profile_failures) >= len(stream_tasks) and all(
+            isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError)
+            for result in stream_results
+        ):
+            raise profile_failures[0]
 
     async def _run_stream(
         self,
@@ -606,6 +629,7 @@ class BinancePublicResearchCollector:
                 )
                 return
             except (BinanceDataIntegrityError, BinanceSinkError):
+                # Market poison / sink failure stops the whole multi-profile retain.
                 stop_event.set()
                 raise
             except asyncio.CancelledError:
@@ -668,11 +692,11 @@ class BinancePublicResearchCollector:
                     extra={"transport_profile": profile.name},
                 )
                 if reconnects >= self._config.max_reconnects:
-                    stop_event.set()
                     raise BinanceTransportError(
                         "Binance public reconnect bound was exhausted."
                     ) from None
                 reconnects += 1
+                self._reset_profile_stream_watch(profile)
                 capture_logger().info(
                     "binance reconnect transport_profile=%s attempt=%s "
                     "reason=venue_server_shutdown",
@@ -696,7 +720,6 @@ class BinancePublicResearchCollector:
                     ),
                     stop_event,
                 )
-                await self._raise_if_required_stream_starved(profile, session_id)
             except PayloadTooBig:
                 await self._quality(
                     profile.product,
@@ -741,11 +764,11 @@ class BinancePublicResearchCollector:
                 if stop_event.is_set():
                     return
                 if reconnects >= self._config.max_reconnects:
-                    stop_event.set()
                     raise BinanceTransportError(
                         "Binance public reconnect bound was exhausted."
                     ) from None
                 reconnects += 1
+                self._reset_profile_stream_watch(profile)
                 capture_logger().info(
                     "binance reconnect transport_profile=%s attempt=%s",
                     profile.name,
@@ -768,7 +791,6 @@ class BinancePublicResearchCollector:
                     ),
                     stop_event,
                 )
-                await self._raise_if_required_stream_starved(profile, session_id)
             except BaseException:
                 stop_event.set()
                 raise BinanceTransportError("Binance public transport boundary failed.") from None
@@ -917,6 +939,9 @@ class BinancePublicResearchCollector:
                         "authenticated": False,
                     },
                 )
+            # Yield so sibling profile sockets can answer Binance server pings
+            # (Spot pong within ~1 minute). Three profiles share one event loop.
+            await asyncio.sleep(0)
 
         # Idle reconnect + operator/duration stop is allowed only when this
         # profile already observed every required stream earlier in the run
@@ -956,12 +981,19 @@ class BinancePublicResearchCollector:
         self._profile_watch_started_monotonic.setdefault(profile.name, time.monotonic())
 
     def _reset_profile_stream_watch(self, profile: _StreamProfile) -> None:
-        """Fresh silence window after a forced profile reconnect."""
+        """Fresh silence window after a forced profile reconnect.
+
+        Keep previously observed required streams marked observed so a slow
+        bootstrap on one stream cannot fail-closed as never-seen. Only reset
+        the silence clocks.
+        """
 
         now = time.monotonic()
         self._profile_watch_started_monotonic[profile.name] = now
         for stream in profile.required_streams:
-            self._required_last_seen_monotonic.pop((profile.name, stream), None)
+            key = (profile.name, stream)
+            if key in self._required_last_seen_monotonic:
+                self._required_last_seen_monotonic[key] = now
 
     def _note_required_stream(self, profile: _StreamProfile, stream: str) -> None:
         if stream in profile.required_streams:

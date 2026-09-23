@@ -51,6 +51,7 @@ from .capture_observability import (
     elapsed_from_report,
     transport_exception_fields,
 )
+from .capture_operator_alert import emit_capture_operator_alert
 from .parquet_research import ParquetResearchWriter, ParquetRotation, create_research_catalog
 from .raw_research import (
     RAW_RESEARCH_SCHEMA_VERSION,
@@ -762,7 +763,6 @@ class KrakenL3ResearchCollector:
             await self._session_started(session_id, "public", previous_session_id)
             connected = False
             payload_size_failure = False
-            connection_failure = False
             unexpected_boundary_failure = False
             try:
                 async with self._public_connection_factory() as connection:
@@ -800,16 +800,13 @@ class KrakenL3ResearchCollector:
                 del error
                 if not connected:
                     await self._connection_failed(session_id, "public", previous_session_id)
-                    connection_failure = True
                 else:
                     await self._disconnected(session_id, "public", disconnect_fields)
-                    previous_session_id = session_id
+                previous_session_id = session_id
             except Exception:
                 unexpected_boundary_failure = True
             if payload_size_failure:
                 raise KrakenDataIntegrityError("Kraken public payload exceeded its bound.")
-            if connection_failure:
-                raise KrakenTransportError("Kraken public connection failed.")
             if unexpected_boundary_failure:
                 if connected:
                     await self._disconnected(session_id, "public")
@@ -862,7 +859,6 @@ class KrakenL3ResearchCollector:
             )
             connected = False
             payload_size_failure = False
-            connection_failure = False
             unexpected_boundary_failure = False
             authentication_failure = False
             try:
@@ -922,18 +918,15 @@ class KrakenL3ResearchCollector:
                 del error
                 if not connected:
                     await self._connection_failed(session_id, "l3", previous_session_id)
-                    connection_failure = True
                 else:
                     await self._disconnected(session_id, "l3", disconnect_fields)
-                    previous_session_id = session_id
+                previous_session_id = session_id
             except Exception:
                 unexpected_boundary_failure = True
             if payload_size_failure:
                 raise KrakenDataIntegrityError("Kraken L3 payload exceeded its bound.")
             if authentication_failure:
                 raise KrakenAuthenticationError("Kraken L3 authentication failed.")
-            if connection_failure:
-                raise KrakenTransportError("Kraken L3 connection failed.")
             if unexpected_boundary_failure:
                 if connected:
                     await self._disconnected(session_id, "l3")
@@ -2072,6 +2065,7 @@ async def run_reconstructable_capture(
     }
     status = "FAILED"
     started = time.monotonic()
+    terminal_error: BaseException | None = None
     try:
         report = await run_bounded_capture(
             output_dir=paths.raw_dir,
@@ -2086,14 +2080,37 @@ async def run_reconstructable_capture(
             status = "OPERATOR_STOP"
         else:
             status = "COMPLETED"
+    except BaseException as error:
+        terminal_error = error
+        raise
     finally:
-        report = {**report, "elapsed_seconds": round(time.monotonic() - started, 6)}
+        elapsed = round(time.monotonic() - started, 6)
+        # Fail-closed stops can skip the normal DuckDB rebuild; reconstruct counts
+        # from published Parquet so health matches disk (events/reconnects/gaps).
+        events_raw = report.get("events", 0)
+        events_count = events_raw if isinstance(events_raw, int) else 0
+        if events_count == 0 and any(paths.raw_dir.glob("*.parquet")):
+            try:
+                if not paths.database_path.exists():
+                    create_research_catalog(paths.raw_dir, paths.database_path)
+                if paths.database_path.exists():
+                    rebuilt = build_capture_report(paths.database_path, paths.raw_dir)
+                    report = {**rebuilt, "elapsed_seconds": elapsed}
+            except Exception:
+                report = {**report, "elapsed_seconds": elapsed}
+        else:
+            report = {**report, "elapsed_seconds": elapsed}
         capture_logger().info(
-            "data1b stop run_id=%s status=%s requested_duration_seconds=%s elapsed_seconds=%s",
+            "data1b stop run_id=%s status=%s requested_duration_seconds=%s elapsed_seconds=%s "
+            "events=%s reconnects=%s gaps=%s parquet_files=%s",
             run_id,
             status,
             duration_seconds,
             report["elapsed_seconds"],
+            report.get("events"),
+            report.get("reconnects"),
+            report.get("gaps"),
+            report.get("parquet_files"),
         )
         if not paths.capture_health_path.exists():
             _write_create_only_json(
@@ -2105,6 +2122,13 @@ async def run_reconstructable_capture(
                     report=report,
                     include_l3=include_l3,
                 ),
+            )
+        if status == "FAILED":
+            emit_capture_operator_alert(
+                venue=KRAKEN_RESEARCH_VENUE,
+                run_id=run_id,
+                status=status,
+                error=terminal_error,
             )
     return {
         **report,

@@ -298,12 +298,27 @@ class ReconnectFailingFactory:
         self._first = first
         self._failure_text = failure_text
         self.calls = 0
+        self.stop_event: asyncio.Event | None = None
 
     def __call__(self) -> AbstractAsyncContextManager[WebSocketConnection]:
         self.calls += 1
         if self.calls == 1:
             return _fake_context(self._first)
+        if self.stop_event is not None:
+            self.stop_event.set()
         raise OSError(self._failure_text)
+
+
+class FirstConnectFailThenSucceedFactory:
+    def __init__(self, connection: FakeConnection) -> None:
+        self._connection = connection
+        self.calls = 0
+
+    def __call__(self) -> AbstractAsyncContextManager[WebSocketConnection]:
+        self.calls += 1
+        if self.calls == 1:
+            raise OSError("synthetic first public connect failure")
+        return _fake_context(self._connection)
 
 
 class SyntheticTokenProvider:
@@ -1600,7 +1615,9 @@ async def test_failed_l3_reconnect_is_visible_terminal_and_sanitized() -> None:
         [_ack("level3"), _fixture_text("level3_snapshot.json")],
         receive_failure_text=f"synthetic receive failure {first_token}",
     )
+    stop_event = asyncio.Event()
     factory = ReconnectFailingFactory(first, lower_failure)
+    factory.stop_event = stop_event
     sink = MemorySink()
     collector = KrakenL3ResearchCollector(
         sink,
@@ -1611,12 +1628,8 @@ async def test_failed_l3_reconnect_is_visible_terminal_and_sanitized() -> None:
         session_id_factory=SessionIds(),
     )
 
-    with pytest.raises(KrakenTransportError) as captured:
-        await collector._run_l3_stream(asyncio.Event())
+    await collector._run_l3_stream(stop_event)
 
-    formatted = "".join(traceback.format_exception(captured.value))
-    assert captured.value.__context__ is None
-    assert lower_failure not in formatted
     assert factory.calls == 2
     assert any(
         event.get("event") == "reconnect_failed" and event.get("stream") == "l3"
@@ -1629,6 +1642,37 @@ async def test_failed_l3_reconnect_is_visible_terminal_and_sanitized() -> None:
     record_bytes = _all_record_bytes(sink.records)
     for secret in (first_token, second_token, lower_failure):
         assert secret.encode("utf-8") not in record_bytes
+
+
+@pytest.mark.asyncio
+async def test_first_public_connect_fails_once_then_succeeds() -> None:
+    stop_event = asyncio.Event()
+    public = FakeConnection(
+        [_ack("trade"), _ack("book"), _fixture_text("book_snapshot.json")],
+        on_last=stop_event.set,
+    )
+    factory = FirstConnectFailThenSucceedFactory(public)
+    sink = MemorySink()
+    collector = KrakenL3ResearchCollector(
+        sink,
+        None,
+        config=KrakenL3ResearchConfig(reconnect_delay_seconds=0.0),
+        public_connection_factory=factory,
+        session_id_factory=SessionIds(),
+    )
+
+    await collector.capture_for(2.0, stop_event=stop_event)
+
+    assert factory.calls == 2
+    sessions = _marker_documents(sink.records, channel="session")
+    assert any(
+        event.get("event") == "connection_failed" and event.get("stream") == "public"
+        for event in sessions
+    )
+    assert any(
+        event.get("event") == "reconnected" and event.get("stream") == "public"
+        for event in sessions
+    )
 
 
 @pytest.mark.asyncio

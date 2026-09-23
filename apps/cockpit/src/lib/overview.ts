@@ -338,7 +338,7 @@ export function buildOverviewView(
     attention.push({
       id: "paper-reject",
       state: "stale",
-      title: `Last PAPER decision was rejected by ${paper.why.gateName}`,
+      title: `Last PAPER decision REJECT · #65 ${paper.why.gateName}`,
       detail: paper.why.reason,
       href: "/paper",
       target: "PAPER",

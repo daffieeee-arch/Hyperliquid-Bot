@@ -240,11 +240,7 @@ describe("MARKETS quotes", () => {
   });
 
   it("fills Last and Mid from the stored tape, attributed to run and channels", () => {
-    const rows = applyStoredTapeQuote(
-      marketsRowsFromBoundVenues(venues),
-      storedTape,
-      180,
-    );
+    const rows = applyStoredTapeQuote(marketsRowsFromBoundVenues(venues), storedTape, 180);
 
     const binance = rows.find((row) => row.id === "binance");
     // The BTCUSDT contract maps to the BTCUSDT-SPOT instrument, not the USDⓈ-M perpetual.
@@ -285,11 +281,7 @@ describe("MARKETS quotes", () => {
   });
 
   it("marks a stored quote stale beyond fresh_max_s and explains a half-empty tape", () => {
-    const rows = applyStoredTapeQuote(
-      marketsRowsFromBoundVenues(venues),
-      storedTape,
-      10,
-    );
+    const rows = applyStoredTapeQuote(marketsRowsFromBoundVenues(venues), storedTape, 10);
     const binance = rows.find((row) => row.id === "binance");
     expect(binance?.quoteState).toBe("stale");
     expect(binance?.quoteReason).toBe("newest stored tick is 14s old (fresh ≤ 10s)");
@@ -322,11 +314,7 @@ describe("MARKETS quotes", () => {
         ],
       },
     };
-    const partial = applyStoredTapeQuote(
-      marketsRowsFromBoundVenues(venues),
-      tradeOnly,
-      180,
-    );
+    const partial = applyStoredTapeQuote(marketsRowsFromBoundVenues(venues), tradeOnly, 180);
     const row = partial.find((item) => item.id === "binance");
     expect(row).toMatchObject({ last: "81181", mid: MARKET_QUOTE_UNAVAILABLE, quoteState: "ok" });
     expect(row?.quoteReason).toBe("no BBO decoded yet · last from stored trades");

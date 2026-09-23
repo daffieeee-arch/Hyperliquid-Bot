@@ -198,10 +198,10 @@ export function MarketsScreen({
         <div>
           <h1>Markets</h1>
           <p>
-            Venue last and mid come from the stored capture of each bound run (HL, Binance,
-            Bitvavo, Bitvavo Standard, Kraken). A missing trade or BBO stays UNAVAILABLE. The chart
-            above that table is separate public Hyperliquid context and is not a venue mid. Neither
-            is research truth or PAPER PnL.
+            Venue last and mid come from the stored capture of each bound run (HL, Binance, Bitvavo,
+            Bitvavo Standard, Kraken). A missing trade or BBO stays UNAVAILABLE. The chart above
+            that table is separate public Hyperliquid context and is not a venue mid. Neither is
+            research truth or PAPER PnL.
           </p>
         </div>
         <div className="page-head-actions">

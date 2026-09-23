@@ -12,11 +12,7 @@ import { localClockLabel } from "../../lib/time-display";
 import type { VenueCaptureStripResponse } from "../../lib/types";
 import { useNow } from "../../lib/use-now";
 
-function liveDataAge(
-  at: string | undefined,
-  nowIso: string | undefined,
-  frozen: string,
-): string {
+function liveDataAge(at: string | undefined, nowIso: string | undefined, frozen: string): string {
   const seconds = secondsBetween(at, nowIso);
   return seconds === undefined ? frozen : formatAgeSeconds(seconds);
 }

@@ -168,8 +168,7 @@ function newestIso(...values: (string | undefined)[]): string | undefined {
 }
 
 function storedSource(venue: VenueMarketTape, instrument: InstrumentTape): string {
-  const channels =
-    instrument.channelsSeen.length > 0 ? instrument.channelsSeen.join("+") : "n/a";
+  const channels = instrument.channelsSeen.length > 0 ? instrument.channelsSeen.join("+") : "n/a";
   return `${MARKET_STORED_TAPE_SOURCE} · run ${presentCopiedText(venue.runId)} · ${channels}`;
 }
 

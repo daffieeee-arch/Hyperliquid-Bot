@@ -96,8 +96,8 @@ export function CapturePulse({ query }: { query: VenueCaptureQuery }) {
         tone={read.tone}
         className={
           feedback.busy || activity.lastOutcome === null
-            ? "topbar-wide read-age"
-            : "topbar-wide read-age badge-pulse"
+            ? "topbar-fresh read-age"
+            : "topbar-fresh read-age badge-pulse"
         }
         title={`${read.detail} Auto-refresh every ${String(intervalMs / 1000)}s${paused ? " (paused)" : ""}.`}
       >

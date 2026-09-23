@@ -288,7 +288,12 @@ export function OverviewScreen({
                         : view.paper.lastOutcome === "REJECT"
                           ? "down"
                           : "warn",
-                    detail: view.paper.lastGate === "UNAVAILABLE" ? undefined : view.paper.lastGate,
+                    detail:
+                      view.paper.lastOutcome === "REJECT"
+                        ? `#65 ${view.paper.lastGate}`
+                        : view.paper.lastGate === "UNAVAILABLE"
+                          ? undefined
+                          : view.paper.lastGate,
                   },
                   { label: "Position", value: `${view.paper.side} · ${view.paper.size}` },
                   {
@@ -394,7 +399,8 @@ export function OverviewScreen({
                   href: `/markets${search}`,
                   icon: <CandlestickChart size={15} aria-hidden="true" />,
                   title: "Markets",
-                  detail: "Capture last and BBO mid for every bound venue. Public candles stay context.",
+                  detail:
+                    "Capture last and BBO mid for every bound venue. Public candles stay context.",
                 },
                 {
                   href: `/research${search}`,

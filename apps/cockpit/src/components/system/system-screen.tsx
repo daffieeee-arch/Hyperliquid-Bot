@@ -35,7 +35,9 @@ import { PAPER_HARD_LIMIT_GATES } from "../../lib/paper-risk-gates";
 import type { PaperRiskGate } from "../../lib/paper-risk-gates";
 import { withLiveStripRisk, type RiskField, type RiskView } from "../../lib/risk";
 import { withLiveStripSecondRow, type SecondRowView } from "../../lib/second-row";
-import { dualClockLabel, localClockLabel } from "../../lib/time-display";
+import { updatedAgoLabel } from "../../lib/poll-state";
+import { localClockLabel } from "../../lib/time-display";
+import { useNow } from "../../lib/use-now";
 import type { Data1ACaptureResponse, VenueCaptureStripResponse } from "../../lib/types";
 import { useData1ACapturePoll } from "../../lib/use-data1a-capture";
 import { useMarketTape } from "../../lib/use-market-tape";
@@ -106,6 +108,7 @@ export function SystemScreen({
   risk: RiskView;
 }) {
   const { token, paused, setPaused, intervalMs } = useCockpitRefresh();
+  const nowIso = useNow();
   const stripPoll = useVenueCapturePoll(query, initialStrip, token);
   const data1aPoll = useData1ACapturePoll(query.data1a_run_id, initialData1A, token);
   const tapePoll = useMarketTape(query, initialTape, token);
@@ -134,10 +137,15 @@ export function SystemScreen({
   const worstState = strip.ok
     ? worstDataState(strip.strip.venues.map((venue) => captureChipDataState(venue.status)))
     : "error";
+  const lastPartIso = data1a.ok ? data1a.snapshot.parts.last_part_mtime_utc : undefined;
+  const lastPartClock = localClockLabel(lastPartIso);
+  const lastPartAgo = updatedAgoLabel(lastPartIso, nowIso, "");
   const lastPartAmsterdam =
-    data1a.ok && data1a.snapshot.parts.last_part_mtime_utc !== undefined
-      ? dualClockLabel(data1a.snapshot.parts.last_part_mtime_utc)
-      : "n/a";
+    lastPartClock === "—"
+      ? "n/a"
+      : lastPartAgo === ""
+        ? lastPartClock
+        : `${lastPartClock} · ${lastPartAgo}`;
   const durationLine = data1a.ok ? presentData1ADuration(data1a.snapshot) : undefined;
 
   return (
@@ -401,7 +409,7 @@ export function SystemScreen({
       <Card>
         <CardHeader
           title="Reconstructable risk overlay"
-          description={`${liveRisk.captureLine} · assumed overlay is never venue-reconciled`}
+          description={`${phaseALine} · assumed overlay is never venue-reconciled. Leverage, margin, liquidation and VaR stay UNAVAILABLE.`}
           actions={
             <div className="seg" role="group" aria-label="Filter risk fields">
               {(["all", "copied", "unavailable"] as const).map((option) => (

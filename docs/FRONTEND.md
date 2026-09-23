@@ -50,10 +50,11 @@ control, and on mobile the sidebar collapses into a drawer. Routes:
    severity-ranked **attention list** that links into the workspace that can
    explain each item, public market context, a PAPER digest, the bound
    capture strip and a research-availability card.
-2. **`/markets`:** public HL BTC-PERP mid plus the public `candleSnapshot`
-   chart with a 5m/15m/1h/4h interval control; sibling last/BBO stay
-   **UNAVAILABLE**. A recharts sparkline renders only from real public
-   closes. Public mid is labeled **not research truth**.
+2. **`/markets`:** last and mid for every bound venue (HL, Binance, Bitvavo,
+   Bitvavo Standard, Kraken) from that run's stored trade and BBO. A missing
+   tick stays **UNAVAILABLE** and does not blank the other rows. The public
+   `candleSnapshot` chart is separate context, labeled **not a capture mid**
+   and **not research truth**. A chart failure does not unmount the quote table.
 3. **`/research` (Quant P0):** artifact and summary viewer only — run
    registry, capture health, WP-Q1 sufficiency, instrument identity and the
    overlap clock. No live mid chart lives here. Missing files stay
@@ -81,29 +82,31 @@ control, and on mobile the sidebar collapses into a drawer. Routes:
   button re-enabled, and the read badge pulses once. The public HL mid and
   candle hooks run on `usePoll` too, so Markets (mid, candles, strip, stored
   tape) is tracked as one snapshot.
-- **Europe/Amsterdam first, UTC in the tooltip.** `lib/time-display.ts` fixes
+- **Europe/Amsterdam only.** `lib/time-display.ts` fixes
   `COCKPIT_TIME_ZONE = "Europe/Amsterdam"`; `localClockLabel` renders
   `HH:MM:SS CEST` / `CET` through `Intl.DateTimeFormat` (en-GB, `h23`), never
-  the browser's zone. Read badges, tape rows, recent trades and attention items
-  show the local label; the exact UTC ISO stays in `title` / detail text and in
-  the data. Tests always pass the zone explicitly so they do not depend on the
-  machine clock.
+  the browser's zone and never a trailing `Z`. Read badges, tape rows, recent
+  trades, attention items and tooltips use that label. Relative ages tick as
+  `updated … ago` from the source timestamp. Source JSON stays UTC ISO.
+  Tests always pass the zone explicitly so they do not depend on the machine
+  clock.
 - **A ticking clock is not a read.** `useNow(1000)` is a client-only display
   clock (undefined during SSR). `readAgeLabel` derives `updated Ns ago` from
   `PollState.lastSuccessAt` only, so a failing panel keeps counting up from its
   last good read (`last good read Ns ago`) instead of looking fresh because the
   second hand moved.
 - **Stored quotes are wired, attributed and bounded.** `applyStoredTapeQuote`
-  (`lib/markets.ts`) fills the Markets Last / Mid columns for Binance, Bitvavo
-  and Kraken from the stored tape of the bound run: Last = `lastTrade.price`,
-  Mid = `(bid + ask) / 2` in exact decimal-string arithmetic, source
-  `stored capture · run <id> · <channels>`. The contract product is mapped to
-  the collector's instrument (`BTCUSDT → BTCUSDT-SPOT`, `BTC-EUR`, `BTC/USD`,
-  `BTC-PERP`) before falling back to the first instrument with a tick. HL keeps
-  the public `/info` mid and gains the stored last. Green is inside
-  `fresh_max_s`, amber is stale, red **UNAVAILABLE** carries the honest reason
-  (capture MISSING, tape unreadable, no trade/BBO decoded yet). No venue API is
-  called from the browser.
+  (`lib/markets.ts`) fills the Markets Last / Mid columns for Hyperliquid,
+  Binance, Bitvavo, Bitvavo Standard and Kraken from the stored tape of the
+  bound run: Last = `lastTrade.price`, Mid = `(bid + ask) / 2` in exact
+  decimal-string arithmetic, source `stored capture · run <id> · <channels>`.
+  The contract product is mapped to the collector's instrument
+  (`BTCUSDT → BTCUSDT-SPOT`, `BTC-EUR`, `BTC/USD`, `BTC-PERP`) before falling
+  back to the first instrument with a tick. The public `/info` mid is not
+  copied onto a venue row. Green is inside `fresh_max_s`, amber is stale, red
+  **UNAVAILABLE** carries the honest reason (capture MISSING, tape unreadable,
+  no trade/BBO decoded yet). One bad venue does not clear the others. No venue
+  API is called from the browser.
 - **Readable at desk density.** Body 15px (hybrid) / 14px (terminal), meta
   and eyebrows 12px, table body 13px with 11.5px muted headers, badges ≥ 11px.
   Primary Last / Mid cells use `.quote-primary` (15.2px, 16px on phones,
@@ -283,15 +286,15 @@ Later command center:
 
 ### MARKETS
 
-First PAPER slice (now on the first screen): bound HL BTC-PERP public mid from
-existing `/api/public-btc-perp`, capture freshness on the same bound runs, and
-a `Bound venues · last / mid` table (Venue | Instrument | Last | Mid | Age |
-Status) whose Binance / Bitvavo / Kraken values come from the stored tape of
-the bound run via `/api/market-tape` (see *Stored quotes are wired* above).
-A venue without a usable stored tick stays fail-closed **UNAVAILABLE** with
-its reason; nothing is fetched from a venue API. Copied COURSE-1 soak
-`mark_price` is labeled as a soak mark, not a live last and not venue PnL.
-No L2/L3 ladders.
+First PAPER slice (now on the first screen): a `Bound venues · last / mid`
+table (Venue | Instrument | Last | Mid | When | Status) whose HL / Binance /
+Bitvavo / Kraken values come from the stored tape of the bound run via
+`/api/market-tape` (see *Stored quotes are wired* above). When shows
+Europe/Amsterdam (CEST/CET) and a ticking `updated … ago`. A venue without a
+usable stored tick stays fail-closed **UNAVAILABLE** with its reason; nothing
+is fetched from a venue API and nothing is invented. The public HL candle
+chart stays separate context. Copied COURSE-1 soak `mark_price` is labeled as
+a soak mark, not a live last and not venue PnL. No L2/L3 ladders.
 
 Later TradingView/Bookmap-inspired market workspace:
 

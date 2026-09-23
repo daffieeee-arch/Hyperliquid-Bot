@@ -394,7 +394,7 @@ export function OverviewScreen({
                   href: `/markets${search}`,
                   icon: <CandlestickChart size={15} aria-hidden="true" />,
                   title: "Markets",
-                  detail: "Public mid and candles with interval choice and preserved zoom.",
+                  detail: "Capture last and BBO mid for every bound venue. Public candles stay context.",
                 },
                 {
                   href: `/research${search}`,

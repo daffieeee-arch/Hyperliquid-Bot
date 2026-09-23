@@ -47,19 +47,20 @@ describe("poll state", () => {
     const failedBeforeAnySuccess = pollFailed(initial, new Error("500"), "2026-09-06T12:00:15Z");
     const described = describePollRead(failedBeforeAnySuccess);
     expect(described.tone).toBe("down");
-    // Labels are Europe/Amsterdam wall clock (CEST in September); detail keeps UTC.
+    // Labels and details are Europe/Amsterdam wall clock (CEST in September).
     expect(described.label).toBe("read failed 14:00:15 CEST");
     expect(described.detail).toMatch(/values from the server render/);
-    expect(described.detail).toMatch(/Attempt at 12:00:15Z/);
+    expect(described.detail).toMatch(/Attempt at 14:00:15 CEST/);
+    expect(described.detail).not.toMatch(/Z/);
 
     const ok = pollSucceeded(initial, "fresh", "2026-09-06T12:00:30Z");
     expect(describePollRead(ok)).toMatchObject({ tone: "ok", label: "read 14:00:30 CEST" });
-    expect(describePollRead(ok).detail).toMatch(/at 12:00:30Z/);
+    expect(describePollRead(ok).detail).toMatch(/at 14:00:30 CEST/);
+    expect(describePollRead(ok).detail).not.toMatch(/Z/);
 
     const failedAfterSuccess = pollFailed(ok, new Error("timeout"), "2026-09-06T12:00:45Z");
-    expect(describePollRead(failedAfterSuccess).detail).toMatch(
-      /values from 14:00:30 CEST \(12:00:30Z\)/,
-    );
+    expect(describePollRead(failedAfterSuccess).detail).toMatch(/values from 14:00:30 CEST/);
+    expect(describePollRead(failedAfterSuccess).detail).not.toMatch(/Z/);
 
     const winter = pollSucceeded(initial, "fresh", "2026-01-06T12:00:30Z");
     expect(describePollRead(winter).label).toBe("read 13:00:30 CET");

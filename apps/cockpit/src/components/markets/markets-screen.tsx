@@ -9,12 +9,16 @@ import { OriginBadge } from "../ui/origin-badge";
 import { Card, CardBody, CardDisclosure, CardHeader } from "../ui/card";
 import { DataTable, dataTableColumnHelper, type DataTableColumns } from "../ui/data-table";
 import { Notice } from "../ui/notice";
+import { PanelBoundary } from "../ui/panel-boundary";
 import { ReadStatus } from "../ui/read-status";
 import { Stat } from "../ui/stat";
 import { useCockpitRefresh } from "../providers/cockpit-refresh";
 import { describeOriginSummary, stripOrigin } from "../../lib/data-origin";
 import { captureChipDataState, dataStateTone } from "../../lib/data-state";
 import { formatGroupedNumber } from "../../lib/display";
+import { updatedAgoLabel } from "../../lib/poll-state";
+import { localClockLabel } from "../../lib/time-display";
+import { useNow } from "../../lib/use-now";
 import {
   MARKET_QUOTE_UNAVAILABLE,
   applyStoredTapeQuote,
@@ -75,6 +79,24 @@ function Detail({
   );
 }
 
+function QuoteWhen({ row }: { row: MarketRow }) {
+  const nowIso = useNow();
+  const clock = localClockLabel(row.quoteAt);
+  const ago =
+    row.quoteAt === undefined
+      ? `age ${row.quoteAge}`
+      : updatedAgoLabel(row.quoteAt, nowIso, `updated ${row.quoteAge} ago`);
+  return (
+    <>
+      <span className="quote-secondary" title={row.quoteAt === undefined ? undefined : clock}>
+        {clock}
+      </span>
+      <Detail nowrap>{ago}</Detail>
+      <Detail nowrap>{`part ${row.lastPartAge}`}</Detail>
+    </>
+  );
+}
+
 function QuoteCell({ value, reason }: { value: string; reason: string | undefined }) {
   if (value === MARKET_QUOTE_UNAVAILABLE) {
     return (
@@ -111,15 +133,8 @@ const columns: DataTableColumns<MarketRow> = helper.columns([
     cell: ({ row }) => <QuoteCell value={row.original.mid} reason={row.original.quoteReason} />,
   }),
   helper.accessor("quoteAge", {
-    header: "Age",
-    cell: ({ row }) => (
-      <>
-        <span className="quote-secondary" title={row.original.quoteAt}>
-          {row.original.quoteAge}
-        </span>
-        <Detail nowrap>{`part ${row.original.lastPartAge}`}</Detail>
-      </>
-    ),
+    header: "When",
+    cell: ({ row }) => <QuoteWhen row={row.original} />,
   }),
   helper.accessor("quoteState", {
     header: "Status",
@@ -173,11 +188,7 @@ export function MarketsScreen({
 
   const freshMaxS = strip.ok ? strip.strip.fresh_max_s : 180;
   const rows = strip.ok
-    ? applyStoredTapeQuote(
-        marketsRowsFromBoundVenues(strip.strip.venues, mid),
-        tapePoll.data,
-        freshMaxS,
-      )
+    ? applyStoredTapeQuote(marketsRowsFromBoundVenues(strip.strip.venues), tapePoll.data, freshMaxS)
     : [];
   const soak = soakMarkRow(soakPnl);
 
@@ -187,10 +198,10 @@ export function MarketsScreen({
         <div>
           <h1>Markets</h1>
           <p>
-            Two sources, kept apart. The chart and mid are public Hyperliquid context from the
-            credentialless <span className="mono">/info</span> route. The stored market data below
-            is what our own collectors wrote to disk for every bound venue. Neither is research
-            truth or PAPER PnL.
+            Venue last and mid come from the stored capture of each bound run (HL, Binance,
+            Bitvavo, Bitvavo Standard, Kraken). A missing trade or BBO stays UNAVAILABLE. The chart
+            above that table is separate public Hyperliquid context and is not a venue mid. Neither
+            is research truth or PAPER PnL.
           </p>
         </div>
         <div className="page-head-actions">
@@ -209,7 +220,7 @@ export function MarketsScreen({
 
       <div className="grid grid-sm-2 grid-lg-4">
         <Stat
-          label="BTC-PERP mid"
+          label="Public HL context"
           value={
             mid.status === "ready"
               ? formatGroupedNumber(mid.price.mid)
@@ -220,7 +231,7 @@ export function MarketsScreen({
           tone={mid.status === "ready" ? "neutral" : "muted"}
           meta={
             mid.status === "ready"
-              ? `${mid.price.source} · unsigned`
+              ? `${mid.price.source} · not a capture mid`
               : mid.status === "error"
                 ? mid.message
                 : "Fetching public /info allMids…"
@@ -277,14 +288,16 @@ export function MarketsScreen({
           }
         />
         <CardBody>
-          <MidChart interval={interval} refreshToken={token} />
+          <PanelBoundary title="Public candle chart unavailable">
+            <MidChart interval={interval} refreshToken={token} />
+          </PanelBoundary>
         </CardBody>
       </Card>
 
       <Card>
         <CardHeader
           title="Bound venues · last / mid"
-          description="One row per bound capture contract. Hyperliquid's mid is the public /info quote; every other Last and Mid is decoded from the stored capture of the bound run (source and channels under Status). Green is inside the freshness bound, amber is stale, red means no usable tick — never an invented price."
+          description="One row per bound capture contract, including Hyperliquid. Last is the newest stored trade. Mid is the stored best bid/offer midpoint. Green is inside the freshness bound, amber is stale, red means no usable tick. A down or gapped venue stays UNAVAILABLE and does not clear the others. Prices are never invented."
         />
         <CardBody flush>
           {strip.ok ? (
@@ -313,7 +326,9 @@ export function MarketsScreen({
         )}
       </Card>
 
-      <StoredMarketData tapePoll={tapePoll} strip={strip} />
+      <PanelBoundary title="Stored market data failed to render">
+        <StoredMarketData tapePoll={tapePoll} strip={strip} />
+      </PanelBoundary>
     </div>
   );
 }

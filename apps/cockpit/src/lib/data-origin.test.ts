@@ -268,7 +268,8 @@ describe("overview stored-data attention", () => {
     );
     const readItem = view.attention.find((item) => item.id === "read-tape");
     expect(readItem).toMatchObject({ state: "error", target: "Markets" });
-    expect(readItem?.detail).toContain("20:00:30 CEST (18:00:30Z)");
+    expect(readItem?.detail).toContain("20:00:30 CEST");
+    expect(readItem?.detail).not.toMatch(/Z/);
     expect(readItem?.detail).toContain("2 consecutive failure(s)");
     expect(view.attention.some((item) => item.id === "tape")).toBe(true);
   });

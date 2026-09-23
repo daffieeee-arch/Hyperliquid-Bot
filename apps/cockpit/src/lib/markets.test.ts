@@ -2,20 +2,15 @@ import { describe, expect, it } from "vitest";
 
 import {
   MARKET_BBO_NOT_IN_COCKPIT_APIS,
-  MARKET_PUBLIC_MID_SOURCE,
   MARKET_QUOTE_UNAVAILABLE,
   MARKET_SOAK_MARK_SOURCE,
-  applyPublicMid,
   applyStoredTapeQuote,
   decimalMidpoint,
   marketsRowsFromBoundVenues,
   pickQuoteInstrument,
   soakMarkRow,
-  type MarketRow,
-  type PublicMidState,
 } from "./markets";
 import type { InstrumentTape, MarketTapeResponse, VenueMarketTape } from "./market-tape-types";
-import { HYPERLIQUID_PUBLIC_INFO_URL } from "./public-price";
 import {
   TERRAPC_BINANCE_ACTIVE_RETAIN_RUN_ID,
   TERRAPC_SHARED_RETAIN_RUN_ID,
@@ -70,20 +65,6 @@ const venues: VenueCaptureChip[] = [
     last_part_age: "n/a",
   }),
 ];
-
-const publicMid: PublicMidState = {
-  status: "ready",
-  price: {
-    coin: "BTC",
-    instrument: "BTC-PERP",
-    mid: "81156.0",
-    source: MARKET_PUBLIC_MID_SOURCE,
-    endpoint: HYPERLIQUID_PUBLIC_INFO_URL,
-    signing: false,
-    credentialless: true,
-    fetched_at: "2026-09-06T10:16:00.000Z",
-  },
-};
 
 function instrument(
   partial: Partial<InstrumentTape> & Pick<InstrumentTape, "product">,
@@ -160,7 +141,16 @@ const storedTape: MarketTapeResponse = {
               size: "0.01",
               side: "buy",
             },
-            channelsSeen: ["trades"],
+            lastBbo: {
+              at: "2026-09-06T10:15:48.000Z",
+              bid: "81149.0",
+              bidSize: "1",
+              ask: "81151.0",
+              askSize: "1",
+              spread: "2.0",
+              spreadBps: "0.25",
+            },
+            channelsSeen: ["bbo", "trades"],
           }),
         ],
       }),
@@ -219,17 +209,17 @@ const storedTape: MarketTapeResponse = {
 };
 
 describe("MARKETS quotes", () => {
-  it("uses the public HL mid and leaves siblings UNAVAILABLE only while no stored tape is applied", () => {
-    const rows = marketsRowsFromBoundVenues(venues, publicMid);
+  it("leaves every venue UNAVAILABLE until a stored trade or BBO is applied", () => {
+    const rows = marketsRowsFromBoundVenues(venues);
     expect(rows).toHaveLength(3);
     expect(rows[0]).toMatchObject({
       id: "hl",
       product: "BTC-PERP",
-      mid: "81156.0",
+      mid: MARKET_QUOTE_UNAVAILABLE,
       last: MARKET_QUOTE_UNAVAILABLE,
-      quoteKind: "public-mid",
-      quoteSource: MARKET_PUBLIC_MID_SOURCE,
-      quoteState: "ok",
+      quoteKind: "unavailable",
+      quoteSource: MARKET_BBO_NOT_IN_COCKPIT_APIS,
+      quoteState: "unavailable",
       captureStatus: "RUNNING",
       runId: TERRAPC_SHARED_RETAIN_RUN_ID,
     });
@@ -251,7 +241,7 @@ describe("MARKETS quotes", () => {
 
   it("fills Last and Mid from the stored tape, attributed to run and channels", () => {
     const rows = applyStoredTapeQuote(
-      marketsRowsFromBoundVenues(venues, publicMid),
+      marketsRowsFromBoundVenues(venues),
       storedTape,
       180,
     );
@@ -273,17 +263,17 @@ describe("MARKETS quotes", () => {
     );
 
     const hl = rows.find((row) => row.id === "hl");
-    // HL keeps the public mid as primary and adds the stored last.
+    // HL mid is the stored BBO midpoint, never a public /info stand-in.
     expect(hl).toMatchObject({
-      mid: "81156.0",
+      mid: "81150.0",
       last: "81150.0",
-      quoteKind: "public-mid",
+      quoteKind: "stored-tape",
       quoteState: "ok",
       quoteAge: "9s",
+      quoteAt: "2026-09-06T10:15:50.000Z",
     });
-    expect(hl?.quoteSource).toMatch(
-      /^hyperliquid-public-info-allMids · last: stored capture · run /,
-    );
+    expect(hl?.quoteSource).toMatch(/^stored capture · run /);
+    expect(hl?.quoteSource).not.toMatch(/allMids/);
 
     const bitvavo = rows.find((row) => row.id === "bitvavo");
     expect(bitvavo).toMatchObject({
@@ -296,7 +286,7 @@ describe("MARKETS quotes", () => {
 
   it("marks a stored quote stale beyond fresh_max_s and explains a half-empty tape", () => {
     const rows = applyStoredTapeQuote(
-      marketsRowsFromBoundVenues(venues, publicMid),
+      marketsRowsFromBoundVenues(venues),
       storedTape,
       10,
     );
@@ -333,7 +323,7 @@ describe("MARKETS quotes", () => {
       },
     };
     const partial = applyStoredTapeQuote(
-      marketsRowsFromBoundVenues(venues, publicMid),
+      marketsRowsFromBoundVenues(venues),
       tradeOnly,
       180,
     );
@@ -356,7 +346,7 @@ describe("MARKETS quotes", () => {
         ],
       },
     };
-    const none = applyStoredTapeQuote(marketsRowsFromBoundVenues(venues, publicMid), empty, 180);
+    const none = applyStoredTapeQuote(marketsRowsFromBoundVenues(venues), empty, 180);
     expect(none.find((item) => item.id === "binance")).toMatchObject({
       instrument: "BTCUSDT-SPOT",
       last: MARKET_QUOTE_UNAVAILABLE,
@@ -368,15 +358,57 @@ describe("MARKETS quotes", () => {
     );
   });
 
-  it("keeps public HL mid and honest reasons when the tape read itself failed", () => {
+  it("fails closed every row when the tape read itself failed and never invents a mid", () => {
     const rows = applyStoredTapeQuote(
-      marketsRowsFromBoundVenues(venues, publicMid),
+      marketsRowsFromBoundVenues(venues),
       { ok: false, error: "ARTIFACT_ROOT unset" },
       180,
     );
-    expect(rows[0]).toMatchObject({ mid: "81156.0", quoteKind: "public-mid", quoteState: "ok" });
+    expect(rows[0]).toMatchObject({
+      mid: MARKET_QUOTE_UNAVAILABLE,
+      quoteKind: "unavailable",
+      quoteState: "unavailable",
+    });
     expect(rows[1]).toMatchObject({ last: MARKET_QUOTE_UNAVAILABLE, quoteState: "unavailable" });
     expect(rows[1]?.quoteReason).toBe("stored market data unavailable · ARTIFACT_ROOT unset");
+    expect(JSON.stringify(rows)).not.toMatch(/81156/);
+  });
+
+  it("keeps sibling capture quotes when one venue tape is unreadable", () => {
+    const gapped: MarketTapeResponse = {
+      ok: true,
+      tape: {
+        ...storedTape.tape,
+        venues: storedTape.tape.venues.map((venue) =>
+          venue.id === "binance"
+            ? {
+                ...venue,
+                status: "ok",
+                error: "parquet gap",
+                instruments: [
+                  instrument({
+                    product: "BTCUSDT-SPOT",
+                    channelsSeen: undefined as unknown as string[],
+                  }),
+                ],
+              }
+            : venue,
+        ),
+      },
+    };
+    const rows = applyStoredTapeQuote(marketsRowsFromBoundVenues(venues), gapped, 180);
+    expect(rows.find((row) => row.id === "hl")).toMatchObject({
+      last: "81150.0",
+      mid: "81150.0",
+      quoteKind: "stored-tape",
+    });
+    expect(rows.find((row) => row.id === "binance")).toMatchObject({
+      last: MARKET_QUOTE_UNAVAILABLE,
+      mid: MARKET_QUOTE_UNAVAILABLE,
+      quoteState: "unavailable",
+    });
+    expect(rows.find((row) => row.id === "binance")?.quoteReason).toMatch(/parquet gap|unreadable/);
+    expect(rows.find((row) => row.id === "bitvavo")?.quoteState).toBe("unavailable");
   });
 
   it("prefers the contract instrument, then -SPOT, then the first instrument with a tick", () => {
@@ -409,34 +441,45 @@ describe("MARKETS quotes", () => {
     expect(decimalMidpoint("abc", "1")).toBeUndefined();
   });
 
-  it("does not invent an HL mid when public /info is missing", () => {
-    const base: MarketRow = {
-      id: "hl",
-      venue: "HL",
-      product: "BTC-PERP",
-      instrument: "BTC-PERP",
-      last: MARKET_QUOTE_UNAVAILABLE,
-      mid: MARKET_QUOTE_UNAVAILABLE,
-      quoteKind: "unavailable",
-      quoteSource: MARKET_BBO_NOT_IN_COCKPIT_APIS,
-      quoteAt: undefined,
-      quoteAge: "n/a",
-      quoteState: "unavailable",
-      quoteReason: undefined,
-      captureStatus: "RUNNING",
-      lastPartAge: "12s",
-      runId: TERRAPC_SHARED_RETAIN_RUN_ID,
-      live: true,
-      tone: "ok",
+  it("does not copy a last trade into the mid when the BBO is missing", () => {
+    const tradeOnlyHl: MarketTapeResponse = {
+      ok: true,
+      tape: {
+        observed_at: OBSERVED,
+        cache: { runsCached: 1, partsParsedThisCall: 0 },
+        venues: [
+          tapeVenue({
+            id: "hl",
+            chip: "HL",
+            series: "DATA-1A",
+            venue: "hyperliquid",
+            contractProduct: "BTC-PERP",
+            instruments: [
+              instrument({
+                product: "BTC-PERP",
+                kind: "perpetual",
+                lastTrade: {
+                  at: "2026-09-06T10:15:50.000Z",
+                  price: "81150.0",
+                  size: "0.01",
+                  side: "buy",
+                },
+                channelsSeen: ["trades"],
+              }),
+            ],
+          }),
+        ],
+      },
     };
-    const row = applyPublicMid(base, {
-      status: "error",
-      message: "Hyperliquid allMids response is missing a BTC mid string.",
+    const row = applyStoredTapeQuote(marketsRowsFromBoundVenues(venues), tradeOnlyHl, 180).find(
+      (item) => item.id === "hl",
+    );
+    expect(row).toMatchObject({
+      last: "81150.0",
+      mid: MARKET_QUOTE_UNAVAILABLE,
+      quoteKind: "stored-tape",
     });
-    expect(row.mid).toBe(MARKET_QUOTE_UNAVAILABLE);
-    expect(row.quoteKind).toBe("unavailable");
-    expect(row.quoteSource).toMatch(/missing a BTC mid/);
-    expect(row.tone).toBe("warn");
+    expect(row?.quoteReason).toBe("no BBO decoded yet · last from stored trades");
   });
 
   it("copies the soak mark from paper-pnl.json and never treats it as a live last", () => {

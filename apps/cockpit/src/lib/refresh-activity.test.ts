@@ -75,7 +75,8 @@ describe("refresh activity registry", () => {
     expect(feedback.busy).toBe(false);
     expect(feedback.tone).toBe("down");
     expect(feedback.label).toBe("Refresh failed · Capture strip request failed (503)");
-    expect(feedback.detail).toMatch(/1 of 2 request\(s\) failed at 12:00:01Z/);
+    expect(feedback.detail).toMatch(/1 of 2 request\(s\) failed at 14:00:01 CEST/);
+    expect(feedback.detail).not.toMatch(/Z/);
     // A failed tick never advances "data last changed".
     expect(state.lastChangedAt).toBeNull();
   });

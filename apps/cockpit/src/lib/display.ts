@@ -3,7 +3,9 @@ import {
   STALE_MTIME_REASON,
   isLastPartFresh,
 } from "./capture-freshness";
+import { formatAgeSeconds } from "./poll-state";
 import { isTerrapcActiveRetain } from "./terrapc-defaults";
+import { CLOCK_UNKNOWN, localDateTimeLabel } from "./time-display";
 import type { VenueCaptureId } from "./paths";
 import type { CaptureBindingSource, CaptureRunCandidate, VenueCaptureChipStatus } from "./types";
 
@@ -186,15 +188,28 @@ export function presentGapReconnectClusters(
   return `${presentCopiedNumber(gaps)} gaps · ${presentCopiedNumber(reconnects)} raw / ${presentCopiedNumber(reconnectClusters)} clusters`;
 }
 
-/** Compact UTC mtime for the strip. Fail closed if unparseable. */
+/**
+ * Whole hours stay `72h` so the Phase A window reads as hours.
+ * Any other duration uses the shared age formatter (`5s`, `10h 49m`).
+ */
+export function formatOperatorDuration(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) {
+    return "n/a";
+  }
+  const whole = Math.floor(seconds);
+  if (whole > 0 && whole % 3600 === 0) {
+    return `${String(whole / 3600)}h`;
+  }
+  return formatAgeSeconds(whole);
+}
+
+/** Amsterdam date and clock for a part mtime. Fail closed if unparseable. */
 export function presentLastPartMtime(mtimeUtc: string | undefined): string {
   if (mtimeUtc === undefined || mtimeUtc === "") {
     return "n/a";
   }
-  if (!Number.isFinite(Date.parse(mtimeUtc))) {
-    return "n/a";
-  }
-  return mtimeUtc.replace("T", " ").replace(/\.000Z$/, "Z");
+  const label = localDateTimeLabel(mtimeUtc);
+  return label === CLOCK_UNKNOWN ? "n/a" : label;
 }
 
 export function captureRunOptionLabel(
@@ -299,14 +314,14 @@ export function presentData1ADuration(snapshot: {
   const claimed =
     snapshot.claim.duration_seconds === undefined
       ? undefined
-      : `${String(snapshot.claim.duration_seconds)}s claimed`;
+      : `${formatOperatorDuration(snapshot.claim.duration_seconds)} claimed`;
   const elapsed = elapsedSecondsSinceRunId(snapshot.runId, snapshot.observed_at);
   if (elapsed === undefined) {
     return claimed ?? "n/a";
   }
   return claimed === undefined
-    ? `${String(elapsed)}s elapsed`
-    : `${String(elapsed)}s elapsed / ${claimed}`;
+    ? `${formatOperatorDuration(elapsed)} elapsed`
+    : `${formatOperatorDuration(elapsed)} elapsed / ${claimed}`;
 }
 
 export function uniqueStrings(items: string[]): string[] {

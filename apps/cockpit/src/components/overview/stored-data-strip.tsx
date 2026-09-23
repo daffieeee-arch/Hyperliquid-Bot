@@ -7,7 +7,19 @@ import { dataStateTone } from "../../lib/data-state";
 import { formatGroupedNumber } from "../../lib/display";
 import { venueTapeSummaries } from "../../lib/market-tape-rows";
 import type { InstrumentTape, MarketTapeResponse } from "../../lib/market-tape-types";
+import { formatAgeSeconds, secondsBetween } from "../../lib/poll-state";
+import { localClockLabel } from "../../lib/time-display";
 import type { VenueCaptureStripResponse } from "../../lib/types";
+import { useNow } from "../../lib/use-now";
+
+function liveDataAge(
+  at: string | undefined,
+  nowIso: string | undefined,
+  frozen: string,
+): string {
+  const seconds = secondsBetween(at, nowIso);
+  return seconds === undefined ? frozen : formatAgeSeconds(seconds);
+}
 
 function InstrumentLine({ instrument }: { instrument: InstrumentTape }) {
   const last = instrument.lastTrade;
@@ -21,13 +33,13 @@ function InstrumentLine({ instrument }: { instrument: InstrumentTape }) {
       <span
         className={`mono ${last?.side === "buy" ? "tone-up" : last?.side === "sell" ? "tone-down" : "tone-muted"}`}
         style={{ fontSize: "0.95rem", fontWeight: 600 }}
-        title={last === undefined ? "No trade decoded" : `last trade ${last.at}`}
+        title={last === undefined ? "No trade decoded" : `last trade ${localClockLabel(last.at)}`}
       >
         {last === undefined ? "—" : formatGroupedNumber(last.price)}
       </span>
       <span
         className="eyebrow spacer"
-        title={bbo === undefined ? "No BBO decoded" : `BBO ${bbo.at}`}
+        title={bbo === undefined ? "No BBO decoded" : `BBO ${localClockLabel(bbo.at)}`}
       >
         {bbo === undefined
           ? "no BBO"
@@ -50,6 +62,7 @@ export function StoredDataStrip({
   strip: VenueCaptureStripResponse;
   degraded: boolean;
 }) {
+  const nowIso = useNow();
   if (!tape.ok) {
     return (
       <Notice state="error" title="Stored market data unavailable">
@@ -92,9 +105,9 @@ export function StoredDataStrip({
               <div className="row" style={{ gap: "0.5rem" }}>
                 <Badge
                   tone={dataStateTone(summary.dataState)}
-                  title={`Last stored event ${summary.tape.lastEventUtc ?? "n/a"}`}
+                  title={`Last stored event ${localClockLabel(summary.tape.lastEventUtc)}`}
                 >
-                  data {summary.lastDataAge} old
+                  {`data ${liveDataAge(summary.tape.lastEventUtc, nowIso, summary.lastDataAge)} old`}
                 </Badge>
                 <span className="eyebrow spacer" title="Published parts and their total size">
                   {summary.published} · {summary.volume}

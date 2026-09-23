@@ -1,4 +1,4 @@
-import { dualClockLabel, localClockLabel, utcClockLabel } from "./time-display";
+import { localClockLabel } from "./time-display";
 
 /**
  * Client-side state of one polled resource.
@@ -107,8 +107,8 @@ export function formatAgeSeconds(seconds: number | undefined): string {
  * One-line read status for a polled panel.
  *
  * Distinguishes "never fetched on the client yet" from "fetched OK" from
- * "last attempt failed, showing values from <time>". Labels are local
- * (Europe/Amsterdam) clock time; the detail keeps the UTC form.
+ * "last attempt failed, showing values from <time>". Labels and details are
+ * Europe/Amsterdam wall time with a CET/CEST suffix.
  */
 export function describePollRead(state: PollState<unknown>): {
   tone: "ok" | "down" | "muted";
@@ -121,11 +121,11 @@ export function describePollRead(state: PollState<unknown>): {
         ? state.origin === "server"
           ? "values from the server render"
           : "no successful read yet"
-        : `values from ${dualClockLabel(state.lastSuccessAt)}`;
+        : `values from ${localClockLabel(state.lastSuccessAt)}`;
     return {
       tone: "down",
       label: `read failed ${localClockLabel(state.lastAttemptAt)}`,
-      detail: `${state.error} — ${shown}. ${String(state.failures)} consecutive failure(s). Attempt at ${utcClockLabel(state.lastAttemptAt)}.`,
+      detail: `${state.error} — ${shown}. ${String(state.failures)} consecutive failure(s). Attempt at ${localClockLabel(state.lastAttemptAt)}.`,
     };
   }
   if (state.lastSuccessAt === undefined) {
@@ -138,7 +138,7 @@ export function describePollRead(state: PollState<unknown>): {
   return {
     tone: "ok",
     label: `read ${localClockLabel(state.lastSuccessAt)}`,
-    detail: `Last successful read from the backend at ${utcClockLabel(state.lastSuccessAt)} (browser clock).`,
+    detail: `Last successful read from the backend at ${localClockLabel(state.lastSuccessAt)} (Europe/Amsterdam).`,
   };
 }
 
@@ -161,4 +161,22 @@ export function readAgeLabel(
   }
   const prefix = state.error === undefined ? "updated" : "last good read";
   return `${prefix} ${formatAgeSeconds(seconds)} ago`;
+}
+
+/**
+ * Ticking "updated 12s ago" for a source timestamp.
+ *
+ * `fallback` is used until the client clock has mounted, or when `at` cannot
+ * be parsed. It never invents a time.
+ */
+export function updatedAgoLabel(
+  at: string | undefined,
+  nowIso: string | undefined,
+  fallback: string,
+): string {
+  const seconds = secondsBetween(at, nowIso);
+  if (seconds === undefined) {
+    return fallback;
+  }
+  return `updated ${formatAgeSeconds(seconds)} ago`;
 }

@@ -8,8 +8,8 @@ import { useNow } from "../../lib/use-now";
 /**
  * Read-vs-source freshness for one polled panel.
  *
- * Shows when the backend was last read successfully (browser clock, shown in
- * Europe/Amsterdam with the UTC form in the tooltip) and, separately, the
+ * Shows when the backend was last read successfully (Europe/Amsterdam, CET/CEST)
+ * and, separately, the
  * timestamp the source data itself carries. The relative age ticks every
  * second but is always measured from the last *successful* read: a ticking
  * refresh clock never appears here on its own.

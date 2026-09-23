@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 import {
   DESK_MODE,
   DESK_UNAVAILABLE,
-  PHASE_A_CLAIMED_SECONDS,
   countCaptureStatuses,
   deskCaptureGlance,
   deskGlanceLine,
@@ -170,7 +169,7 @@ describe("deskPhaseAProgressLine", () => {
     const line = deskPhaseAProgressLine({ ok: true, strip: boundStrip });
     // 20260905t232635z → 2026-09-05T23:26:35Z; observed 2026-09-06T10:16:00Z → 38965s
     expect(line).toBe(
-      `2 live · 1 stale · 0 stopped · 0 degraded · 1 missing · fresh ≤ 180s · HL 38965s / ${String(PHASE_A_CLAIMED_SECONDS)}s (15%)`,
+      "2 live · 1 stale · 0 stopped · 0 degraded · 1 missing · fresh ≤ 180s · HL 10h 49m / 72h (15%)",
     );
   });
 

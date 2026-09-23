@@ -128,7 +128,9 @@ def test_webhook_failure_is_swallowed(caplog: pytest.LogCaptureFixture) -> None:
         )
     assert payload is not None
     assert calls == 3
-    assert "capture_operator_alert_webhook_failed error_class=TimeoutError attempts=3" in caplog.text
+    assert (
+        "capture_operator_alert_webhook_failed error_class=TimeoutError attempts=3" in caplog.text
+    )
     assert "https://example.test/hook" not in caplog.text
 
 

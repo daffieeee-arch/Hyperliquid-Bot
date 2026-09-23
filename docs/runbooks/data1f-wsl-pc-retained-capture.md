@@ -296,8 +296,9 @@ When the assigned goal is a 72-hour reconstructable tape (`DURATION_SECONDS=2592
   `FAILED`. `forceOrder` is optional; liquidation silence is not starvation.
   An empty required stream must not pass as a healthy retain on
   `OPERATOR_STOP`. Terminal `FAILED` emits one event-driven
-  `capture_operator_alert` (optional `CAPTURE_ALERT_WEBHOOK_URL`); no polling
-  cron.
+  `capture_operator_alert` (optional `CAPTURE_ALERT_WEBHOOK_URL` and
+  `CAPTURE_ALERT_WEBHOOK_AUTHORIZATION`, bounded retries, HTTP status logged,
+  no secret text); no polling cron.
 - **Apply path:** this keepalive fix needs a BN process restart. Prefer after the
   current 72h retain unless Chupa explicitly OKs a BN-only restart (CoS gates).
   Do not stop `hl-capture` / `bv-capture` / `kr-capture`. Until restart, the

@@ -17,7 +17,7 @@ from typing import cast
 
 import duckdb
 import pytest
-from websockets.exceptions import ConnectionClosedError, PayloadTooBig, WebSocketException
+from websockets.exceptions import ConnectionClosedOK, PayloadTooBig, WebSocketException
 from websockets.frames import Close
 
 from hyperliquid_bot.bitvavo_mdpro_research import (
@@ -29,6 +29,7 @@ from hyperliquid_bot.bitvavo_mdpro_research import (
     BITVAVO_MDPRO_SIGNATURE_PATH,
     BITVAVO_MDPRO_WEBSOCKET_CLIENT_PING_INTERVAL,
     BITVAVO_MDPRO_WEBSOCKET_CLIENT_PING_TIMEOUT,
+    BITVAVO_MDPRO_WEBSOCKET_MAX_QUEUE,
     BITVAVO_MDPRO_WEBSOCKET_URL,
     MAX_CAPTURE_SECONDS,
     RETAINED_MAX_RECONNECTS,
@@ -46,7 +47,9 @@ from hyperliquid_bot.bitvavo_mdpro_research import (
     _book_subscription_acknowledged,
     _BookState,
     _config_for_duration,
+    _connection_factory,
     _decode_json_object,
+    _is_venue_ping_timeout,
     _normalize_book_snapshot,
     _normalize_book_update,
     _normalize_ticker,
@@ -356,8 +359,13 @@ async def _capture_transport_error(
 def test_fixed_scope_and_small_credential_surface() -> None:
     assert BITVAVO_MDPRO_WEBSOCKET_URL == "wss://ws-mdpro.bitvavo.com/v2/"
     assert "ws.bitvavo.com" not in BITVAVO_MDPRO_WEBSOCKET_URL
-    assert BITVAVO_MDPRO_WEBSOCKET_CLIENT_PING_INTERVAL is None
+    # Protocol pings, no self-close timeout. Docs do not define an app ping.
+    assert BITVAVO_MDPRO_WEBSOCKET_CLIENT_PING_INTERVAL == 20.0
     assert BITVAVO_MDPRO_WEBSOCKET_CLIENT_PING_TIMEOUT is None
+    assert BITVAVO_MDPRO_WEBSOCKET_MAX_QUEUE == (16_384, 4_096)
+    assert _is_venue_ping_timeout({"close_reason_rcvd": "Ping timeout"})
+    assert _is_venue_ping_timeout({"close_reason_sent": "ping timeout"})
+    assert not _is_venue_ping_timeout({"close_reason_rcvd": "keepalive ping timeout"})
     assert BITVAVO_MDPRO_PRODUCT == "BTC-EUR"
     assert BITVAVO_MDPRO_FEED_PRODUCT == "market_data_pro"
     assert BITVAVO_MDPRO_BOOK_DEPTH == 1000
@@ -370,6 +378,36 @@ def test_fixed_scope_and_small_credential_surface() -> None:
         "fallback",
         "standard_connection",
     } & set(signature.parameters)
+
+
+@pytest.mark.asyncio
+async def test_connection_factory_sends_protocol_ping_without_self_close_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_connect(
+        uri: str, **options: object
+    ) -> AbstractAsyncContextManager[WebSocketConnection]:
+        captured["uri"] = uri
+        captured["options"] = options
+
+        @asynccontextmanager
+        async def context() -> AsyncIterator[WebSocketConnection]:
+            yield FakeConnection(())
+
+        return context()
+
+    monkeypatch.setattr("hyperliquid_bot.bitvavo_mdpro_research.connect", fake_connect)
+    factory = _connection_factory(BitvavoMdProResearchConfig())
+    async with factory():
+        pass
+    options = captured["options"]
+    assert captured["uri"] == BITVAVO_MDPRO_WEBSOCKET_URL
+    assert isinstance(options, dict)
+    assert options["ping_interval"] == 20.0
+    assert options["ping_timeout"] is None
+    assert options["max_queue"] == (16_384, 4_096)
 
 
 def test_subscribe_set_is_pro_book_and_trades_with_optional_ticker() -> None:
@@ -1152,7 +1190,11 @@ async def test_reconnect_reauthenticates_and_starts_with_empty_book_state() -> N
 @pytest.mark.asyncio
 async def test_receive_close_preserves_connection_closed_code_and_reason() -> None:
     stop_event = asyncio.Event()
-    closed = ConnectionClosedError(Close(1000, "Ping timeout"), None)
+    closed = ConnectionClosedOK(
+        Close(1000, "Ping timeout"),
+        Close(1000, "Ping timeout"),
+        rcvd_then_sent=True,
+    )
     first = FakeConnection(
         [*_successful_messages(snapshot_sequence=100), closed],
     )
@@ -1175,11 +1217,18 @@ async def test_receive_close_preserves_connection_closed_code_and_reason() -> No
         if item["event"] == "disconnected"
     ]
     assert disconnected
-    assert disconnected[0]["exception_class"] == "ConnectionClosedError"
+    assert disconnected[0]["exception_class"] == "ConnectionClosedOK"
+    assert disconnected[0]["reason"] == "venue_ping_timeout"
     assert disconnected[0]["close_code"] == 1000
     assert disconnected[0]["close_code_rcvd"] == 1000
     assert disconnected[0]["close_reason_rcvd"] == "Ping timeout"
+    assert disconnected[0]["close_reason_sent"] == "Ping timeout"
     assert "OSError" not in disconnected[0]["exception_class"]
+    quality = _marker_documents(sink.records, channel="data_quality")
+    assert any(
+        item.get("reason") == "venue_ping_timeout; reconnect will re-auth and re-subscribe"
+        for item in quality
+    )
 
 
 @pytest.mark.asyncio
@@ -1315,9 +1364,70 @@ async def test_reconnect_bound_is_hard() -> None:
         connection_factory=factory,
         session_id_factory=SessionIds(),
     )
-    with pytest.raises(BitvavoMdProAuthenticationError):
+    with pytest.raises(BitvavoMdProTransportError, match="reconnect bound"):
         await collector.capture_for(5.0)
     assert factory.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_ping_timeout_during_authenticate_reconnects() -> None:
+    stop_event = asyncio.Event()
+    closed = ConnectionClosedOK(Close(1000, "Ping timeout"), None)
+    first = FakeConnection([closed])
+    second = FakeConnection(
+        _successful_messages(snapshot_sequence=200),
+        on_last=stop_event.set,
+    )
+    factory = ScriptedConnectionFactory([first, second])
+    sink = MemorySink()
+    collector = BitvavoMdProResearchCollector(
+        sink,
+        _credentials(),
+        config=BitvavoMdProResearchConfig(reconnect_delay_seconds=0),
+        connection_factory=factory,
+        session_id_factory=SessionIds(),
+    )
+    await collector.capture_for(5.0, stop_event=stop_event)
+    assert factory.calls == 2
+    disconnected = [
+        item
+        for item in _marker_documents(sink.records, channel="session")
+        if item["event"] == "disconnected"
+    ]
+    assert disconnected[0]["reason"] == "venue_ping_timeout"
+    assert not any(
+        item["event"] == "authentication_failed"
+        for item in _marker_documents(sink.records, channel="data_quality")
+    )
+
+
+@pytest.mark.asyncio
+async def test_transport_failure_writes_failed_health_not_completed(tmp_path: Path) -> None:
+    closed = ConnectionClosedOK(Close(1000, "Ping timeout"), None)
+
+    def collector_factory(sink: RawResearchSink) -> BitvavoMdProResearchCollector:
+        return BitvavoMdProResearchCollector(
+            sink,
+            _credentials(),
+            config=BitvavoMdProResearchConfig(max_reconnects=0, reconnect_delay_seconds=0),
+            connection_factory=ScriptedConnectionFactory([FakeConnection([closed])]),
+            session_id_factory=SessionIds(),
+        )
+
+    with pytest.raises(BitvavoMdProTransportError, match="reconnect bound"):
+        await run_reconstructable_capture(
+            artifact_root=tmp_path,
+            run_id="ping-timeout-fail",
+            duration_seconds=86_400,
+            credentials=_credentials(),
+            collector_factory=collector_factory,
+        )
+    health = json.loads(
+        data1e_run_paths(tmp_path, "ping-timeout-fail").capture_health_path.read_text(
+            encoding="utf-8"
+        )
+    )
+    assert health["status"] == "FAILED"
 
 
 @pytest.mark.asyncio

@@ -108,16 +108,32 @@ kill -TERM "${COLLECTOR_PID}"
 Expected health statuses: `COMPLETED`, `OPERATOR_STOP`, or `FAILED`.
 `elapsed_seconds` must be read separately from requested `duration_seconds`.
 
-Retained resilience (vs short smoke): client websocket ping is disabled
-(`ping_interval=None`; MD Pro docs require authenticate-then-subscribe and do
-not mandate client pings —
-https://docs.bitvavo.com/docs/ws-market-data-pro-api/introduction/). Subscribe-
-ack races and venue error frames reconnect with full re-auth; credential
-authenticate failures stay fail-closed. Terminal `FAILED` emits one event-driven
-`capture_operator_alert` log line and, when `CAPTURE_ALERT_WEBHOOK_URL` is set,
-one short HTTP POST (≤2s, failures swallowed). Point that webhook at the Grok
-Bot / CoS capture-fail endpoint; ochtendbriefing stays separate. Do **not** add
-interval watchdogs or `*/15` polls.
+Retained resilience (vs short smoke): MD Pro docs require
+authenticate-then-subscribe and do not define an application ping
+(https://docs.bitvavo.com/docs/ws-market-data-pro-api/introduction/). Bitvavo
+still closes long sockets with code **1000** reason `Ping timeout` when a
+protocol Pong is late (server pings about every 50s). The client sends protocol
+pings every 20s (`ping_interval=20`, `ping_timeout=None`) so a late Pong cannot
+self-close as 1011 `keepalive ping timeout`. The receive queue is
+`(16384, 4096)` so a Parquet flush does not pause socket reads. A `Ping timeout`
+close, including one during the authenticate window, reconnects with a fresh
+signature. A real authenticate rejection stays fail-closed. Subscribe-ack races
+reconnect the same way.
+
+Terminal `FAILED` emits one event-driven `capture_operator_alert`. When
+`CAPTURE_ALERT_WEBHOOK_URL` is set, the process POSTs the JSON payload up to 3
+times (2s each). Set `CAPTURE_ALERT_WEBHOOK_AUTHORIZATION` to the full header
+value (for example `Bearer …`); it is not logged. HTTP status is logged as
+`http_status` only. Auth rejects (401/403) are not retried. A failed POST does
+not raise into the writer. Point that webhook at the Grok Bot / CoS capture-fail
+endpoint; ochtendbriefing stays separate. Do **not** add interval watchdogs or
+`*/15` polls. This keepalive change applies on the next BV-Pro process start.
+Do not restart the live Phase A `bv-capture` session from this change.
+
+HL, KR, BV-Std, and BN already emit the same alert on `FAILED`. The BN #101
+early-`COMPLETED` path (a profile set the shared stop and the runner returned
+normally) is not present on those single-stream runners: integrity and exhausted
+reconnects raise, and health stays `FAILED`.
 
 ## How to continue later (there is no resume)
 

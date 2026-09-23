@@ -6,6 +6,7 @@ import json
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
+from email.message import Message
 from typing import cast
 
 import pytest
@@ -217,8 +218,8 @@ def test_default_webhook_post_sends_authorization_and_hides_url(
         def __enter__(self) -> _Response:
             return self
 
-        def __exit__(self, *_args: object) -> bool:
-            return False
+        def __exit__(self, *_args: object) -> None:
+            return None
 
     def fake_urlopen(request: urllib.request.Request, timeout: float) -> _Response:
         seen["timeout"] = timeout
@@ -242,7 +243,7 @@ def test_default_webhook_post_sends_authorization_and_hides_url(
 
     def fail_urlopen(request: urllib.request.Request, timeout: float) -> _Response:
         del timeout
-        raise urllib.error.HTTPError(request.full_url, 403, "Forbidden", hdrs=None, fp=None)
+        raise urllib.error.HTTPError(request.full_url, 403, "Forbidden", Message(), None)
 
     monkeypatch.setattr(urllib.request, "urlopen", fail_urlopen)
     with pytest.raises(WebhookDeliveryError) as raised:

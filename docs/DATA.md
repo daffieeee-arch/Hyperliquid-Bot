@@ -1594,6 +1594,9 @@ Vision and OHLCVT do not provide those books. Never merge hist Parquet into live
 Operator runbook:
 [hist-archives-research-warehouse.md](runbooks/hist-archives-research-warehouse.md).
 Repo pointer (no binaries): [scripts/research/README.md](../scripts/research/README.md).
+While Phase A is still recording, list `run_id`s and smoke the hist + live
+catalog without stopping writers:
+[phase-a-research-inventory.md](runbooks/phase-a-research-inventory.md).
 
 ## Self-collected dataset
 

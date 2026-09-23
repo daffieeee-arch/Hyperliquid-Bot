@@ -135,8 +135,11 @@ auto-pong). A leftover client keepalive Ping times out as **close_code=1011** on
 under the 300 connections / 5 minutes / IP limit. `forceOrder` silence is optional
 and is not starvation. An empty required stream must not be accepted as a healthy
 retain on `OPERATOR_STOP`. Terminal `FAILED` emits one event-driven
-`capture_operator_alert` (and optional `CAPTURE_ALERT_WEBHOOK_URL` POST ≤2s);
-ochtendbriefing stays separate — no polling cron. Apply path: BN process restart;
+`capture_operator_alert`. Optional `CAPTURE_ALERT_WEBHOOK_URL` plus
+`CAPTURE_ALERT_WEBHOOK_AUTHORIZATION` (header value, never logged): up to 3
+POSTs of 2s; 401/403 are not retried; failures stay in the log as
+`http_status` and do not crash the writer. Ochtendbriefing stays separate —
+no polling cron. Apply path: BN process restart;
 prefer after the current 72h retain unless Chupa explicitly OKs a BN-only restart.
 Live HL/BV/KR untouched.
 

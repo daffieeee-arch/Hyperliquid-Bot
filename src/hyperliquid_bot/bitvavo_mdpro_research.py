@@ -72,13 +72,18 @@ BITVAVO_MDPRO_BOOK_DEPTH: Final = 1000
 BITVAVO_MDPRO_REQUIRED_CHANNELS: Final = ("book", "trades")
 BITVAVO_MDPRO_OPTIONAL_TICKER_CHANNEL: Final = "ticker"
 BITVAVO_MDPRO_SIGNATURE_PATH: Final = "/v2/websocket"
-# Official MD Pro docs require authenticate-then-subscribe and do not mandate
-# client-driven websocket ping
+# Official MD Pro docs require authenticate-then-subscribe and do not define an
+# application-level ping
 # (https://docs.bitvavo.com/docs/ws-market-data-pro-api/introduction/).
-# Library default ping_interval=20 / ping_timeout=10 closes with 1011
-# "keepalive ping timeout". Match DATA-1F: None keeps auto-pong for server pings.
-BITVAVO_MDPRO_WEBSOCKET_CLIENT_PING_INTERVAL: Final[float | None] = None
+# Bitvavo still closes long sockets with code 1000 reason "Ping timeout" when a
+# protocol Pong is late (server pings about every 50s; python-bitvavo-api#58).
+# The official Python SDK enables protocol ping_interval. A ping_timeout would
+# self-close with 1011 "keepalive ping timeout" when Bitvavo is slow to Pong,
+# so the timeout stays disabled. A full receive queue pauses socket reads and
+# delays those Pongs across a Parquet flush; keep the queue high.
+BITVAVO_MDPRO_WEBSOCKET_CLIENT_PING_INTERVAL: Final[float | None] = 20.0
 BITVAVO_MDPRO_WEBSOCKET_CLIENT_PING_TIMEOUT: Final[float | None] = None
+BITVAVO_MDPRO_WEBSOCKET_MAX_QUEUE: Final[tuple[int, int]] = (16_384, 4_096)
 # Docs do not require client ping; soft-reconnect when market frames go silent.
 BITVAVO_MDPRO_APPLICATION_IDLE_RECONNECT_SECONDS: Final = 180.0
 SMOKE_CAPTURE_SECONDS: Final = 600.0
@@ -526,6 +531,7 @@ class BitvavoMdProResearchCollector:
             failure: str | None = None
             disconnect_fields: dict[str, int | str] = {}
             idle_reconnect = False
+            venue_ping_timeout = False
             try:
                 async with self._connection_factory() as connection:
                     connected = True
@@ -563,8 +569,10 @@ class BitvavoMdProResearchCollector:
                     isinstance(error, ConnectionError)
                     and str(error) == "application idle reconnect"
                 )
+                venue_ping_timeout = False
                 if not idle_reconnect:
                     disconnect_fields = transport_exception_fields(error)
+                    venue_ping_timeout = _is_venue_ping_timeout(disconnect_fields)
                 del error
             except Exception:
                 failure = "boundary"
@@ -592,6 +600,12 @@ class BitvavoMdProResearchCollector:
                         stream=BITVAVO_MDPRO_FEED_PRODUCT,
                         transport_profile=BITVAVO_MDPRO_FEED_PRODUCT,
                         reason="application_idle",
+                    )
+                elif venue_ping_timeout:
+                    await self._disconnected(
+                        session_id,
+                        disconnect_fields,
+                        reason="venue_ping_timeout",
                     )
                 else:
                     await self._disconnected(session_id, disconnect_fields)
@@ -773,6 +787,9 @@ class BitvavoMdProResearchCollector:
             await connection.send(payload)
         except asyncio.CancelledError:
             raise
+        except (WebSocketException, OSError):
+            # A socket close while sending authenticate is transport, not a bad key.
+            raise
         except Exception:
             failed = True
         finally:
@@ -810,6 +827,10 @@ class BitvavoMdProResearchCollector:
                     document
                 ) or not _authentication_acknowledged(document)
         except asyncio.CancelledError:
+            raise
+        except (WebSocketException, OSError):
+            # Code 1000 "Ping timeout" during the auth window must reconnect
+            # with a fresh signature. It is not a credential rejection.
             raise
         except Exception:
             failed = True
@@ -1222,12 +1243,20 @@ class BitvavoMdProResearchCollector:
         self,
         session_id: str,
         failure_fields: dict[str, int | str] | None = None,
+        *,
+        reason: str = "transport_error",
     ) -> None:
         fields = dict(failure_fields or {})
         capture_logger().info(
-            "bitvavo disconnect transport_profile=%s " + DISCONNECT_LOG_SUFFIX,
+            "bitvavo disconnect transport_profile=%s reason=%s " + DISCONNECT_LOG_SUFFIX,
             BITVAVO_MDPRO_FEED_PRODUCT,
+            reason,
             *disconnect_log_values(fields),
+        )
+        gap_reason = (
+            "venue_ping_timeout; reconnect will re-auth and re-subscribe"
+            if reason == "venue_ping_timeout"
+            else "transport_disconnect; missed Pro L2 history is not reconstructable"
         )
         await self._append_marker(
             session_id,
@@ -1235,7 +1264,7 @@ class BitvavoMdProResearchCollector:
             "disconnected",
             stream=BITVAVO_MDPRO_FEED_PRODUCT,
             transport_profile=BITVAVO_MDPRO_FEED_PRODUCT,
-            reason="transport_error",
+            reason=reason,
             **fields,
         )
         await self._append_marker(
@@ -1244,7 +1273,7 @@ class BitvavoMdProResearchCollector:
             "gap_detected",
             stream=BITVAVO_MDPRO_FEED_PRODUCT,
             transport_profile=BITVAVO_MDPRO_FEED_PRODUCT,
-            reason="transport_disconnect; missed Pro L2 history is not reconstructable",
+            reason=gap_reason,
             **fields,
         )
 
@@ -1743,6 +1772,16 @@ def _reject_json_constant(value: str) -> object:
     raise ValueError("non-standard JSON constant")
 
 
+def _is_venue_ping_timeout(fields: Mapping[str, int | str]) -> bool:
+    """True for Bitvavo's close reason, not the library's keepalive ping timeout."""
+
+    for key in ("close_reason_rcvd", "close_reason_sent"):
+        reason = fields.get(key)
+        if type(reason) is str and reason.casefold() == "ping timeout":
+            return True
+    return False
+
+
 @asynccontextmanager
 async def _websocket_connection(
     config: BitvavoMdProResearchConfig,
@@ -1753,8 +1792,8 @@ async def _websocket_connection(
         close_timeout=5.0,
         ping_interval=BITVAVO_MDPRO_WEBSOCKET_CLIENT_PING_INTERVAL,
         ping_timeout=BITVAVO_MDPRO_WEBSOCKET_CLIENT_PING_TIMEOUT,
+        max_queue=BITVAVO_MDPRO_WEBSOCKET_MAX_QUEUE,
         max_size=config.max_application_payload_bytes,
-        max_queue=1024,
         logger=_TRANSPORT_PRIVACY_LOGGER,
     ) as connection:
         yield cast(WebSocketConnection, connection)
@@ -2026,10 +2065,11 @@ def data1e_capture_health(
                 "This capture never falls back to DATA-1D Standard.",
                 "Keys enter only through BITVAVO_MDPRO_API_KEY and BITVAVO_MDPRO_API_SECRET.",
                 "Trade, withdrawal, transfer, or signing key names fail closed.",
-                "Client websocket ping is disabled (ping_interval=None); MD Pro docs "
-                "require authenticate-then-subscribe and do not mandate client pings. "
-                "Subscribe-ack races reconnect with re-auth; credential authenticate "
-                "failures stay fail-closed.",
+                "Client protocol pings use ping_interval=20s with ping_timeout disabled "
+                "so a late Pong cannot self-close as 1011. Bitvavo code 1000 "
+                "'Ping timeout' reconnects with re-auth, including during the "
+                "authenticate window. Credential authenticate rejections stay "
+                "fail-closed.",
             ],
         },
         report,

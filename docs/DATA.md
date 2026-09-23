@@ -1018,6 +1018,10 @@ The retained-operator path loads View-only keys only from `BITVAVO_MDPRO_API_KEY
 `BITVAVO_MDPRO_API_SECRET`. Values are never printed, logged, committed, or written to
 artifacts. Generic `BITVAVO_API_KEY` / `BITVAVO_API_SECRET` and other trade/signing names fail
 closed. Authentication or access rejection defers DATA-1E; it never justifies broader rights.
+A WebSocket close with reason `Ping timeout` during authenticate is transport
+and reconnects; it is not an access rejection. Protocol keepalive is
+`ping_interval=20` / `ping_timeout=None` (no 1011 self-close) with a high
+receive queue so server Pongs are not stalled behind a Parquet flush.
 
 ### DATA-1E duration and reconstructable retain
 

@@ -306,6 +306,21 @@ stop a live 72h tape. `OPERATOR_STOP` with `elapsed_seconds` <
 ./scripts/data1b_stop.sh
 ```
 
+## Research while the window is still open
+
+Do not stop collectors to inspect tape. Read-only helpers list `run_id`s,
+claim/health paths, parquet part counts, DuckDB catalog pins, Binance
+starvation-then-continue gaps, Bitvavo Pro ping timeouts, and cross-venue
+holes. They do not attach to tmux and do not write `data-capture/`.
+
+```bash
+cd "$REPO_ROOT"
+PYTHONPATH=src uv run --frozen python -m hyperliquid_bot.phase_a_research_tools inventory
+PYTHONPATH=src uv run --frozen python -m hyperliquid_bot.phase_a_research_tools duckdb-smoke
+```
+
+How-to: [phase-a-research-inventory.md](phase-a-research-inventory.md).
+
 ## Residual risks
 
 - `trickle` is userspace and can miss some sockets; attest a cgroup/netns

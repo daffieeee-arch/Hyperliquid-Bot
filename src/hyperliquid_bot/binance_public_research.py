@@ -512,10 +512,19 @@ class BinancePublicResearchCollector:
             watchers.add(cast(asyncio.Task[object], external_wait))
 
         profile_failures: list[BaseException] = []
+        raised_profile_errors: list[BaseException] = []
+        # Default: a profile set the shared stop before the requested window.
+        # Duration expiry and an external stop overwrite this.
+        end_reason = "internal_stop"
         try:
             while not internal_stop.is_set():
                 done, _ = await asyncio.wait(watchers, return_when=asyncio.FIRST_COMPLETED)
-                if timer in done or (external_wait is not None and external_wait in done):
+                if timer in done:
+                    end_reason = "duration"
+                    internal_stop.set()
+                    break
+                if external_wait is not None and external_wait in done:
+                    end_reason = "external_stop"
                     internal_stop.set()
                     break
                 for task in stream_tasks:
@@ -524,6 +533,7 @@ class BinancePublicResearchCollector:
                     task_error = task.exception()
                     if task_error is not None:
                         profile_failures.append(task_error)
+                        raised_profile_errors.append(task_error)
                         capture_logger().info(
                             "binance profile_task_failed error_class=%s",
                             type(task_error).__name__,
@@ -566,8 +576,13 @@ class BinancePublicResearchCollector:
             if isinstance(error, (BinanceDataIntegrityError, BinanceSinkError)):
                 raise error
 
-        # Transport-only deaths stay profile-local: fail the retain only when every
-        # required websocket profile died.
+        # A profile that sets the shared stop before the requested window ends
+        # the retain. That must surface as FAILED, not a normal return that the
+        # runner labels COMPLETED. Reconnectable transport errors do not set
+        # that stop. A single profile that dies without stopping the others
+        # stays local unless every required websocket profile died.
+        if end_reason == "internal_stop" and raised_profile_errors:
+            raise raised_profile_errors[0]
         if len(profile_failures) >= len(stream_tasks) and all(
             isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError)
             for result in stream_results
@@ -782,6 +797,72 @@ class BinancePublicResearchCollector:
                         "event": "reconnect",
                         "attempt": reconnects,
                         "transport_profile": profile.name,
+                    },
+                )
+                await _wait_or_stop(
+                    _reconnect_wait_seconds(
+                        self._config.reconnect_delay_seconds,
+                        reconnects,
+                    ),
+                    stop_event,
+                )
+            except BinanceTransportError as error:
+                # Spot depth REST and other reconnectable transport failures stay
+                # on this profile. Official local-book procedure retries the
+                # snapshot, then restarts the stream. Do not set the shared stop.
+                failure_class = type(error).__name__
+                del error
+                capture_logger().info(
+                    "binance disconnect transport_profile=%s exception_class=%s "
+                    "reason=profile_transport_error",
+                    profile.name,
+                    failure_class,
+                )
+                await self._marker(
+                    profile.product,
+                    "session",
+                    session_id,
+                    {
+                        "event": "disconnect",
+                        "reason": "profile_transport_error",
+                        "transport_profile": profile.name,
+                        "exception_class": failure_class,
+                    },
+                )
+                await self._quality(
+                    profile.product,
+                    session_id,
+                    "gap",
+                    "profile_transport_error",
+                    None,
+                    extra={
+                        "transport_profile": profile.name,
+                        "exception_class": failure_class,
+                    },
+                )
+                if stop_event.is_set():
+                    return
+                if reconnects >= self._config.max_reconnects:
+                    raise BinanceTransportError(
+                        "Binance public reconnect bound was exhausted."
+                    ) from None
+                reconnects += 1
+                self._reset_profile_stream_watch(profile)
+                capture_logger().info(
+                    "binance reconnect transport_profile=%s attempt=%s "
+                    "reason=profile_transport_error",
+                    profile.name,
+                    reconnects,
+                )
+                await self._marker(
+                    profile.product,
+                    "session",
+                    session_id,
+                    {
+                        "event": "reconnect",
+                        "attempt": reconnects,
+                        "transport_profile": profile.name,
+                        "reason": "profile_transport_error",
                     },
                 )
                 await _wait_or_stop(
@@ -1190,6 +1271,19 @@ class BinancePublicResearchCollector:
                 )
                 error.reported = True
                 raise
+            except BinanceTransportError:
+                # Official book sync retries GET /api/v3/depth when the snapshot
+                # cannot be applied. A transport failure is the same retry, not
+                # a terminal retain. The profile reconnects if attempts exhaust.
+                capture_logger().info(
+                    "binance snapshot_retry transport_profile=%s attempt=%s "
+                    "reason=snapshot_transport",
+                    _SPOT_PROFILE.name,
+                    attempt,
+                )
+                if attempt >= self._config.max_spot_snapshot_requests:
+                    raise
+                continue
             raw_snapshot_ordinal = await self._raw(
                 BINANCE_SPOT_PRODUCT,
                 "spot_depth_snapshot",
@@ -2191,9 +2285,14 @@ def data1f_capture_health(
                 "USD-M open interest is one REST observation at start, not a history.",
                 "Public stream only; no API keys, signing, or extra venues.",
                 "Transport gaps include mid-run required-stream silence that force-"
-                "reconnects one transport profile (reason=required_stream_starved); "
-                "they exclude fail-closed integrity events such as sequence_gap or "
+                "reconnects one transport profile (reason=required_stream_starved) "
+                "and a Spot depth REST failure that retries then force-reconnects "
+                "that profile only (reason=profile_transport_error). They exclude "
+                "fail-closed integrity events such as sequence_gap or "
                 "never-observed / reconnect-exhausted liveness_error.",
+                "A profile that still stops the shared run before the requested "
+                "duration is FAILED, not COMPLETED. Operator SIGINT remains "
+                "OPERATOR_STOP.",
                 "USD-M bookTicker uses a dedicated /public combined socket; "
                 "aggTrade/markPrice/forceOrder stay on /market and are not mixed.",
                 "Required-stream application silence past "

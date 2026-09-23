@@ -39,6 +39,7 @@ from hyperliquid_bot.binance_public_research import (
     BinancePublicResearchCollector,
     BinancePublicResearchConfig,
     BinanceSinkError,
+    BinanceTransportError,
     WebSocketConnection,
     _argument_parser,
     _combined_stream,
@@ -1112,6 +1113,200 @@ async def test_transport_reconnect_uses_fresh_session_and_gap_marker() -> None:
 
 
 @pytest.mark.asyncio
+async def test_spot_snapshot_transport_error_retries_then_installs() -> None:
+    sink = MemorySink()
+    stop_event = asyncio.Event()
+    attempts = {"n": 0}
+
+    async def flaky_snapshot() -> CapturedApplicationPayload:
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise TimeoutError("synthetic snapshot timeout")
+        return _captured("public_spot_depth_snapshot.json", utc_ns=200, monotonic_ns=201)
+
+    collector, spot_factory = _collector(sink, stop_event, max_reconnects=1)
+    collector._config = BinancePublicResearchConfig(
+        reconnect_delay_seconds=0,
+        max_reconnects=1,
+        max_spot_snapshot_requests=2,
+    )
+    collector._spot_depth_fetcher = flaky_snapshot
+    await collector.capture_for(10, stop_event=stop_event)
+    assert attempts["n"] == 2
+    assert spot_factory.calls == 1
+    quality = _local_documents(sink.records, "data_quality")
+    assert not any(marker["reason"] == "profile_transport_error" for marker in quality)
+    installed = _local_documents(sink.records, "subscription")
+    assert any(marker["event"] == "snapshot_installed" for marker in installed)
+
+
+@pytest.mark.asyncio
+async def test_spot_snapshot_transport_error_reconnects_one_profile() -> None:
+    sink = MemorySink()
+    stop_event = asyncio.Event()
+    stop_after = StopAfterConnections(stop_event, 3)
+    attempts = {"n": 0}
+
+    async def flaky_snapshot() -> CapturedApplicationPayload:
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise OSError("synthetic snapshot transport")
+        return _captured("public_spot_depth_snapshot.json", utc_ns=200, monotonic_ns=201)
+
+    first = FakeConnection((_fixture_text("public_spot_depth_frame.json"),))
+    second = FakeConnection(
+        (
+            _fixture_text("public_spot_trade_frame.json"),
+            _fixture_text("public_spot_book_ticker_frame.json"),
+            _fixture_text("public_spot_depth_frame.json"),
+        ),
+        on_last=stop_after,
+    )
+    collector, spot_factory = _collector(
+        sink,
+        stop_event,
+        spot_connections=(first, second),
+        max_reconnects=1,
+    )
+    collector._config = BinancePublicResearchConfig(
+        reconnect_delay_seconds=0,
+        max_reconnects=1,
+        max_spot_snapshot_requests=1,
+    )
+    collector._spot_depth_fetcher = flaky_snapshot
+    collector._usdm_market_connection_factory = ScriptedConnectionFactory(
+        (
+            FakeConnection(
+                (
+                    _fixture_text("public_usdm_agg_trade_frame.json"),
+                    _fixture_text("public_usdm_mark_price_frame.json"),
+                ),
+                on_last=stop_after,
+            ),
+        )
+    )
+    collector._usdm_public_connection_factory = ScriptedConnectionFactory(
+        (
+            FakeConnection(
+                (_fixture_text("public_usdm_book_ticker_frame.json"),),
+                on_last=stop_after,
+            ),
+        )
+    )
+    await collector.capture_for(30, stop_event=stop_event)
+    assert attempts["n"] == 2
+    assert spot_factory.calls == 2
+    quality = _local_documents(sink.records, "data_quality")
+    assert any(
+        marker["event"] == "gap"
+        and marker["reason"] == "profile_transport_error"
+        and marker.get("transport_profile") == "spot"
+        and marker.get("exception_class") == "BinanceTransportError"
+        for marker in quality
+    )
+    sessions = _local_documents(sink.records, "session")
+    assert any(
+        marker["event"] == "reconnect"
+        and marker.get("transport_profile") == "spot"
+        and marker.get("reason") == "profile_transport_error"
+        for marker in sessions
+    )
+    assert any(record.channel == "usdm_agg_trade" for record in sink.records)
+    assert any(record.channel == "usdm_book_ticker" for record in sink.records)
+    assert not any(marker["event"] == "liveness_error" for marker in quality)
+
+
+class _IdleAfterFrames:
+    def __init__(self, frames: Sequence[str], on_idle: Callable[[], None]) -> None:
+        self._frames: deque[str] = deque(frames)
+        self._on_idle = on_idle
+        self._noted = False
+        self._never = asyncio.Event()
+
+    async def recv(self) -> str:
+        await asyncio.sleep(0)
+        if self._frames:
+            return self._frames.popleft()
+        if not self._noted:
+            self._noted = True
+            self._on_idle()
+        await self._never.wait()
+        raise AssertionError("unreachable")
+
+
+class _BoomWhenReady:
+    def __init__(self, ready: asyncio.Event) -> None:
+        self._ready = ready
+
+    async def recv(self) -> str:
+        await self._ready.wait()
+        raise RuntimeError("synthetic boundary")
+
+
+@pytest.mark.asyncio
+async def test_unknown_profile_boundary_before_duration_is_failed(
+    tmp_path: Path,
+) -> None:
+    ready = asyncio.Event()
+    idle = {"n": 0}
+
+    def note_idle() -> None:
+        idle["n"] += 1
+        if idle["n"] >= 2:
+            ready.set()
+
+    async def open_interest() -> CapturedApplicationPayload:
+        return _captured("public_usdm_open_interest.json", utc_ns=202, monotonic_ns=203)
+
+    def collector_factory(sink: RawResearchSink) -> BinancePublicResearchCollector:
+        return BinancePublicResearchCollector(
+            sink,
+            config=BinancePublicResearchConfig(reconnect_delay_seconds=0, max_reconnects=1),
+            spot_connection_factory=ScriptedConnectionFactory((_BoomWhenReady(ready),)),
+            usdm_market_connection_factory=ScriptedConnectionFactory(
+                (
+                    _IdleAfterFrames(
+                        (
+                            _fixture_text("public_usdm_agg_trade_frame.json"),
+                            _fixture_text("public_usdm_mark_price_frame.json"),
+                        ),
+                        note_idle,
+                    ),
+                )
+            ),
+            usdm_public_connection_factory=ScriptedConnectionFactory(
+                (
+                    _IdleAfterFrames(
+                        (_fixture_text("public_usdm_book_ticker_frame.json"),),
+                        note_idle,
+                    ),
+                )
+            ),
+            usdm_open_interest_fetcher=open_interest,
+            utc_ns=Counter(1000),
+            monotonic_ns=Counter(2000),
+            session_id_factory=SessionIds(),
+        )
+
+    with pytest.raises(BinanceTransportError, match="transport boundary"):
+        await run_reconstructable_capture(
+            artifact_root=tmp_path,
+            run_id="boundary-fail",
+            duration_seconds=86_400,
+            collector_factory=collector_factory,
+        )
+    paths = data1f_run_paths(tmp_path, "boundary-fail")
+    health = json.loads(paths.capture_health_path.read_text(encoding="utf-8"))
+    assert health["status"] == "FAILED"
+    assert float(health["elapsed_seconds"]) < float(health["duration_seconds"])
+    log_text = (paths.run_dir / "capture-boundary-fail.log").read_text(encoding="utf-8")
+    assert "status=FAILED" in log_text
+    assert "status=COMPLETED" not in log_text
+    assert "capture_operator_alert" in log_text
+    assert "synthetic" not in log_text
+
+
+@pytest.mark.asyncio
 async def test_client_keepalive_1011_is_recorded_as_transport_gap() -> None:
     sink = MemorySink()
     stop_event = asyncio.Event()
@@ -1526,6 +1721,8 @@ def test_data1f_claim_and_health_are_create_only_and_not_twenty_four_seven() -> 
     limitations = health["limitations"]
     assert isinstance(limitations, list)
     assert any("liveness_error" in str(item) for item in limitations)
+    assert any("profile_transport_error" in str(item) for item in limitations)
+    assert any("FAILED, not COMPLETED" in str(item) for item in limitations)
     profiles = health["transport_profiles"]
     assert isinstance(profiles, list)
     assert profiles[0]["transport_profile"] == "spot"

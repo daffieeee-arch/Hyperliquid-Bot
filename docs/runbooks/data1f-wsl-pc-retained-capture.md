@@ -302,6 +302,11 @@ When the assigned goal is a 72-hour reconstructable tape (`DURATION_SECONDS=2592
   current 72h retain unless Chupa explicitly OKs a BN-only restart (CoS gates).
   Do not stop `hl-capture` / `bv-capture` / `kr-capture`. Until restart, the
   live tape is not silent but Quant `bn_gap_fraction` may stay high.
+- A Spot depth REST transport error retries the snapshot, then reconnects that
+  profile only. If a profile still stops the shared run before the requested
+  duration, health is `FAILED` (and one operator alert), not `COMPLETED`.
+  Continue with a new `run_id`. See the VPS runbook for the BN-only command.
+  Do not start `bv-std-capture` from that note.
 
 Collector INFO log: `<run_dir>/capture-<run_id>.log` (must be non-empty; no
 payloads or secrets). Optional tmux copy:

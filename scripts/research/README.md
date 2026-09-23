@@ -21,4 +21,16 @@ Open the catalog on the VPS:
 bash ~/Hyperliquid\ Project/hist-archives/scripts/open_research.sh
 ```
 
+Read-only Phase A inventory, DuckDB glob smoke, Binance gap notes, Bitvavo Pro
+ping-timeout counts, and cross-venue continuity live in the repo (they do not
+start or stop captures):
+
+```bash
+cd ~/Hyperliquid\ Project/Hyperliquid-Bot
+PYTHONPATH=src uv run --frozen python -m hyperliquid_bot.phase_a_research_tools inventory
+PYTHONPATH=src uv run --frozen python -m hyperliquid_bot.phase_a_research_tools duckdb-smoke
+```
+
+How-to: [docs/runbooks/phase-a-research-inventory.md](../../docs/runbooks/phase-a-research-inventory.md).
+
 PAPER / free-data-first. No LIVE, no secrets, no capture restarts from this path.

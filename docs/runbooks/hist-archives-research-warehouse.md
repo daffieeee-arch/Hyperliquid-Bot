@@ -106,8 +106,25 @@ LIMIT 10;
 ```
 
 `catalog.sql` may also expose **read-only** `live_*_parts` views that glob
-current Phase A retain paths under `data-capture/`. Those globs are for
-research joins only — never write, rotate, or rename those parts from hist ETL.
+specific Phase A `run_id`s under `data-capture/`. Those pins go stale when a
+lane continues under a new directory. Check globs, and print (do not apply)
+union views, with the repo helper:
+
+```bash
+cd "$HOME/Hyperliquid Project/Hyperliquid-Bot"
+PYTHONPATH=src uv run --frozen python -m hyperliquid_bot.phase_a_research_tools duckdb-smoke
+PYTHONPATH=src uv run --frozen python -m hyperliquid_bot.phase_a_research_tools duckdb-smoke --probe-db
+```
+
+`--probe-db` counts small `hist_*` views only (`*_1h` / `*_4h` / `*_12h` /
+`*_1d` / `*_funding`) through a read-only DuckDB connection. It does not scan
+`live_*` or aggTrades, and it does not rewrite `research.duckdb`. Paste any
+printed `live_*_phase_a_parts` SQL into this tree's `catalog.sql`, then
+`bash scripts/build_catalog.sh` here — never inside a live `run_id`. Full
+steps: [phase-a-research-inventory.md](phase-a-research-inventory.md).
+
+Those globs are for research joins only — never write, rotate, or rename
+those parts from hist ETL.
 
 ## USDT vs USD caveat
 

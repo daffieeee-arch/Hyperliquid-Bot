@@ -12,7 +12,7 @@ export const MARKET_SOAK_MARK_SOURCE =
   "paper-pnl.json mark_price · soak mark, not live mid, not venue PnL";
 export const MARKET_STORED_TAPE_SOURCE = "stored capture";
 
-export type MarketQuoteKind = "public-mid" | "stored-tape" | "unavailable" | "soak-mark";
+export type MarketQuoteKind = "stored-tape" | "unavailable" | "soak-mark";
 
 /** Freshness of the quote itself, independent of the capture chip status. */
 export type MarketQuoteState = "ok" | "stale" | "unavailable";
@@ -72,48 +72,14 @@ function boundInstrumentRow(venue: VenueCaptureChip): MarketRow {
   };
 }
 
-export function applyPublicMid(row: MarketRow, mid: PublicMidState): MarketRow {
-  if (row.id !== "hl") {
-    return row;
-  }
-  switch (mid.status) {
-    case "loading":
-      return {
-        ...row,
-        mid: "—",
-        quoteSource: "Fetching public /info…",
-      };
-    case "error":
-      return {
-        ...row,
-        mid: MARKET_QUOTE_UNAVAILABLE,
-        quoteSource: mid.message,
-        quoteReason: mid.message,
-        tone: "warn",
-      };
-    case "ready":
-      return {
-        ...row,
-        mid: mid.price.mid,
-        quoteKind: "public-mid",
-        quoteSource: mid.price.source,
-        quoteAt: mid.price.fetched_at,
-        quoteAge: "0s",
-        quoteState: "ok",
-        quoteReason: undefined,
-      };
-    default: {
-      const exhaustive: never = mid;
-      throw new Error(`Unhandled public mid state: ${String(exhaustive)}`);
-    }
-  }
-}
-
-export function marketsRowsFromBoundVenues(
-  venues: readonly VenueCaptureChip[],
-  mid: PublicMidState,
-): MarketRow[] {
-  return venues.map((venue) => applyPublicMid(boundInstrumentRow(venue), mid));
+/**
+ * One fail-closed row per bound venue.
+ *
+ * Prices are filled later from the stored capture. The public Hyperliquid
+ * `/info` mid is context for the chart only and is never written onto a row.
+ */
+export function marketsRowsFromBoundVenues(venues: readonly VenueCaptureChip[]): MarketRow[] {
+  return venues.map((venue) => boundInstrumentRow(venue));
 }
 
 type ParsedDecimal = { negative: boolean; digits: bigint; scale: number };
@@ -206,6 +172,20 @@ function storedSource(venue: VenueMarketTape, instrument: InstrumentTape): strin
   return `${MARKET_STORED_TAPE_SOURCE} · run ${presentCopiedText(venue.runId)} · ${channels}`;
 }
 
+function unavailableStoredRow(row: MarketRow, quoteReason: string): MarketRow {
+  return {
+    ...row,
+    last: MARKET_QUOTE_UNAVAILABLE,
+    mid: MARKET_QUOTE_UNAVAILABLE,
+    quoteKind: "unavailable",
+    quoteSource: MARKET_BBO_NOT_IN_COCKPIT_APIS,
+    quoteAt: undefined,
+    quoteAge: "n/a",
+    quoteState: "unavailable",
+    quoteReason,
+  };
+}
+
 function applyStoredVenue(
   row: MarketRow,
   venue: VenueMarketTape,
@@ -213,17 +193,16 @@ function applyStoredVenue(
   freshMaxS: number,
 ): MarketRow {
   if (venue.status !== "ok") {
-    return {
-      ...row,
-      quoteReason:
-        venue.status === "missing"
-          ? `stored data missing · ${venue.error ?? venue.note}`
-          : `stored data unreadable · ${venue.error ?? venue.note}`,
-    };
+    return unavailableStoredRow(
+      row,
+      venue.status === "missing"
+        ? `stored data missing · ${venue.error ?? venue.note}`
+        : `stored data unreadable · ${venue.error ?? venue.note}`,
+    );
   }
   const instrument = pickQuoteInstrument(venue, row.product);
   if (instrument === undefined) {
-    return { ...row, quoteReason: `no instrument decoded yet · ${venue.note}` };
+    return unavailableStoredRow(row, `no instrument decoded yet · ${venue.note}`);
   }
   const last = instrument.lastTrade?.price;
   const storedMid =
@@ -231,30 +210,27 @@ function applyStoredVenue(
       ? undefined
       : decimalMidpoint(instrument.lastBbo.bid, instrument.lastBbo.ask);
   if (last === undefined && storedMid === undefined) {
-    return {
-      ...row,
-      instrument: instrument.product,
-      quoteReason: `no trade or BBO decoded yet in run ${presentCopiedText(venue.runId)} · channels ${instrument.channelsSeen.join(", ") || "none"}`,
-    };
+    return unavailableStoredRow(
+      {
+        ...row,
+        instrument: instrument.product,
+      },
+      `no trade or BBO decoded yet in run ${presentCopiedText(venue.runId)} · channels ${instrument.channelsSeen.join(", ") || "none"}`,
+    );
   }
-  // HL keeps its public /info mid as the primary mid; stored data supplies the last.
-  const keepPublicMid = row.quoteKind === "public-mid";
-  const mid = keepPublicMid ? row.mid : (storedMid ?? MARKET_QUOTE_UNAVAILABLE);
-  const storedAt = newestIso(
-    instrument.lastTrade?.at,
-    keepPublicMid ? undefined : instrument.lastBbo?.at,
+  const quoteAt = newestIso(
+    last === undefined ? undefined : instrument.lastTrade?.at,
+    storedMid === undefined ? undefined : instrument.lastBbo?.at,
   );
-  const quoteAt = newestIso(storedAt, keepPublicMid ? row.quoteAt : undefined);
-  const ageS = secondsBetween(storedAt, observedAt);
+  const ageS = secondsBetween(quoteAt, observedAt);
   const stale = ageS !== undefined && ageS > freshMaxS;
-  const source = storedSource(venue, instrument);
   return {
     ...row,
     instrument: instrument.product,
     last: last ?? MARKET_QUOTE_UNAVAILABLE,
-    mid,
-    quoteKind: keepPublicMid ? "public-mid" : "stored-tape",
-    quoteSource: keepPublicMid ? `${row.quoteSource} · last: ${source}` : source,
+    mid: storedMid ?? MARKET_QUOTE_UNAVAILABLE,
+    quoteKind: "stored-tape",
+    quoteSource: storedSource(venue, instrument),
     quoteAt,
     quoteAge: formatAgeSeconds(ageS),
     quoteState: stale ? "stale" : "ok",
@@ -262,18 +238,19 @@ function applyStoredVenue(
       ? `newest stored tick is ${formatAgeSeconds(ageS)} old (fresh ≤ ${String(freshMaxS)}s)`
       : last === undefined
         ? "no trade decoded yet · mid from stored BBO"
-        : storedMid === undefined && !keepPublicMid
+        : storedMid === undefined
           ? "no BBO decoded yet · last from stored trades"
           : undefined,
   };
 }
 
 /**
- * Fill Last / Mid from the stored market tape for every bound venue.
+ * Fill Last / Mid from the stored market tape for every bound venue, including HL.
  *
- * Nothing here calls a venue API: values come from the Parquet parts the
- * collectors wrote, attributed to the run id and channels they came from.
- * A venue whose tape has no usable tick stays UNAVAILABLE with the reason.
+ * Last is the newest stored trade. Mid is the stored BBO midpoint in exact
+ * decimal arithmetic. A missing trade or BBO stays UNAVAILABLE — the last is
+ * never copied into the mid, and the public `/info` mid is never used here.
+ * One unreadable venue does not blank the others.
  */
 export function applyStoredTapeQuote(
   rows: readonly MarketRow[],
@@ -282,9 +259,7 @@ export function applyStoredTapeQuote(
 ): MarketRow[] {
   if (!tape.ok) {
     return rows.map((row) =>
-      row.quoteState === "unavailable"
-        ? { ...row, quoteReason: `stored market data unavailable · ${tape.error}` }
-        : row,
+      unavailableStoredRow(row, `stored market data unavailable · ${tape.error}`),
     );
   }
   return rows.map((row) => {
@@ -292,7 +267,12 @@ export function applyStoredTapeQuote(
     if (venue === undefined) {
       return row;
     }
-    return applyStoredVenue(row, venue, tape.tape.observed_at, freshMaxS);
+    try {
+      return applyStoredVenue(row, venue, tape.tape.observed_at, freshMaxS);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "unreadable stored quote";
+      return unavailableStoredRow(row, `stored quote unreadable · ${message}`);
+    }
   });
 }
 

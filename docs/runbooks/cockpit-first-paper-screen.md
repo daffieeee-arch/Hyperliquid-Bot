@@ -17,9 +17,9 @@ directories. It copies assumed overlay fields, observed soak health, DATA-1A
 claim/health plus a cheap parquet-part listing, and a four-venue capture-health
 strip (HL / Binance / Bitvavo / Kraken). **DESK** shows PAPER mode, the bound
 paper run, and live vs stale capture chips from that strip
-(`COCKPIT_CAPTURE_FRESH_MAX_S=180`). **MARKETS** shows the public Hyperliquid
-BTC-PERP mid already used by the cockpit and fail-closes sibling last/BBO as
-**UNAVAILABLE** (those quotes are not in cockpit APIs). **RISK** copies
+(`COCKPIT_CAPTURE_FRESH_MAX_S=180`). **MARKETS** shows last and BBO mid from
+the stored capture of every bound venue (HL / Binance / Bitvavo / Kraken) and
+fail-closes a missing tick as **UNAVAILABLE**. **RISK** copies
 reconstructable PAPER position, assumed overlay PnL, fail-closed preflight
 bounds, and the capture live/stale summary; leverage, margin, liquidation, VaR,
 and venue risk stay **UNAVAILABLE**. It does not invent PnL, position, prices,
@@ -75,8 +75,10 @@ pnpm --filter @hyperliquid-bot/cockpit dev
 ```
 
 Open `http://127.0.0.1:3000`. Fixture PAPER JSON and the DATA-1A sample run
-are enough to render DESK + MARKETS + RISK; sibling venue quotes and
-leverage/margin/liquidation/VaR stay UNAVAILABLE.
+are enough to render DESK + MARKETS + RISK. Venue quotes stay UNAVAILABLE
+until a stored trade or BBO exists. Leverage, margin, liquidation and VaR
+stay UNAVAILABLE. The dev server stays on localhost (`127.0.0.1`); do not
+bind a public port.
 
 ### Remote VPS access via Tailscale Serve
 
@@ -118,7 +120,7 @@ pnpm --filter @hyperliquid-bot/cockpit dev
 `ARTIFACT_ROOT` and open
 `http://127.0.0.1:3000/?data1a_run_id=<run_id>`.
 DESK live-vs-stale chips and MARKETS bound-instrument rows use the same binds.
-Sibling last/BBO stay UNAVAILABLE.
+Last and mid come from the stored capture; a missing tick stays UNAVAILABLE.
 
 LAN phone on the same Wi-Fi (not 4G). Official Next.js `next dev --hostname 0.0.0.0`
 listens on all interfaces (`pnpm --filter @hyperliquid-bot/cockpit dev:lan`).

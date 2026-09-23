@@ -159,14 +159,14 @@ describe("cockpit display helpers", () => {
         observed_at: "2026-09-04T13:49:45.000Z",
         claim: { duration_seconds: 259200 },
       }),
-    ).toBe("5s elapsed / 259200s claimed");
+    ).toBe("5s elapsed / 72h claimed");
     expect(
       presentData1ADuration({
         runId: "sample-run",
         observed_at: "2026-09-04T13:49:45.000Z",
         claim: { duration_seconds: 86400 },
       }),
-    ).toBe("86400s claimed");
+    ).toBe("24h claimed");
   });
 
   it("copies gaps/reconnects only when health JSON supplied them", () => {
@@ -177,7 +177,7 @@ describe("cockpit display helpers", () => {
     expect(presentGapReconnectClusters(1, 6, 3)).toBe("1 gaps · 6 raw / 3 clusters");
     expect(presentGapReconnectClusters(0, 2, undefined)).toBe("0 gaps · 2 raw / n/a clusters");
     expect(presentLastPartMtime(undefined)).toBe("n/a");
-    expect(presentLastPartMtime("2026-09-06T10:15:59.000Z")).toBe("2026-09-06 10:15:59Z");
+    expect(presentLastPartMtime("2026-09-06T10:15:59.000Z")).toBe("2026-09-06 12:15:59 CEST");
     expect(presentLastPartMtime("not-a-time")).toBe("n/a");
     expect(
       captureRunOptionLabel("binance", {

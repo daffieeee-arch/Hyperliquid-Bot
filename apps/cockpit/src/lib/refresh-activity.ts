@@ -1,5 +1,5 @@
 import { formatAgeSeconds, secondsBetween } from "./poll-state";
-import { localClockLabel, utcClockLabel } from "./time-display";
+import { localClockLabel } from "./time-display";
 
 /**
  * What one polled fetch reports when it settles.
@@ -141,7 +141,7 @@ export function describeRefreshFeedback(
     return {
       tone: "down",
       label: `Refresh failed · ${shortReason(outcome.errors)}`,
-      detail: `${String(outcome.errors.length)} of ${String(outcome.fetches)} request(s) failed at ${utcClockLabel(outcome.settledAt)}. Previous values stay on screen. ${outcome.errors.join(" | ")}`,
+      detail: `${String(outcome.errors.length)} of ${String(outcome.fetches)} request(s) failed at ${localClockLabel(outcome.settledAt)}. Previous values stay on screen. ${outcome.errors.join(" | ")}`,
       busy: false,
     };
   }
@@ -149,7 +149,7 @@ export function describeRefreshFeedback(
     return {
       tone: "ok",
       label: `Updated ${localClockLabel(outcome.settledAt)}`,
-      detail: `${String(outcome.fetches)} request(s) settled at ${utcClockLabel(outcome.settledAt)} with new data.`,
+      detail: `${String(outcome.fetches)} request(s) settled at ${localClockLabel(outcome.settledAt)} with new data.`,
       busy: false,
     };
   }
@@ -161,7 +161,7 @@ export function describeRefreshFeedback(
       age === undefined
         ? `Already current · ${localClockLabel(outcome.settledAt)}`
         : `Already current · age ${formatAgeSeconds(age)}`,
-    detail: `${String(outcome.fetches)} request(s) settled at ${utcClockLabel(outcome.settledAt)}; the backend returned the same values. Data last changed at ${utcClockLabel(since)}.`,
+    detail: `${String(outcome.fetches)} request(s) settled at ${localClockLabel(outcome.settledAt)}; the backend returned the same values. Data last changed at ${localClockLabel(since)}.`,
     busy: false,
   };
 }

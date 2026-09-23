@@ -1,5 +1,10 @@
 import { DEFAULT_CAPTURE_FRESH_MAX_S } from "./capture-freshness";
-import { elapsedSecondsSinceRunId, paperRunSourceLabel, presentCopiedText } from "./display";
+import {
+  elapsedSecondsSinceRunId,
+  formatOperatorDuration,
+  paperRunSourceLabel,
+  presentCopiedText,
+} from "./display";
 import type {
   PaperRunSnapshot,
   VenueCaptureChip,
@@ -180,5 +185,5 @@ export function deskPhaseAProgressLine(
     return base;
   }
   const pct = Math.min(100, Math.floor((elapsed / claimedDurationSeconds) * 100));
-  return `${base} · HL ${String(elapsed)}s / ${String(claimedDurationSeconds)}s (${String(pct)}%)`;
+  return `${base} · HL ${formatOperatorDuration(elapsed)} / ${formatOperatorDuration(claimedDurationSeconds)} (${String(pct)}%)`;
 }

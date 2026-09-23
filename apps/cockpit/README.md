@@ -43,10 +43,11 @@ unset or `PAPER`; `LIVE`, `TESTNET`, and `SHADOW` fail closed.
    closed), bound paper-run identity, and live vs stale capture chips reused
    from `#54` freshness (`COCKPIT_CAPTURE_FRESH_MAX_S=180`). Bound run ids are
    copied from the strip provenance; they are not invented.
-2. **MARKETS** first quote panel: bound HL BTC-PERP public mid from
-   `/api/public-btc-perp`. Binance / Bitvavo / Kraken last/BBO stay
-   **UNAVAILABLE** because those quotes are not in cockpit APIs. Copied
-   COURSE-1 `paper-pnl.json` `mark_price` is a soak mark, not a live last.
+2. **MARKETS** first quote panel: last and BBO mid from the stored capture
+   of every bound venue (HL / Binance / Bitvavo / Kraken). A missing tick
+   stays **UNAVAILABLE**. The public HL mid is separate context and is not
+   copied onto a venue row. Copied COURSE-1 `paper-pnl.json` `mark_price` is
+   a soak mark, not a live last.
 3. **RISK** first reconstructable overlay: PAPER position, assumed overlay PnL
    labeled as assumed and **not venue-reconciled**, fail-closed preflight
    bounds, COURSE-1 risk-rejection / 24/7 flags, the documented #65

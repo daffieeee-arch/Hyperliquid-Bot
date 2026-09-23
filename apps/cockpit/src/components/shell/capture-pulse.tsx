@@ -11,7 +11,7 @@ import { captureChipDataState, dataStateTone, worstDataState } from "../../lib/d
 import type { VenueCaptureQuery } from "../../lib/paths";
 import { describePollRead, formatAgeSeconds, secondsBetween } from "../../lib/poll-state";
 import { describeRefreshFeedback } from "../../lib/refresh-activity";
-import { dualClockLabel } from "../../lib/time-display";
+import { localClockLabel } from "../../lib/time-display";
 import type { VenueCaptureStripResponse } from "../../lib/types";
 import { useNow } from "../../lib/use-now";
 import { useVenueCapturePoll } from "../../lib/use-venue-capture";
@@ -59,7 +59,7 @@ export function CapturePulse({ query }: { query: VenueCaptureQuery }) {
               ? `${String(live)}/${String(strip.strip.venues.length)} live`
               : `${String(strip.strip.venues.length)} bound`,
           live: live > 0 && !poll.degraded,
-          title: `Worst capture state: ${worst}. Fresh ≤ ${String(strip.strip.fresh_max_s)}s. Newest part ${dualClockLabel(
+          title: `Worst capture state: ${worst}. Fresh ≤ ${String(strip.strip.fresh_max_s)}s. Newest part ${localClockLabel(
             strip.strip.venues
               .map((venue) => venue.last_part_mtime_utc)
               .filter((value): value is string => value !== undefined)
@@ -96,8 +96,8 @@ export function CapturePulse({ query }: { query: VenueCaptureQuery }) {
         tone={read.tone}
         className={
           feedback.busy || activity.lastOutcome === null
-            ? "topbar-wide read-age"
-            : "topbar-wide read-age badge-pulse"
+            ? "topbar-fresh read-age"
+            : "topbar-fresh read-age badge-pulse"
         }
         title={`${read.detail} Auto-refresh every ${String(intervalMs / 1000)}s${paused ? " (paused)" : ""}.`}
       >

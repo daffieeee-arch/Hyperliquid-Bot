@@ -4,8 +4,19 @@ import { Badge } from "./ui/badge";
 import { Notice } from "./ui/notice";
 import { captureChipDataState, dataStateTone } from "../lib/data-state";
 import { presentCopiedText } from "../lib/display";
-import { dualClockLabel } from "../lib/time-display";
+import { formatAgeSeconds, secondsBetween, updatedAgoLabel } from "../lib/poll-state";
+import { localClockLabel } from "../lib/time-display";
 import type { VenueCaptureStripResponse } from "../lib/types";
+import { useNow } from "../lib/use-now";
+
+function stripPartAge(
+  mtimeUtc: string | undefined,
+  nowIso: string | undefined,
+  fallback: string,
+): string {
+  const seconds = secondsBetween(mtimeUtc, nowIso);
+  return seconds === undefined ? fallback : formatAgeSeconds(seconds);
+}
 
 /**
  * Compact four-venue capture strip.
@@ -23,6 +34,7 @@ export function VenueStrip({
   /** True when the latest read failed and these are values from an earlier read. */
   degraded?: boolean;
 }) {
+  const nowIso = useNow();
   if (!strip.ok) {
     return (
       <Notice state="error" title="Capture strip unavailable">
@@ -68,10 +80,16 @@ export function VenueStrip({
                 title={
                   venue.last_part_mtime_utc === undefined
                     ? "Age of the newest parquet part"
-                    : `Newest part ${dualClockLabel(venue.last_part_mtime_utc)}`
+                    : `Newest part ${localClockLabel(venue.last_part_mtime_utc)} · ${updatedAgoLabel(
+                        venue.last_part_mtime_utc,
+                        nowIso,
+                        venue.last_part_age === "n/a"
+                          ? "age n/a"
+                          : `updated ${venue.last_part_age} ago`,
+                      )}`
                 }
               >
-                {venue.last_part_age}
+                {stripPartAge(venue.last_part_mtime_utc, nowIso, venue.last_part_age)}
               </span>
             </div>
             <div className="stat-meta cell-id truncate-1" title={presentCopiedText(venue.run_id)}>

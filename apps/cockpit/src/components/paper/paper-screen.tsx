@@ -172,6 +172,31 @@ export function PaperScreen({
         </Notice>
       ) : null}
 
+      <div className="grid grid-sm-2">
+        <Stat
+          label="COURSE-1 soak"
+          value={identities.soak.runId}
+          compact
+          tone="paper"
+          meta={`${identities.soak.kind} · ${identities.soak.soakSeconds} · not DATA retain`}
+        />
+        <Stat
+          label="DATA retain"
+          value={
+            identities.retain.error === undefined
+              ? `${String(identities.retain.venues.length)} venues`
+              : "UNAVAILABLE"
+          }
+          compact
+          tone="muted"
+          meta={
+            identities.retain.error === undefined
+              ? `${identities.retain.glanceLine} · not soak PnL`
+              : identities.retain.error
+          }
+        />
+      </div>
+
       <div className="grid grid-sm-2 grid-lg-4">
         <Stat
           label="Last decision"
@@ -180,7 +205,11 @@ export function PaperScreen({
           tone={
             view.why.outcome === "ACCEPT" ? "ok" : view.why.outcome === "REJECT" ? "down" : "warn"
           }
-          meta={view.why.reason}
+          meta={
+            view.why.outcome === "REJECT"
+              ? `#65 ${view.why.gateName} · ${view.why.reason}`
+              : view.why.reason
+          }
         />
         <Stat
           label="assumed_pnl"
@@ -248,7 +277,8 @@ export function PaperScreen({
                 },
                 {
                   label: "Gate",
-                  value: view.why.gateName,
+                  value:
+                    view.why.outcome === "REJECT" ? `#65/${view.why.gateName}` : view.why.gateName,
                   tone: view.why.outcome === "REJECT" ? "down" : "unknown",
                 },
                 { label: "Reason", value: view.why.reason },

@@ -431,13 +431,26 @@ body {
 }
 
 @media (max-width: 640px) {
+  .topbar {
+    flex-wrap: wrap;
+    align-items: center;
+  }
   .topbar-crumb .crumb-root {
     display: none;
   }
-  /* The origin chip repeats in each page head; the live count, read pulse and
-     refresh button must stay reachable on a phone. */
+  .topbar-actions {
+    flex-wrap: wrap;
+    flex: 1 1 auto;
+    justify-content: flex-end;
+  }
+  /* Origin repeats in each page head. PAPER, capture freshness, the refresh
+     label and the spinner stay in the sticky bar. */
   .topbar-actions .topbar-wide {
     display: none;
+  }
+  .topbar-fresh {
+    display: inline-flex;
+    flex: none;
   }
 }
 
@@ -449,17 +462,16 @@ body {
   min-width: 0;
 }
 
-/* Refresh feedback: always-visible last-refreshed label beside the button. */
+/* Refresh feedback: spinner state, last update, already-current, or the error. */
 .refresh-feedback {
   flex: 0 1 auto;
   min-width: 5rem;
-  font-size: var(--font-meta);
+  font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.04em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 18rem;
 }
 
 .read-age {
@@ -497,9 +509,21 @@ body {
   }
 }
 
+@media (min-width: 641px) {
+  .refresh-feedback {
+    max-width: 18rem;
+  }
+}
+
 @media (max-width: 640px) {
   .refresh-feedback {
-    max-width: 9rem;
+    order: 2;
+    flex: 1 0 100%;
+    max-width: none;
+    overflow: visible;
+    text-overflow: unset;
+    white-space: normal;
+    line-height: 1.35;
   }
 }
 
@@ -932,7 +956,7 @@ table.dt th {
   border-bottom: 1px solid var(--line);
   background: var(--panel-2);
   color: var(--dim);
-  font-size: 0.72rem;
+  font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -982,12 +1006,12 @@ table.dt tbody tr:last-child td {
   border-bottom: 0;
 }
 
-/* Quote cells: primary Last/Mid are the numbers the operator reads first;
-   secondary spread/age/venue stay dense. Phones get a 16px minimum. */
+/* Quote cells: Last/Mid stay 15px (16px on a phone) even when body type is 14px.
+   Chrome and column labels stay at 11px. */
 .quote-primary {
   display: block;
   font-family: var(--font-mono);
-  font-size: 0.95rem;
+  font-size: 15px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.005em;
@@ -1015,7 +1039,7 @@ table.dt tbody tr:last-child td {
 
 @media (max-width: 640px) {
   .quote-primary {
-    font-size: 1rem;
+    font-size: 16px;
   }
 }
 

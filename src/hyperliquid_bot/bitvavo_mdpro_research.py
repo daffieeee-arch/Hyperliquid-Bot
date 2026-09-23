@@ -79,6 +79,8 @@ BITVAVO_MDPRO_SIGNATURE_PATH: Final = "/v2/websocket"
 # "keepalive ping timeout". Match DATA-1F: None keeps auto-pong for server pings.
 BITVAVO_MDPRO_WEBSOCKET_CLIENT_PING_INTERVAL: Final[float | None] = None
 BITVAVO_MDPRO_WEBSOCKET_CLIENT_PING_TIMEOUT: Final[float | None] = None
+# Docs do not require client ping; soft-reconnect when market frames go silent.
+BITVAVO_MDPRO_APPLICATION_IDLE_RECONNECT_SECONDS: Final = 180.0
 SMOKE_CAPTURE_SECONDS: Final = 600.0
 MAX_CAPTURE_SECONDS: Final = 7 * 24 * 60 * 60
 RETAINED_MAX_RECONNECTS: Final = 10_080
@@ -523,6 +525,7 @@ class BitvavoMdProResearchCollector:
             connected = False
             failure: str | None = None
             disconnect_fields: dict[str, int | str] = {}
+            idle_reconnect = False
             try:
                 async with self._connection_factory() as connection:
                     connected = True
@@ -556,7 +559,12 @@ class BitvavoMdProResearchCollector:
                 raise
             except (WebSocketException, OSError) as error:
                 failure = "transport"
-                disconnect_fields = transport_exception_fields(error)
+                idle_reconnect = (
+                    isinstance(error, ConnectionError)
+                    and str(error) == "application idle reconnect"
+                )
+                if not idle_reconnect:
+                    disconnect_fields = transport_exception_fields(error)
                 del error
             except Exception:
                 failure = "boundary"
@@ -574,15 +582,17 @@ class BitvavoMdProResearchCollector:
             if failure in {"transport", "subscription"}:
                 if not connected:
                     await self._connection_failed(session_id, previous_session_id)
-                    if failure == "subscription":
-                        raise BitvavoMdProSubscriptionError(
-                            "Bitvavo Market Data Pro subscription failed before connect."
-                        ) from None
-                    raise BitvavoMdProTransportError(
-                        "Bitvavo Market Data Pro connection failed."
-                    ) from None
-                if failure == "subscription":
+                elif failure == "subscription":
                     await self._subscription_failed_reconnectable(session_id)
+                elif idle_reconnect:
+                    await self._append_marker(
+                        session_id,
+                        "session",
+                        "disconnected",
+                        stream=BITVAVO_MDPRO_FEED_PRODUCT,
+                        transport_profile=BITVAVO_MDPRO_FEED_PRODUCT,
+                        reason="application_idle",
+                    )
                 else:
                     await self._disconnected(session_id, disconnect_fields)
                 if reconnects >= self._config.max_reconnects:
@@ -616,10 +626,44 @@ class BitvavoMdProResearchCollector:
         )
         snapshot_received = False
         expected_channels = frozenset(self._config.subscription_channels)
+        session_healthy = False
+        last_market_monotonic_ns = self._monotonic_ns()
         while not stop_event.is_set():
-            captured = await self._receive_or_stop(connection, stop_event)
+            timeout_seconds: float | None = None
+            if session_healthy:
+                idle_budget = BITVAVO_MDPRO_APPLICATION_IDLE_RECONNECT_SECONDS
+                elapsed = (self._monotonic_ns() - last_market_monotonic_ns) / 1_000_000_000
+                remaining = idle_budget - elapsed
+                if remaining <= 0:
+                    await self._append_marker(
+                        session_id,
+                        "data_quality",
+                        "gap_detected",
+                        stream=BITVAVO_MDPRO_FEED_PRODUCT,
+                        transport_profile=BITVAVO_MDPRO_FEED_PRODUCT,
+                        reason="application_idle",
+                    )
+                    raise ConnectionError("application idle reconnect")
+                timeout_seconds = max(remaining, 0.01)
+            captured = await self._receive_or_stop(
+                connection,
+                stop_event,
+                timeout_seconds=timeout_seconds,
+            )
             if captured is None:
-                break
+                if stop_event.is_set():
+                    break
+                if session_healthy:
+                    await self._append_marker(
+                        session_id,
+                        "data_quality",
+                        "gap_detected",
+                        stream=BITVAVO_MDPRO_FEED_PRODUCT,
+                        transport_profile=BITVAVO_MDPRO_FEED_PRODUCT,
+                        reason="application_idle",
+                    )
+                    raise ConnectionError("application idle reconnect")
+                continue
             result, unpersisted_failure = await self._record_market_inbound(
                 captured,
                 session_id,
@@ -684,6 +728,10 @@ class BitvavoMdProResearchCollector:
                     normalized_channel,
                     normalized,
                 )
+            last_market_monotonic_ns = self._monotonic_ns()
+            if book_state.has_snapshot and not session_healthy:
+                session_healthy = True
+                last_market_monotonic_ns = self._monotonic_ns()
 
         if not book_state.has_snapshot:
             await self._append_marker(
@@ -986,6 +1034,8 @@ class BitvavoMdProResearchCollector:
         self,
         connection: WebSocketConnection,
         stop_event: asyncio.Event,
+        *,
+        timeout_seconds: float | None = None,
     ) -> CapturedApplicationPayload | None:
         receive_task = asyncio.create_task(
             self._receive_captured(connection),
@@ -996,6 +1046,7 @@ class BitvavoMdProResearchCollector:
         try:
             done, _ = await asyncio.wait(
                 (receive_task, stop_task),
+                timeout=timeout_seconds,
                 return_when=asyncio.FIRST_COMPLETED,
             )
             if receive_task in done:

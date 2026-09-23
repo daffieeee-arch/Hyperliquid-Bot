@@ -19,6 +19,7 @@ from websockets.exceptions import PayloadTooBig
 from hyperliquid_bot.bitvavo_standard_research import (
     BITVAVO_FEED_PRODUCT,
     BITVAVO_RESEARCH_PRODUCT,
+    BITVAVO_STANDARD_APPLICATION_IDLE_RECONNECT_SECONDS,
     BITVAVO_STANDARD_WEBSOCKET_CLIENT_PING_INTERVAL,
     BITVAVO_STANDARD_WEBSOCKET_CLIENT_PING_TIMEOUT,
     BITVAVO_STANDARD_WEBSOCKET_URL,
@@ -186,6 +187,26 @@ class ScriptedConnectionFactory:
 
     def __call__(self) -> AbstractAsyncContextManager[WebSocketConnection]:
         self.calls += 1
+        if not self._connections:
+            raise AssertionError("collector requested an unexpected connection")
+        return _fake_context(self._connections.popleft())
+
+
+class FailThenConnectFactory:
+    def __init__(
+        self,
+        *,
+        fail_count: int,
+        connections: Sequence[WebSocketConnection],
+    ) -> None:
+        self._fail_count = fail_count
+        self._connections = deque(connections)
+        self.calls = 0
+
+    def __call__(self) -> AbstractAsyncContextManager[WebSocketConnection]:
+        self.calls += 1
+        if self.calls <= self._fail_count:
+            raise OSError("synthetic first-connect failure")
         if not self._connections:
             raise AssertionError("collector requested an unexpected connection")
         return _fake_context(self._connections.popleft())
@@ -616,6 +637,86 @@ async def test_reconnect_uses_fresh_session_subscription_buffer_and_snapshot() -
         )
         == 2
     )
+
+
+@pytest.mark.asyncio
+async def test_first_connect_retries_then_succeeds() -> None:
+    stop_event = asyncio.Event()
+    messages = [
+        *_standard_messages(),
+    ]
+    connection = FakeConnection(messages, on_last=stop_event.set)
+    factory = FailThenConnectFactory(fail_count=1, connections=[connection])
+    sink = MemorySink()
+    collector = BitvavoStandardResearchCollector(
+        sink,
+        config=BitvavoStandardResearchConfig(reconnect_delay_seconds=0, max_reconnects=2),
+        connection_factory=factory,
+        session_id_factory=SessionIds(),
+    )
+
+    await collector.capture_for(5.0, stop_event=stop_event)
+
+    assert factory.calls == 2
+    sessions = _marker_documents(sink.records, channel="session")
+    assert any(event["event"] == "connection_failed" for event in sessions)
+    assert any(event["event"] == "reconnected" for event in sessions)
+    assert any(
+        event["event"] in {"snapshot_received", "resnapshot_received"}
+        for event in _marker_documents(sink.records, channel="data_quality")
+    )
+
+
+@pytest.mark.asyncio
+async def test_application_idle_emits_gap_and_reconnects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "hyperliquid_bot.bitvavo_standard_research.BITVAVO_STANDARD_APPLICATION_IDLE_RECONNECT_SECONDS",
+        0.05,
+    )
+    assert BITVAVO_STANDARD_APPLICATION_IDLE_RECONNECT_SECONDS == 180.0
+    first_messages = [
+        _ack("trades"),
+        _ack("ticker"),
+        _ack("book"),
+        _book_update(100),
+        _snapshot(101),
+    ]
+    second_stop = asyncio.Event()
+    second_messages = [
+        _ack("trades"),
+        _ack("ticker"),
+        _ack("book"),
+        _book_update(500),
+        _snapshot(501),
+        _book_update(502),
+    ]
+    first = FakeConnection(first_messages)
+    second = FakeConnection(second_messages, on_last=second_stop.set)
+    factory = ScriptedConnectionFactory([first, second])
+    sink = MemorySink()
+    collector = BitvavoStandardResearchCollector(
+        sink,
+        config=BitvavoStandardResearchConfig(reconnect_delay_seconds=0, max_reconnects=2),
+        connection_factory=factory,
+        session_id_factory=SessionIds(),
+    )
+
+    await collector.capture_for(5.0, stop_event=second_stop)
+
+    assert factory.calls == 2
+    quality = _marker_documents(sink.records, channel="data_quality")
+    assert any(
+        event["event"] == "gap_detected" and event.get("reason") == "application_idle"
+        for event in quality
+    )
+    sessions = _marker_documents(sink.records, channel="session")
+    assert any(
+        event["event"] == "disconnected" and event.get("reason") == "application_idle"
+        for event in sessions
+    )
+    assert any(event["event"] == "reconnected" for event in sessions)
 
 
 @pytest.mark.asyncio

@@ -261,6 +261,26 @@ class ScriptedConnectionFactory:
         return context()
 
 
+class FailThenConnectFactory:
+    def __init__(self, *, fail_count: int, connections: Sequence[FakeConnection]) -> None:
+        self._fail_count = fail_count
+        self._connections = deque(connections)
+        self.calls = 0
+
+    def __call__(self) -> AbstractAsyncContextManager[WebSocketConnection]:
+        self.calls += 1
+        if self.calls <= self._fail_count:
+            raise OSError("synthetic first-connect failure")
+
+        @asynccontextmanager
+        async def context() -> AsyncIterator[WebSocketConnection]:
+            if not self._connections:
+                raise AssertionError("unexpected connection attempt")
+            yield self._connections.popleft()
+
+        return context()
+
+
 class Counter:
     def __init__(self, start: int) -> None:
         self.value = start
@@ -1298,6 +1318,34 @@ async def test_reconnect_bound_is_hard() -> None:
     with pytest.raises(BitvavoMdProAuthenticationError):
         await collector.capture_for(5.0)
     assert factory.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_first_connect_retries_then_succeeds() -> None:
+    stop_event = asyncio.Event()
+    messages = _successful_messages(snapshot_sequence=438_525)
+    connection = FakeConnection(messages, on_last=stop_event.set)
+    factory = FailThenConnectFactory(fail_count=1, connections=[connection])
+    sink = MemorySink()
+    collector = BitvavoMdProResearchCollector(
+        sink,
+        _credentials(),
+        config=BitvavoMdProResearchConfig(reconnect_delay_seconds=0, max_reconnects=2),
+        connection_factory=factory,
+        timestamp_ms=lambda: 1_788_112_345_678,
+        session_id_factory=SessionIds(),
+    )
+
+    await collector.capture_for(5.0, stop_event=stop_event)
+
+    assert factory.calls == 2
+    sessions = _marker_documents(sink.records, channel="session")
+    assert any(event["event"] == "connection_failed" for event in sessions)
+    assert any(event["event"] == "reconnected" for event in sessions)
+    assert any(
+        event["event"] in {"snapshot_received", "resnapshot_received"}
+        for event in _marker_documents(sink.records, channel="data_quality")
+    )
 
 
 @pytest.mark.asyncio

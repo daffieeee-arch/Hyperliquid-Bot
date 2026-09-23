@@ -308,7 +308,10 @@ def test_websocket_connect_disables_client_keepalive_pings() -> None:
     assert market_options["max_queue"] == BINANCE_WEBSOCKET_MARKET_MAX_QUEUE
     assert _websocket_incoming_max_queue(BINANCE_USDM_PUBLIC_WEBSOCKET_URL) == 1024
     assert _websocket_incoming_max_queue(BINANCE_SPOT_WEBSOCKET_URL) == 1024
-    assert _websocket_incoming_max_queue(BINANCE_USDM_MARKET_WEBSOCKET_URL) == 16
+    assert (
+        _websocket_incoming_max_queue(BINANCE_USDM_MARKET_WEBSOCKET_URL)
+        == BINANCE_WEBSOCKET_MARKET_MAX_QUEUE
+    )
     with pytest.raises(ValueError, match="unknown Binance public research WebSocket URL"):
         _websocket_incoming_max_queue("wss://example.invalid/stream")
 

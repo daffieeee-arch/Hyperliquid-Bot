@@ -29,6 +29,12 @@ from websockets.exceptions import PayloadTooBig, WebSocketException
 
 from .binance_spot_trades import BinanceTimestampUnit, decode_binance_spot_trade
 from .binance_usdm_stream_contract import require_usdm_combined_stream_split
+from .capture_live_status import (
+    CAPTURE_LIVE_NAME,
+    stamp_start_metadata,
+    utc_now_text,
+    write_capture_live,
+)
 from .capture_observability import (
     DISCONNECT_LOG_SUFFIX,
     add_transport_counts,
@@ -467,7 +473,14 @@ class BinancePublicResearchCollector:
         self._append_lock = asyncio.Lock()
         self._sink_failed = False
         self._required_last_seen_monotonic: dict[tuple[str, str], float] = {}
+        self._required_last_seen_utc: dict[tuple[str, str], str] = {}
         self._profile_watch_started_monotonic: dict[str, float] = {}
+        self._profile_phase: dict[str, str] = {}
+        self._live_status_path: Path | None = None
+        self._live_run_id: str | None = None
+        self._alerted_profiles: set[str] = set()
+        self.preserved_profile_failure: BaseException | None = None
+        self.notice_while_siblings_active = False
 
     async def capture_for(
         self,
@@ -510,6 +523,11 @@ class BinancePublicResearchCollector:
         watchers.add(cast(asyncio.Task[object], timer))
         if external_wait is not None:
             watchers.add(cast(asyncio.Task[object], external_wait))
+        live_stop = asyncio.Event()
+        live_task = asyncio.create_task(
+            self._publish_live_until(live_stop),
+            name="binance-live-status",
+        )
 
         profile_failures: list[BaseException] = []
         raised_profile_errors: list[BaseException] = []
@@ -527,6 +545,11 @@ class BinancePublicResearchCollector:
                     end_reason = "external_stop"
                     internal_stop.set()
                     break
+                profile_by_task = {
+                    spot_task: _SPOT_PROFILE,
+                    market_task: _USDM_MARKET_PROFILE,
+                    public_task: _USDM_PUBLIC_PROFILE,
+                }
                 for task in stream_tasks:
                     if task not in done:
                         continue
@@ -538,12 +561,22 @@ class BinancePublicResearchCollector:
                             "binance profile_task_failed error_class=%s",
                             type(task_error).__name__,
                         )
+                        failure = task_error
                     else:
-                        profile_failures.append(
-                            BinanceTransportError(
-                                "Binance required public stream ended unexpectedly."
-                            )
+                        failure = BinanceTransportError(
+                            "Binance required public stream ended unexpectedly."
                         )
+                        profile_failures.append(failure)
+                    failed_profile = profile_by_task[task]
+                    self._profile_phase[failed_profile.name] = "definitive_outage"
+                    siblings_active = any(
+                        not other.done() for other in stream_tasks if other is not task
+                    )
+                    self._notice_definitive_profile_failure(
+                        failure,
+                        profile_name=failed_profile.name,
+                        siblings_active=siblings_active,
+                    )
                     watchers.discard(cast(asyncio.Task[object], task))
                 if oi_task in done:
                     # Keep the other sockets running until their own stop. The
@@ -557,8 +590,11 @@ class BinancePublicResearchCollector:
                     internal_stop.set()
                     break
         finally:
+            live_stop.set()
             internal_stop.set()
             stream_results = await asyncio.gather(*stream_tasks, return_exceptions=True)
+            with suppress(asyncio.CancelledError):
+                await live_task
             oi_results = await asyncio.gather(oi_task, return_exceptions=True)
             timer.cancel()
             if external_wait is not None:
@@ -1090,6 +1126,10 @@ class BinancePublicResearchCollector:
             missing_snapshot_error.reported = True
             raise missing_snapshot_error
 
+    def set_live_status_path(self, path: Path, run_id: str) -> None:
+        self._live_status_path = path
+        self._live_run_id = run_id
+
     def _mark_profile_watch_start(self, profile: _StreamProfile) -> None:
         self._profile_watch_started_monotonic.setdefault(profile.name, time.monotonic())
 
@@ -1098,19 +1138,119 @@ class BinancePublicResearchCollector:
 
         Keep previously observed required streams marked observed so a slow
         bootstrap on one stream cannot fail-closed as never-seen. Only reset
-        the silence clocks.
+        the silence clocks. A reconnect attempt is not a definitive outage.
         """
 
         now = time.monotonic()
+        now_text = utc_now_text()
         self._profile_watch_started_monotonic[profile.name] = now
+        if self._profile_phase.get(profile.name) != "definitive_outage":
+            self._profile_phase[profile.name] = "recovering"
         for stream in profile.required_streams:
             key = (profile.name, stream)
             if key in self._required_last_seen_monotonic:
                 self._required_last_seen_monotonic[key] = now
+                self._required_last_seen_utc[key] = now_text
 
     def _note_required_stream(self, profile: _StreamProfile, stream: str) -> None:
         if stream in profile.required_streams:
             self._required_last_seen_monotonic[(profile.name, stream)] = time.monotonic()
+            self._required_last_seen_utc[(profile.name, stream)] = utc_now_text()
+            if self._profile_phase.get(profile.name) != "definitive_outage":
+                self._profile_phase[profile.name] = "fresh"
+
+    def _notice_definitive_profile_failure(
+        self,
+        error: BaseException,
+        *,
+        profile_name: str,
+        siblings_active: bool,
+    ) -> None:
+        """Alert once per profile. Short reconnects never reach this path."""
+
+        if profile_name in self._alerted_profiles:
+            return
+        self._alerted_profiles.add(profile_name)
+        if self.preserved_profile_failure is None:
+            self.preserved_profile_failure = error
+        self.notice_while_siblings_active = siblings_active
+        self._profile_phase[profile_name] = "definitive_outage"
+        capture_logger().error(
+            "binance definitive_profile_failure transport_profile=%s "
+            "siblings_active=%s error_class=%s",
+            profile_name,
+            siblings_active,
+            type(error).__name__,
+        )
+        self.publish_live_status()
+        emit_capture_operator_alert(
+            venue=BINANCE_RESEARCH_VENUE,
+            run_id=self._live_run_id or "unscoped",
+            status="FAILED",
+            error=error,
+        )
+
+    def publish_live_status(self) -> None:
+        path = self._live_status_path
+        run_id = self._live_run_id
+        if path is None or run_id is None:
+            return
+        pending: int | None = None
+        published: int | None = None
+        if isinstance(self._sink, ParquetResearchWriter):
+            pending = self._sink.pending_record_count
+            published = len(self._sink.parquet_files)
+        feeds: list[dict[str, object]] = []
+        for profile in _STREAM_PROFILES:
+            stamps = [
+                self._required_last_seen_utc[(profile.name, stream)]
+                for stream in sorted(profile.required_streams)
+                if (profile.name, stream) in self._required_last_seen_utc
+            ]
+            feeds.append(
+                {
+                    "name": profile.name,
+                    "role": "required",
+                    "state": self._profile_phase.get(profile.name, "unknown"),
+                    "last_market_utc": min(stamps) if stamps else None,
+                    "silence_bound_seconds": float(self._config.required_stream_starvation_seconds),
+                }
+            )
+        outage = None
+        failure = self.preserved_profile_failure
+        if failure is not None:
+            outage = {
+                "name": next(
+                    (
+                        name
+                        for name, phase in self._profile_phase.items()
+                        if phase == "definitive_outage"
+                    ),
+                    "required",
+                ),
+                "error_class": type(failure).__name__,
+                "error_message": str(failure),
+            }
+        try:
+            write_capture_live(
+                path,
+                run_id=run_id,
+                writer_pending_records=pending,
+                writer_published_parts=published,
+                feeds=feeds,
+                definitive_outage=outage,
+            )
+        except OSError:
+            capture_logger().info("binance live_status_write_failed")
+
+    async def _publish_live_until(self, stop_event: asyncio.Event) -> None:
+        while not stop_event.is_set():
+            self.publish_live_status()
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=5)
+            except TimeoutError:
+                continue
+        self.publish_live_status()
 
     def _observed_required_streams(self, profile: _StreamProfile) -> set[str]:
         return {
@@ -2202,6 +2342,9 @@ async def run_bounded_capture(
     duration_seconds: float,
     stop_event: asyncio.Event | None = None,
     collector_factory: Callable[[RawResearchSink], BinancePublicResearchCollector] | None = None,
+    live_status_path: Path | None = None,
+    live_run_id: str | None = None,
+    capture_notes: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """Run the no-credential capture, close Parquet, and build the DuckDB catalog."""
 
@@ -2215,12 +2358,20 @@ async def run_bounded_capture(
             config=_config_for_duration(duration),
         )
     )
+    if live_status_path is not None and live_run_id is not None:
+        active.set_live_status_path(live_status_path, live_run_id)
     capture_error: BaseException | None = None
     try:
         await active.capture_for(duration, stop_event=stop_event)
     except BaseException as error:
         capture_error = error
     finally:
+        if capture_notes is not None:
+            failure = active.preserved_profile_failure
+            capture_notes["definitive_alert_sent"] = bool(active._alerted_profiles)
+            if failure is not None:
+                capture_notes["preserved_profile_error_class"] = type(failure).__name__
+                capture_notes["preserved_profile_error_message"] = str(failure)
         await writer.aclose()
     create_research_catalog(output_dir, database_path)
     report = build_capture_report(database_path, output_dir)
@@ -2238,7 +2389,7 @@ def data1f_capture_claim(
     """Create-only start claim for a reconstructable DATA-1F run."""
 
     duration = _require_bounded_duration(duration_seconds)
-    return {
+    claim: dict[str, object] = {
         "schema": DATA1F_CLAIM_SCHEMA,
         "state": "STARTED_FAIL_CLOSED",
         "path_contract": DATA1F_PATH_CONTRACT_ID,
@@ -2269,6 +2420,17 @@ def data1f_capture_claim(
         "raw_dir": paths.raw_dir.as_posix(),
         "database_path": paths.database_path.as_posix(),
     }
+    return stamp_start_metadata(
+        claim,
+        config_fields={
+            "feed": claim["feed"],
+            "spot_websocket_url": claim["spot_websocket_url"],
+            "usdm_market_websocket_url": claim["usdm_market_websocket_url"],
+            "usdm_public_websocket_url": claim["usdm_public_websocket_url"],
+            "required_streams": claim["required_streams"],
+            "required_stream_starvation_seconds": claim["required_stream_starvation_seconds"],
+        },
+    )
 
 
 def data1f_capture_health(
@@ -2284,7 +2446,7 @@ def data1f_capture_health(
         raise ValueError("DATA-1F capture-health status is outside the documented bound.")
     duration = _require_bounded_duration(duration_seconds)
     elapsed = elapsed_from_report(report)
-    return attach_observability_health(
+    health = attach_observability_health(
         {
             "schema": DATA1F_HEALTH_SCHEMA,
             "kind": "capture-health",
@@ -2336,11 +2498,21 @@ def data1f_capture_health(
                 "socket still looks alive. Empty required streams at stop still "
                 "fail closed with liveness_error; OPERATOR_STOP cannot accept them.",
                 "USD-M forceOrder is optional; liquidation silence is not starvation.",
+                "A required profile that exhausts reconnects is logged and alerted "
+                "while sibling profiles are still running. A later operator stop "
+                "stays OPERATOR_STOP and keeps that original error_class.",
             ],
         },
         report,
         elapsed_seconds=elapsed,
     )
+    preserved_class = report.get("preserved_profile_error_class")
+    preserved_message = report.get("preserved_profile_error_message")
+    if type(preserved_class) is str and preserved_class:
+        health["exception_class"] = preserved_class
+        if type(preserved_message) is str:
+            health["preserved_profile_error_message"] = preserved_message
+    return health
 
 
 def _write_create_only_json(path: Path, payload: dict[str, object]) -> None:
@@ -2392,6 +2564,7 @@ async def run_reconstructable_capture(
     status = "FAILED"
     started = time.monotonic()
     terminal_error: BaseException | None = None
+    capture_notes: dict[str, object] = {}
     try:
         report = await run_bounded_capture(
             output_dir=paths.raw_dir,
@@ -2399,6 +2572,9 @@ async def run_reconstructable_capture(
             duration_seconds=duration_seconds,
             stop_event=stop_event,
             collector_factory=collector_factory,
+            live_status_path=paths.run_dir / CAPTURE_LIVE_NAME,
+            live_run_id=run_id,
+            capture_notes=capture_notes,
         )
         if operator_stop is not None and operator_stop():
             status = "OPERATOR_STOP"
@@ -2410,7 +2586,10 @@ async def run_reconstructable_capture(
             report = build_capture_report(paths.database_path, paths.raw_dir)
         raise
     finally:
-        report = {**report, "elapsed_seconds": round(time.monotonic() - started, 6)}
+        preserved = {
+            key: value for key, value in capture_notes.items() if key != "definitive_alert_sent"
+        }
+        report = {**report, **preserved, "elapsed_seconds": round(time.monotonic() - started, 6)}
         capture_logger().info(
             "data1f stop run_id=%s status=%s requested_duration_seconds=%s elapsed_seconds=%s",
             run_id,
@@ -2428,7 +2607,7 @@ async def run_reconstructable_capture(
                     report=report,
                 ),
             )
-        if status == "FAILED":
+        if status == "FAILED" and capture_notes.get("definitive_alert_sent") is not True:
             emit_capture_operator_alert(
                 venue=BINANCE_RESEARCH_VENUE,
                 run_id=run_id,

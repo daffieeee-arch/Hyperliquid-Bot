@@ -213,7 +213,7 @@ export function loadVenueCaptureChip(
       run_id: snapshot.runId,
       binding_source: bindingSource,
       observed_at: observedAt,
-      error: snapshot.health_error,
+      error: snapshot.live_error ?? snapshot.health_error,
     };
   } catch (error: unknown) {
     return classifyLoadError(contract, observedAt, error, resolvedRunId, bindingSource);

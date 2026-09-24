@@ -24,6 +24,12 @@ import duckdb
 from websockets.asyncio.client import connect
 from websockets.exceptions import WebSocketException
 
+from .capture_live_status import (
+    CAPTURE_LIVE_NAME,
+    stamp_start_metadata,
+    utc_now_text,
+    write_capture_live,
+)
 from .capture_observability import (
     add_transport_counts,
     attach_observability_health,
@@ -74,6 +80,11 @@ DATA1A_HEALTH_SCHEMA: Final = "data-1a-retained-capture-health-v1"
 HYPERLIQUID_TRANSPORT_PROFILE: Final = "hyperliquid_public"
 _SERVER_IDLE_TIMEOUT_SECONDS: Final = 60.0
 _MIN_HEARTBEAT_SECONDS: Final = 5.0
+# Official HL websocket (timeouts and heartbeats, fetched 2026-09-24): the server
+# closes a connection it has not written for 60s. Client {"method":"ping"} /
+# {"channel":"pong"} keeps that socket up and is not market data. 90s is longer
+# than that server idle and the 45s client heartbeat, so one heartbeat gap does
+# not reconnect a quiet channel, and one live channel still cannot hide a sibling.
 _MARKET_DATA_STALE_SECONDS: Final = 90.0
 _MARKET_DATA_CHANNELS: Final = frozenset({"trades", "bbo", "l2Book", "activeAssetCtx"})
 
@@ -117,6 +128,7 @@ class HyperliquidRawResearchConfig:
     receive_timeout_seconds: float = 60.0
     reconnect_delay_seconds: float = 3.0
     max_application_payload_bytes: int = 8 * 1024 * 1024
+    market_data_stale_seconds: float = _MARKET_DATA_STALE_SECONDS
 
     def __post_init__(self) -> None:
         if type(self.heartbeat_interval_seconds) not in (int, float) or not math.isfinite(
@@ -143,8 +155,16 @@ class HyperliquidRawResearchConfig:
             or self.max_application_payload_bytes <= 0
         ):
             raise ValueError("max_application_payload_bytes must be a positive integer.")
+        if type(self.market_data_stale_seconds) not in (int, float) or not math.isfinite(
+            float(self.market_data_stale_seconds)
+        ):
+            raise ValueError("market_data_stale_seconds must be a finite number.")
+        market_stale = float(self.market_data_stale_seconds)
+        if market_stale <= 0:
+            raise ValueError("market_data_stale_seconds must be positive.")
         object.__setattr__(self, "heartbeat_interval_seconds", heartbeat)
         object.__setattr__(self, "receive_timeout_seconds", receive_timeout)
+        object.__setattr__(self, "market_data_stale_seconds", market_stale)
 
 
 class HyperliquidRawResearchCollector:
@@ -186,6 +206,10 @@ class HyperliquidRawResearchCollector:
         )
         self._message_ordinal = 0
         self._awaiting_market_recovery: set[tuple[str, str]] = set()
+        self._live_status_path: Path | None = None
+        self._live_run_id: str | None = None
+        self._feed_last_market_utc: dict[tuple[str, str], str] = {}
+        self._feed_state: dict[tuple[str, str], str] = {}
 
     def _expected_inbound_channels(self) -> frozenset[str]:
         return self._instrument_plan.expected_channels | _CONTROL_INBOUND_CHANNELS
@@ -204,12 +228,18 @@ class HyperliquidRawResearchCollector:
             self._stop_after(capture_stop, float(duration_seconds)),
             name="hyperliquid-raw-research-duration",
         )
+        live_stop = asyncio.Event()
+        live_task = asyncio.create_task(
+            self._publish_live_until(live_stop),
+            name="hyperliquid-live-status",
+        )
         try:
             await self._capture_until(capture_stop)
         finally:
             capture_stop.set()
+            live_stop.set()
             timer.cancel()
-            await asyncio.gather(timer, return_exceptions=True)
+            await asyncio.gather(timer, live_task, return_exceptions=True)
 
     async def _stop_after(self, stop_event: asyncio.Event, duration_seconds: float) -> None:
         await asyncio.sleep(duration_seconds)
@@ -285,6 +315,7 @@ class HyperliquidRawResearchCollector:
                     failure_fields.get("close_code"),
                 )
                 if connected:
+                    self._mark_feeds_recovering()
                     await self._append_marker(
                         session_id,
                         "session",
@@ -352,6 +383,68 @@ class HyperliquidRawResearchCollector:
                 ),
             )
 
+    def set_live_status_path(self, path: Path, run_id: str) -> None:
+        self._live_status_path = path
+        self._live_run_id = run_id
+
+    def _required_market_identities(self) -> tuple[tuple[str, str], ...]:
+        return tuple(
+            identity
+            for identity in sorted(self._instrument_plan.expected_subscription_identities)
+            if identity[0] in _MARKET_DATA_CHANNELS and identity[1] == HYPERLIQUID_REQUIRED_COIN
+        )
+
+    def _note_required_market(self, identity: tuple[str, str]) -> None:
+        self._feed_last_market_utc[identity] = utc_now_text()
+        self._feed_state[identity] = "fresh"
+
+    def _mark_feeds_recovering(self) -> None:
+        for identity in self._required_market_identities():
+            self._feed_state[identity] = "recovering"
+
+    def publish_live_status(self) -> None:
+        path = self._live_status_path
+        run_id = self._live_run_id
+        if path is None or run_id is None:
+            return
+        pending: int | None = None
+        published: int | None = None
+        if isinstance(self._sink, ParquetResearchWriter):
+            pending = self._sink.pending_record_count
+            published = len(self._sink.parquet_files)
+        feeds: list[dict[str, object]] = []
+        for channel, coin in self._required_market_identities():
+            identity = (channel, coin)
+            feeds.append(
+                {
+                    "name": f"{channel}/{coin}",
+                    "role": "required",
+                    "state": self._feed_state.get(identity, "unknown"),
+                    "last_market_utc": self._feed_last_market_utc.get(identity),
+                    "silence_bound_seconds": float(self._config.market_data_stale_seconds),
+                }
+            )
+        try:
+            write_capture_live(
+                path,
+                run_id=run_id,
+                writer_pending_records=pending,
+                writer_published_parts=published,
+                feeds=feeds,
+                definitive_outage=None,
+            )
+        except OSError:
+            capture_logger().info("hyperliquid live_status_write_failed")
+
+    async def _publish_live_until(self, stop_event: asyncio.Event) -> None:
+        while not stop_event.is_set():
+            self.publish_live_status()
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=5)
+            except TimeoutError:
+                continue
+        self.publish_live_status()
+
     async def _raise_if_required_market_silent(
         self,
         session_id: str,
@@ -361,7 +454,7 @@ class HyperliquidRawResearchCollector:
         silent_identities = sorted(
             identity
             for identity, seen_at in last_market.items()
-            if now >= seen_at + _MARKET_DATA_STALE_SECONDS
+            if now >= seen_at + self._config.market_data_stale_seconds
         )
         if not silent_identities:
             return
@@ -426,7 +519,7 @@ class HyperliquidRawResearchCollector:
                 else:
                     stale_wait = max(
                         0.0,
-                        last_market[stale_identity] + _MARKET_DATA_STALE_SECONDS - now,
+                        last_market[stale_identity] + self._config.market_data_stale_seconds - now,
                     )
                 done, _ = await asyncio.wait(
                     (receive_task, stop_task),
@@ -442,6 +535,7 @@ class HyperliquidRawResearchCollector:
                         if market_identity not in last_market:
                             continue
                         last_market[market_identity] = last_inbound
+                        self._note_required_market(market_identity)
                         if market_identity in self._awaiting_market_recovery:
                             self._awaiting_market_recovery.discard(market_identity)
                             await self._append_marker(
@@ -792,6 +886,8 @@ async def run_bounded_capture(
     stop_event: asyncio.Event | None = None,
     connection_factory: ConnectionFactory | None = None,
     instrument_plan: HyperliquidRetainedInstrumentPlan | None = None,
+    live_status_path: Path | None = None,
+    live_run_id: str | None = None,
 ) -> dict[str, object]:
     """Run the no-credential capture, close Parquet, and build the DuckDB catalog."""
 
@@ -802,6 +898,8 @@ async def run_bounded_capture(
         connection_factory=connection_factory,
         instrument_plan=instrument_plan,
     )
+    if live_status_path is not None and live_run_id is not None:
+        collector.set_live_status_path(live_status_path, live_run_id)
     try:
         await collector.capture_for(duration_seconds, stop_event=stop_event)
     finally:
@@ -852,7 +950,17 @@ def data1a_capture_claim(
         "database_path": paths.database_path.as_posix(),
     }
     claim.update(claim_profile_fields(duration))
-    return claim
+    return stamp_start_metadata(
+        claim,
+        config_fields={
+            "feed": claim["feed"],
+            "websocket_url": claim["websocket_url"],
+            "heartbeat_interval_seconds": claim["heartbeat_interval_seconds"],
+            "receive_timeout_seconds": claim["receive_timeout_seconds"],
+            "market_data_stale_seconds": _MARKET_DATA_STALE_SECONDS,
+            "started_coins": claim["started_coins"],
+        },
+    )
 
 
 def data1a_capture_health(
@@ -964,6 +1072,8 @@ async def run_reconstructable_capture(
             stop_event=stop_event,
             connection_factory=connection_factory,
             instrument_plan=plan,
+            live_status_path=paths.run_dir / CAPTURE_LIVE_NAME,
+            live_run_id=run_id,
         )
         if operator_stop is not None and operator_stop():
             status = "OPERATOR_STOP"

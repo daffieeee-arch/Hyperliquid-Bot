@@ -975,7 +975,15 @@ class BitvavoMdProResearchCollector:
     ) -> None:
         expected = frozenset(self._config.subscription_channels)
         acknowledged: set[str] = set()
+        # One deadline for the whole ack phase. Each receive uses only the
+        # time still left, so ignored market frames cannot restart the clock.
+        deadline = time.monotonic() + BITVAVO_MDPRO_SUBSCRIBE_ACK_TIMEOUT_SECONDS
         while acknowledged != expected:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise BitvavoMdProSubscriptionError(
+                    "Bitvavo Market Data Pro subscription acknowledgement timed out."
+                )
             failed = False
             retryable = False
             captured: CapturedApplicationPayload | None = None
@@ -985,7 +993,7 @@ class BitvavoMdProResearchCollector:
                 captured = await self._receive_or_stop(
                     connection,
                     stop_event,
-                    timeout_seconds=BITVAVO_MDPRO_SUBSCRIBE_ACK_TIMEOUT_SECONDS,
+                    timeout_seconds=remaining,
                 )
                 if captured is None:
                     if stop_event.is_set():

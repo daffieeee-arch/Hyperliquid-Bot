@@ -19,6 +19,7 @@ import {
   VENUE_CAPTURE_STRIP_ORDER,
 } from "./paths";
 import { STALE_MTIME_REASON } from "./capture-freshness";
+import { LIVE_STATUS_STALLED_REASON, MARKET_DATA_NOT_FRESH_REASON } from "./display";
 import { loadVenueCaptureStrip } from "./venue-capture";
 
 const repoRoot = resolve(fileURLToPath(new URL("../../../../", import.meta.url)));
@@ -169,6 +170,161 @@ describe("multi-venue capture-health strip", () => {
     expect(strip.venues.find((venue) => venue.id === "hl")?.status).toBe("MISSING");
     expect(strip.venues.find((venue) => venue.id === "bitvavo")?.status).toBe("MISSING");
     expect(strip.venues.find((venue) => venue.id === "kraken")?.status).toBe("MISSING");
+  });
+
+  function writeLive(
+    runDir: string,
+    runId: string,
+    mtimeUtc: string,
+    feeds: unknown,
+    definitiveOutage: unknown = null,
+  ): void {
+    const path = join(runDir, "capture-live.json");
+    writeJson(path, {
+      schema: "capture-live-v1",
+      kind: "capture-live",
+      run_id: runId,
+      published_utc: "2026-09-04T13:49:44.000Z",
+      writer_pending_records: 1,
+      writer_published_parts: 2,
+      feeds,
+      definitive_outage: definitiveOutage,
+    });
+    utimesSync(path, new Date(mtimeUtc), new Date(mtimeUtc));
+  }
+
+  const requiredFeeds = [
+    {
+      name: "spot",
+      role: "required",
+      state: "fresh",
+      last_market_utc: "2026-09-04T13:49:30.000Z",
+      silence_bound_seconds: 60,
+    },
+    {
+      name: "usdm_market",
+      role: "required",
+      state: "fresh",
+      last_market_utc: "2026-09-04T13:49:30.000Z",
+      silence_bound_seconds: 60,
+    },
+  ];
+
+  it("shows RUNNING only when capture-live.json and required feed timestamps are both fresh", () => {
+    const artifactRoot = mkdtempSync(join(tmpdir(), "venue-live-"));
+    const runId = "20260904t134900z-live-retained";
+    const runDir = join(artifactRoot, "data-1f", "binance", "BTCUSDT", runId);
+    writeClaim(runDir, DATA1F_CLAIM_SCHEMA, DATA1F_PATH_CONTRACT_ID, runId, {
+      venue: "binance",
+      product: "BTCUSDT",
+    });
+    writeLive(runDir, runId, "2026-09-04T13:49:40.000Z", requiredFeeds);
+    const strip = loadVenueCaptureStrip(
+      { TRADING_MODE: "PAPER", ARTIFACT_ROOT: artifactRoot, DATA1F_RUN_ID: runId },
+      repoRoot,
+      {},
+      () => observedAt,
+    );
+    const binance = strip.venues.find((venue) => venue.id === "binance");
+    expect(binance?.status).toBe("RUNNING");
+    expect(binance?.live).toBe(true);
+    expect(binance?.status_detail).toBe("RUNNING");
+  });
+
+  it("keeps a fresh capture-live.json from proving stale market data is RUNNING", () => {
+    const artifactRoot = mkdtempSync(join(tmpdir(), "venue-live-stale-market-"));
+    const runId = "20260904t134900z-live-retained";
+    const runDir = join(artifactRoot, "data-1f", "binance", "BTCUSDT", runId);
+    writeClaim(runDir, DATA1F_CLAIM_SCHEMA, DATA1F_PATH_CONTRACT_ID, runId, {
+      venue: "binance",
+      product: "BTCUSDT",
+    });
+    writeLive(runDir, runId, "2026-09-04T13:49:40.000Z", [
+      {
+        name: "spot",
+        role: "required",
+        state: "fresh",
+        last_market_utc: "2026-09-04T13:40:00.000Z",
+        silence_bound_seconds: 60,
+      },
+    ]);
+    const strip = loadVenueCaptureStrip(
+      { TRADING_MODE: "PAPER", ARTIFACT_ROOT: artifactRoot, DATA1F_RUN_ID: runId },
+      repoRoot,
+      {},
+      () => observedAt,
+    );
+    const binance = strip.venues.find((venue) => venue.id === "binance");
+    expect(binance?.status).toBe("STALE");
+    expect(binance?.live).toBe(false);
+    expect(binance?.reason).toBe(MARKET_DATA_NOT_FRESH_REASON);
+  });
+
+  it("marks a stalled capture-live.json even when embedded feed times are fresh", () => {
+    const artifactRoot = mkdtempSync(join(tmpdir(), "venue-live-stalled-"));
+    const runId = "20260904t134900z-live-retained";
+    const runDir = join(artifactRoot, "data-1f", "binance", "BTCUSDT", runId);
+    writeClaim(runDir, DATA1F_CLAIM_SCHEMA, DATA1F_PATH_CONTRACT_ID, runId, {
+      venue: "binance",
+      product: "BTCUSDT",
+    });
+    writeLive(runDir, runId, "2026-09-04T13:40:00.000Z", requiredFeeds);
+    const strip = loadVenueCaptureStrip(
+      { TRADING_MODE: "PAPER", ARTIFACT_ROOT: artifactRoot, DATA1F_RUN_ID: runId },
+      repoRoot,
+      {},
+      () => observedAt,
+    );
+    const binance = strip.venues.find((venue) => venue.id === "binance");
+    expect(binance?.status).toBe("STALE");
+    expect(binance?.live).toBe(false);
+    expect(binance?.reason).toBe(LIVE_STATUS_STALLED_REASON);
+  });
+
+  it("shows a definitive outage as DEGRADED while a sibling feed is still fresh", () => {
+    const artifactRoot = mkdtempSync(join(tmpdir(), "venue-live-outage-"));
+    const runId = "20260904t134900z-live-retained";
+    const runDir = join(artifactRoot, "data-1f", "binance", "BTCUSDT", runId);
+    writeClaim(runDir, DATA1F_CLAIM_SCHEMA, DATA1F_PATH_CONTRACT_ID, runId, {
+      venue: "binance",
+      product: "BTCUSDT",
+    });
+    writeLive(
+      runDir,
+      runId,
+      "2026-09-04T13:49:40.000Z",
+      [
+        {
+          name: "spot",
+          role: "required",
+          state: "definitive_outage",
+          last_market_utc: "2026-09-04T13:49:40.000Z",
+          silence_bound_seconds: 60,
+        },
+        {
+          name: "usdm_market",
+          role: "required",
+          state: "fresh",
+          last_market_utc: "2026-09-04T13:49:30.000Z",
+          silence_bound_seconds: 60,
+        },
+      ],
+      {
+        name: "spot",
+        error_class: "BinanceTransportError",
+        error_message: "reconnect bound",
+      },
+    );
+    const strip = loadVenueCaptureStrip(
+      { TRADING_MODE: "PAPER", ARTIFACT_ROOT: artifactRoot, DATA1F_RUN_ID: runId },
+      repoRoot,
+      {},
+      () => observedAt,
+    );
+    const binance = strip.venues.find((venue) => venue.id === "binance");
+    expect(binance?.status).toBe("DEGRADED");
+    expect(binance?.live).toBe(false);
+    expect(binance?.status_detail).toMatch(/BinanceTransportError/);
   });
 
   it("marks a claim with last_part_mtime older than FRESH_MAX as STALE, not RUNNING", () => {

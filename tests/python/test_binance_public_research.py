@@ -7,7 +7,7 @@ import hashlib
 import inspect
 import json
 from collections import deque
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from pathlib import Path
 from typing import cast
@@ -1887,3 +1887,122 @@ async def test_one_required_profile_transport_failure_is_not_completed(
     )
     assert health["status"] == "FAILED"
     assert health["status"] != "COMPLETED"
+
+
+def _open_interest_and_snapshot() -> tuple[
+    Callable[[], Awaitable[CapturedApplicationPayload]],
+    Callable[[], Awaitable[CapturedApplicationPayload]],
+]:
+    async def open_interest() -> CapturedApplicationPayload:
+        return _captured("public_usdm_open_interest.json", utc_ns=202, monotonic_ns=203)
+
+    async def spot_snapshot() -> CapturedApplicationPayload:
+        return _captured("public_spot_depth_snapshot.json", utc_ns=200, monotonic_ns=201)
+
+    return open_interest, spot_snapshot
+
+
+@pytest.mark.asyncio
+async def test_definitive_profile_failure_is_visible_while_siblings_still_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    alerts: list[dict[str, object]] = []
+    stop_event = asyncio.Event()
+    live_path = data1f_run_paths(tmp_path, "spot-down-siblings-up").run_dir / "capture-live.json"
+
+    def on_alert(**kwargs: object) -> None:
+        alerts.append(kwargs)
+        document = json.loads(live_path.read_text(encoding="utf-8"))
+        feeds = {item["name"]: item for item in document["feeds"]}
+        assert feeds["spot"]["state"] == "definitive_outage"
+        assert any(item["state"] != "definitive_outage" for item in document["feeds"])
+        outage = document["definitive_outage"]
+        assert isinstance(outage, dict)
+        assert outage["error_class"] == "BinanceTransportError"
+        stop_event.set()
+
+    monkeypatch.setattr(
+        "hyperliquid_bot.binance_public_research.emit_capture_operator_alert",
+        on_alert,
+    )
+    _, market, public = _hanging_profile_frames()
+    spot = FakeConnection((ConnectionError("spot socket down"),))
+    open_interest, spot_snapshot = _open_interest_and_snapshot()
+    created: list[BinancePublicResearchCollector] = []
+
+    def collector_factory(sink: RawResearchSink) -> BinancePublicResearchCollector:
+        collector = BinancePublicResearchCollector(
+            sink,
+            config=BinancePublicResearchConfig(reconnect_delay_seconds=0, max_reconnects=0),
+            spot_connection_factory=ScriptedConnectionFactory((spot,)),
+            usdm_market_connection_factory=ScriptedConnectionFactory((market,)),
+            usdm_public_connection_factory=ScriptedConnectionFactory((public,)),
+            spot_depth_fetcher=spot_snapshot,
+            usdm_open_interest_fetcher=open_interest,
+            utc_ns=Counter(1000),
+            monotonic_ns=Counter(2000),
+            session_id_factory=SessionIds(),
+        )
+        created.append(collector)
+        return collector
+
+    report = await run_reconstructable_capture(
+        artifact_root=tmp_path,
+        run_id="spot-down-siblings-up",
+        duration_seconds=30,
+        stop_event=stop_event,
+        operator_stop=lambda: stop_event.is_set(),
+        collector_factory=collector_factory,
+    )
+    assert report["status"] == "OPERATOR_STOP"
+    assert len(alerts) == 1
+    assert alerts[0]["status"] == "FAILED"
+    assert created[0].notice_while_siblings_active is True
+    health = json.loads(
+        data1f_run_paths(tmp_path, "spot-down-siblings-up").capture_health_path.read_text(
+            encoding="utf-8"
+        )
+    )
+    assert health["status"] == "OPERATOR_STOP"
+    assert health["exception_class"] == "BinanceTransportError"
+    assert "reconnect bound" in str(health["preserved_profile_error_message"])
+    assert float(health["elapsed_seconds"]) < 5
+
+
+@pytest.mark.asyncio
+async def test_short_reconnect_does_not_alert_as_definitive_outage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    alerts: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "hyperliquid_bot.binance_public_research.emit_capture_operator_alert",
+        lambda **kwargs: alerts.append(kwargs),
+    )
+    spot_hang, market, public = _hanging_profile_frames()
+    spot_down = FakeConnection((ConnectionError("spot socket blip"),))
+    open_interest, spot_snapshot = _open_interest_and_snapshot()
+
+    def collector_factory(sink: RawResearchSink) -> BinancePublicResearchCollector:
+        return BinancePublicResearchCollector(
+            sink,
+            config=BinancePublicResearchConfig(reconnect_delay_seconds=0, max_reconnects=1),
+            spot_connection_factory=ScriptedConnectionFactory((spot_down, spot_hang)),
+            usdm_market_connection_factory=ScriptedConnectionFactory((market,)),
+            usdm_public_connection_factory=ScriptedConnectionFactory((public,)),
+            spot_depth_fetcher=spot_snapshot,
+            usdm_open_interest_fetcher=open_interest,
+            utc_ns=Counter(1000),
+            monotonic_ns=Counter(2000),
+            session_id_factory=SessionIds(),
+        )
+
+    report = await run_reconstructable_capture(
+        artifact_root=tmp_path,
+        run_id="spot-reconnects",
+        duration_seconds=1,
+        collector_factory=collector_factory,
+    )
+    assert report["status"] == "COMPLETED"
+    assert alerts == []

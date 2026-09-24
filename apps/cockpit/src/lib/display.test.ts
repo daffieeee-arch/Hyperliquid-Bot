@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import { STALE_MTIME_REASON } from "./capture-freshness";
+import type { CaptureLiveStatus } from "./types";
 import {
-  DATA1A_UNKNOWN_PENDING_HEALTH,
   DATA1A_STALE_MTIME_LABEL,
+  DATA1A_UNKNOWN_PENDING_HEALTH,
+  LIVE_STATUS_STALLED_REASON,
+  MARKET_DATA_NOT_FRESH_REASON,
   data1aCaptureHealthPresentation,
   captureBindingSourceLabel,
   captureRunOptionLabel,
@@ -131,6 +134,138 @@ describe("cockpit display helpers", () => {
     expect(presentation.live).toBe(false);
     expect(presentation.reason).toBe(STALE_MTIME_REASON);
     expect(presentation.note).toMatch(/COCKPIT_CAPTURE_FRESH_MAX_S=180/);
+  });
+
+  function liveStatus(overrides: Partial<CaptureLiveStatus> = {}): CaptureLiveStatus {
+    return {
+      schema: "capture-live-v1",
+      kind: "capture-live",
+      run_id: "20260904t134900z-live-retained",
+      file_mtime_utc: "2026-09-04T13:49:40.000Z",
+      writer_pending_records: 2,
+      writer_published_parts: 4,
+      feeds: [
+        {
+          name: "spot",
+          role: "required",
+          state: "fresh",
+          last_market_utc: "2026-09-04T13:49:30.000Z",
+          silence_bound_seconds: 60,
+        },
+        {
+          name: "usdm_market",
+          role: "required",
+          state: "fresh",
+          last_market_utc: "2026-09-04T13:49:20.000Z",
+          silence_bound_seconds: 60,
+        },
+      ],
+      definitive_outage: null,
+      ...overrides,
+    };
+  }
+
+  it("treats a fresh live file plus fresh required feeds as RUNNING", () => {
+    const presentation = data1aCaptureHealthPresentation({
+      health: undefined,
+      health_missing: true,
+      observed_at: "2026-09-04T13:49:45.000Z",
+      fresh_max_s: 180,
+      live: liveStatus(),
+      parts: { raw_dir_present: true, count: 4, last_part_mtime_utc: "2026-09-04T13:49:40.000Z" },
+    });
+    expect(presentation.tileLabel).toBe("RUNNING");
+    expect(presentation.live).toBe(true);
+    expect(presentation.note).toMatch(/Writer backlog 2/);
+    expect(venueCaptureChipStatus(presentation)).toBe("RUNNING");
+  });
+
+  it("does not treat a fresh status file as proof that market data is fresh", () => {
+    const presentation = data1aCaptureHealthPresentation({
+      health: undefined,
+      health_missing: true,
+      observed_at: "2026-09-04T13:49:45.000Z",
+      fresh_max_s: 180,
+      live: liveStatus({
+        feeds: [
+          {
+            name: "spot",
+            role: "required",
+            state: "fresh",
+            last_market_utc: "2026-09-04T13:40:00.000Z",
+            silence_bound_seconds: 60,
+          },
+        ],
+      }),
+      parts: { raw_dir_present: true, count: 4, last_part_mtime_utc: "2026-09-04T13:49:40.000Z" },
+    });
+    expect(presentation.tileLabel).toBe("STALE");
+    expect(presentation.live).toBe(false);
+    expect(presentation.reason).toBe(MARKET_DATA_NOT_FRESH_REASON);
+    expect(venueCaptureChipStatus(presentation)).toBe("STALE");
+  });
+
+  it("shows a stalled live-status publication even when embedded feed times look fresh", () => {
+    const presentation = data1aCaptureHealthPresentation({
+      health: undefined,
+      health_missing: true,
+      observed_at: "2026-09-04T13:49:45.000Z",
+      fresh_max_s: 180,
+      live: liveStatus({ file_mtime_utc: "2026-09-04T13:40:00.000Z" }),
+      parts: { raw_dir_present: false },
+    });
+    expect(presentation.tileLabel).toBe("STALE");
+    expect(presentation.live).toBe(false);
+    expect(presentation.reason).toBe(LIVE_STATUS_STALLED_REASON);
+    expect(presentation.note).toMatch(/stalled status file/);
+  });
+
+  it("shows a definitive outage while a sibling feed can still look fresh", () => {
+    const presentation = data1aCaptureHealthPresentation({
+      health: undefined,
+      health_missing: true,
+      observed_at: "2026-09-04T13:49:45.000Z",
+      fresh_max_s: 180,
+      live: liveStatus({
+        feeds: [
+          {
+            name: "spot",
+            role: "required",
+            state: "definitive_outage",
+            last_market_utc: "2026-09-04T13:49:40.000Z",
+            silence_bound_seconds: 60,
+          },
+          {
+            name: "usdm_market",
+            role: "required",
+            state: "fresh",
+            last_market_utc: "2026-09-04T13:49:40.000Z",
+            silence_bound_seconds: 60,
+          },
+        ],
+        definitive_outage: {
+          name: "spot",
+          error_class: "BinanceTransportError",
+          error_message: "reconnect bound",
+        },
+      }),
+      parts: { raw_dir_present: true, count: 1, last_part_mtime_utc: "2026-09-04T13:49:40.000Z" },
+    });
+    expect(presentation.tileLabel).toBe("DEGRADED");
+    expect(presentation.live).toBe(false);
+    expect(presentation.statusLabel).toMatch(/BinanceTransportError/);
+    expect(venueCaptureChipStatus(presentation)).toBe("DEGRADED");
+  });
+
+  it("keeps terminal capture-health ahead of a fresh live file", () => {
+    const presentation = data1aCaptureHealthPresentation({
+      health: { status: "OPERATOR_STOP" },
+      health_missing: false,
+      live: liveStatus(),
+      parts: { raw_dir_present: true, count: 1, last_part_mtime_utc: "2026-09-04T13:49:40.000Z" },
+    });
+    expect(presentation.statusLabel).toBe("OPERATOR_STOP");
+    expect(presentation.live).toBe(false);
   });
 
   it("does not invent RUNNING when health is missing and no parquet parts exist", () => {

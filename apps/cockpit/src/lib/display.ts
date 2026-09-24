@@ -2,12 +2,19 @@ import {
   DEFAULT_CAPTURE_FRESH_MAX_S,
   STALE_MTIME_REASON,
   isLastPartFresh,
+  lastPartAgeSeconds,
 } from "./capture-freshness";
 import { formatAgeSeconds } from "./poll-state";
 import { isTerrapcActiveRetain } from "./terrapc-defaults";
 import { CLOCK_UNKNOWN, localDateTimeLabel } from "./time-display";
 import type { VenueCaptureId } from "./paths";
-import type { CaptureBindingSource, CaptureRunCandidate, VenueCaptureChipStatus } from "./types";
+import type {
+  CaptureBindingSource,
+  CaptureLiveFeed,
+  CaptureLiveStatus,
+  CaptureRunCandidate,
+  VenueCaptureChipStatus,
+} from "./types";
 
 export type SignedTone = "up" | "down" | "flat" | "unknown";
 export type StatusTone = "ok" | "warn" | "down" | "neutral";
@@ -78,11 +85,15 @@ export function healthTone(status: string): StatusTone {
 export const DATA1A_UNKNOWN_PENDING_HEALTH =
   "UNKNOWN (storage activity only; capture-health.json not written yet)";
 export const DATA1A_STALE_MTIME_LABEL = "STALE (stale_mtime)";
+export const LIVE_STATUS_STALLED_REASON = "live_status_stalled";
+export const MARKET_DATA_NOT_FRESH_REASON = "market_data_not_fresh";
 
 export type Data1AHealthView = {
   health?: { status: string } | undefined;
   health_missing: boolean;
   health_error?: string | undefined;
+  live?: CaptureLiveStatus | undefined;
+  live_error?: string | undefined;
   observed_at?: string;
   fresh_max_s?: number;
   parts: {
@@ -100,6 +111,90 @@ export type Data1AHealthPresentation = {
   live: boolean;
   reason?: string;
 };
+
+function writerBacklog(live: CaptureLiveStatus): string {
+  return live.writer_pending_records === null ? "n/a" : String(live.writer_pending_records);
+}
+
+function requiredFeedIsFresh(feed: CaptureLiveFeed, observedAt: string | undefined): boolean {
+  if (observedAt === undefined || feed.last_market_utc === undefined) {
+    return false;
+  }
+  const ageSeconds = lastPartAgeSeconds(feed.last_market_utc, observedAt);
+  return ageSeconds !== undefined && ageSeconds >= 0 && ageSeconds <= feed.silence_bound_seconds;
+}
+
+function presentLiveCapture(snapshot: Data1AHealthView): Data1AHealthPresentation | undefined {
+  if (snapshot.live_error !== undefined) {
+    return {
+      statusLabel: "UNREADABLE",
+      tileLabel: "UNREADABLE",
+      tone: "warn",
+      note: snapshot.live_error,
+      live: false,
+    };
+  }
+  const live = snapshot.live;
+  if (live === undefined) {
+    return undefined;
+  }
+  const backlog = writerBacklog(live);
+  const freshMaxSeconds = snapshot.fresh_max_s ?? DEFAULT_CAPTURE_FRESH_MAX_S;
+  if (!isLastPartFresh(live.file_mtime_utc, snapshot.observed_at, freshMaxSeconds)) {
+    return {
+      statusLabel: "STALE (live status publication stalled)",
+      tileLabel: "STALE",
+      tone: "warn",
+      note: `capture-live.json is older than the freshness window. Writer backlog ${backlog}. A stalled status file is not a healthy feed.`,
+      live: false,
+      reason: LIVE_STATUS_STALLED_REASON,
+    };
+  }
+  const required = live.feeds.filter((feed) => feed.role === "required");
+  if (required.length === 0) {
+    return {
+      statusLabel: DATA1A_UNKNOWN_PENDING_HEALTH,
+      tileLabel: "UNKNOWN",
+      tone: "warn",
+      note: `capture-live.json has no required-feed timestamps. Writer backlog ${backlog}. Status publication is not market-data proof.`,
+      live: false,
+    };
+  }
+  if (
+    live.definitive_outage !== null ||
+    required.some((feed) => feed.state === "definitive_outage")
+  ) {
+    const errorClass = live.definitive_outage?.error_class ?? "definitive_outage";
+    const message = live.definitive_outage?.error_message ?? errorClass;
+    return {
+      statusLabel: `DEGRADED (${errorClass})`,
+      tileLabel: "DEGRADED",
+      tone: "down",
+      note: `Required feed gave up while the run continued: ${message} Writer backlog ${backlog}.`,
+      live: false,
+    };
+  }
+  if (!required.every((feed) => requiredFeedIsFresh(feed, snapshot.observed_at))) {
+    const recovering = required.some((feed) => feed.state === "recovering");
+    return {
+      statusLabel: recovering ? "STALE (reconnecting)" : "STALE (market data not fresh)",
+      tileLabel: "STALE",
+      tone: "warn",
+      note: recovering
+        ? `A required feed is reconnecting. Writer backlog ${backlog}. This is not a definitive outage.`
+        : `capture-live.json was just written, but a required feed timestamp is outside its silence bound. Writer backlog ${backlog}.`,
+      live: false,
+      reason: MARKET_DATA_NOT_FRESH_REASON,
+    };
+  }
+  return {
+    statusLabel: "RUNNING",
+    tileLabel: "RUNNING",
+    tone: "ok",
+    note: `Required feeds are inside their silence bounds. Writer backlog ${backlog}.`,
+    live: true,
+  };
+}
 
 export function data1aCaptureHealthPresentation(
   snapshot: Data1AHealthView,
@@ -121,6 +216,10 @@ export function data1aCaptureHealthPresentation(
       note: snapshot.health_error ?? "capture-health.json is unreadable.",
       live: false,
     };
+  }
+  const livePresentation = presentLiveCapture(snapshot);
+  if (livePresentation !== undefined) {
+    return livePresentation;
   }
   const partCount = snapshot.parts.count ?? 0;
   const partsLookLive =

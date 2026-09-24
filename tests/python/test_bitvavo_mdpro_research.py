@@ -8,6 +8,7 @@ import hmac
 import inspect
 import json
 import secrets
+import time
 import traceback
 from collections import deque
 from collections.abc import AsyncIterator, Callable, Sequence
@@ -2014,6 +2015,59 @@ async def test_subscribe_ack_timeout_is_not_an_auth_reject(
         for item in _marker_documents(sink.records, channel="data_quality")
     )
     assert factory.calls == 2
+
+
+class _BookAckThenIrrelevantTrades(FakeConnection):
+    """One required channel acks; trades keep arriving and the other ack never does."""
+
+    def __init__(self) -> None:
+        super().__init__([_auth_ack(), _pro_ack("book")])
+
+    async def recv(self) -> str | bytes:
+        if self._messages:
+            return await super().recv()
+        await asyncio.sleep(0)
+        return _trade()
+
+
+@pytest.mark.asyncio
+async def test_irrelevant_traffic_does_not_extend_the_subscription_ack_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "hyperliquid_bot.bitvavo_mdpro_research.BITVAVO_MDPRO_SUBSCRIBE_ACK_TIMEOUT_SECONDS",
+        0.05,
+    )
+    stop_event = asyncio.Event()
+    factory = ScriptedConnectionFactory(
+        [
+            _BookAckThenIrrelevantTrades(),
+            FakeConnection(_successful_messages(snapshot_sequence=210), on_last=stop_event.set),
+        ]
+    )
+    sink = MemorySink()
+    collector = BitvavoMdProResearchCollector(
+        sink,
+        _credentials(),
+        config=BitvavoMdProResearchConfig(reconnect_delay_seconds=0),
+        connection_factory=factory,
+        session_id_factory=SessionIds(),
+    )
+    started = time.perf_counter()
+    await collector.capture_for(5.0, stop_event=stop_event)
+    assert time.perf_counter() - started < 1.5
+    sessions = _marker_documents(sink.records, channel="session")
+    assert any(
+        item["event"] == "disconnected" and item.get("reason") == "subscription_ack_timeout"
+        for item in sessions
+    )
+    assert not any(
+        item["event"] == "authentication_failed"
+        for item in _marker_documents(sink.records, channel="data_quality")
+    )
+    assert factory.calls == 2
+    assert stop_event.is_set()
+    assert any(record.channel == "mdpro_book_snapshot" for record in sink.records)
 
 
 @pytest.mark.asyncio

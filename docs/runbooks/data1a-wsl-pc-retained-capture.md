@@ -246,8 +246,8 @@ With `ARTIFACT_ROOT` already set you can also use
 
 While `capture-health.json` is absent (normal until stop), claim present plus
 fresh `raw/part-*.parquet` files (`now - last_part_mtime <=
-COCKPIT_CAPTURE_FRESH_MAX_S=180`, tunable) are the liveness signal. The panel
-labels that **RUNNING (health JSON pending until stop)** and polls
+COCKPIT_CAPTURE_FRESH_MAX_S=180`, tunable) show storage activity only. The panel
+labels that **UNKNOWN (storage activity only; capture-health.json not written yet)** and polls
 `/api/data1a-capture` every **5 seconds** (`Cache-Control: no-store`) so
 duration, part count, bytes on disk, and last mtime move without a full page
 reload. A stale last part mtime is **STALE (stale_mtime)**, not RUNNING. Host

@@ -33,6 +33,7 @@ export type DeskStatusCounts = {
   stopped: number;
   degraded: number;
   missing: number;
+  unknown: number;
 };
 
 export type DeskVenueGlance = {
@@ -58,7 +59,7 @@ export type DeskCaptureGlance =
   | { ok: false; error: string };
 
 function emptyCounts(): DeskStatusCounts {
-  return { running: 0, stale: 0, stopped: 0, degraded: 0, missing: 0 };
+  return { running: 0, stale: 0, stopped: 0, degraded: 0, missing: 0, unknown: 0 };
 }
 
 export function countCaptureStatuses(venues: readonly VenueCaptureChip[]): DeskStatusCounts {
@@ -80,6 +81,9 @@ export function countCaptureStatuses(venues: readonly VenueCaptureChip[]): DeskS
       case "MISSING":
         counts.missing += 1;
         break;
+      case "UNKNOWN":
+        counts.unknown += 1;
+        break;
       default: {
         const exhaustive: never = venue.status;
         throw new Error(`Unhandled venue capture status: ${String(exhaustive)}`);
@@ -93,7 +97,8 @@ export function deskGlanceLine(counts: DeskStatusCounts, freshMaxS: number): str
   return (
     `${String(counts.running)} live · ${String(counts.stale)} stale · ` +
     `${String(counts.stopped)} stopped · ${String(counts.degraded)} degraded · ` +
-    `${String(counts.missing)} missing · fresh ≤ ${String(freshMaxS)}s`
+    `${String(counts.missing)} missing · ${String(counts.unknown)} unknown · ` +
+    `fresh ≤ ${String(freshMaxS)}s`
   );
 }
 

@@ -86,6 +86,19 @@ BITVAVO_MDPRO_WEBSOCKET_CLIENT_PING_TIMEOUT: Final[float | None] = None
 BITVAVO_MDPRO_WEBSOCKET_MAX_QUEUE: Final[tuple[int, int]] = (16_384, 4_096)
 # Docs do not require client ping; soft-reconnect when market frames go silent.
 BITVAVO_MDPRO_APPLICATION_IDLE_RECONNECT_SECONDS: Final = 180.0
+# Client bounds. Official MD Pro docs require authenticate-then-subscribe and
+# do not publish an acknowledgement deadline. The signature `window` (default
+# 10_000 ms, max 60_000 ms) is the request execution window, not this timeout.
+BITVAVO_MDPRO_AUTH_ACK_TIMEOUT_SECONDS: Final = 10.0
+BITVAVO_MDPRO_SUBSCRIBE_ACK_TIMEOUT_SECONDS: Final = 10.0
+BITVAVO_MDPRO_SNAPSHOT_TIMEOUT_SECONDS: Final = 15.0
+_MDPRO_IDLE_RECONNECTS: Final = {
+    "application idle reconnect": "application_idle",
+    "book idle reconnect": "book_idle",
+    "trades idle reconnect": "trades_idle",
+    "snapshot bootstrap timeout": "snapshot_bootstrap_timeout",
+    "authentication ack timeout": "authentication_ack_timeout",
+}
 SMOKE_CAPTURE_SECONDS: Final = 600.0
 MAX_CAPTURE_SECONDS: Final = 7 * 24 * 60 * 60
 RETAINED_MAX_RECONNECTS: Final = 10_080
@@ -530,8 +543,9 @@ class BitvavoMdProResearchCollector:
             connected = False
             failure: str | None = None
             disconnect_fields: dict[str, int | str] = {}
-            idle_reconnect = False
+            idle_reconnect_reason: str | None = None
             venue_ping_timeout = False
+            subscription_disconnect_reason = "subscription_ack_failed"
             try:
                 async with self._connection_factory() as connection:
                     connected = True
@@ -554,8 +568,10 @@ class BitvavoMdProResearchCollector:
                 raise
             except PayloadTooBig:
                 failure = "truncation"
-            except BitvavoMdProSubscriptionError:
+            except BitvavoMdProSubscriptionError as error:
                 failure = "subscription"
+                if "timed out" in str(error):
+                    subscription_disconnect_reason = "subscription_ack_timeout"
                 disconnect_fields = {"exception_class": "BitvavoMdProSubscriptionError"}
             except (
                 BitvavoMdProAuthenticationError,
@@ -565,12 +581,9 @@ class BitvavoMdProResearchCollector:
                 raise
             except (WebSocketException, OSError) as error:
                 failure = "transport"
-                idle_reconnect = (
-                    isinstance(error, ConnectionError)
-                    and str(error) == "application idle reconnect"
-                )
+                idle_reconnect_reason = _mdpro_idle_reconnect_reason(error)
                 venue_ping_timeout = False
-                if not idle_reconnect:
+                if idle_reconnect_reason is None:
                     disconnect_fields = transport_exception_fields(error)
                     venue_ping_timeout = _is_venue_ping_timeout(disconnect_fields)
                 del error
@@ -591,15 +604,18 @@ class BitvavoMdProResearchCollector:
                 if not connected:
                     await self._connection_failed(session_id, previous_session_id)
                 elif failure == "subscription":
-                    await self._subscription_failed_reconnectable(session_id)
-                elif idle_reconnect:
+                    await self._subscription_failed_reconnectable(
+                        session_id,
+                        reason=subscription_disconnect_reason,
+                    )
+                elif idle_reconnect_reason is not None:
                     await self._append_marker(
                         session_id,
                         "session",
                         "disconnected",
                         stream=BITVAVO_MDPRO_FEED_PRODUCT,
                         transport_profile=BITVAVO_MDPRO_FEED_PRODUCT,
-                        reason="application_idle",
+                        reason=idle_reconnect_reason,
                     )
                 elif venue_ping_timeout:
                     await self._disconnected(
@@ -630,9 +646,17 @@ class BitvavoMdProResearchCollector:
         is_reconnect: bool,
     ) -> None:
         await self._send_authentication(connection, session_id)
+        if stop_event.is_set():
+            return
         await self._require_authentication_ack(connection, session_id, stop_event)
+        if stop_event.is_set():
+            return
         await self._send_subscription(connection, session_id)
+        if stop_event.is_set():
+            return
         await self._require_subscription_ack(connection, session_id, stop_event)
+        if stop_event.is_set():
+            return
         await self._send_snapshot_request(connection, session_id, request_id=1)
 
         book_state = _BookState(
@@ -641,24 +665,53 @@ class BitvavoMdProResearchCollector:
         snapshot_received = False
         expected_channels = frozenset(self._config.subscription_channels)
         session_healthy = False
-        last_market_monotonic_ns = self._monotonic_ns()
+        bootstrap_started_ns = self._monotonic_ns()
+        last_book_ns = bootstrap_started_ns
+        last_trade_ns = bootstrap_started_ns
         while not stop_event.is_set():
-            timeout_seconds: float | None = None
-            if session_healthy:
-                idle_budget = BITVAVO_MDPRO_APPLICATION_IDLE_RECONNECT_SECONDS
-                elapsed = (self._monotonic_ns() - last_market_monotonic_ns) / 1_000_000_000
-                remaining = idle_budget - elapsed
+            now_ns = self._monotonic_ns()
+            timeout_reason: str | None = None
+            if not book_state.has_snapshot:
+                remaining = BITVAVO_MDPRO_SNAPSHOT_TIMEOUT_SECONDS - (
+                    (now_ns - bootstrap_started_ns) / 1_000_000_000
+                )
                 if remaining <= 0:
+                    await self._append_marker(
+                        session_id,
+                        "data_quality",
+                        "snapshot_missing",
+                        stream=BITVAVO_MDPRO_FEED_PRODUCT,
+                        reason="snapshot_bootstrap_timeout",
+                    )
+                    raise ConnectionError("snapshot bootstrap timeout")
+                timeout_seconds: float | None = max(remaining, 0.01)
+                timeout_reason = "snapshot_bootstrap_timeout"
+            else:
+                idle_budget = BITVAVO_MDPRO_APPLICATION_IDLE_RECONNECT_SECONDS
+                book_remaining = idle_budget - ((now_ns - last_book_ns) / 1_000_000_000)
+                trade_remaining = idle_budget - ((now_ns - last_trade_ns) / 1_000_000_000)
+                if book_remaining <= 0:
                     await self._append_marker(
                         session_id,
                         "data_quality",
                         "gap_detected",
                         stream=BITVAVO_MDPRO_FEED_PRODUCT,
                         transport_profile=BITVAVO_MDPRO_FEED_PRODUCT,
-                        reason="application_idle",
+                        reason="book_idle",
                     )
-                    raise ConnectionError("application idle reconnect")
-                timeout_seconds = max(remaining, 0.01)
+                    raise ConnectionError("book idle reconnect")
+                if trade_remaining <= 0:
+                    await self._append_marker(
+                        session_id,
+                        "data_quality",
+                        "gap_detected",
+                        stream=BITVAVO_MDPRO_FEED_PRODUCT,
+                        transport_profile=BITVAVO_MDPRO_FEED_PRODUCT,
+                        reason="trades_idle",
+                    )
+                    raise ConnectionError("trades idle reconnect")
+                timeout_seconds = max(min(book_remaining, trade_remaining), 0.01)
+                timeout_reason = "book_idle" if book_remaining <= trade_remaining else "trades_idle"
             captured = await self._receive_or_stop(
                 connection,
                 stop_event,
@@ -667,17 +720,26 @@ class BitvavoMdProResearchCollector:
             if captured is None:
                 if stop_event.is_set():
                     break
-                if session_healthy:
+                if timeout_reason == "snapshot_bootstrap_timeout":
                     await self._append_marker(
                         session_id,
                         "data_quality",
-                        "gap_detected",
+                        "snapshot_missing",
                         stream=BITVAVO_MDPRO_FEED_PRODUCT,
-                        transport_profile=BITVAVO_MDPRO_FEED_PRODUCT,
-                        reason="application_idle",
+                        reason="snapshot_bootstrap_timeout",
                     )
-                    raise ConnectionError("application idle reconnect")
-                continue
+                    raise ConnectionError("snapshot bootstrap timeout")
+                await self._append_marker(
+                    session_id,
+                    "data_quality",
+                    "gap_detected",
+                    stream=BITVAVO_MDPRO_FEED_PRODUCT,
+                    transport_profile=BITVAVO_MDPRO_FEED_PRODUCT,
+                    reason=timeout_reason or "book_idle",
+                )
+                if timeout_reason == "trades_idle":
+                    raise ConnectionError("trades idle reconnect")
+                raise ConnectionError("book idle reconnect")
             result, unpersisted_failure = await self._record_market_inbound(
                 captured,
                 session_id,
@@ -742,10 +804,16 @@ class BitvavoMdProResearchCollector:
                     normalized_channel,
                     normalized,
                 )
-            last_market_monotonic_ns = self._monotonic_ns()
+            # Ticker must not refresh book or trades. One feed cannot mask the other.
+            if channel in {"mdpro_book", "mdpro_book_snapshot"}:
+                last_book_ns = self._monotonic_ns()
+            elif channel == "mdpro_trades":
+                last_trade_ns = self._monotonic_ns()
             if book_state.has_snapshot and not session_healthy:
                 session_healthy = True
-                last_market_monotonic_ns = self._monotonic_ns()
+                recovered_ns = self._monotonic_ns()
+                last_book_ns = recovered_ns
+                last_trade_ns = recovered_ns
 
         if not book_state.has_snapshot:
             await self._append_marker(
@@ -816,10 +884,23 @@ class BitvavoMdProResearchCollector:
         captured: CapturedApplicationPayload | None = None
         document: dict[str, object] | None = None
         try:
-            captured = await self._receive_or_stop(connection, stop_event)
-            if captured is None or self._credentials._contains_sensitive_material(
-                captured.payload_bytes
-            ):
+            captured = await self._receive_or_stop(
+                connection,
+                stop_event,
+                timeout_seconds=BITVAVO_MDPRO_AUTH_ACK_TIMEOUT_SECONDS,
+            )
+            if captured is None:
+                if stop_event.is_set():
+                    return
+                await self._append_marker(
+                    session_id,
+                    "data_quality",
+                    "authentication_ack_timeout",
+                    stream=BITVAVO_MDPRO_FEED_PRODUCT,
+                    reason="authentication_acknowledgement_timed_out",
+                )
+                raise ConnectionError("authentication ack timeout") from None
+            if self._credentials._contains_sensitive_material(captured.payload_bytes):
                 failed = True
             else:
                 document = _decode_json_object(captured.payload_bytes)
@@ -901,10 +982,18 @@ class BitvavoMdProResearchCollector:
             document: dict[str, object] | None = None
             newly: frozenset[str] = frozenset()
             try:
-                captured = await self._receive_or_stop(connection, stop_event)
-                if captured is None or self._credentials._contains_sensitive_material(
-                    captured.payload_bytes
-                ):
+                captured = await self._receive_or_stop(
+                    connection,
+                    stop_event,
+                    timeout_seconds=BITVAVO_MDPRO_SUBSCRIBE_ACK_TIMEOUT_SECONDS,
+                )
+                if captured is None:
+                    if stop_event.is_set():
+                        return
+                    raise BitvavoMdProSubscriptionError(
+                        "Bitvavo Market Data Pro subscription acknowledgement timed out."
+                    ) from None
+                if self._credentials._contains_sensitive_material(captured.payload_bytes):
                     failed = True
                 else:
                     document = _decode_json_object(captured.payload_bytes)
@@ -925,6 +1014,8 @@ class BitvavoMdProResearchCollector:
                             retryable = True
                             failed = True
             except asyncio.CancelledError:
+                raise
+            except BitvavoMdProSubscriptionError:
                 raise
             except Exception:
                 failed = True
@@ -1277,10 +1368,16 @@ class BitvavoMdProResearchCollector:
             **fields,
         )
 
-    async def _subscription_failed_reconnectable(self, session_id: str) -> None:
+    async def _subscription_failed_reconnectable(
+        self,
+        session_id: str,
+        *,
+        reason: str = "subscription_ack_failed",
+    ) -> None:
         capture_logger().info(
-            "bitvavo subscription_gap transport_profile=%s reason=subscription_ack_failed",
+            "bitvavo subscription_gap transport_profile=%s reason=%s",
             BITVAVO_MDPRO_FEED_PRODUCT,
+            reason,
         )
         await self._append_marker(
             session_id,
@@ -1288,7 +1385,7 @@ class BitvavoMdProResearchCollector:
             "disconnected",
             stream=BITVAVO_MDPRO_FEED_PRODUCT,
             transport_profile=BITVAVO_MDPRO_FEED_PRODUCT,
-            reason="subscription_ack_failed",
+            reason=reason,
             exception_class="BitvavoMdProSubscriptionError",
         )
         await self._append_marker(
@@ -1297,7 +1394,7 @@ class BitvavoMdProResearchCollector:
             "gap_detected",
             stream=BITVAVO_MDPRO_FEED_PRODUCT,
             transport_profile=BITVAVO_MDPRO_FEED_PRODUCT,
-            reason="subscription_ack_failed; reconnect will re-auth and re-subscribe",
+            reason=f"{reason}; reconnect will re-auth and re-subscribe",
         )
 
     async def _connection_failed(
@@ -1770,6 +1867,12 @@ def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
 def _reject_json_constant(value: str) -> object:
     del value
     raise ValueError("non-standard JSON constant")
+
+
+def _mdpro_idle_reconnect_reason(error: BaseException) -> str | None:
+    if isinstance(error, ConnectionError):
+        return _MDPRO_IDLE_RECONNECTS.get(str(error))
+    return None
 
 
 def _is_venue_ping_timeout(fields: Mapping[str, int | str]) -> bool:

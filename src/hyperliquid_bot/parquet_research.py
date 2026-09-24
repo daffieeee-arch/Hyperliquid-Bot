@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -72,6 +73,11 @@ _INSERT_SEGMENT_ROW: Final = """
 INSERT INTO raw_segment VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
+# One in-flight segment plus one queued segment. Further appends wait.
+# The bound is the backpressure that keeps a slow disk from growing memory
+# without bound and from dropping records.
+_MAX_PENDING_SEGMENTS: Final = 2
+
 
 @dataclass(frozen=True, slots=True)
 class ParquetRotation:
@@ -93,6 +99,13 @@ class ParquetRotation:
 class ParquetResearchWriter:
     """Buffer records and publish complete ZSTD-Parquet parts atomically.
 
+    ``append`` hands a full segment to a single writer task and returns before
+    the disk flush. Callers therefore do not hold their own locks across
+    ``asyncio.to_thread``. At most two segments sit in the handoff queue;
+    further appends wait, and a failed segment stays queued so ``aclose`` can
+    retry it. ``received_utc_ns`` and ``received_monotonic_ns`` are stored as
+    the caller set them. A wait inside this writer does not rewrite them.
+
     Published parts survive a process crash. A hard crash can lose the current
     in-memory segment and may leave a hidden ``.partial`` file, which readers
     deliberately ignore.
@@ -112,7 +125,10 @@ class ParquetResearchWriter:
         self._part_number = 0
         self._writer_tag = uuid.uuid4().hex[:12]
         self._closed = False
-        self._lock = asyncio.Lock()
+        self._condition = asyncio.Condition()
+        self._pending: deque[tuple[tuple[RawResearchRecord, ...], int]] = deque()
+        self._writer_task: asyncio.Task[None] | None = None
+        self._writer_error: BaseException | None = None
 
     @property
     def output_dir(self) -> Path:
@@ -126,10 +142,20 @@ class ParquetResearchWriter:
     def orphan_partial_files(self) -> tuple[Path, ...]:
         return tuple(sorted(self._output_dir.glob(".*.partial")))
 
+    @property
+    def pending_record_count(self) -> int:
+        """Buffered plus queued records. Safe to read between awaits on this loop."""
+
+        return len(self._buffer) + sum(len(segment) for segment, _part in self._pending)
+
     async def append(self, record: RawResearchRecord) -> None:
         if type(record) is not RawResearchRecord:
             raise TypeError("record must be a RawResearchRecord.")
-        async with self._lock:
+        async with self._condition:
+            while len(self._pending) >= _MAX_PENDING_SEGMENTS and self._writer_error is None:
+                await self._condition.wait()
+            if self._writer_error is not None:
+                raise self._writer_error
             if self._closed:
                 raise RuntimeError("Cannot append to a closed Parquet research writer.")
             if self._segment_started_monotonic_ns is None:
@@ -137,20 +163,41 @@ class ParquetResearchWriter:
             self._buffer.append(record)
             self._buffer_payload_bytes += len(record.payload_bytes)
             if self._should_rotate(record.received_monotonic_ns):
-                await self._flush_locked()
+                self._enqueue_segment_locked()
 
     async def flush(self) -> None:
-        async with self._lock:
+        async with self._condition:
             if self._closed:
                 raise RuntimeError("Cannot flush a closed Parquet research writer.")
-            await self._flush_locked()
+            if self._writer_error is not None:
+                raise self._writer_error
+            if self._buffer:
+                self._enqueue_segment_locked()
+        await self._wait_until_idle()
+        async with self._condition:
+            if self._writer_error is not None:
+                raise self._writer_error
 
     async def aclose(self) -> None:
-        async with self._lock:
+        async with self._condition:
             if self._closed:
                 return
-            await self._flush_locked()
+            if self._buffer:
+                self._enqueue_segment_locked()
+            if self._writer_error is not None and self._pending:
+                # Keep the failed segment and try the disk write once more.
+                self._writer_error = None
+                self._ensure_writer_locked()
             self._closed = True
+        await self._wait_until_idle()
+        async with self._condition:
+            if self._writer_error is not None and self._pending:
+                self._writer_error = None
+                self._ensure_writer_locked()
+        await self._wait_until_idle()
+        async with self._condition:
+            if self._writer_error is not None:
+                raise self._writer_error
 
     def _should_rotate(self, current_monotonic_ns: int) -> bool:
         if len(self._buffer) >= self._rotation.max_records:
@@ -162,24 +209,70 @@ class ParquetResearchWriter:
         elapsed_ns = max(0, current_monotonic_ns - self._segment_started_monotonic_ns)
         return elapsed_ns >= int(self._rotation.max_interval_seconds * 1_000_000_000)
 
-    async def _flush_locked(self) -> None:
+    def _enqueue_segment_locked(self) -> None:
+        """Detach the buffer and hand it to the writer. Caller holds the condition."""
+
         if not self._buffer:
             return
         segment = tuple(self._buffer)
-        next_part_number = self._part_number + 1
-        final_path = await asyncio.to_thread(
-            self._write_segment,
-            segment,
-            next_part_number,
-        )
-        del self._buffer[: len(segment)]
-        self._buffer_payload_bytes = sum(len(record.payload_bytes) for record in self._buffer)
-        self._segment_started_monotonic_ns = (
-            self._buffer[0].received_monotonic_ns if self._buffer else None
-        )
-        self._part_number = next_part_number
-        if final_path not in self.parquet_files:
-            raise RuntimeError("Published Parquet part is not visible after atomic rename.")
+        self._part_number += 1
+        part_number = self._part_number
+        self._buffer.clear()
+        self._buffer_payload_bytes = 0
+        self._segment_started_monotonic_ns = None
+        self._pending.append((segment, part_number))
+        self._ensure_writer_locked()
+
+    def _ensure_writer_locked(self) -> None:
+        if self._writer_task is None and self._pending and self._writer_error is None:
+            self._writer_task = asyncio.create_task(
+                self._writer_loop(),
+                name="parquet-research-writer",
+            )
+
+    async def _wait_until_idle(self) -> None:
+        while True:
+            async with self._condition:
+                task = self._writer_task
+            if task is None:
+                return
+            await task
+
+    async def _writer_loop(self) -> None:
+        while True:
+            async with self._condition:
+                if not self._pending:
+                    self._writer_task = None
+                    self._condition.notify_all()
+                    return
+                segment, part_number = self._pending[0]
+            try:
+                final_path = await asyncio.to_thread(self._write_segment, segment, part_number)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                async with self._condition:
+                    self._writer_error = exc
+                    self._writer_task = None
+                    self._condition.notify_all()
+                return
+            async with self._condition:
+                if not self._pending or self._pending[0][1] != part_number:
+                    self._writer_error = RuntimeError(
+                        "Parquet writer queue lost the segment it just published."
+                    )
+                    self._writer_task = None
+                    self._condition.notify_all()
+                    return
+                self._pending.popleft()
+                if final_path not in self.parquet_files:
+                    self._writer_error = RuntimeError(
+                        "Published Parquet part is not visible after atomic rename."
+                    )
+                    self._writer_task = None
+                    self._condition.notify_all()
+                    return
+                self._condition.notify_all()
 
     def _write_segment(
         self,

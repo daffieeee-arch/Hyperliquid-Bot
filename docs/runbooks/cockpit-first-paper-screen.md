@@ -146,8 +146,9 @@ Path helper: `data1a_run_paths(artifact_root, run_id)`. Health JSON is written a
 process end. While the run is live (claim present, published `raw/part-*.parquet`
 files with `now - last_part_mtime <= COCKPIT_CAPTURE_FRESH_MAX_S=180`, no
 `capture-health.json`) the panel shows
-**RUNNING (health JSON pending until stop)** plus filesystem part count / last
-mtime, and `n/a` for gaps/reconnects. A present claim with a stale last part
+**UNKNOWN (storage activity only; capture-health.json not written yet)** plus
+filesystem part count / last mtime, and `n/a` for gaps/reconnects. Fresh parts
+are not a proven healthy feed. A present claim with a stale last part
 mtime is **STALE (stale_mtime)**, not RUNNING. Host clock must be sane. The
 browser polls `/api/data1a-capture` every **5 seconds** with `cache: no-store`
 so duration, published parts, bytes on disk, last part mtime, and `observed_at`

@@ -97,6 +97,7 @@ export function worstDataState(states: readonly DataState[]): DataState {
  *
  * STOPPED is deliberately `ok`: a bounded retained capture that finished is a
  * correct terminal state, not a fault. DEGRADED is the read/contract failure.
+ * UNKNOWN is fresh storage without a health file: not a proven healthy feed.
  */
 export function captureChipDataState(status: VenueCaptureChipStatus): DataState {
   switch (status) {
@@ -110,6 +111,8 @@ export function captureChipDataState(status: VenueCaptureChipStatus): DataState 
       return "missing";
     case "DEGRADED":
       return "error";
+    case "UNKNOWN":
+      return "pending";
     default: {
       const exhaustive: never = status;
       throw new Error(`Unhandled capture chip status: ${String(exhaustive)}`);

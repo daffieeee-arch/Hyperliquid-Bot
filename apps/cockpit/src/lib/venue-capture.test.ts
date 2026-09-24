@@ -136,7 +136,7 @@ describe("multi-venue capture-health strip", () => {
     expect(strip.venues[3]?.status).toBe("MISSING");
   });
 
-  it("copies a live-looking Binance run as RUNNING and leaves unpointed venues MISSING", () => {
+  it("copies fresh Binance parquet without health as UNKNOWN and leaves unpointed venues MISSING", () => {
     const artifactRoot = mkdtempSync(join(tmpdir(), "venue-strip-"));
     const runId = "20260904t134900z-live-retained";
     const runDir = join(artifactRoot, "data-1f", "binance", "BTCUSDT", runId);
@@ -160,8 +160,9 @@ describe("multi-venue capture-health strip", () => {
       () => observedAt,
     );
     const binance = strip.venues.find((venue) => venue.id === "binance");
-    expect(binance?.status).toBe("RUNNING");
-    expect(binance?.live).toBe(true);
+    expect(binance?.status).toBe("UNKNOWN");
+    expect(binance?.tone).toBe("warn");
+    expect(binance?.live).toBe(false);
     expect(binance?.part_count).toBe(1);
     expect(binance?.last_part_age).toBe("12s");
     expect(binance?.last_part_mtime_utc).toBe("2026-09-04T13:49:33.000Z");
@@ -294,7 +295,8 @@ describe("multi-venue capture-health strip", () => {
     expect(binance?.status).toBe("STOPPED");
     expect(binance?.gaps).toBe(2);
     expect(binance?.reconnects).toBe(1);
-    expect(hl?.status).toBe("RUNNING");
+    expect(hl?.status).toBe("UNKNOWN");
+    expect(hl?.live).toBe(false);
     expect(hl?.gaps).toBeUndefined();
     expect(hl?.reconnects).toBeUndefined();
   });
@@ -447,10 +449,12 @@ describe("multi-venue capture-health strip", () => {
     );
     const hl = strip.venues.find((venue) => venue.id === "hl");
     const binance = strip.venues.find((venue) => venue.id === "binance");
-    expect(hl?.status).toBe("RUNNING");
+    expect(hl?.status).toBe("UNKNOWN");
+    expect(hl?.live).toBe(false);
     expect(hl?.run_id).toBe(hlId);
     expect(hl?.binding_source).toBe("auto-detect");
-    expect(binance?.status).toBe("RUNNING");
+    expect(binance?.status).toBe("UNKNOWN");
+    expect(binance?.live).toBe(false);
     expect(binance?.run_id).toBe(bnId);
     expect(binance?.binding_source).toBe("auto-detect");
     expect(strip.venues.find((venue) => venue.id === "bitvavo")?.status).toBe("MISSING");
@@ -503,14 +507,15 @@ describe("multi-venue capture-health strip", () => {
     );
     const std = strip.venues.find((venue) => venue.id === "bitvavo-std");
     expect(std).toMatchObject({
-      status: "RUNNING",
+      status: "UNKNOWN",
       series: "DATA-1D",
       chip: "BV-STD",
       run_id: runId,
-      live: true,
+      live: false,
+      tone: "warn",
       part_count: 1,
     });
-    expect(std?.status_detail).toMatch(/health JSON pending/i);
+    expect(std?.status_detail).toMatch(/capture-health.json not written yet/i);
     expect(std?.error).toBe("capture-health.json is not written yet");
   });
 

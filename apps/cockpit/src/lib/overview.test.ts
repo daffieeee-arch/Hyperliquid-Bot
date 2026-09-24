@@ -32,6 +32,7 @@ describe("capture data states", () => {
     expect(captureChipDataState("STALE")).toBe("stale");
     expect(captureChipDataState("MISSING")).toBe("missing");
     expect(captureChipDataState("DEGRADED")).toBe("error");
+    expect(captureChipDataState("UNKNOWN")).toBe("pending");
   });
 
   it("ranks the worst state so summaries surface faults first", () => {

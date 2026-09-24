@@ -132,6 +132,8 @@ function chipTone(
       return presentationTone;
     case "MISSING":
       return "warn";
+    case "UNKNOWN":
+      return "warn";
     default: {
       const exhaustive: never = status;
       throw new Error(`Unhandled venue capture status: ${String(exhaustive)}`);

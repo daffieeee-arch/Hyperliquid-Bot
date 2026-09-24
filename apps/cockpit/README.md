@@ -84,8 +84,8 @@ unset or `PAPER`; `LIVE`, `TESTNET`, and `SHADOW` fail closed.
    `capture-health.json` and a cheap `raw/part-*.parquet` listing. While a live
    run has a claim, fresh `raw/part-*.parquet` files
    (`now - last_part_mtime <= COCKPIT_CAPTURE_FRESH_MAX_S=180`), and no health
-   file, the panel shows **RUNNING (health JSON pending until stop)** instead of
-   inventing zeros. A stale last part mtime is **STALE (stale_mtime)**, not
+   file, the panel shows **UNKNOWN (storage activity only; capture-health.json not written yet)** instead of
+   a healthy RUNNING feed or invented zeros. A stale last part mtime is **STALE (stale_mtime)**, not
    RUNNING. Host clock must be sane (wall-clock compare). The browser polls
    `/api/data1a-capture` every **5 seconds**
    (   `cache: no-store`) so duration, published parts, bytes on disk, last part

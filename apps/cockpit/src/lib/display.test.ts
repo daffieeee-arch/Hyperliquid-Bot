@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { STALE_MTIME_REASON } from "./capture-freshness";
 import {
-  DATA1A_RUNNING_PENDING_HEALTH,
+  DATA1A_UNKNOWN_PENDING_HEALTH,
   DATA1A_STALE_MTIME_LABEL,
   data1aCaptureHealthPresentation,
   captureBindingSourceLabel,
@@ -91,7 +91,7 @@ describe("cockpit display helpers", () => {
     expect(uniqueStrings(["a", "a", "b"])).toEqual(["a", "b"]);
   });
 
-  it("labels a live-looking DATA-1A run as RUNNING when claim parts are fresh and health is pending", () => {
+  it("does not paint fresh parquet without a health file as a healthy RUNNING feed", () => {
     const presentation = data1aCaptureHealthPresentation({
       health: undefined,
       health_missing: true,
@@ -104,12 +104,12 @@ describe("cockpit display helpers", () => {
         last_part_mtime_utc: "2026-09-04T13:49:00.000Z",
       },
     });
-    expect(presentation.statusLabel).toBe(DATA1A_RUNNING_PENDING_HEALTH);
-    expect(presentation.tileLabel).toBe("RUNNING");
-    expect(presentation.tone).toBe("ok");
-    expect(presentation.live).toBe(true);
+    expect(presentation.statusLabel).toBe(DATA1A_UNKNOWN_PENDING_HEALTH);
+    expect(presentation.tileLabel).toBe("UNKNOWN");
+    expect(presentation.tone).toBe("warn");
+    expect(presentation.live).toBe(false);
     expect(presentation.reason).toBeUndefined();
-    expect(presentation.note).toMatch(/written at stop/);
+    expect(presentation.note).toMatch(/not a proven healthy feed/);
   });
 
   it("labels a claim with stale last_part_mtime as STALE (stale_mtime), not RUNNING", () => {
@@ -221,7 +221,7 @@ describe("cockpit display helpers", () => {
           },
         }),
       ),
-    ).toBe("RUNNING");
+    ).toBe("UNKNOWN");
     expect(
       venueCaptureChipStatus(
         data1aCaptureHealthPresentation({

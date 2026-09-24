@@ -546,7 +546,9 @@ class BinancePublicResearchCollector:
                         )
                     watchers.discard(cast(asyncio.Task[object], task))
                 if oi_task in done:
-                    # Open-interest is best-effort context; never kill market sockets.
+                    # Keep the other sockets running until their own stop. The
+                    # open-interest exception is folded into the terminal status
+                    # after every profile has unwound.
                     watchers.discard(cast(asyncio.Task[object], oi_task))
                 watchers.difference_update(
                     {item for item in done if item not in {timer, external_wait}}
@@ -557,7 +559,7 @@ class BinancePublicResearchCollector:
         finally:
             internal_stop.set()
             stream_results = await asyncio.gather(*stream_tasks, return_exceptions=True)
-            await asyncio.gather(oi_task, return_exceptions=True)
+            oi_results = await asyncio.gather(oi_task, return_exceptions=True)
             timer.cancel()
             if external_wait is not None:
                 external_wait.cancel()
@@ -571,17 +573,47 @@ class BinancePublicResearchCollector:
             if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
                 if not any(result is existing for existing in profile_failures):
                     profile_failures.append(result)
+                    raised_profile_errors.append(result)
 
+        oi_result = oi_results[0]
+        oi_error = (
+            oi_result
+            if isinstance(oi_result, BaseException)
+            and not isinstance(oi_result, asyncio.CancelledError)
+            else None
+        )
+        # Open interest used to be discarded as best-effort. An integrity
+        # failure there still means the retained dataset is incomplete,
+        # including when it arrives after the websocket profiles are flowing.
+        # Prefer that integrity error over a sibling "streams unobserved"
+        # error caused by the same stop. Prefer the original sink failure
+        # over the follow-on "sink unavailable" errors from the other tasks.
+        if isinstance(oi_error, BinanceDataIntegrityError):
+            raise oi_error
         for error in profile_failures:
-            if isinstance(error, (BinanceDataIntegrityError, BinanceSinkError)):
+            if isinstance(error, BinanceDataIntegrityError):
                 raise error
+        sink_errors = [
+            error
+            for error in (*profile_failures, *(() if oi_error is None else (oi_error,)))
+            if isinstance(error, BinanceSinkError)
+        ]
+        if sink_errors:
+            raise next(
+                (error for error in sink_errors if str(error).endswith("append failed.")),
+                sink_errors[0],
+            )
 
-        # A profile that sets the shared stop before the requested window ends
-        # the retain. That must surface as FAILED, not a normal return that the
-        # runner labels COMPLETED. Reconnectable transport errors do not set
-        # that stop. A single profile that dies without stopping the others
-        # stays local unless every required websocket profile died.
-        if end_reason == "internal_stop" and raised_profile_errors:
+        # Planned duration and an operator stop are different from a complete
+        # dataset. elapsed_seconds includes wind-down, so it is not completeness.
+        # A required profile that exhausts reconnects must fail the run even
+        # when its siblings keep running until the timer. Operator stop still
+        # wins over a transport error so SIGINT stays OPERATOR_STOP.
+        if end_reason == "external_stop":
+            return
+        if oi_error is not None:
+            raise oi_error
+        if raised_profile_errors:
             raise raised_profile_errors[0]
         if len(profile_failures) >= len(stream_tasks) and all(
             isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError)
@@ -2290,9 +2322,11 @@ def data1f_capture_health(
                 "that profile only (reason=profile_transport_error). They exclude "
                 "fail-closed integrity events such as sequence_gap or "
                 "never-observed / reconnect-exhausted liveness_error.",
-                "A profile that still stops the shared run before the requested "
-                "duration is FAILED, not COMPLETED. Operator SIGINT remains "
-                "OPERATOR_STOP.",
+                "A required profile hard failure is FAILED, not COMPLETED, even "
+                "when sibling profiles keep running until the planned duration. "
+                "That includes open-interest integrity errors and a profile that "
+                "exhausts reconnects. elapsed_seconds includes wind-down and is "
+                "not dataset completeness. Operator SIGINT remains OPERATOR_STOP.",
                 "USD-M bookTicker uses a dedicated /public combined socket; "
                 "aggTrade/markPrice/forceOrder stay on /market and are not mixed.",
                 "Required-stream application silence past "

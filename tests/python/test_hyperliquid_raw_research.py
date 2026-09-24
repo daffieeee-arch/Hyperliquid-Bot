@@ -502,18 +502,34 @@ async def test_enabled_addons_subscribe_eth_and_sol_without_dropping_btc() -> No
     assert sum(1 for item in sent if '"coin":"BTC"' in item) == 4
 
 
+def _btc_market_frames() -> list[str]:
+    return [
+        _fixture_text("trades_frame.json"),
+        _fixture_text("bbo_frame.json"),
+        _fixture_text("l2_book_frame.json"),
+        _fixture_text("active_asset_ctx_frame.json"),
+    ]
+
+
+class _HangAfterMessages(FakeConnection):
+    async def recv(self) -> str | bytes:
+        if self._messages:
+            return await super().recv()
+        await asyncio.sleep(30)
+        raise AssertionError("silence watch should have reconnected before this hang ended")
+
+
+class _OnlyBbo(FakeConnection):
+    async def recv(self) -> str | bytes:
+        await asyncio.sleep(0)
+        return _fixture_text("bbo_frame.json")
+
+
 @pytest.mark.asyncio
 async def test_heartbeat_does_not_count_as_market_data_validity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(hyperliquid_raw_research_module, "_MARKET_DATA_STALE_SECONDS", 0.05)
-
-    class PongAfterAck(FakeConnection):
-        async def recv(self) -> str | bytes:
-            if self._messages:
-                return await super().recv()
-            await asyncio.sleep(0.2)
-            return '{"channel":"pong"}'
 
     stop_event = asyncio.Event()
     inbound = [
@@ -523,16 +539,92 @@ async def test_heartbeat_does_not_count_as_market_data_validity(
             for channel in ("trades", "bbo", "l2Book", "activeAssetCtx")
         ],
     ]
-    connection = PongAfterAck(inbound)
+    recovered = FakeConnection(
+        [
+            "Websocket connection established.",
+            *_btc_market_frames(),
+        ],
+        stop_event=stop_event,
+    )
+    factory = ScriptedConnectionFactory([_HangAfterMessages(inbound), recovered])
     sink = MemorySink()
     collector = HyperliquidRawResearchCollector(
         sink,
-        connection_factory=ScriptedConnectionFactory([connection]),
+        config=HyperliquidRawResearchConfig(reconnect_delay_seconds=0),
+        connection_factory=factory,
         session_id_factory=lambda: "session-stale",
     )
-    runner = asyncio.create_task(collector.capture_for(2.0, stop_event=stop_event))
-    await asyncio.sleep(0.25)
-    stop_event.set()
-    await runner
+    await collector.capture_for(2.0, stop_event=stop_event)
     quality = _local_events(sink.records, "data_quality")
-    assert any(event["event"] == "market_data_stale_despite_heartbeat" for event in quality)
+    stale = [event for event in quality if event["event"] == "market_data_stale_despite_heartbeat"]
+    assert stale
+    assert stale[0]["coin"] == "BTC"
+    assert stale[0]["market_channel"] in {"trades", "bbo", "l2Book", "activeAssetCtx"}
+    assert any(event["event"] == "market_data_recovered" for event in quality)
+    sessions = _local_events(sink.records, "session")
+    assert any(event["event"] == "reconnected" for event in sessions)
+    assert factory.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_one_required_channel_cannot_hide_another_silent_channel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(hyperliquid_raw_research_module, "_MARKET_DATA_STALE_SECONDS", 0.05)
+    stop_event = asyncio.Event()
+    recovered = FakeConnection(_btc_market_frames(), stop_event=stop_event)
+    factory = ScriptedConnectionFactory([_OnlyBbo([]), recovered])
+    sink = MemorySink()
+    collector = HyperliquidRawResearchCollector(
+        sink,
+        config=HyperliquidRawResearchConfig(reconnect_delay_seconds=0),
+        connection_factory=factory,
+        session_id_factory=lambda: "session-split",
+    )
+    await collector.capture_for(2.0, stop_event=stop_event)
+    quality = _local_events(sink.records, "data_quality")
+    stale = [event for event in quality if event["event"] == "market_data_stale_despite_heartbeat"]
+    assert stale
+    assert {event["market_channel"] for event in stale} >= {"trades"}
+    assert all(event["coin"] == "BTC" for event in stale)
+    assert any(
+        event["event"] == "market_data_recovered" and event["market_channel"] == "trades"
+        for event in quality
+    )
+    assert factory.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_optional_addon_silence_does_not_reconnect_required_btc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(hyperliquid_raw_research_module, "_MARKET_DATA_STALE_SECONDS", 0.05)
+    stop_event = asyncio.Event()
+
+    class _BtcKeepsFlowing(FakeConnection):
+        def __init__(self) -> None:
+            super().__init__([])
+            self._index = 0
+
+        async def recv(self) -> str | bytes:
+            await asyncio.sleep(0.01)
+            frames = _btc_market_frames()
+            message = frames[self._index % len(frames)]
+            self._index += 1
+            if self._index >= 12:
+                stop_event.set()
+            return message
+
+    factory = ScriptedConnectionFactory([_BtcKeepsFlowing()])
+    sink = MemorySink()
+    collector = HyperliquidRawResearchCollector(
+        sink,
+        config=HyperliquidRawResearchConfig(reconnect_delay_seconds=0),
+        instrument_plan=build_hyperliquid_retained_plan(addon_coins="ETH,SOL", enable_addons=True),
+        connection_factory=factory,
+        session_id_factory=lambda: "session-addon",
+    )
+    await collector.capture_for(2.0, stop_event=stop_event)
+    quality = _local_events(sink.records, "data_quality")
+    assert not any(event["event"] == "market_data_stale_despite_heartbeat" for event in quality)
+    assert factory.calls == 1

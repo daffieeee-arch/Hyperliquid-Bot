@@ -257,6 +257,81 @@ describe("cockpit display helpers", () => {
     expect(venueCaptureChipStatus(presentation)).toBe("DEGRADED");
   });
 
+  it("does not treat a recent timestamp as healthy while a required feed is recovering", () => {
+    const presentation = data1aCaptureHealthPresentation({
+      health: undefined,
+      health_missing: true,
+      observed_at: "2026-09-04T13:49:45.000Z",
+      fresh_max_s: 180,
+      live: liveStatus({
+        feeds: [
+          {
+            name: "spot",
+            role: "required",
+            state: "recovering",
+            last_market_utc: "2026-09-04T13:49:40.000Z",
+            silence_bound_seconds: 60,
+          },
+        ],
+      }),
+      parts: { raw_dir_present: true, count: 1, last_part_mtime_utc: "2026-09-04T13:49:40.000Z" },
+    });
+    expect(presentation.tileLabel).toBe("STALE");
+    expect(presentation.statusLabel).toBe("STALE (reconnecting)");
+    expect(presentation.tone).toBe("warn");
+    expect(presentation.live).toBe(false);
+    expect(venueCaptureChipStatus(presentation)).toBe("STALE");
+  });
+
+  it("does not treat a recent timestamp as healthy while a required feed is unknown", () => {
+    const presentation = data1aCaptureHealthPresentation({
+      health: undefined,
+      health_missing: true,
+      observed_at: "2026-09-04T13:49:45.000Z",
+      fresh_max_s: 180,
+      live: liveStatus({
+        feeds: [
+          {
+            name: "spot",
+            role: "required",
+            state: "unknown",
+            last_market_utc: "2026-09-04T13:49:40.000Z",
+            silence_bound_seconds: 60,
+          },
+        ],
+      }),
+      parts: { raw_dir_present: true, count: 1, last_part_mtime_utc: "2026-09-04T13:49:40.000Z" },
+    });
+    expect(presentation.tileLabel).toBe("UNKNOWN");
+    expect(presentation.tone).toBe("warn");
+    expect(presentation.live).toBe(false);
+    expect(venueCaptureChipStatus(presentation)).toBe("UNKNOWN");
+  });
+
+  it("does not treat a required feed with no market timestamp as healthy", () => {
+    const presentation = data1aCaptureHealthPresentation({
+      health: undefined,
+      health_missing: true,
+      observed_at: "2026-09-04T13:49:45.000Z",
+      fresh_max_s: 180,
+      live: liveStatus({
+        feeds: [
+          {
+            name: "usdm_market",
+            role: "required",
+            state: "fresh",
+            last_market_utc: undefined,
+            silence_bound_seconds: 60,
+          },
+        ],
+      }),
+      parts: { raw_dir_present: true, count: 1, last_part_mtime_utc: "2026-09-04T13:49:40.000Z" },
+    });
+    expect(presentation.tileLabel).toBe("UNKNOWN");
+    expect(presentation.live).toBe(false);
+    expect(presentation.tone).not.toBe("ok");
+  });
+
   it("keeps terminal capture-health ahead of a fresh live file", () => {
     const presentation = data1aCaptureHealthPresentation({
       health: { status: "OPERATOR_STOP" },

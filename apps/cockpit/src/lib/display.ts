@@ -117,6 +117,9 @@ function writerBacklog(live: CaptureLiveStatus): string {
 }
 
 function requiredFeedIsFresh(feed: CaptureLiveFeed, observedAt: string | undefined): boolean {
+  if (feed.state !== "fresh") {
+    return false;
+  }
   if (observedAt === undefined || feed.last_market_utc === undefined) {
     return false;
   }
@@ -175,14 +178,30 @@ function presentLiveCapture(snapshot: Data1AHealthView): Data1AHealthPresentatio
     };
   }
   if (!required.every((feed) => requiredFeedIsFresh(feed, snapshot.observed_at))) {
-    const recovering = required.some((feed) => feed.state === "recovering");
+    if (required.some((feed) => feed.state === "recovering")) {
+      return {
+        statusLabel: "STALE (reconnecting)",
+        tileLabel: "STALE",
+        tone: "warn",
+        note: `A required feed is reconnecting. Writer backlog ${backlog}. A recent timestamp during recovery is not a healthy feed.`,
+        live: false,
+        reason: MARKET_DATA_NOT_FRESH_REASON,
+      };
+    }
+    if (required.some((feed) => feed.state === "unknown" || feed.last_market_utc === undefined)) {
+      return {
+        statusLabel: "UNKNOWN (required feed is not recovered)",
+        tileLabel: "UNKNOWN",
+        tone: "warn",
+        note: `A required feed is missing or still unknown. Writer backlog ${backlog}. A recent timestamp is not proof the feed recovered.`,
+        live: false,
+      };
+    }
     return {
-      statusLabel: recovering ? "STALE (reconnecting)" : "STALE (market data not fresh)",
+      statusLabel: "STALE (market data not fresh)",
       tileLabel: "STALE",
       tone: "warn",
-      note: recovering
-        ? `A required feed is reconnecting. Writer backlog ${backlog}. This is not a definitive outage.`
-        : `capture-live.json was just written, but a required feed timestamp is outside its silence bound. Writer backlog ${backlog}.`,
+      note: `capture-live.json was just written, but a required feed timestamp is outside its silence bound. Writer backlog ${backlog}.`,
       live: false,
       reason: MARKET_DATA_NOT_FRESH_REASON,
     };
@@ -191,7 +210,7 @@ function presentLiveCapture(snapshot: Data1AHealthView): Data1AHealthPresentatio
     statusLabel: "RUNNING",
     tileLabel: "RUNNING",
     tone: "ok",
-    note: `Required feeds are inside their silence bounds. Writer backlog ${backlog}.`,
+    note: `Required feeds are recovered and inside their silence bounds. Writer backlog ${backlog}.`,
     live: true,
   };
 }

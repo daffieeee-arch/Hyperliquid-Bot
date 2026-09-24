@@ -6,6 +6,8 @@ import asyncio
 import hashlib
 import inspect
 import json
+import threading
+import time
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
@@ -18,6 +20,9 @@ from websockets.exceptions import ConnectionClosedError, PayloadTooBig
 from websockets.frames import Close
 
 from hyperliquid_bot.binance_public_research import (
+    _SPOT_PROFILE,
+    _USDM_MARKET_PROFILE,
+    _USDM_PUBLIC_PROFILE,
     BINANCE_NATIVE_SYMBOL,
     BINANCE_RECONNECT_BACKOFF_CAP_SECONDS,
     BINANCE_SPOT_DEPTH_URL,
@@ -1909,6 +1914,7 @@ async def test_definitive_profile_failure_is_visible_while_siblings_still_run(
 ) -> None:
     alerts: list[dict[str, object]] = []
     stop_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
     live_path = data1f_run_paths(tmp_path, "spot-down-siblings-up").run_dir / "capture-live.json"
 
     def on_alert(**kwargs: object) -> None:
@@ -1920,7 +1926,7 @@ async def test_definitive_profile_failure_is_visible_while_siblings_still_run(
         outage = document["definitive_outage"]
         assert isinstance(outage, dict)
         assert outage["error_class"] == "BinanceTransportError"
-        stop_event.set()
+        loop.call_soon_threadsafe(stop_event.set)
 
     monkeypatch.setattr(
         "hyperliquid_bot.binance_public_research.emit_capture_operator_alert",
@@ -2006,3 +2012,396 @@ async def test_short_reconnect_does_not_alert_as_definitive_outage(
     )
     assert report["status"] == "COMPLETED"
     assert alerts == []
+
+
+def _live_feed(document: dict[str, object], name: str) -> dict[str, object]:
+    feeds = document["feeds"]
+    assert isinstance(feeds, list)
+    for item in feeds:
+        assert isinstance(item, dict)
+        if item["name"] == name:
+            return item
+    raise AssertionError(f"missing feed {name}")
+
+
+def test_reconnect_does_not_replace_market_receipt_time(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = {"value": "2026-09-24T12:00:00Z"}
+
+    def now_text() -> str:
+        return clock["value"]
+
+    monkeypatch.setattr("hyperliquid_bot.binance_public_research.utc_now_text", now_text)
+    collector = BinancePublicResearchCollector(MemorySink())
+    collector.set_live_status_path(tmp_path / "capture-live.json", "receipt-run")
+    profile = _USDM_PUBLIC_PROFILE
+    stream = "btcusdt@bookTicker"
+    collector._note_required_stream(profile, stream, None)
+    receipt = collector._required_last_seen_utc[(profile.name, stream)]
+    assert collector._profile_phase[profile.name] == "fresh"
+    clock["value"] = "2026-09-24T12:10:00Z"
+    collector._reset_profile_stream_watch(profile)
+    clock["value"] = "2026-09-24T12:20:00Z"
+    collector._reset_profile_stream_watch(profile)
+    assert collector._required_last_seen_utc[(profile.name, stream)] == receipt
+    assert collector._profile_phase[profile.name] == "recovering"
+    collector.publish_live_status()
+    document = json.loads((tmp_path / "capture-live.json").read_text(encoding="utf-8"))
+    feed = _live_feed(document, "usdm_public")
+    assert feed["state"] == "recovering"
+    assert feed["last_market_utc"] == receipt
+    assert feed["last_market_utc"] != "2026-09-24T12:20:00Z"
+
+
+def test_one_required_stream_does_not_summarize_the_profile_as_fresh(tmp_path: Path) -> None:
+    collector = BinancePublicResearchCollector(MemorySink())
+    collector.set_live_status_path(tmp_path / "capture-live.json", "partial-run")
+    collector._note_required_stream(_USDM_MARKET_PROFILE, "btcusdt@aggTrade", None)
+    assert collector._profile_phase["usdm_market"] == "recovering"
+    collector.publish_live_status()
+    document = json.loads((tmp_path / "capture-live.json").read_text(encoding="utf-8"))
+    feed = _live_feed(document, "usdm_market")
+    assert feed["state"] == "recovering"
+    assert feed["last_market_utc"] is None
+    spot = _live_feed(document, "spot")
+    assert spot["state"] == "unknown"
+    assert spot["last_market_utc"] is None
+
+
+def test_profile_is_fresh_only_after_required_recovery_conditions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = {"value": "2026-09-24T12:00:00Z"}
+
+    def now_text() -> str:
+        return clock["value"]
+
+    monkeypatch.setattr("hyperliquid_bot.binance_public_research.utc_now_text", now_text)
+    collector = BinancePublicResearchCollector(MemorySink())
+    collector.set_live_status_path(tmp_path / "capture-live.json", "recovery-run")
+    market = _USDM_MARKET_PROFILE
+    collector._note_required_stream(market, "btcusdt@aggTrade", None)
+    collector._note_required_stream(market, "btcusdt@markPrice@1s", None)
+    assert collector._profile_phase["usdm_market"] == "fresh"
+
+    spot = _SPOT_PROFILE
+    empty_book = _SpotBookState()
+    for stream in ("btcusdt@trade", "btcusdt@bookTicker", "btcusdt@depth@100ms"):
+        collector._note_required_stream(spot, stream, empty_book)
+    assert collector._profile_phase["spot"] == "recovering"
+
+    ready_book = _SpotBookState()
+    _depth_stream, depth = _combined_document("public_spot_depth_frame.json")
+    ready_book.ingest_update(depth, 1)
+    acceptance = ready_book.accept_snapshot(_document("public_spot_depth_snapshot.json"), 2)
+    assert acceptance.retry_required is False
+    assert ready_book.validated_post_snapshot_updates >= 1
+    collector._note_required_stream(spot, "btcusdt@depth@100ms", ready_book)
+    assert collector._profile_phase["spot"] == "fresh"
+
+    clock["value"] = "2026-09-24T12:30:00Z"
+    receipts = dict(collector._required_last_seen_utc)
+    collector._reset_profile_stream_watch(spot)
+    assert collector._profile_phase["spot"] == "recovering"
+    assert collector._required_last_seen_utc == receipts
+    collector._note_required_stream(spot, "btcusdt@trade", _SpotBookState())
+    assert collector._profile_phase["spot"] == "recovering"
+    collector.publish_live_status()
+    document = json.loads((tmp_path / "capture-live.json").read_text(encoding="utf-8"))
+    published = _live_feed(document, "spot")
+    assert published["state"] == "recovering"
+    assert published["last_market_utc"] == min(
+        receipts[(spot.name, stream)] for stream in spot.required_streams
+    )
+
+
+def test_live_status_publish_does_not_scan_the_parquet_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    writer = ParquetResearchWriter(tmp_path / "raw")
+    for index in range(300):
+        (writer.output_dir / f"part-{index:04d}.parquet").write_bytes(b"")
+    scans = 0
+    original_glob = Path.glob
+
+    def counting_glob(self: Path, pattern: str) -> object:
+        nonlocal scans
+        scans += 1
+        return original_glob(self, pattern)
+
+    monkeypatch.setattr(Path, "glob", counting_glob)
+    collector = BinancePublicResearchCollector(writer)
+    collector.set_live_status_path(tmp_path / "capture-live.json", "scan-run")
+    started = time.perf_counter()
+    collector.publish_live_status()
+    elapsed = time.perf_counter() - started
+    assert scans == 0
+    assert elapsed < 0.25
+    document = json.loads((tmp_path / "capture-live.json").read_text(encoding="utf-8"))
+    assert document["writer_published_parts"] == 0
+
+
+@pytest.mark.asyncio
+async def test_slow_webhook_does_not_stall_healthy_profile_processing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    webhook_started = threading.Event()
+    webhook_finished = threading.Event()
+    release_webhook = threading.Event()
+    progressed = threading.Event()
+    market_state = {"processed_during_webhook": False}
+
+    def slow_post(
+        url: str,
+        body: bytes,
+        timeout_seconds: float,
+        headers: object,
+    ) -> int:
+        del url, body, timeout_seconds, headers
+        webhook_started.set()
+        release_webhook.wait(timeout=3)
+        webhook_finished.set()
+        return 204
+
+    monkeypatch.setattr(
+        "hyperliquid_bot.capture_operator_alert._default_webhook_post",
+        slow_post,
+    )
+    monkeypatch.setenv("CAPTURE_ALERT_WEBHOOK_URL", "https://example.test/hook")
+
+    class HealthyMarket:
+        def __init__(self) -> None:
+            self._step = 0
+
+        async def recv(self) -> str:
+            if self._step == 0:
+                await asyncio.to_thread(webhook_started.wait, 3)
+                self._step = 1
+                return _fixture_text("public_usdm_agg_trade_frame.json")
+            if self._step == 1:
+                self._step = 2
+                return _fixture_text("public_usdm_mark_price_frame.json")
+            market_state["processed_during_webhook"] = (
+                webhook_started.is_set() and not webhook_finished.is_set()
+            )
+            progressed.set()
+            release_webhook.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+    sink = MemorySink()
+    stop_event = asyncio.Event()
+    open_interest, spot_snapshot = _open_interest_and_snapshot()
+    collector = BinancePublicResearchCollector(
+        sink,
+        config=BinancePublicResearchConfig(reconnect_delay_seconds=0, max_reconnects=0),
+        spot_connection_factory=ScriptedConnectionFactory(
+            (FakeConnection((ConnectionError("spot socket down"),)),)
+        ),
+        usdm_market_connection_factory=ScriptedConnectionFactory((HealthyMarket(),)),
+        usdm_public_connection_factory=ScriptedConnectionFactory(
+            (FakeConnection((_fixture_text("public_usdm_book_ticker_frame.json"),)),)
+        ),
+        spot_depth_fetcher=spot_snapshot,
+        usdm_open_interest_fetcher=open_interest,
+        utc_ns=Counter(1000),
+        monotonic_ns=Counter(2000),
+        session_id_factory=SessionIds(),
+    )
+    capture = asyncio.create_task(collector.capture_for(30, stop_event=stop_event))
+    assert await asyncio.to_thread(progressed.wait, 3)
+    assert market_state["processed_during_webhook"] is True
+    channels = {record.channel for record in sink.records}
+    assert "usdm_agg_trade" in channels
+    assert "usdm_mark_price" in channels
+    stop_event.set()
+    await capture
+
+
+@pytest.mark.asyncio
+async def test_same_profile_failure_is_not_alerted_twice_at_terminal_stop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    alerts: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "hyperliquid_bot.binance_public_research.emit_capture_operator_alert",
+        lambda **kwargs: alerts.append(kwargs),
+    )
+    _spot, market, public = _hanging_profile_frames()
+    spot = FakeConnection((ConnectionError("spot socket down"),))
+    open_interest, spot_snapshot = _open_interest_and_snapshot()
+
+    def collector_factory(sink: RawResearchSink) -> BinancePublicResearchCollector:
+        return BinancePublicResearchCollector(
+            sink,
+            config=BinancePublicResearchConfig(reconnect_delay_seconds=0, max_reconnects=0),
+            spot_connection_factory=ScriptedConnectionFactory((spot,)),
+            usdm_market_connection_factory=ScriptedConnectionFactory((market,)),
+            usdm_public_connection_factory=ScriptedConnectionFactory((public,)),
+            spot_depth_fetcher=spot_snapshot,
+            usdm_open_interest_fetcher=open_interest,
+            utc_ns=Counter(1000),
+            monotonic_ns=Counter(2000),
+            session_id_factory=SessionIds(),
+        )
+
+    with pytest.raises(BinanceTransportError, match="reconnect bound"):
+        await run_reconstructable_capture(
+            artifact_root=tmp_path,
+            run_id="one-alert",
+            duration_seconds=1,
+            collector_factory=collector_factory,
+        )
+    assert len(alerts) == 1
+    assert alerts[0]["status"] == "FAILED"
+    assert isinstance(alerts[0]["error"], BinanceTransportError)
+
+
+@pytest.mark.asyncio
+async def test_earlier_profile_alert_does_not_suppress_a_later_integrity_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    alerts: list[dict[str, object]] = []
+    transport_alerted = threading.Event()
+
+    def on_alert(**kwargs: object) -> None:
+        alerts.append(kwargs)
+        error = kwargs.get("error")
+        if isinstance(error, BinanceTransportError):
+            transport_alerted.set()
+
+    monkeypatch.setattr(
+        "hyperliquid_bot.binance_public_research.emit_capture_operator_alert",
+        on_alert,
+    )
+
+    class MarketAfterTransport:
+        async def recv(self) -> str:
+            await asyncio.to_thread(transport_alerted.wait, 3)
+            return "[]"
+
+    _spot, _market, public = _hanging_profile_frames()
+    spot = FakeConnection((ConnectionError("spot socket down"),))
+    open_interest, spot_snapshot = _open_interest_and_snapshot()
+
+    def collector_factory(sink: RawResearchSink) -> BinancePublicResearchCollector:
+        return BinancePublicResearchCollector(
+            sink,
+            config=BinancePublicResearchConfig(reconnect_delay_seconds=0, max_reconnects=0),
+            spot_connection_factory=ScriptedConnectionFactory((spot,)),
+            usdm_market_connection_factory=ScriptedConnectionFactory((MarketAfterTransport(),)),
+            usdm_public_connection_factory=ScriptedConnectionFactory((public,)),
+            spot_depth_fetcher=spot_snapshot,
+            usdm_open_interest_fetcher=open_interest,
+            utc_ns=Counter(1000),
+            monotonic_ns=Counter(2000),
+            session_id_factory=SessionIds(),
+        )
+
+    with pytest.raises(BinanceDataIntegrityError):
+        await run_reconstructable_capture(
+            artifact_root=tmp_path,
+            run_id="two-kinds",
+            duration_seconds=30,
+            collector_factory=collector_factory,
+        )
+    assert [type(item["error"]).__name__ for item in alerts] == [
+        "BinanceTransportError",
+        "BinanceDataIntegrityError",
+    ]
+
+
+_CAPTURE_LIVE_CONTRACT_DIR = Path(__file__).parents[1] / "fixtures" / "capture-live"
+_CONTRACT_RUN_ID = "20260924t120000z-publisher-contract"
+
+
+def _contract_collector(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    receipt: str = "2026-09-24T12:00:00Z",
+) -> BinancePublicResearchCollector:
+    clock = {"value": receipt}
+
+    def now_text() -> str:
+        return clock["value"]
+
+    monkeypatch.setattr("hyperliquid_bot.binance_public_research.utc_now_text", now_text)
+    monkeypatch.setattr(
+        "hyperliquid_bot.capture_live_status.utc_now_text",
+        lambda: "2026-09-24T12:00:10Z",
+    )
+    collector = BinancePublicResearchCollector(MemorySink())
+    collector.set_live_status_path(tmp_path / "capture-live.json", _CONTRACT_RUN_ID)
+    return collector
+
+
+def _read_live(path: Path) -> dict[str, object]:
+    return cast(dict[str, object], json.loads(path.read_text(encoding="utf-8")))
+
+
+def test_publisher_live_documents_match_cockpit_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real publish_live_status documents are the cockpit contract fixtures."""
+
+    unknown = _contract_collector(tmp_path / "unknown", monkeypatch)
+    unknown.publish_live_status()
+
+    partial_root = tmp_path / "partial"
+    partial = _contract_collector(partial_root, monkeypatch)
+    partial._note_required_stream(_USDM_MARKET_PROFILE, "btcusdt@aggTrade", None)
+    partial.publish_live_status()
+
+    fresh_root = tmp_path / "fresh"
+    fresh = _contract_collector(fresh_root, monkeypatch)
+    book = _SpotBookState()
+    _depth_stream, depth = _combined_document("public_spot_depth_frame.json")
+    book.ingest_update(depth, 1)
+    book.accept_snapshot(_document("public_spot_depth_snapshot.json"), 2)
+    for stream in sorted(_SPOT_PROFILE.required_streams):
+        fresh._note_required_stream(_SPOT_PROFILE, stream, book)
+    for stream in sorted(_USDM_MARKET_PROFILE.required_streams):
+        fresh._note_required_stream(_USDM_MARKET_PROFILE, stream, None)
+    fresh._note_required_stream(_USDM_PUBLIC_PROFILE, "btcusdt@bookTicker", None)
+    fresh.publish_live_status()
+
+    reconnect_root = tmp_path / "reconnect"
+    reconnect = _contract_collector(reconnect_root, monkeypatch)
+    reconnect._note_required_stream(_USDM_PUBLIC_PROFILE, "btcusdt@bookTicker", None)
+    reconnect._reset_profile_stream_watch(_USDM_PUBLIC_PROFILE)
+    reconnect.publish_live_status()
+
+    outage_root = tmp_path / "outage"
+    outage = _contract_collector(outage_root, monkeypatch)
+    outage._note_required_stream(_USDM_PUBLIC_PROFILE, "btcusdt@bookTicker", None)
+    monkeypatch.setattr(
+        "hyperliquid_bot.binance_public_research.emit_capture_operator_alert",
+        lambda **_kwargs: None,
+    )
+    outage._notice_definitive_profile_failure(
+        BinanceTransportError("Binance public reconnect bound was exhausted."),
+        profile_name="usdm_public",
+        siblings_active=True,
+    )
+    outage._alert_lane.shutdown(timeout_seconds=1)
+
+    documents = {
+        "binance-unknown.json": _read_live(tmp_path / "unknown" / "capture-live.json"),
+        "binance-one-required-stream.json": _read_live(partial_root / "capture-live.json"),
+        "binance-recovered.json": _read_live(fresh_root / "capture-live.json"),
+        "binance-reconnect-keeps-receipt.json": _read_live(reconnect_root / "capture-live.json"),
+        "binance-definitive-outage.json": _read_live(outage_root / "capture-live.json"),
+    }
+    for name, actual in documents.items():
+        expected_path = _CAPTURE_LIVE_CONTRACT_DIR / name
+        assert expected_path.is_file(), expected_path
+        expected = cast(dict[str, object], json.loads(expected_path.read_text(encoding="utf-8")))
+        assert actual == expected

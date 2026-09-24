@@ -411,7 +411,7 @@ class HyperliquidRawResearchCollector:
         published: int | None = None
         if isinstance(self._sink, ParquetResearchWriter):
             pending = self._sink.pending_record_count
-            published = len(self._sink.parquet_files)
+            published = self._sink.published_part_count
         feeds: list[dict[str, object]] = []
         for channel, coin in self._required_market_identities():
             identity = (channel, coin)

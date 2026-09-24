@@ -46,7 +46,11 @@ from .capture_observability import (
     elapsed_from_report,
     transport_exception_fields,
 )
-from .capture_operator_alert import emit_capture_operator_alert
+from .capture_operator_alert import (
+    CAPTURE_ALERT_LANE_DRAIN_SECONDS,
+    CaptureAlertLane,
+    emit_capture_operator_alert,
+)
 from .parquet_research import ParquetResearchWriter, ParquetRotation, create_research_catalog
 from .raw_research import (
     RAW_RESEARCH_SCHEMA_VERSION,
@@ -474,11 +478,14 @@ class BinancePublicResearchCollector:
         self._sink_failed = False
         self._required_last_seen_monotonic: dict[tuple[str, str], float] = {}
         self._required_last_seen_utc: dict[tuple[str, str], str] = {}
+        self._session_required_seen: dict[str, set[str]] = {}
         self._profile_watch_started_monotonic: dict[str, float] = {}
         self._profile_phase: dict[str, str] = {}
         self._live_status_path: Path | None = None
         self._live_run_id: str | None = None
+        self._alert_lane = CaptureAlertLane()
         self._alerted_profiles: set[str] = set()
+        self._alerted_errors: list[BaseException] = []
         self.preserved_profile_failure: BaseException | None = None
         self.notice_while_siblings_active = False
 
@@ -592,18 +599,21 @@ class BinancePublicResearchCollector:
         finally:
             live_stop.set()
             internal_stop.set()
-            stream_results = await asyncio.gather(*stream_tasks, return_exceptions=True)
-            with suppress(asyncio.CancelledError):
-                await live_task
-            oi_results = await asyncio.gather(oi_task, return_exceptions=True)
-            timer.cancel()
-            if external_wait is not None:
-                external_wait.cancel()
-            with suppress(asyncio.CancelledError):
-                await timer
-            if external_wait is not None:
+            try:
+                stream_results = await asyncio.gather(*stream_tasks, return_exceptions=True)
                 with suppress(asyncio.CancelledError):
-                    await external_wait
+                    await live_task
+                oi_results = await asyncio.gather(oi_task, return_exceptions=True)
+                timer.cancel()
+                if external_wait is not None:
+                    external_wait.cancel()
+                with suppress(asyncio.CancelledError):
+                    await timer
+                if external_wait is not None:
+                    with suppress(asyncio.CancelledError):
+                        await external_wait
+            finally:
+                self._alert_lane.shutdown(timeout_seconds=CAPTURE_ALERT_LANE_DRAIN_SECONDS)
 
         for result in stream_results:
             if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
@@ -1074,7 +1084,7 @@ class BinancePublicResearchCollector:
                     error.reported = True
                 raise
 
-            self._note_required_stream(profile, stream)
+            self._note_required_stream(profile, stream, book_state)
             if stream not in observed:
                 observed.add(stream)
                 await self._marker(
@@ -1134,30 +1144,57 @@ class BinancePublicResearchCollector:
         self._profile_watch_started_monotonic.setdefault(profile.name, time.monotonic())
 
     def _reset_profile_stream_watch(self, profile: _StreamProfile) -> None:
-        """Fresh silence window after a forced profile reconnect.
+        """Open a new silence deadline after a forced profile reconnect.
 
-        Keep previously observed required streams marked observed so a slow
-        bootstrap on one stream cannot fail-closed as never-seen. Only reset
-        the silence clocks. A reconnect attempt is not a definitive outage.
+        Previously observed streams stay observed, so a slow bootstrap cannot
+        fail closed as never-seen. The monotonic clocks are only the recovery
+        deadline. Receipt timestamps stay at the last real market frame.
         """
 
         now = time.monotonic()
-        now_text = utc_now_text()
         self._profile_watch_started_monotonic[profile.name] = now
+        self._session_required_seen.pop(profile.name, None)
         if self._profile_phase.get(profile.name) != "definitive_outage":
             self._profile_phase[profile.name] = "recovering"
         for stream in profile.required_streams:
             key = (profile.name, stream)
             if key in self._required_last_seen_monotonic:
                 self._required_last_seen_monotonic[key] = now
-                self._required_last_seen_utc[key] = now_text
 
-    def _note_required_stream(self, profile: _StreamProfile, stream: str) -> None:
-        if stream in profile.required_streams:
-            self._required_last_seen_monotonic[(profile.name, stream)] = time.monotonic()
-            self._required_last_seen_utc[(profile.name, stream)] = utc_now_text()
-            if self._profile_phase.get(profile.name) != "definitive_outage":
-                self._profile_phase[profile.name] = "fresh"
+    def _note_required_stream(
+        self,
+        profile: _StreamProfile,
+        stream: str,
+        book_state: _SpotBookState | None,
+    ) -> None:
+        if stream not in profile.required_streams:
+            return
+        self._required_last_seen_monotonic[(profile.name, stream)] = time.monotonic()
+        self._required_last_seen_utc[(profile.name, stream)] = utc_now_text()
+        seen = self._session_required_seen.setdefault(profile.name, set())
+        seen.add(stream)
+        if self._profile_phase.get(profile.name) == "definitive_outage":
+            return
+        if self._profile_market_recovered(profile, book_state):
+            self._profile_phase[profile.name] = "fresh"
+            return
+        self._profile_phase[profile.name] = "recovering"
+
+    def _profile_market_recovered(
+        self,
+        profile: _StreamProfile,
+        book_state: _SpotBookState | None,
+    ) -> bool:
+        seen = self._session_required_seen.get(profile.name, set())
+        if not profile.required_streams <= seen:
+            return False
+        if profile is not _SPOT_PROFILE:
+            return True
+        return (
+            book_state is not None
+            and book_state.has_snapshot
+            and book_state.validated_post_snapshot_updates >= 1
+        )
 
     def _notice_definitive_profile_failure(
         self,
@@ -1171,6 +1208,7 @@ class BinancePublicResearchCollector:
         if profile_name in self._alerted_profiles:
             return
         self._alerted_profiles.add(profile_name)
+        self._alerted_errors.append(error)
         if self.preserved_profile_failure is None:
             self.preserved_profile_failure = error
         self.notice_while_siblings_active = siblings_active
@@ -1183,12 +1221,17 @@ class BinancePublicResearchCollector:
             type(error).__name__,
         )
         self.publish_live_status()
-        emit_capture_operator_alert(
-            venue=BINANCE_RESEARCH_VENUE,
-            run_id=self._live_run_id or "unscoped",
-            status="FAILED",
-            error=error,
-        )
+        run_id = self._live_run_id or "unscoped"
+
+        def _send() -> None:
+            emit_capture_operator_alert(
+                venue=BINANCE_RESEARCH_VENUE,
+                run_id=run_id,
+                status="FAILED",
+                error=error,
+            )
+
+        self._alert_lane.submit(_send)
 
     def publish_live_status(self) -> None:
         path = self._live_status_path
@@ -1199,20 +1242,26 @@ class BinancePublicResearchCollector:
         published: int | None = None
         if isinstance(self._sink, ParquetResearchWriter):
             pending = self._sink.pending_record_count
-            published = len(self._sink.parquet_files)
+            published = self._sink.published_part_count
         feeds: list[dict[str, object]] = []
         for profile in _STREAM_PROFILES:
-            stamps = [
-                self._required_last_seen_utc[(profile.name, stream)]
-                for stream in sorted(profile.required_streams)
-                if (profile.name, stream) in self._required_last_seen_utc
-            ]
+            stamps: list[str] = []
+            missing_required = False
+            for stream in sorted(profile.required_streams):
+                stamp = self._required_last_seen_utc.get((profile.name, stream))
+                if stamp is None:
+                    missing_required = True
+                    continue
+                stamps.append(stamp)
+            state = self._profile_phase.get(profile.name, "unknown")
+            if state == "fresh" and missing_required:
+                state = "recovering"
             feeds.append(
                 {
                     "name": profile.name,
                     "role": "required",
-                    "state": self._profile_phase.get(profile.name, "unknown"),
-                    "last_market_utc": min(stamps) if stamps else None,
+                    "state": state,
+                    "last_market_utc": None if missing_required or not stamps else min(stamps),
                     "silence_bound_seconds": float(self._config.required_stream_starvation_seconds),
                 }
             )
@@ -2369,6 +2418,7 @@ async def run_bounded_capture(
         if capture_notes is not None:
             failure = active.preserved_profile_failure
             capture_notes["definitive_alert_sent"] = bool(active._alerted_profiles)
+            capture_notes["alerted_error_ids"] = [id(item) for item in active._alerted_errors]
             if failure is not None:
                 capture_notes["preserved_profile_error_class"] = type(failure).__name__
                 capture_notes["preserved_profile_error_message"] = str(failure)
@@ -2587,7 +2637,9 @@ async def run_reconstructable_capture(
         raise
     finally:
         preserved = {
-            key: value for key, value in capture_notes.items() if key != "definitive_alert_sent"
+            key: value
+            for key, value in capture_notes.items()
+            if key not in {"definitive_alert_sent", "alerted_error_ids"}
         }
         report = {**report, **preserved, "elapsed_seconds": round(time.monotonic() - started, 6)}
         capture_logger().info(
@@ -2607,7 +2659,13 @@ async def run_reconstructable_capture(
                     report=report,
                 ),
             )
-        if status == "FAILED" and capture_notes.get("definitive_alert_sent") is not True:
+        alerted_ids = capture_notes.get("alerted_error_ids")
+        already_alerted = (
+            terminal_error is not None
+            and isinstance(alerted_ids, list)
+            and id(terminal_error) in alerted_ids
+        )
+        if status == "FAILED" and not already_alerted:
             emit_capture_operator_alert(
                 venue=BINANCE_RESEARCH_VENUE,
                 run_id=run_id,

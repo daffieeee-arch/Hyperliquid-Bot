@@ -164,6 +164,7 @@ class ParquetResearchWriter:
         self._inflight: _InflightWrite | None = None
         self._close_task: asyncio.Task[None] | None = None
         self._close_error: BaseException | None = None
+        self._published_part_count = 0
 
     @property
     def output_dir(self) -> Path:
@@ -172,6 +173,12 @@ class ParquetResearchWriter:
     @property
     def parquet_files(self) -> tuple[Path, ...]:
         return tuple(sorted(self._output_dir.glob("*.parquet")))
+
+    @property
+    def published_part_count(self) -> int:
+        """Parts committed after a visible rename. Does not list the directory."""
+
+        return self._published_part_count
 
     @property
     def orphan_partial_files(self) -> tuple[Path, ...]:
@@ -445,6 +452,7 @@ class ParquetResearchWriter:
                 self._condition.notify_all()
                 return
             self._pending.popleft()
+            self._published_part_count += 1
             self._condition.notify_all()
 
     def _write_segment(

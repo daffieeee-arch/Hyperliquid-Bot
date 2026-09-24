@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -703,5 +703,88 @@ describe("multi-venue capture-health strip", () => {
     expect(std?.status).toBe("MISSING");
     expect(std?.error).toMatch(/missing non-empty string field state/);
     expect(std?.part_count).toBeUndefined();
+  });
+});
+
+const publisherContractDir = join(repoRoot, "tests", "fixtures", "capture-live");
+const publisherContractRunId = "20260924t120000z-publisher-contract";
+const publisherObservedAt = "2026-09-24T12:00:20.000Z";
+
+function loadPublisherContract(name: string, mtimeUtc: string) {
+  const artifactRoot = mkdtempSync(join(tmpdir(), "publisher-live-"));
+  const runDir = join(artifactRoot, "data-1f", "binance", "BTCUSDT", publisherContractRunId);
+  writeClaim(runDir, DATA1F_CLAIM_SCHEMA, DATA1F_PATH_CONTRACT_ID, publisherContractRunId, {
+    venue: "binance",
+    product: "BTCUSDT",
+  });
+  const livePath = join(runDir, "capture-live.json");
+  writeFileSync(livePath, readFileSync(join(publisherContractDir, name)));
+  utimesSync(livePath, new Date(mtimeUtc), new Date(mtimeUtc));
+  const strip = loadVenueCaptureStrip(
+    {
+      TRADING_MODE: "PAPER",
+      ARTIFACT_ROOT: artifactRoot,
+      DATA1F_RUN_ID: publisherContractRunId,
+    },
+    repoRoot,
+    {},
+    () => publisherObservedAt,
+  );
+  const binance = strip.venues.find((venue) => venue.id === "binance");
+  if (binance === undefined) {
+    throw new Error("binance chip missing");
+  }
+  return binance;
+}
+
+describe("cockpit reads Binance publisher capture-live documents", () => {
+  it("keeps an unknown publisher document off RUNNING", () => {
+    const binance = loadPublisherContract("binance-unknown.json", "2026-09-24T12:00:10.000Z");
+    expect(binance.status).toBe("UNKNOWN");
+    expect(binance.live).toBe(false);
+  });
+
+  it("keeps a one-stream publisher document off RUNNING", () => {
+    const binance = loadPublisherContract(
+      "binance-one-required-stream.json",
+      "2026-09-24T12:00:10.000Z",
+    );
+    expect(binance.status).toBe("STALE");
+    expect(binance.live).toBe(false);
+    expect(binance.reason).toBe(MARKET_DATA_NOT_FRESH_REASON);
+  });
+
+  it("keeps a reconnect receipt with state recovering off RUNNING", () => {
+    const binance = loadPublisherContract(
+      "binance-reconnect-keeps-receipt.json",
+      "2026-09-24T12:00:10.000Z",
+    );
+    expect(binance.status).toBe("STALE");
+    expect(binance.live).toBe(false);
+    expect(binance.status_detail).toBe("STALE (reconnecting)");
+  });
+
+  it("shows RUNNING only for a publisher document whose required feeds are fresh", () => {
+    const binance = loadPublisherContract("binance-recovered.json", "2026-09-24T12:00:10.000Z");
+    expect(binance.status).toBe("RUNNING");
+    expect(binance.live).toBe(true);
+    expect(binance.tone).toBe("ok");
+  });
+
+  it("shows a publisher definitive outage as DEGRADED", () => {
+    const binance = loadPublisherContract(
+      "binance-definitive-outage.json",
+      "2026-09-24T12:00:10.000Z",
+    );
+    expect(binance.status).toBe("DEGRADED");
+    expect(binance.live).toBe(false);
+    expect(binance.status_detail).toMatch(/BinanceTransportError/);
+  });
+
+  it("marks a stalled publisher file even when the embedded feeds are fresh", () => {
+    const binance = loadPublisherContract("binance-recovered.json", "2026-09-24T11:00:00.000Z");
+    expect(binance.status).toBe("STALE");
+    expect(binance.live).toBe(false);
+    expect(binance.reason).toBe(LIVE_STATUS_STALLED_REASON);
   });
 });

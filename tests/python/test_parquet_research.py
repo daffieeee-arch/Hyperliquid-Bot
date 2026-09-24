@@ -136,6 +136,7 @@ async def test_zstd_parquet_round_trip_and_all_research_views(tmp_path: Path) ->
     await writer.aclose()
 
     assert len(writer.parquet_files) == 2
+    assert writer.published_part_count == len(writer.parquet_files)
     assert all(path.stat().st_size > 0 for path in writer.parquet_files)
     assert writer.orphan_partial_files == ()
 

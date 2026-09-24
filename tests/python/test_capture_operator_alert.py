@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
@@ -14,6 +16,7 @@ import pytest
 from hyperliquid_bot.capture_operator_alert import (
     CAPTURE_ALERT_WEBHOOK_AUTHORIZATION_ENV,
     CAPTURE_ALERT_WEBHOOK_ENV,
+    CaptureAlertLane,
     WebhookDeliveryError,
     _default_webhook_post,
     capture_alert_webhook_headers,
@@ -257,3 +260,29 @@ def test_default_webhook_post_sends_authorization_and_hides_url(
     assert raised.value.error_class == "HTTPError"
     assert "example.test" not in str(raised.value)
     assert "supersecrettokenvalue123456" not in str(raised.value)
+
+
+def test_alert_lane_delivers_before_shutdown_returns() -> None:
+    delivered = threading.Event()
+    lane = CaptureAlertLane()
+    lane.submit(delivered.set)
+    lane.shutdown(timeout_seconds=1)
+    assert delivered.is_set()
+
+
+def test_alert_lane_shutdown_returns_while_webhook_is_still_blocked() -> None:
+    started = threading.Event()
+    release = threading.Event()
+    lane = CaptureAlertLane()
+
+    def emit() -> None:
+        started.set()
+        release.wait(timeout=5)
+
+    lane.submit(emit)
+    assert started.wait(timeout=1)
+    began = time.monotonic()
+    lane.shutdown(timeout_seconds=0.05)
+    elapsed = time.monotonic() - began
+    release.set()
+    assert elapsed < 0.5

@@ -133,7 +133,7 @@ def test_wsl_runbook_documents_known_good_operator_paths() -> None:
     assert "$HOME/hyperliquid-artifacts/reconstructable" in text
     assert "DATA1A_RUN_ID" in text
     assert "pnpm --filter @hyperliquid-bot/cockpit dev" in text
-    assert "RUNNING (health JSON pending until stop)" in text
+    assert "UNKNOWN (storage activity only; capture-health.json not written yet)" in text
     assert "COCKPIT_CAPTURE_FRESH_MAX_S=180" in text
     assert "STALE (stale_mtime)" in text
     assert "every **5 seconds**" in text

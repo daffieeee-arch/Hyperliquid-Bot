@@ -242,7 +242,8 @@ export type Data1ACaptureSnapshot = {
 export type Data1ACaptureResponse =
   { ok: true; snapshot: Data1ACaptureSnapshot } | { ok: false; error: string };
 
-export type VenueCaptureChipStatus = "RUNNING" | "STALE" | "DEGRADED" | "STOPPED" | "MISSING";
+export type VenueCaptureChipStatus =
+  "RUNNING" | "STALE" | "DEGRADED" | "STOPPED" | "MISSING" | "UNKNOWN";
 
 export type VenueCaptureChip = {
   id: "hl" | "binance" | "bitvavo-std" | "bitvavo" | "kraken";

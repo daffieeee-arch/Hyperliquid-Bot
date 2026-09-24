@@ -194,8 +194,8 @@ function loadClaim(
   if (typeof stateValue === "string" && stateValue !== "") {
     state = stateValue;
   } else if (options.allowMissingState === true) {
-    // In-flight retains that omitted state (e.g. early DATA-1D) still surface as
-    // RUNNING when fresh parquet parts exist; presentation does not invent mids.
+    // In-flight retains that omitted state (e.g. early DATA-1D) still load.
+    // Fresh parquet without capture-health.json is UNKNOWN, not a healthy feed.
     state = "STARTED_FAIL_CLOSED";
   } else {
     throw new Error(`${path} is missing non-empty string field state.`);

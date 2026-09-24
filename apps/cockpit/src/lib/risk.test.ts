@@ -128,7 +128,7 @@ describe("RISK first PAPER slice", () => {
     expect(view.assumedNetPnl).toBe("-0.0126583080 USDC");
     expect(view.maxAssumedLoss).toBe("0.25 USDC");
     expect(view.captureLine).toBe(
-      "2 live · 1 stale · 0 stopped · 0 degraded · 1 missing · fresh ≤ 180s",
+      "2 live · 1 stale · 0 stopped · 0 degraded · 1 missing · 0 unknown · fresh ≤ 180s",
     );
 
     expect(field(view, "assumed-pnl")).toMatchObject({
@@ -249,10 +249,10 @@ describe("RISK first PAPER slice", () => {
     expect(live.assumedNetPnl).toBe(initial.assumedNetPnl);
     expect(live.positionBtc).toBe(initial.positionBtc);
     expect(live.captureLine).toBe(
-      "2 live · 1 stale · 0 stopped · 0 degraded · 1 missing · fresh ≤ 180s",
+      "2 live · 1 stale · 0 stopped · 0 degraded · 1 missing · 0 unknown · fresh ≤ 180s",
     );
     expect(field(live, "capture")).toMatchObject({
-      value: "2 live · 1 stale · 0 stopped · 0 degraded · 1 missing · fresh ≤ 180s",
+      value: "2 live · 1 stale · 0 stopped · 0 degraded · 1 missing · 0 unknown · fresh ≤ 180s",
       kind: "copied",
     });
     expect(JSON.stringify(live)).not.toContain("invented");

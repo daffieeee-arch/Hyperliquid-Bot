@@ -708,12 +708,11 @@ async def test_application_idle_emits_gap_and_reconnects(
     assert factory.calls == 2
     quality = _marker_documents(sink.records, channel="data_quality")
     assert any(
-        event["event"] == "gap_detected" and event.get("reason") == "application_idle"
-        for event in quality
+        event["event"] == "gap_detected" and event.get("reason") == "book_idle" for event in quality
     )
     sessions = _marker_documents(sink.records, channel="session")
     assert any(
-        event["event"] == "disconnected" and event.get("reason") == "application_idle"
+        event["event"] == "disconnected" and event.get("reason") == "book_idle"
         for event in sessions
     )
     assert any(event["event"] == "reconnected" for event in sessions)

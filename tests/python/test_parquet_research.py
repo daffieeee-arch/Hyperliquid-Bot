@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import threading
+import time
 from pathlib import Path
 
 import duckdb
@@ -243,6 +246,7 @@ async def test_failed_rotation_preserves_published_part_and_buffer(
     )
     await writer.append(_record(1, "trades", b'{"channel":"trades","data":[]}'))
     await writer.append(_record(2, "trades", b'{"channel":"trades","data":[]}'))
+    await writer.flush()
     published_path = writer.parquet_files[0]
     published_bytes = published_path.read_bytes()
 
@@ -257,8 +261,9 @@ async def test_failed_rotation_preserves_published_part_and_buffer(
 
     monkeypatch.setattr(writer, "_write_segment", fail_write_segment)
     await writer.append(_record(3, "bbo", _fixture("bbo_frame.json")))
+    await writer.append(_record(4, "l2Book", _fixture("l2_book_frame.json")))
     with pytest.raises(RuntimeError, match="injected DuckDB failure"):
-        await writer.append(_record(4, "l2Book", _fixture("l2_book_frame.json")))
+        await writer.flush()
 
     assert writer.parquet_files == (published_path,)
     assert published_path.read_bytes() == published_bytes
@@ -275,6 +280,53 @@ async def test_failed_rotation_preserves_published_part_and_buffer(
     finally:
         connection.close()
     assert count_row == (4,)
+
+
+@pytest.mark.asyncio
+async def test_delayed_flush_does_not_serialize_the_next_append(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    writer = ParquetResearchWriter(
+        tmp_path,
+        rotation=ParquetRotation(
+            max_records=2,
+            max_payload_bytes=1024 * 1024,
+            max_interval_seconds=60.0,
+        ),
+    )
+    entered = threading.Event()
+    release = threading.Event()
+    real_write_segment = writer._write_segment
+
+    def slow_write_segment(
+        segment: tuple[RawResearchRecord, ...],
+        part_number: int,
+    ) -> Path:
+        entered.set()
+        assert release.wait(timeout=2)
+        return real_write_segment(segment, part_number)
+
+    monkeypatch.setattr(writer, "_write_segment", slow_write_segment)
+    await writer.append(_record(1, "trades", b'{"channel":"trades","data":[]}'))
+    await writer.append(_record(2, "trades", b'{"channel":"trades","data":[]}'))
+    assert await asyncio.to_thread(entered.wait, 2)
+    started = time.perf_counter()
+    await writer.append(_record(3, "bbo", b'{"channel":"bbo","data":{}}'))
+    elapsed = time.perf_counter() - started
+    assert elapsed < 0.15
+    assert writer.pending_record_count >= 1
+    release.set()
+    await writer.aclose()
+    connection = duckdb.connect(":memory:")
+    try:
+        count_row = connection.execute(
+            "SELECT count(*), min(received_utc_ns), max(received_utc_ns) FROM read_parquet(?)",
+            [str(tmp_path / "*.parquet")],
+        ).fetchone()
+    finally:
+        connection.close()
+    assert count_row == (3, 1_788_105_600_000_000_001, 1_788_105_600_000_000_003)
 
 
 def test_duckdb_runtime_dependency_is_exact_and_extensions_are_bundled() -> None:

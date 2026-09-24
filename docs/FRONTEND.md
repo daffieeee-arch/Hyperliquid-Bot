@@ -170,7 +170,7 @@ collectors. Missing files stay **UNAVAILABLE**.
 claim and an end-of-run health file. While a live retain has a claim, fresh
 `raw/part-*.parquet` files (`now - last_part_mtime <=
 COCKPIT_CAPTURE_FRESH_MAX_S=180`), and no health file, the panel shows
-**RUNNING (health JSON pending until stop)** rather than invented zeros. A
+**UNKNOWN (storage activity only; capture-health.json not written yet)** rather than a healthy RUNNING feed or invented zeros. A
 stale last part mtime is **STALE (stale_mtime)**, not RUNNING. Host clock must
 be sane.
 The DATA-1A panel polls `/api/data1a-capture` every 5 seconds with

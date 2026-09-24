@@ -1761,3 +1761,129 @@ def test_cli_modes_are_mutually_exclusive(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="not both"):
         _resolve_cli_mode(mixed)
+
+
+def _hanging_profile_frames(
+    *, include_force_order: bool = True
+) -> tuple[
+    FakeConnection,
+    FakeConnection,
+    FakeConnection,
+]:
+    spot = FakeConnection(
+        (
+            _fixture_text("public_spot_trade_frame.json"),
+            _fixture_text("public_spot_book_ticker_frame.json"),
+            _fixture_text("public_spot_depth_frame.json"),
+        )
+    )
+    market_frames = [
+        _fixture_text("public_usdm_agg_trade_frame.json"),
+        _fixture_text("public_usdm_mark_price_frame.json"),
+    ]
+    if include_force_order:
+        market_frames.append(_fixture_text("public_usdm_force_order_frame.json"))
+    market = FakeConnection(tuple(market_frames))
+    public = FakeConnection((_fixture_text("public_usdm_book_ticker_frame.json"),))
+    return spot, market, public
+
+
+@pytest.mark.asyncio
+async def test_open_interest_integrity_after_streams_is_not_completed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "hyperliquid_bot.binance_public_research.emit_capture_operator_alert",
+        lambda **_kwargs: None,
+    )
+    spot, market, public = _hanging_profile_frames()
+
+    async def bad_open_interest() -> CapturedApplicationPayload:
+        await asyncio.sleep(0.15)
+        return CapturedApplicationPayload(
+            received_utc_ns=202,
+            received_monotonic_ns=203,
+            frame_type=FrameType.TEXT,
+            payload_encoding=PayloadEncoding.UTF8,
+            payload_bytes=b'{"symbol":"BTCUSDT"}',
+        )
+
+    async def spot_snapshot() -> CapturedApplicationPayload:
+        return _captured("public_spot_depth_snapshot.json", utc_ns=200, monotonic_ns=201)
+
+    def collector_factory(sink: RawResearchSink) -> BinancePublicResearchCollector:
+        return BinancePublicResearchCollector(
+            sink,
+            config=BinancePublicResearchConfig(reconnect_delay_seconds=0, max_reconnects=0),
+            spot_connection_factory=ScriptedConnectionFactory((spot,)),
+            usdm_market_connection_factory=ScriptedConnectionFactory((market,)),
+            usdm_public_connection_factory=ScriptedConnectionFactory((public,)),
+            spot_depth_fetcher=spot_snapshot,
+            usdm_open_interest_fetcher=bad_open_interest,
+            utc_ns=Counter(1000),
+            monotonic_ns=Counter(2000),
+            session_id_factory=SessionIds(),
+        )
+
+    with pytest.raises(BinanceDataIntegrityError):
+        await run_reconstructable_capture(
+            artifact_root=tmp_path,
+            run_id="oi-after-feeds",
+            duration_seconds=30,
+            collector_factory=collector_factory,
+        )
+    health = json.loads(
+        data1f_run_paths(tmp_path, "oi-after-feeds").capture_health_path.read_text(encoding="utf-8")
+    )
+    assert health["status"] == "FAILED"
+    assert health["status"] != "COMPLETED"
+    assert float(health["elapsed_seconds"]) < 5
+
+
+@pytest.mark.asyncio
+async def test_one_required_profile_transport_failure_is_not_completed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "hyperliquid_bot.binance_public_research.emit_capture_operator_alert",
+        lambda **_kwargs: None,
+    )
+    _spot, market, public = _hanging_profile_frames()
+    spot = FakeConnection((ConnectionError("spot socket down"),))
+
+    async def open_interest() -> CapturedApplicationPayload:
+        return _captured("public_usdm_open_interest.json", utc_ns=202, monotonic_ns=203)
+
+    async def spot_snapshot() -> CapturedApplicationPayload:
+        return _captured("public_spot_depth_snapshot.json", utc_ns=200, monotonic_ns=201)
+
+    def collector_factory(sink: RawResearchSink) -> BinancePublicResearchCollector:
+        return BinancePublicResearchCollector(
+            sink,
+            config=BinancePublicResearchConfig(reconnect_delay_seconds=0, max_reconnects=0),
+            spot_connection_factory=ScriptedConnectionFactory((spot,)),
+            usdm_market_connection_factory=ScriptedConnectionFactory((market,)),
+            usdm_public_connection_factory=ScriptedConnectionFactory((public,)),
+            spot_depth_fetcher=spot_snapshot,
+            usdm_open_interest_fetcher=open_interest,
+            utc_ns=Counter(1000),
+            monotonic_ns=Counter(2000),
+            session_id_factory=SessionIds(),
+        )
+
+    with pytest.raises(BinanceTransportError, match="reconnect bound"):
+        await run_reconstructable_capture(
+            artifact_root=tmp_path,
+            run_id="one-profile-down",
+            duration_seconds=1,
+            collector_factory=collector_factory,
+        )
+    health = json.loads(
+        data1f_run_paths(tmp_path, "one-profile-down").capture_health_path.read_text(
+            encoding="utf-8"
+        )
+    )
+    assert health["status"] == "FAILED"
+    assert health["status"] != "COMPLETED"

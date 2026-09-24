@@ -75,7 +75,8 @@ export function healthTone(status: string): StatusTone {
   return "neutral";
 }
 
-export const DATA1A_RUNNING_PENDING_HEALTH = "RUNNING (health JSON pending until stop)";
+export const DATA1A_UNKNOWN_PENDING_HEALTH =
+  "UNKNOWN (storage activity only; capture-health.json not written yet)";
 export const DATA1A_STALE_MTIME_LABEL = "STALE (stale_mtime)";
 
 export type Data1AHealthView = {
@@ -132,11 +133,11 @@ export function data1aCaptureHealthPresentation(
       isLastPartFresh(snapshot.parts.last_part_mtime_utc, snapshot.observed_at, freshMaxSeconds)
     ) {
       return {
-        statusLabel: DATA1A_RUNNING_PENDING_HEALTH,
-        tileLabel: "RUNNING",
-        tone: "ok",
-        note: "capture-health.json is written at stop; growing part count and last mtime are the live signal.",
-        live: true,
+        statusLabel: DATA1A_UNKNOWN_PENDING_HEALTH,
+        tileLabel: "UNKNOWN",
+        tone: "warn",
+        note: "Parquet parts are updating, but capture-health.json is missing. Storage activity is not a proven healthy feed.",
+        live: false,
       };
     }
     return {
@@ -289,6 +290,9 @@ export function venueCaptureChipStatus(
 ): Exclude<VenueCaptureChipStatus, "MISSING"> {
   if (presentation.live) {
     return "RUNNING";
+  }
+  if (presentation.tileLabel === "UNKNOWN") {
+    return "UNKNOWN";
   }
   if (presentation.reason === STALE_MTIME_REASON || presentation.tileLabel === "STALE") {
     return "STALE";

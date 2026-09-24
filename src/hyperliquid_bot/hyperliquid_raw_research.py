@@ -37,6 +37,7 @@ from .capture_operator_alert import emit_capture_operator_alert
 from .hyperliquid_retained_instruments import (
     DEFAULT_CANDLE_INTERVAL,
     HYPERLIQUID_CANDLE_INTERVALS,
+    HYPERLIQUID_REQUIRED_COIN,
     HyperliquidRetainedInstrumentPlan,
     build_hyperliquid_retained_plan,
 )
@@ -184,6 +185,7 @@ class HyperliquidRawResearchCollector:
             session_id_factory if session_id_factory is not None else lambda: uuid.uuid4().hex
         )
         self._message_ordinal = 0
+        self._awaiting_market_recovery: set[tuple[str, str]] = set()
 
     def _expected_inbound_channels(self) -> frozenset[str]:
         return self._instrument_plan.expected_channels | _CONTROL_INBOUND_CHANNELS
@@ -350,6 +352,36 @@ class HyperliquidRawResearchCollector:
                 ),
             )
 
+    async def _raise_if_required_market_silent(
+        self,
+        session_id: str,
+        last_market: dict[tuple[str, str], float],
+    ) -> None:
+        now = self._monotonic()
+        silent_identities = sorted(
+            identity
+            for identity, seen_at in last_market.items()
+            if now >= seen_at + _MARKET_DATA_STALE_SECONDS
+        )
+        if not silent_identities:
+            return
+        for market_channel, coin in silent_identities:
+            self._awaiting_market_recovery.add((market_channel, coin))
+            await self._append_marker(
+                session_id,
+                "data_quality",
+                "market_data_stale_despite_heartbeat",
+                reason=(
+                    "heartbeat/pong or another channel kept the socket alive but "
+                    f"{market_channel}/{coin} was silent; heartbeat is not "
+                    "market-data validity"
+                ),
+                market_channel=market_channel,
+                coin=coin,
+            )
+        market_channel, coin = silent_identities[0]
+        raise TimeoutError(f"Hyperliquid {market_channel}/{coin} was silent despite heartbeat.")
+
     async def _receive_session(
         self,
         connection: WebSocketConnection,
@@ -359,7 +391,20 @@ class HyperliquidRawResearchCollector:
         acknowledged_subscriptions: set[tuple[str, str]] = set()
         expected_identities = self._instrument_plan.expected_subscription_identities
         subscriptions_active_marked = False
-        market_data_stale_marked = False
+        # Required BTC market channels each have a clock. Addon silence is not
+        # a fault: one active channel must not hide a quiet required channel.
+        # Official HL websocket: the server closes a connection it has not
+        # written in 60s; client {"method":"ping"} / {"channel":"pong"} is
+        # keepalive, not market data.
+        required_market = tuple(
+            identity
+            for identity in sorted(expected_identities)
+            if identity[0] in _MARKET_DATA_CHANNELS and identity[1] == HYPERLIQUID_REQUIRED_COIN
+        )
+        session_started = self._monotonic()
+        last_market: dict[tuple[str, str], float] = {
+            identity: session_started for identity in required_market
+        }
         stop_task = asyncio.create_task(stop_event.wait(), name="raw-research-stop-wait")
         receive_task = asyncio.create_task(
             self._receive_captured(connection),
@@ -367,7 +412,6 @@ class HyperliquidRawResearchCollector:
         )
         next_heartbeat = self._monotonic() + float(self._config.heartbeat_interval_seconds)
         last_inbound = self._monotonic()
-        last_market_data = self._monotonic()
         try:
             while True:
                 now = self._monotonic()
@@ -376,12 +420,13 @@ class HyperliquidRawResearchCollector:
                     0.0,
                     last_inbound + float(self._config.receive_timeout_seconds) - now,
                 )
-                if market_data_stale_marked:
+                stale_identity = _oldest_silent_identity(last_market, now)
+                if stale_identity is None:
                     stale_wait = heartbeat_wait
                 else:
                     stale_wait = max(
                         0.0,
-                        last_market_data + _MARKET_DATA_STALE_SECONDS - now,
+                        last_market[stale_identity] + _MARKET_DATA_STALE_SECONDS - now,
                     )
                 done, _ = await asyncio.wait(
                     (receive_task, stop_task),
@@ -392,9 +437,24 @@ class HyperliquidRawResearchCollector:
                     captured = receive_task.result()
                     last_inbound = self._monotonic()
                     _, channel, document = await self._record_inbound(captured, session_id)
-                    if channel in _MARKET_DATA_CHANNELS:
-                        last_market_data = last_inbound
-                        market_data_stale_marked = False
+                    for coin in _market_coins(channel, document):
+                        market_identity = (channel, coin)
+                        if market_identity not in last_market:
+                            continue
+                        last_market[market_identity] = last_inbound
+                        if market_identity in self._awaiting_market_recovery:
+                            self._awaiting_market_recovery.discard(market_identity)
+                            await self._append_marker(
+                                session_id,
+                                "data_quality",
+                                "market_data_recovered",
+                                reason=(
+                                    "required market channel delivered after reconnect; "
+                                    "heartbeat is not market-data validity"
+                                ),
+                                market_channel=channel,
+                                coin=coin,
+                            )
                     if channel == "subscriptionResponse" and document is not None:
                         identity = _subscription_identity_from_response(document)
                         if identity is not None and identity in expected_identities:
@@ -429,25 +489,13 @@ class HyperliquidRawResearchCollector:
                     )
                     if stop_task.done():
                         return
+                    await self._raise_if_required_market_silent(session_id, last_market)
                     continue
                 if stop_task in done:
                     return
                 if self._monotonic() >= last_inbound + float(self._config.receive_timeout_seconds):
                     raise TimeoutError("Hyperliquid public receive timed out.")
-                if (
-                    self._monotonic() >= last_market_data + _MARKET_DATA_STALE_SECONDS
-                    and not market_data_stale_marked
-                ):
-                    await self._append_marker(
-                        session_id,
-                        "data_quality",
-                        "market_data_stale_despite_heartbeat",
-                        reason=(
-                            "heartbeat/pong kept the socket alive but no trades/bbo/"
-                            "l2Book/activeAssetCtx arrived; heartbeat is not market-data validity"
-                        ),
-                    )
-                    market_data_stale_marked = True
+                await self._raise_if_required_market_silent(session_id, last_market)
 
                 if self._monotonic() >= next_heartbeat:
                     await self._send_heartbeat(connection, session_id)
@@ -602,6 +650,40 @@ async def _mainnet_connection(
 
 def _mainnet_connection_factory(config: HyperliquidRawResearchConfig) -> ConnectionFactory:
     return lambda: _mainnet_connection(config)
+
+
+def _oldest_silent_identity(
+    last_market: dict[tuple[str, str], float],
+    now: float,
+) -> tuple[str, str] | None:
+    if not last_market:
+        return None
+    return min(last_market, key=lambda identity: (last_market[identity], identity))
+
+
+def _market_coins(channel: str, document: dict[str, object] | None) -> tuple[str, ...]:
+    """Coins carried by one market frame. Control frames and addons return empty."""
+
+    if document is None or channel not in _MARKET_DATA_CHANNELS:
+        return ()
+    data = document.get("data")
+    if channel == "trades":
+        if type(data) is not list:
+            return ()
+        coins: list[str] = []
+        for item in data:
+            if type(item) is not dict:
+                continue
+            coin = item.get("coin")
+            if type(coin) is str and coin and coin not in coins:
+                coins.append(coin)
+        return tuple(coins)
+    if type(data) is not dict:
+        return ()
+    coin = data.get("coin")
+    if type(coin) is not str or not coin:
+        return ()
+    return (coin,)
 
 
 def _classify_inbound(

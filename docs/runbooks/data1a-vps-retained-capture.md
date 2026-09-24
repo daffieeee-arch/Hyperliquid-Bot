@@ -46,7 +46,7 @@ The Operator Cockpit first PAPER screen reads:
 Helpers: `data1a_run_paths(artifact_root, run_id)`. Set `ARTIFACT_ROOT` plus
 `DATA1A_RUN_ID` (or `COCKPIT_DATA1A_RUN_ID`) or open `/?data1a_run_id=<run_id>`.
 Missing `capture-health.json` is expected while the writer is still running;
-the cockpit shows **RUNNING (health JSON pending until stop)** when the claim
+the cockpit shows **UNKNOWN (storage activity only; capture-health.json not written yet)** when the claim
 is present and last `raw/part-*.parquet` mtime is within
 `COCKPIT_CAPTURE_FRESH_MAX_S=180`. The first PAPER screen polls
 `/api/data1a-capture` every **5 seconds** (`Cache-Control: no-store`) so those

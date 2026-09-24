@@ -1943,3 +1943,163 @@ def test_cli_modes_are_mutually_exclusive(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="not both"):
         _resolve_cli_mode(mixed)
+
+
+@pytest.mark.asyncio
+async def test_auth_ack_timeout_is_transport_not_an_auth_reject(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "hyperliquid_bot.bitvavo_mdpro_research.BITVAVO_MDPRO_AUTH_ACK_TIMEOUT_SECONDS",
+        0.05,
+    )
+    stop_event = asyncio.Event()
+    factory = ScriptedConnectionFactory(
+        [
+            FakeConnection([]),
+            FakeConnection(_successful_messages(), on_last=stop_event.set),
+        ]
+    )
+    sink = MemorySink()
+    collector = BitvavoMdProResearchCollector(
+        sink,
+        _credentials(),
+        config=BitvavoMdProResearchConfig(reconnect_delay_seconds=0),
+        connection_factory=factory,
+        session_id_factory=SessionIds(),
+    )
+    await collector.capture_for(5.0, stop_event=stop_event)
+    quality = _marker_documents(sink.records, channel="data_quality")
+    assert any(item["event"] == "authentication_ack_timeout" for item in quality)
+    assert not any(item["event"] == "authentication_failed" for item in quality)
+    sessions = _marker_documents(sink.records, channel="session")
+    assert any(
+        item["event"] == "disconnected" and item.get("reason") == "authentication_ack_timeout"
+        for item in sessions
+    )
+    assert factory.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_subscribe_ack_timeout_is_not_an_auth_reject(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "hyperliquid_bot.bitvavo_mdpro_research.BITVAVO_MDPRO_SUBSCRIBE_ACK_TIMEOUT_SECONDS",
+        0.05,
+    )
+    stop_event = asyncio.Event()
+    factory = ScriptedConnectionFactory(
+        [
+            FakeConnection([_auth_ack()]),
+            FakeConnection(_successful_messages(snapshot_sequence=200), on_last=stop_event.set),
+        ]
+    )
+    sink = MemorySink()
+    collector = BitvavoMdProResearchCollector(
+        sink,
+        _credentials(),
+        config=BitvavoMdProResearchConfig(reconnect_delay_seconds=0),
+        connection_factory=factory,
+        session_id_factory=SessionIds(),
+    )
+    await collector.capture_for(5.0, stop_event=stop_event)
+    sessions = _marker_documents(sink.records, channel="session")
+    assert any(
+        item["event"] == "disconnected" and item.get("reason") == "subscription_ack_timeout"
+        for item in sessions
+    )
+    assert not any(
+        item["event"] == "authentication_failed"
+        for item in _marker_documents(sink.records, channel="data_quality")
+    )
+    assert factory.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_snapshot_bootstrap_timeout_is_not_a_clean_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "hyperliquid_bot.bitvavo_mdpro_research.BITVAVO_MDPRO_SNAPSHOT_TIMEOUT_SECONDS",
+        0.05,
+    )
+    stop_event = asyncio.Event()
+    factory = ScriptedConnectionFactory(
+        [
+            FakeConnection([_auth_ack(), _pro_ack("book", "trades")]),
+            FakeConnection(_successful_messages(snapshot_sequence=300), on_last=stop_event.set),
+        ]
+    )
+    sink = MemorySink()
+    collector = BitvavoMdProResearchCollector(
+        sink,
+        _credentials(),
+        config=BitvavoMdProResearchConfig(reconnect_delay_seconds=0),
+        connection_factory=factory,
+        session_id_factory=SessionIds(),
+    )
+    await collector.capture_for(5.0, stop_event=stop_event)
+    quality = _marker_documents(sink.records, channel="data_quality")
+    assert any(
+        item["event"] == "snapshot_missing" and item.get("reason") == "snapshot_bootstrap_timeout"
+        for item in quality
+    )
+    sessions = _marker_documents(sink.records, channel="session")
+    assert any(
+        item["event"] == "disconnected" and item.get("reason") == "snapshot_bootstrap_timeout"
+        for item in sessions
+    )
+
+
+class _TradesOnlyAfterBootstrap(FakeConnection):
+    async def recv(self) -> str | bytes:
+        if self._messages:
+            return await super().recv()
+        await asyncio.sleep(0.01)
+        return _trade()
+
+
+@pytest.mark.asyncio
+async def test_trades_do_not_mask_a_silent_book(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "hyperliquid_bot.bitvavo_mdpro_research.BITVAVO_MDPRO_APPLICATION_IDLE_RECONNECT_SECONDS",
+        0.05,
+    )
+    stop_event = asyncio.Event()
+    prefix = [
+        _auth_ack(),
+        _pro_ack("book", "trades"),
+        _snapshot(100, nonce=100),
+        _book_update(
+            101,
+            102,
+            nonce=101,
+            bids=[["4999.900000000000000001", "0"]],
+            asks=[["5001.100000000000000001", "0.017000000000000001"]],
+        ),
+        _trade(),
+    ]
+    factory = ScriptedConnectionFactory(
+        [
+            _TradesOnlyAfterBootstrap(prefix),
+            FakeConnection(_successful_messages(snapshot_sequence=400), on_last=stop_event.set),
+        ]
+    )
+    sink = MemorySink()
+    collector = BitvavoMdProResearchCollector(
+        sink,
+        _credentials(),
+        config=BitvavoMdProResearchConfig(reconnect_delay_seconds=0),
+        connection_factory=factory,
+        session_id_factory=SessionIds(),
+    )
+    await collector.capture_for(5.0, stop_event=stop_event)
+    quality = _marker_documents(sink.records, channel="data_quality")
+    assert any(
+        item["event"] == "gap_detected" and item.get("reason") == "book_idle" for item in quality
+    )
+    assert not any(item.get("reason") == "trades_idle" for item in quality)
+    assert factory.calls == 2

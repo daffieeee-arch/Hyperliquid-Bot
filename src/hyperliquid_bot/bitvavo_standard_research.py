@@ -70,6 +70,16 @@ BITVAVO_STANDARD_WEBSOCKET_CLIENT_PING_INTERVAL: Final[float | None] = None
 BITVAVO_STANDARD_WEBSOCKET_CLIENT_PING_TIMEOUT: Final[float | None] = None
 # Docs do not require client ping; soft-reconnect when market frames go silent.
 BITVAVO_STANDARD_APPLICATION_IDLE_RECONNECT_SECONDS: Final = 180.0
+# Client bound. Standard public docs do not publish a subscribe or snapshot
+# acknowledgement deadline. A missing bootstrap must not wait forever.
+BITVAVO_STANDARD_BOOTSTRAP_TIMEOUT_SECONDS: Final = 15.0
+_STANDARD_IDLE_RECONNECTS: Final = {
+    "application idle reconnect": "application_idle",
+    "book idle reconnect": "book_idle",
+    "trades idle reconnect": "trades_idle",
+    "subscription ack timeout": "subscription_ack_timeout",
+    "snapshot bootstrap timeout": "snapshot_bootstrap_timeout",
+}
 SMOKE_CAPTURE_SECONDS: Final = 600.0
 MAX_CAPTURE_SECONDS: Final = 7 * 24 * 60 * 60
 RETAINED_MAX_RECONNECTS: Final = 10_080
@@ -428,20 +438,17 @@ class BitvavoStandardResearchCollector:
             except (BitvavoSinkError, BitvavoDataIntegrityError):
                 raise
             except (WebSocketException, OSError) as error:
-                idle_reconnect = (
-                    isinstance(error, ConnectionError)
-                    and str(error) == "application idle reconnect"
-                )
+                idle_reconnect_reason = _standard_idle_reconnect_reason(error)
                 del error
                 if not connected:
                     await self._connection_failed(session_id, previous_session_id)
-                elif idle_reconnect:
+                elif idle_reconnect_reason is not None:
                     await self._append_marker(
                         session_id,
                         "session",
                         "disconnected",
                         stream=BITVAVO_FEED_PRODUCT,
-                        reason="application_idle",
+                        reason=idle_reconnect_reason,
                     )
                 else:
                     await self._disconnected(session_id)
@@ -543,24 +550,65 @@ class BitvavoStandardResearchCollector:
         snapshot_requests = 0
         outstanding_request_id: int | None = None
         session_healthy = False
-        last_market_monotonic_ns = self._monotonic_ns()
+        bootstrap_started_ns = self._monotonic_ns()
+        last_book_ns = bootstrap_started_ns
+        last_trade_ns = bootstrap_started_ns
 
         while not stop_event.is_set():
-            timeout_seconds: float | None = None
-            if session_healthy:
-                idle_budget = BITVAVO_STANDARD_APPLICATION_IDLE_RECONNECT_SECONDS
-                elapsed = (self._monotonic_ns() - last_market_monotonic_ns) / 1_000_000_000
-                remaining = idle_budget - elapsed
+            now_ns = self._monotonic_ns()
+            timeout_reason: str | None = None
+            if not session_healthy:
+                remaining = BITVAVO_STANDARD_BOOTSTRAP_TIMEOUT_SECONDS - (
+                    (now_ns - bootstrap_started_ns) / 1_000_000_000
+                )
                 if remaining <= 0:
+                    if subscriptions_active_marked:
+                        await self._append_marker(
+                            session_id,
+                            "data_quality",
+                            "snapshot_missing",
+                            stream=BITVAVO_FEED_PRODUCT,
+                            reason="snapshot_bootstrap_timeout",
+                        )
+                        raise ConnectionError("snapshot bootstrap timeout")
+                    await self._append_marker(
+                        session_id,
+                        "data_quality",
+                        "subscription_failed",
+                        stream=BITVAVO_FEED_PRODUCT,
+                        reason="subscription_ack_timeout",
+                    )
+                    raise ConnectionError("subscription ack timeout")
+                timeout_seconds: float | None = max(remaining, 0.01)
+                timeout_reason = (
+                    "snapshot_bootstrap_timeout"
+                    if subscriptions_active_marked
+                    else "subscription_ack_timeout"
+                )
+            else:
+                idle_budget = BITVAVO_STANDARD_APPLICATION_IDLE_RECONNECT_SECONDS
+                book_remaining = idle_budget - ((now_ns - last_book_ns) / 1_000_000_000)
+                trade_remaining = idle_budget - ((now_ns - last_trade_ns) / 1_000_000_000)
+                if book_remaining <= 0:
                     await self._append_marker(
                         session_id,
                         "data_quality",
                         "gap_detected",
                         stream=BITVAVO_FEED_PRODUCT,
-                        reason="application_idle",
+                        reason="book_idle",
                     )
-                    raise ConnectionError("application idle reconnect")
-                timeout_seconds = max(remaining, 0.01)
+                    raise ConnectionError("book idle reconnect")
+                if trade_remaining <= 0:
+                    await self._append_marker(
+                        session_id,
+                        "data_quality",
+                        "gap_detected",
+                        stream=BITVAVO_FEED_PRODUCT,
+                        reason="trades_idle",
+                    )
+                    raise ConnectionError("trades idle reconnect")
+                timeout_seconds = max(min(book_remaining, trade_remaining), 0.01)
+                timeout_reason = "book_idle" if book_remaining <= trade_remaining else "trades_idle"
             captured = await self._receive_or_stop(
                 connection,
                 stop_event,
@@ -569,16 +617,34 @@ class BitvavoStandardResearchCollector:
             if captured is None:
                 if stop_event.is_set():
                     break
-                if session_healthy:
+                if timeout_reason == "snapshot_bootstrap_timeout":
                     await self._append_marker(
                         session_id,
                         "data_quality",
-                        "gap_detected",
+                        "snapshot_missing",
                         stream=BITVAVO_FEED_PRODUCT,
-                        reason="application_idle",
+                        reason="snapshot_bootstrap_timeout",
                     )
-                    raise ConnectionError("application idle reconnect")
-                continue
+                    raise ConnectionError("snapshot bootstrap timeout")
+                if timeout_reason == "subscription_ack_timeout":
+                    await self._append_marker(
+                        session_id,
+                        "data_quality",
+                        "subscription_failed",
+                        stream=BITVAVO_FEED_PRODUCT,
+                        reason="subscription_ack_timeout",
+                    )
+                    raise ConnectionError("subscription ack timeout")
+                await self._append_marker(
+                    session_id,
+                    "data_quality",
+                    "gap_detected",
+                    stream=BITVAVO_FEED_PRODUCT,
+                    reason=timeout_reason or "book_idle",
+                )
+                if timeout_reason == "trades_idle":
+                    raise ConnectionError("trades idle reconnect")
+                raise ConnectionError("book idle reconnect")
             raw_ordinal, channel, document = await self._record_inbound(captured, session_id)
 
             if channel == "error":
@@ -705,11 +771,15 @@ class BitvavoStandardResearchCollector:
                     normalized,
                 )
 
-            if channel in {*expected_channels, "book_snapshot"}:
-                last_market_monotonic_ns = self._monotonic_ns()
+            if channel in {"book", "book_snapshot"}:
+                last_book_ns = self._monotonic_ns()
+            elif channel == "trades":
+                last_trade_ns = self._monotonic_ns()
             if subscriptions_active_marked and book_state.has_snapshot and not session_healthy:
                 session_healthy = True
-                last_market_monotonic_ns = self._monotonic_ns()
+                recovered_ns = self._monotonic_ns()
+                last_book_ns = recovered_ns
+                last_trade_ns = recovered_ns
 
             outstanding_request_id, snapshot_requests = await self._maybe_request_snapshot(
                 connection,
@@ -1470,6 +1540,12 @@ def _require_bounded_duration(duration_seconds: object) -> float:
     if not math.isfinite(duration) or not 1.0 <= duration <= MAX_CAPTURE_SECONDS:
         raise ValueError(f"duration_seconds must be between 1 and {MAX_CAPTURE_SECONDS:g}.")
     return duration
+
+
+def _standard_idle_reconnect_reason(error: BaseException) -> str | None:
+    if isinstance(error, ConnectionError):
+        return _STANDARD_IDLE_RECONNECTS.get(str(error))
+    return None
 
 
 def standard_subscription_channels(*, include_candles: bool = False) -> tuple[str, ...]:

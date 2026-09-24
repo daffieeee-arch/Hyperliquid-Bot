@@ -1,0 +1,32 @@
+{
+  "definitive_outage": null,
+  "feeds": [
+    {
+      "last_market_utc": null,
+      "name": "spot",
+      "role": "required",
+      "silence_bound_seconds": 60.0,
+      "state": "unknown"
+    },
+    {
+      "last_market_utc": null,
+      "name": "usdm_market",
+      "role": "required",
+      "silence_bound_seconds": 60.0,
+      "state": "recovering"
+    },
+    {
+      "last_market_utc": null,
+      "name": "usdm_public",
+      "role": "required",
+      "silence_bound_seconds": 60.0,
+      "state": "unknown"
+    }
+  ],
+  "kind": "capture-live",
+  "published_utc": "2026-09-24T12:00:10Z",
+  "run_id": "20260924t120000z-publisher-contract",
+  "schema": "capture-live-v1",
+  "writer_pending_records": null,
+  "writer_published_parts": null
+}

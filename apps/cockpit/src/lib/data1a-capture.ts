@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 import { bindVenueCaptureRun } from "./capture-runs";
@@ -19,6 +19,10 @@ import {
   type VenueRunResolution,
 } from "./paths";
 import type {
+  CaptureLiveFeed,
+  CaptureLiveFeedState,
+  CaptureLiveOutage,
+  CaptureLiveStatus,
   Data1ACaptureClaim,
   Data1ACaptureHealth,
   Data1ACaptureSnapshot,
@@ -280,6 +284,130 @@ function skipResolvedRunIdMatch(source: VenueRunResolution["source"]): boolean {
   return source === "data1a-run-dir" || source === "venue-run-dir";
 }
 
+function requireFeedState(value: unknown, path: string): CaptureLiveFeedState {
+  if (
+    value === "fresh" ||
+    value === "recovering" ||
+    value === "definitive_outage" ||
+    value === "unknown"
+  ) {
+    return value;
+  }
+  throw new Error(`${path} state is not a known capture-live feed state.`);
+}
+
+function requireNullableInt(source: JsonObject, field: string, path: string): number | null {
+  const value = source[field];
+  if (value === null) {
+    return null;
+  }
+  if (typeof value === "number" && Number.isInteger(value)) {
+    return value;
+  }
+  throw new Error(`${path} field ${field} must be an integer or null.`);
+}
+
+function requireSilenceBound(source: JsonObject, path: string): number {
+  const value = source.silence_bound_seconds;
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    throw new Error(`${path} silence_bound_seconds must be a positive finite number.`);
+  }
+  return value;
+}
+
+function optionalMarketUtc(source: JsonObject, path: string): string | undefined {
+  if (!("last_market_utc" in source) || source.last_market_utc === null) {
+    return undefined;
+  }
+  return requireText(source, "last_market_utc", path);
+}
+
+function parseLiveFeeds(source: JsonObject, path: string): CaptureLiveFeed[] {
+  const value = source.feeds;
+  if (!Array.isArray(value)) {
+    throw new Error(`${path}.feeds must be a list.`);
+  }
+  return value.map((item, index) => {
+    const itemPath = `${path}.feeds[${String(index)}]`;
+    if (!isRecord(item)) {
+      throw new Error(`${itemPath} must be an object.`);
+    }
+    const role = item.role;
+    if (role !== "required" && role !== "optional") {
+      throw new Error(`${itemPath} role must be required or optional.`);
+    }
+    return {
+      name: requireText(item, "name", itemPath),
+      role,
+      state: requireFeedState(item.state, itemPath),
+      last_market_utc: optionalMarketUtc(item, itemPath),
+      silence_bound_seconds: requireSilenceBound(item, itemPath),
+    };
+  });
+}
+
+function parseLiveOutage(source: JsonObject, path: string): CaptureLiveOutage | null {
+  if (!("definitive_outage" in source) || source.definitive_outage === null) {
+    return null;
+  }
+  const value = source.definitive_outage;
+  const itemPath = `${path}.definitive_outage`;
+  if (!isRecord(value)) {
+    throw new Error(`${itemPath} must be an object or null.`);
+  }
+  return {
+    name: requireText(value, "name", itemPath),
+    error_class: requireText(value, "error_class", itemPath),
+    error_message: requireText(value, "error_message", itemPath),
+  };
+}
+
+function loadLive(
+  runDir: string,
+  expectedRunId: string,
+): {
+  live: CaptureLiveStatus | undefined;
+  live_error: string | undefined;
+} {
+  const path = join(runDir, "capture-live.json");
+  if (!existsSync(path)) {
+    return { live: undefined, live_error: undefined };
+  }
+  try {
+    const raw = readJsonObject(path);
+    if (raw.schema !== "capture-live-v1") {
+      throw new Error(`${path} schema is not capture-live-v1.`);
+    }
+    if (raw.kind !== "capture-live") {
+      throw new Error(`${path} kind is not capture-live.`);
+    }
+    const runId = requireText(raw, "run_id", path);
+    if (runId !== expectedRunId) {
+      throw new Error(
+        `capture-live.json run_id ${runId} does not match resolved run_id ${expectedRunId}.`,
+      );
+    }
+    return {
+      live: {
+        schema: "capture-live-v1",
+        kind: "capture-live",
+        run_id: runId,
+        file_mtime_utc: statSync(path).mtime.toISOString(),
+        writer_pending_records: requireNullableInt(raw, "writer_pending_records", path),
+        writer_published_parts: requireNullableInt(raw, "writer_published_parts", path),
+        feeds: parseLiveFeeds(raw, path),
+        definitive_outage: parseLiveOutage(raw, path),
+      },
+      live_error: undefined,
+    };
+  } catch (error: unknown) {
+    return {
+      live: undefined,
+      live_error: error instanceof Error ? error.message : "capture-live.json is unreadable.",
+    };
+  }
+}
+
 export function loadCaptureSnapshotForContract(
   resolved: VenueRunResolution,
   contract: VenueCaptureContract,
@@ -315,6 +443,7 @@ export function loadCaptureSnapshotForContract(
     );
   }
   const healthState = loadHealth(resolved.runDir, contract);
+  const liveState = loadLive(resolved.runDir, claim.run_id);
   if (
     healthState.health !== undefined &&
     !skipResolvedRunIdMatch(resolved.source) &&
@@ -335,6 +464,8 @@ export function loadCaptureSnapshotForContract(
     health: healthState.health,
     health_missing: healthState.health_missing,
     health_error: healthState.health_error,
+    live: liveState.live,
+    live_error: liveState.live_error,
     parts,
     duckdb_present: existsSync(join(resolved.runDir, "research.duckdb")),
   };

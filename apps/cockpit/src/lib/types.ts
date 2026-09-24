@@ -224,6 +224,33 @@ export type CaptureRunProvenance = {
   overlap_note: string;
 };
 
+export type CaptureLiveFeedState = "fresh" | "recovering" | "definitive_outage" | "unknown";
+
+export type CaptureLiveFeed = {
+  name: string;
+  role: "required" | "optional";
+  state: CaptureLiveFeedState;
+  last_market_utc: string | undefined;
+  silence_bound_seconds: number;
+};
+
+export type CaptureLiveOutage = {
+  name: string;
+  error_class: string;
+  error_message: string;
+};
+
+export type CaptureLiveStatus = {
+  schema: "capture-live-v1";
+  kind: "capture-live";
+  run_id: string;
+  file_mtime_utc: string;
+  writer_pending_records: number | null;
+  writer_published_parts: number | null;
+  feeds: CaptureLiveFeed[];
+  definitive_outage: CaptureLiveOutage | null;
+};
+
 export type Data1ACaptureSnapshot = {
   runDir: string;
   runId: string;
@@ -235,6 +262,8 @@ export type Data1ACaptureSnapshot = {
   health: Data1ACaptureHealth | undefined;
   health_missing: boolean;
   health_error: string | undefined;
+  live: CaptureLiveStatus | undefined;
+  live_error: string | undefined;
   parts: Data1APartListing;
   duckdb_present: boolean;
 };

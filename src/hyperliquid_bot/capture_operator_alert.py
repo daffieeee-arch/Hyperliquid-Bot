@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import socket
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -28,6 +29,12 @@ CAPTURE_ALERT_WEBHOOK_AUTHORIZATION_ENV: Final = "CAPTURE_ALERT_WEBHOOK_AUTHORIZ
 CAPTURE_ALERT_WEBHOOK_TIMEOUT_SECONDS: Final = 2.0
 CAPTURE_ALERT_WEBHOOK_ATTEMPTS: Final = 3
 CAPTURE_ALERT_WEBHOOK_RETRY_BACKOFF_SECONDS: Final = (0.25, 0.5)
+# Worst-case webhook budget: per-attempt timeout, plus the retry sleeps, plus slack.
+CAPTURE_ALERT_LANE_DRAIN_SECONDS: Final = (
+    CAPTURE_ALERT_WEBHOOK_TIMEOUT_SECONDS * CAPTURE_ALERT_WEBHOOK_ATTEMPTS
+    + sum(CAPTURE_ALERT_WEBHOOK_RETRY_BACKOFF_SECONDS)
+    + 0.5
+)
 _MAX_ERROR_MESSAGE_CHARS: Final = 240
 _SECRETISH: Final = re.compile(
     r"(?i)(?:token|secret|password|passwd|authorization|api[-_]?key|"
@@ -239,6 +246,68 @@ def _post_capture_alert_webhook(
         return
     if last_error is not None:
         _log_webhook_failure(last_error, attempts=used_attempts)
+
+
+class CaptureAlertLane:
+    """Run webhook delivery off the capture event loop.
+
+    The caller records dedup state, then submits the emit. ``shutdown`` waits
+    up to ``timeout_seconds`` so a normal retry can finish, then returns.
+    Threads are daemons, so a webhook that ignores its timeout cannot keep the
+    process alive after that bound.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._threads: list[threading.Thread] = []
+        self._closed = False
+        self._failure: BaseException | None = None
+
+    def submit(self, emit: Callable[[], None]) -> None:
+        def run() -> None:
+            try:
+                emit()
+            except Exception as error:
+                with self._lock:
+                    if self._failure is None:
+                        self._failure = error
+                capture_logger().warning(
+                    "capture_operator_alert_lane_failed error_class=%s",
+                    type(error).__name__,
+                )
+
+        with self._lock:
+            if self._closed:
+                capture_logger().warning("capture_operator_alert_dropped_after_shutdown")
+                return
+            thread = threading.Thread(target=run, name="capture-alert", daemon=True)
+            self._threads.append(thread)
+            thread.start()
+
+    def shutdown(self, *, timeout_seconds: float) -> None:
+        with self._lock:
+            self._closed = True
+            threads = tuple(self._threads)
+        if type(timeout_seconds) not in (int, float):
+            timeout_seconds = 0.0
+        seconds = max(0.0, float(timeout_seconds))
+        deadline = time.monotonic() + seconds
+        timed_out = False
+        for thread in threads:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = thread.is_alive() or timed_out
+                break
+            thread.join(timeout=remaining)
+            if thread.is_alive():
+                timed_out = True
+                break
+        if timed_out:
+            capture_logger().warning("capture_operator_alert_shutdown_timeout")
+        with self._lock:
+            failure = self._failure
+        if failure is not None:
+            raise failure
 
 
 def emit_capture_operator_alert(

@@ -136,6 +136,7 @@ async def test_zstd_parquet_round_trip_and_all_research_views(tmp_path: Path) ->
     await writer.aclose()
 
     assert len(writer.parquet_files) == 2
+    assert writer.published_part_count == len(writer.parquet_files)
     assert all(path.stat().st_size > 0 for path in writer.parquet_files)
     assert writer.orphan_partial_files == ()
 
@@ -327,6 +328,197 @@ async def test_delayed_flush_does_not_serialize_the_next_append(
     finally:
         connection.close()
     assert count_row == (3, 1_788_105_600_000_000_001, 1_788_105_600_000_000_003)
+
+
+def _slow_segment_write(
+    writer: ParquetResearchWriter,
+    entered: threading.Event,
+    release: threading.Event,
+    calls: dict[str, int],
+) -> None:
+    real_write_segment = writer._write_segment
+    active = {"n": 0}
+
+    def slow_write_segment(
+        segment: tuple[RawResearchRecord, ...],
+        part_number: int,
+    ) -> Path:
+        active["n"] += 1
+        calls["n"] += 1
+        if active["n"] > 1:
+            calls["overlap"] += 1
+        entered.set()
+        try:
+            assert release.wait(timeout=2)
+            return real_write_segment(segment, part_number)
+        finally:
+            active["n"] -= 1
+
+    writer._write_segment = slow_write_segment  # type: ignore[method-assign]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_flush_does_not_cancel_the_segment_write(tmp_path: Path) -> None:
+    writer = ParquetResearchWriter(
+        tmp_path,
+        rotation=ParquetRotation(
+            max_records=2, max_payload_bytes=1024 * 1024, max_interval_seconds=60
+        ),
+    )
+    entered = threading.Event()
+    release = threading.Event()
+    calls = {"n": 0, "overlap": 0}
+    _slow_segment_write(writer, entered, release, calls)
+    await writer.append(_record(1, "trades", b'{"channel":"trades","data":[]}'))
+    await writer.append(_record(2, "trades", b'{"channel":"trades","data":[]}'))
+    assert await asyncio.to_thread(entered.wait, 2)
+    flush_task = asyncio.create_task(writer.flush())
+    await asyncio.sleep(0)
+    flush_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await flush_task
+    assert calls["n"] == 1
+    assert calls["overlap"] == 0
+    release.set()
+    await asyncio.wait_for(writer.aclose(), timeout=3)
+    connection = duckdb.connect(":memory:")
+    try:
+        count_row = connection.execute(
+            "SELECT count(*) FROM read_parquet(?)",
+            [str(tmp_path / "*.parquet")],
+        ).fetchone()
+    finally:
+        connection.close()
+    assert count_row == (2,)
+    assert calls["overlap"] == 0
+    assert calls["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_full_queue_cancel_does_not_hang_or_drop_queued_segments(tmp_path: Path) -> None:
+    writer = ParquetResearchWriter(
+        tmp_path,
+        rotation=ParquetRotation(
+            max_records=2, max_payload_bytes=1024 * 1024, max_interval_seconds=60
+        ),
+    )
+    entered = threading.Event()
+    release = threading.Event()
+    calls = {"n": 0, "overlap": 0}
+    _slow_segment_write(writer, entered, release, calls)
+    await writer.append(_record(1, "trades", b"{}"))
+    await writer.append(_record(2, "trades", b"{}"))
+    assert await asyncio.to_thread(entered.wait, 2)
+    await writer.append(_record(3, "bbo", b"{}"))
+    await writer.append(_record(4, "bbo", b"{}"))
+    waiting = asyncio.create_task(writer.append(_record(5, "l2Book", b"{}")))
+    await asyncio.sleep(0)
+    assert not waiting.done()
+    waiting.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiting
+    release.set()
+    await asyncio.wait_for(writer.aclose(), timeout=3)
+    connection = duckdb.connect(":memory:")
+    try:
+        count_row = connection.execute(
+            "SELECT count(*) FROM read_parquet(?)",
+            [str(tmp_path / "*.parquet")],
+        ).fetchone()
+    finally:
+        connection.close()
+    assert count_row == (4,)
+
+
+@pytest.mark.asyncio
+async def test_persistent_storage_errors_do_not_report_a_successful_close(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    writer = ParquetResearchWriter(
+        tmp_path,
+        rotation=ParquetRotation(
+            max_records=2, max_payload_bytes=1024 * 1024, max_interval_seconds=60
+        ),
+    )
+
+    def fail_write_segment(
+        segment: tuple[RawResearchRecord, ...],
+        part_number: int,
+    ) -> Path:
+        del segment, part_number
+        raise RuntimeError("injected DuckDB failure")
+
+    monkeypatch.setattr(writer, "_write_segment", fail_write_segment)
+    await writer.append(_record(1, "trades", b"{}"))
+    await writer.append(_record(2, "trades", b"{}"))
+    with pytest.raises(RuntimeError, match="injected DuckDB failure"):
+        await asyncio.wait_for(writer.aclose(), timeout=3)
+    assert writer.pending_record_count == 2
+    assert writer.parquet_files == ()
+    with pytest.raises(RuntimeError, match="injected DuckDB failure"):
+        await asyncio.wait_for(writer.aclose(), timeout=3)
+    assert writer.pending_record_count == 2
+    assert writer.parquet_files == ()
+
+
+@pytest.mark.asyncio
+async def test_repeated_and_concurrent_close_publish_once(tmp_path: Path) -> None:
+    writer = ParquetResearchWriter(
+        tmp_path,
+        rotation=ParquetRotation(
+            max_records=2, max_payload_bytes=1024 * 1024, max_interval_seconds=60
+        ),
+    )
+    entered = threading.Event()
+    release = threading.Event()
+    calls = {"n": 0, "overlap": 0}
+    _slow_segment_write(writer, entered, release, calls)
+    await writer.append(_record(1, "trades", b"{}"))
+    await writer.append(_record(2, "trades", b"{}"))
+    assert await asyncio.to_thread(entered.wait, 2)
+    first = asyncio.create_task(writer.aclose())
+    second = asyncio.create_task(writer.aclose())
+    await asyncio.sleep(0)
+    release.set()
+    await asyncio.wait_for(first, timeout=3)
+    await asyncio.wait_for(second, timeout=3)
+    await writer.aclose()
+    assert calls["overlap"] == 0
+    assert calls["n"] == 1
+    assert len(writer.parquet_files) == 1
+
+
+@pytest.mark.asyncio
+async def test_cancelling_the_writer_joins_the_segment_thread_before_retry(
+    tmp_path: Path,
+) -> None:
+    writer = ParquetResearchWriter(
+        tmp_path,
+        rotation=ParquetRotation(
+            max_records=2, max_payload_bytes=1024 * 1024, max_interval_seconds=60
+        ),
+    )
+    entered = threading.Event()
+    release = threading.Event()
+    calls = {"n": 0, "overlap": 0}
+    _slow_segment_write(writer, entered, release, calls)
+    await writer.append(_record(1, "trades", b"{}"))
+    await writer.append(_record(2, "trades", b"{}"))
+    assert await asyncio.to_thread(entered.wait, 2)
+    writer_task = writer._writer_task
+    assert writer_task is not None
+    writer_task.cancel()
+    await asyncio.sleep(0)
+    assert calls["n"] == 1
+    assert calls["overlap"] == 0
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await writer_task
+    await asyncio.wait_for(writer.aclose(), timeout=3)
+    assert calls["n"] == 1
+    assert calls["overlap"] == 0
+    assert len(writer.parquet_files) == 1
 
 
 def test_duckdb_runtime_dependency_is_exact_and_extensions_are_bundled() -> None:

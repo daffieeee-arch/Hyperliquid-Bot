@@ -12,7 +12,6 @@ from typing import cast
 
 import pytest
 
-import hyperliquid_bot.hyperliquid_raw_research as hyperliquid_raw_research_module
 from hyperliquid_bot.hyperliquid_raw_research import (
     MAX_CAPTURE_SECONDS,
     SMOKE_CAPTURE_SECONDS,
@@ -360,6 +359,17 @@ async def test_reconstructable_capture_writes_the_path_contract(tmp_path: Path) 
     assert list(paths.raw_dir.glob(paths.parquet_glob))
     claim = json.loads(paths.capture_claim_path.read_text(encoding="utf-8"))
     health = json.loads(paths.capture_health_path.read_text(encoding="utf-8"))
+    assert isinstance(claim["code_version"], str) and claim["code_version"]
+    assert isinstance(claim["config_identity"], str) and len(str(claim["config_identity"])) == 64
+    live = json.loads((paths.run_dir / "capture-live.json").read_text(encoding="utf-8"))
+    assert live["schema"] == "capture-live-v1"
+    assert live["run_id"] == "sample-run"
+    assert live["definitive_outage"] is None
+    feed_names = {item["name"] for item in live["feeds"]}
+    assert "trades/BTC" in feed_names
+    trades = next(item for item in live["feeds"] if item["name"] == "trades/BTC")
+    assert trades["state"] == "fresh"
+    assert trades["last_market_utc"]
     assert claim["retained"] is True
     assert claim["duration_seconds"] == 86_400.0
     assert claim["twenty_four_seven"] is False
@@ -511,12 +521,24 @@ def _btc_market_frames() -> list[str]:
     ]
 
 
-class _HangAfterMessages(FakeConnection):
+class _ManualClock:
+    def __init__(self) -> None:
+        self.now = 1_000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+class _PongOnly(FakeConnection):
+    """Server pongs keep arriving. No market channel is delivered."""
+
+    def __init__(self, clock: _ManualClock) -> None:
+        super().__init__([])
+        self._clock = clock
+
     async def recv(self) -> str | bytes:
-        if self._messages:
-            return await super().recv()
-        await asyncio.sleep(30)
-        raise AssertionError("silence watch should have reconnected before this hang ended")
+        self._clock.now += 1.0
+        return '{"channel":"pong"}'
 
 
 class _OnlyBbo(FakeConnection):
@@ -526,19 +548,9 @@ class _OnlyBbo(FakeConnection):
 
 
 @pytest.mark.asyncio
-async def test_heartbeat_does_not_count_as_market_data_validity(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(hyperliquid_raw_research_module, "_MARKET_DATA_STALE_SECONDS", 0.05)
-
+async def test_heartbeat_does_not_count_as_market_data_validity() -> None:
+    clock = _ManualClock()
     stop_event = asyncio.Event()
-    inbound = [
-        "Websocket connection established.",
-        *[
-            _subscription_response(channel)
-            for channel in ("trades", "bbo", "l2Book", "activeAssetCtx")
-        ],
-    ]
     recovered = FakeConnection(
         [
             "Websocket connection established.",
@@ -546,15 +558,22 @@ async def test_heartbeat_does_not_count_as_market_data_validity(
         ],
         stop_event=stop_event,
     )
-    factory = ScriptedConnectionFactory([_HangAfterMessages(inbound), recovered])
+    factory = ScriptedConnectionFactory([_PongOnly(clock), recovered])
     sink = MemorySink()
     collector = HyperliquidRawResearchCollector(
         sink,
-        config=HyperliquidRawResearchConfig(reconnect_delay_seconds=0),
+        config=HyperliquidRawResearchConfig(
+            heartbeat_interval_seconds=5,
+            receive_timeout_seconds=5,
+            reconnect_delay_seconds=0,
+            market_data_stale_seconds=5,
+        ),
         connection_factory=factory,
+        monotonic=clock,
         session_id_factory=lambda: "session-stale",
     )
     await collector.capture_for(2.0, stop_event=stop_event)
+    assert any(record.channel == "pong" for record in sink.records)
     quality = _local_events(sink.records, "data_quality")
     stale = [event for event in quality if event["event"] == "market_data_stale_despite_heartbeat"]
     assert stale
@@ -567,17 +586,17 @@ async def test_heartbeat_does_not_count_as_market_data_validity(
 
 
 @pytest.mark.asyncio
-async def test_one_required_channel_cannot_hide_another_silent_channel(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(hyperliquid_raw_research_module, "_MARKET_DATA_STALE_SECONDS", 0.05)
+async def test_one_required_channel_cannot_hide_another_silent_channel() -> None:
     stop_event = asyncio.Event()
     recovered = FakeConnection(_btc_market_frames(), stop_event=stop_event)
     factory = ScriptedConnectionFactory([_OnlyBbo([]), recovered])
     sink = MemorySink()
     collector = HyperliquidRawResearchCollector(
         sink,
-        config=HyperliquidRawResearchConfig(reconnect_delay_seconds=0),
+        config=HyperliquidRawResearchConfig(
+            reconnect_delay_seconds=0,
+            market_data_stale_seconds=0.05,
+        ),
         connection_factory=factory,
         session_id_factory=lambda: "session-split",
     )
@@ -595,10 +614,7 @@ async def test_one_required_channel_cannot_hide_another_silent_channel(
 
 
 @pytest.mark.asyncio
-async def test_optional_addon_silence_does_not_reconnect_required_btc(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(hyperliquid_raw_research_module, "_MARKET_DATA_STALE_SECONDS", 0.05)
+async def test_optional_addon_silence_does_not_reconnect_required_btc() -> None:
     stop_event = asyncio.Event()
 
     class _BtcKeepsFlowing(FakeConnection):
@@ -619,7 +635,10 @@ async def test_optional_addon_silence_does_not_reconnect_required_btc(
     sink = MemorySink()
     collector = HyperliquidRawResearchCollector(
         sink,
-        config=HyperliquidRawResearchConfig(reconnect_delay_seconds=0),
+        config=HyperliquidRawResearchConfig(
+            reconnect_delay_seconds=0,
+            market_data_stale_seconds=0.05,
+        ),
         instrument_plan=build_hyperliquid_retained_plan(addon_coins="ETH,SOL", enable_addons=True),
         connection_factory=factory,
         session_id_factory=lambda: "session-addon",

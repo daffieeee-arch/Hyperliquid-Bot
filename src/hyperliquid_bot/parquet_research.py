@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import enum
 import os
+import threading
 import uuid
 from collections import deque
 from dataclasses import dataclass
@@ -96,15 +98,45 @@ class ParquetRotation:
             raise ValueError("max_interval_seconds must be positive.")
 
 
+class _WriterPhase(enum.Enum):
+    """Explicit close lifecycle. Success is only ``CLOSED`` after publish."""
+
+    OPEN = "open"
+    CLOSING = "closing"
+    CLOSED = "closed"
+    FAILED = "failed"
+
+
+class _WriteResult:
+    """Filled by the segment thread. Visible to asyncio only after ``Thread.join``."""
+
+    path: Path | None = None
+    error: BaseException | None = None
+
+
+@dataclass(slots=True)
+class _InflightWrite:
+    thread: threading.Thread
+    part_number: int
+    result: _WriteResult
+    done: asyncio.Future[None]
+
+
 class ParquetResearchWriter:
     """Buffer records and publish complete ZSTD-Parquet parts atomically.
 
-    ``append`` hands a full segment to a single writer task and returns before
-    the disk flush. Callers therefore do not hold their own locks across
-    ``asyncio.to_thread``. At most two segments sit in the handoff queue;
-    further appends wait, and a failed segment stays queued so ``aclose`` can
-    retry it. ``received_utc_ns`` and ``received_monotonic_ns`` are stored as
-    the caller set them. A wait inside this writer does not rewrite them.
+    ``append`` hands a full segment to one writer task and returns before the
+    disk flush. Callers do not hold their own locks across the segment thread.
+    At most two segments sit in the handoff queue; further appends wait, and a
+    failed segment stays queued so ``aclose`` can retry it.
+    ``received_utc_ns`` and ``received_monotonic_ns`` are stored as the caller
+    set them. A wait inside this writer does not rewrite them.
+
+    The writer task owns the segment thread. Cancelling ``flush`` or one
+    ``aclose`` waiter does not cancel that task and does not start a second
+    write of the same segment. ``aclose`` reports success only after the
+    buffer and the queue are published. A failed close stays failed for every
+    later ``aclose``.
 
     Published parts survive a process crash. A hard crash can lose the current
     in-memory segment and may leave a hidden ``.partial`` file, which readers
@@ -124,11 +156,15 @@ class ParquetResearchWriter:
         self._segment_started_monotonic_ns: int | None = None
         self._part_number = 0
         self._writer_tag = uuid.uuid4().hex[:12]
-        self._closed = False
+        self._phase = _WriterPhase.OPEN
         self._condition = asyncio.Condition()
         self._pending: deque[tuple[tuple[RawResearchRecord, ...], int]] = deque()
         self._writer_task: asyncio.Task[None] | None = None
         self._writer_error: BaseException | None = None
+        self._inflight: _InflightWrite | None = None
+        self._close_task: asyncio.Task[None] | None = None
+        self._close_error: BaseException | None = None
+        self._published_part_count = 0
 
     @property
     def output_dir(self) -> Path:
@@ -137,6 +173,12 @@ class ParquetResearchWriter:
     @property
     def parquet_files(self) -> tuple[Path, ...]:
         return tuple(sorted(self._output_dir.glob("*.parquet")))
+
+    @property
+    def published_part_count(self) -> int:
+        """Parts committed after a visible rename. Does not list the directory."""
+
+        return self._published_part_count
 
     @property
     def orphan_partial_files(self) -> tuple[Path, ...]:
@@ -152,11 +194,15 @@ class ParquetResearchWriter:
         if type(record) is not RawResearchRecord:
             raise TypeError("record must be a RawResearchRecord.")
         async with self._condition:
-            while len(self._pending) >= _MAX_PENDING_SEGMENTS and self._writer_error is None:
+            while (
+                len(self._pending) >= _MAX_PENDING_SEGMENTS
+                and self._writer_error is None
+                and self._phase is _WriterPhase.OPEN
+            ):
                 await self._condition.wait()
             if self._writer_error is not None:
                 raise self._writer_error
-            if self._closed:
+            if self._phase is not _WriterPhase.OPEN:
                 raise RuntimeError("Cannot append to a closed Parquet research writer.")
             if self._segment_started_monotonic_ns is None:
                 self._segment_started_monotonic_ns = record.received_monotonic_ns
@@ -167,37 +213,46 @@ class ParquetResearchWriter:
 
     async def flush(self) -> None:
         async with self._condition:
-            if self._closed:
+            if self._phase is not _WriterPhase.OPEN:
                 raise RuntimeError("Cannot flush a closed Parquet research writer.")
             if self._writer_error is not None:
                 raise self._writer_error
             if self._buffer:
                 self._enqueue_segment_locked()
-        await self._wait_until_idle()
+        await self._wait_until_settled()
         async with self._condition:
             if self._writer_error is not None:
                 raise self._writer_error
 
     async def aclose(self) -> None:
         async with self._condition:
-            if self._closed:
+            if self._phase is _WriterPhase.CLOSED:
                 return
-            if self._buffer:
-                self._enqueue_segment_locked()
-            if self._writer_error is not None and self._pending:
-                # Keep the failed segment and try the disk write once more.
-                self._writer_error = None
-                self._ensure_writer_locked()
-            self._closed = True
-        await self._wait_until_idle()
+            if self._phase is _WriterPhase.FAILED:
+                if self._close_error is None:
+                    raise RuntimeError("Parquet close failed without a recorded error.")
+                raise self._close_error
+            if self._close_task is None:
+                self._phase = _WriterPhase.CLOSING
+                if self._buffer:
+                    self._enqueue_segment_locked()
+                self._close_task = asyncio.create_task(
+                    self._finish_close(),
+                    name="parquet-research-close",
+                )
+            close_task = self._close_task
+        try:
+            # Waiters do not own the close task. Shield keeps one cancelled
+            # waiter from cancelling the publish; the commit after the segment
+            # thread joins is what prevents a second write of the same part.
+            await asyncio.shield(close_task)
+        except asyncio.CancelledError:
+            raise
         async with self._condition:
-            if self._writer_error is not None and self._pending:
-                self._writer_error = None
-                self._ensure_writer_locked()
-        await self._wait_until_idle()
-        async with self._condition:
-            if self._writer_error is not None:
-                raise self._writer_error
+            if self._phase is _WriterPhase.FAILED:
+                if self._close_error is None:
+                    raise RuntimeError("Parquet close failed without a recorded error.")
+                raise self._close_error
 
     def _should_rotate(self, current_monotonic_ns: int) -> bool:
         if len(self._buffer) >= self._rotation.max_records:
@@ -224,55 +279,181 @@ class ParquetResearchWriter:
         self._ensure_writer_locked()
 
     def _ensure_writer_locked(self) -> None:
-        if self._writer_task is None and self._pending and self._writer_error is None:
+        if (
+            self._writer_task is None
+            and self._pending
+            and self._writer_error is None
+            and self._inflight is None
+        ):
             self._writer_task = asyncio.create_task(
                 self._writer_loop(),
                 name="parquet-research-writer",
             )
 
-    async def _wait_until_idle(self) -> None:
+    async def _wait_until_settled(self) -> None:
+        """Wait until the queue is idle or a storage error is recorded.
+
+        This waits on the condition, not on the writer task, so cancelling the
+        waiter does not cancel the writer.
+        """
+
         while True:
             async with self._condition:
-                task = self._writer_task
-            if task is None:
-                return
-            await task
+                if self._writer_error is not None and self._inflight is None:
+                    return
+                writer_running = self._writer_task is not None and not self._writer_task.done()
+                if not self._pending and self._inflight is None and not writer_running:
+                    return
+                if (
+                    self._pending
+                    and self._inflight is None
+                    and not writer_running
+                    and self._writer_error is None
+                ):
+                    self._ensure_writer_locked()
+                await self._condition.wait()
+
+    async def _finish_close(self) -> None:
+        try:
+            for _attempt in (1, 2):
+                await self._wait_until_settled()
+                async with self._condition:
+                    if self._writer_error is not None and self._pending and self._inflight is None:
+                        self._writer_error = None
+                        self._ensure_writer_locked()
+                        continue
+                    break
+            await self._wait_until_settled()
+            async with self._condition:
+                unpublished = bool(self._pending or self._buffer or self._inflight is not None)
+                if self._writer_error is not None or unpublished:
+                    self._phase = _WriterPhase.FAILED
+                    self._close_error = self._writer_error or RuntimeError(
+                        "Parquet close finished with unpublished records."
+                    )
+                else:
+                    self._phase = _WriterPhase.CLOSED
+                    self._close_error = None
+                self._condition.notify_all()
+        except asyncio.CancelledError:
+            async with self._condition:
+                if self._phase is _WriterPhase.CLOSING:
+                    self._phase = _WriterPhase.FAILED
+                    self._close_error = RuntimeError(
+                        "Parquet close was cancelled before publish completed."
+                    )
+                self._condition.notify_all()
+            raise
 
     async def _writer_loop(self) -> None:
-        while True:
-            async with self._condition:
-                if not self._pending:
-                    self._writer_task = None
-                    self._condition.notify_all()
-                    return
-                segment, part_number = self._pending[0]
-            try:
-                final_path = await asyncio.to_thread(self._write_segment, segment, part_number)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
+        try:
+            while True:
                 async with self._condition:
-                    self._writer_error = exc
-                    self._writer_task = None
-                    self._condition.notify_all()
-                return
+                    if self._writer_error is not None and self._inflight is None:
+                        return
+                    if self._inflight is not None:
+                        await self._condition.wait()
+                        continue
+                    if not self._pending:
+                        current = asyncio.current_task()
+                        if self._writer_task is current:
+                            self._writer_task = None
+                        self._condition.notify_all()
+                        return
+                    segment, part_number = self._pending[0]
+                await self._publish_one(segment, part_number)
+        except asyncio.CancelledError:
+            await self._join_and_commit_inflight()
+            raise
+        finally:
             async with self._condition:
-                if not self._pending or self._pending[0][1] != part_number:
-                    self._writer_error = RuntimeError(
-                        "Parquet writer queue lost the segment it just published."
-                    )
+                current = asyncio.current_task()
+                if self._writer_task is current:
                     self._writer_task = None
-                    self._condition.notify_all()
-                    return
-                self._pending.popleft()
-                if final_path not in self.parquet_files:
-                    self._writer_error = RuntimeError(
-                        "Published Parquet part is not visible after atomic rename."
-                    )
-                    self._writer_task = None
-                    self._condition.notify_all()
-                    return
                 self._condition.notify_all()
+
+    async def _publish_one(
+        self,
+        segment: tuple[RawResearchRecord, ...],
+        part_number: int,
+    ) -> None:
+        loop = asyncio.get_running_loop()
+        result = _WriteResult()
+        done: asyncio.Future[None] = loop.create_future()
+
+        def _finish_from_thread() -> None:
+            if not done.done():
+                done.set_result(None)
+
+        def _run() -> None:
+            try:
+                result.path = self._write_segment(segment, part_number)
+            except BaseException as exc:
+                result.error = exc
+            finally:
+                loop.call_soon_threadsafe(_finish_from_thread)
+
+        thread = threading.Thread(target=_run, name=f"parquet-part-{part_number}")
+        inflight = _InflightWrite(
+            thread=thread,
+            part_number=part_number,
+            result=result,
+            done=done,
+        )
+        async with self._condition:
+            if self._inflight is not None:
+                raise RuntimeError("Parquet writer refused a second in-flight segment write.")
+            self._inflight = inflight
+        thread.start()
+        try:
+            await done
+        except asyncio.CancelledError:
+            await asyncio.shield(asyncio.to_thread(thread.join))
+            await self._commit_inflight(inflight)
+            raise
+        await asyncio.to_thread(thread.join)
+        await self._commit_inflight(inflight)
+
+    async def _join_and_commit_inflight(self) -> None:
+        async with self._condition:
+            inflight = self._inflight
+        if inflight is None:
+            return
+        await asyncio.shield(asyncio.to_thread(inflight.thread.join))
+        await self._commit_inflight(inflight)
+
+    async def _commit_inflight(self, inflight: _InflightWrite) -> None:
+        async with self._condition:
+            if self._inflight is not inflight:
+                return
+            self._inflight = None
+            error = inflight.result.error
+            if error is not None:
+                self._writer_error = error
+                self._condition.notify_all()
+                return
+            path = inflight.result.path
+            if not isinstance(path, Path):
+                self._writer_error = RuntimeError(
+                    "Parquet segment write ended without a published path."
+                )
+                self._condition.notify_all()
+                return
+            if not self._pending or self._pending[0][1] != inflight.part_number:
+                self._writer_error = RuntimeError(
+                    "Parquet writer queue lost the segment it just published."
+                )
+                self._condition.notify_all()
+                return
+            if path not in self.parquet_files:
+                self._writer_error = RuntimeError(
+                    "Published Parquet part is not visible after atomic rename."
+                )
+                self._condition.notify_all()
+                return
+            self._pending.popleft()
+            self._published_part_count += 1
+            self._condition.notify_all()
 
     def _write_segment(
         self,

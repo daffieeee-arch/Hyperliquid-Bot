@@ -1158,10 +1158,17 @@ Unsolicited client pongs do not replace answering the server ping. DATA-1F there
 own keepalive Pings. The library still auto-replies to Binance server Pings. A leftover library
 default (`ping_interval=20`, `ping_timeout=20`) closed with **code 1011** (`ConnectionClosedError`,
 keepalive ping timeout) when `/public` bookTicker did not answer client Pings — the TerraPC
-`usdm_public` reconnect churn after #52. #58 removed that client ping. It does not stop Binance
-from closing a socket that misses the **server** pong (Spot code **1008**, reason `Pong timeout`)
-when the shared event loop is busy, and it does not disable the 60s required-stream starve
-reconnect. All three profiles use `max_queue=1024` (library default is 16).
+`usdm_public` reconnect churn after #52. #58 removed that client ping. Spot and `usdm_market`
+share those keepalive kwargs but saw fewer 1011s because those sockets are quieter. It does not
+stop Binance from closing a socket that misses the **server** pong (Spot code **1008**, reason
+`Pong timeout`) when recv waits on the shared Parquet append lock, and it does not disable the
+60s required-stream starve reconnect. All three profiles use `max_queue=1024` (library default
+is 16). The library pauses socket reads once that queue is full, so a server PING sitting in
+the kernel is not auto-ponged. Each profile therefore recvs into a bounded drain of 16384
+frames (`BINANCE_SOCKET_DRAIN_MAX`) before Parquet append, enough for one Spot 60s pong window
+at about 150 bookTicker frames/s. The drain does not drop frames. `required_stream_starved`
+is raised only when the socket is idle and the drain is empty, so a slow append is not a
+reconnect.
 
 Phase A code-restart `20260924t164936z-phase-a-72h-code-restart` still recorded **269**
 reconnects after #58: spot about 138, `usdm_public` about 128, `usdm_market` about 3. The themes
@@ -1192,10 +1199,15 @@ closed. `forceOrder` silence is never starvation. `capture-health.json` always l
 `usdm_market`, and `usdm_public` with `reconnects`, `gaps`, `close_code_counts`,
 `exception_class_counts`, `pong_closes`, and `starved_reconnects`, including zeros. A run can
 show those counters while `gaps` is 0 and minute-bar `gap_frac` is about 0.
+`reconnect_microstructure` on the same file is `fragile` when `reconnects > 0` and `stable`
+when it is 0 (`unknown` if the count is missing). Minute bins can be complete either way.
+Those reconnects reset Spot depth sync. `twenty_four_seven` stays false. Short reconnects
+do not emit `capture_operator_alert`.
 
-**Apply path:** backoff, storm gates, and `ping_interval=None` are process-start state. A
-**BN process restart is required** before a live collector uses them. CoS / VPS ops only.
-This change does not restart `bn-capture` or any other lane. Do not stop HL / BV / KR.
+**Apply path:** backoff, storm gates, the socket drain, and `ping_interval=None` are
+process-start state. A **BN process restart is required** before a live collector uses them.
+CoS / VPS ops only. This change does not restart `bn-capture` or any other lane. Do not stop
+HL / BV / KR.
 
 Spot disconnects now persist sanitized close-reason text (`close_reason_rcvd` /
 `close_reason_sent`) in addition to codes. Official Spot streams document both

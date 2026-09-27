@@ -111,6 +111,42 @@ def counts_from_capture_log(
     return reconnects, (gaps if gaps else None)
 
 
+def _health_honesty_lines(health_path: Path) -> list[str]:
+    """Extra operator lines. Absent keys stay silent so older health files match."""
+
+    try:
+        payload = json.loads(health_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return []
+    if not isinstance(payload, dict):
+        return []
+    lines: list[str] = []
+    liveness = payload.get("integrity_liveness")
+    if isinstance(liveness, str) and liveness:
+        lines.append(f"integrity_liveness={liveness}")
+    profiles = payload.get("transport_profiles")
+    if not isinstance(profiles, list):
+        return lines
+    close_bits: list[str] = []
+    for item in profiles:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("transport_profile")
+        counts = item.get("close_code_counts")
+        if not isinstance(name, str) or not isinstance(counts, dict) or not counts:
+            continue
+        rendered = ",".join(
+            f"{code}:{counts[code]}"
+            for code in sorted(counts, key=str)
+            if isinstance(counts[code], int)
+        )
+        if rendered:
+            close_bits.append(f"{name}:{rendered}")
+    if close_bits:
+        lines.append("transport_close_codes=" + ";".join(close_bits))
+    return lines
+
+
 def render_transport_hints(
     run_dir: Path,
     run_id: str,
@@ -119,11 +155,13 @@ def render_transport_hints(
     health = counts_from_health(run_dir / "capture-health.json")
     if health is not None:
         reconnects, gaps = health
-        return [
+        lines = [
             "transport_hints_source=health",
             f"transport_reconnects={_format_counts(reconnects)}",
             f"transport_gaps={_format_counts(gaps)}",
         ]
+        lines.extend(_health_honesty_lines(run_dir / "capture-health.json"))
+        return lines
 
     log_candidates = [run_dir / f"capture-{run_id}.log"]
     if artifact_root is not None:

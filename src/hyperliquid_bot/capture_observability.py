@@ -328,6 +328,150 @@ def _reconnect_cluster_counts(
     )
 
 
+def close_is_pong_class(
+    *,
+    close_reason_rcvd: object = None,
+    close_reason_sent: object = None,
+) -> bool:
+    """Server pong miss or client keepalive timeout. Code alone is not enough."""
+
+    parts: list[str] = []
+    for value in (close_reason_rcvd, close_reason_sent):
+        if isinstance(value, str) and value:
+            parts.append(value.lower())
+    blob = " ".join(parts)
+    return "pong" in blob or "ping timeout" in blob or "keepalive ping" in blob
+
+
+_LIVENESS_PRIORITY: Final = (
+    "reconnect_storm",
+    "pong_starvation_pattern",
+    "required_stream_starved",
+    "required_streams_unobserved",
+)
+
+
+def annotate_profile_close_honesty(
+    connection: duckdb.DuckDBPyConnection,
+    report: dict[str, object],
+    *,
+    profile_names: Sequence[str],
+) -> dict[str, object]:
+    """Add per-profile close-code and exception counts beside gap/reconnect totals.
+
+    Transport gaps stay the gap counter. `integrity_liveness` is the fail-closed
+    pattern status and is not added to `gaps`. Profiles with no rows are still
+    emitted so a quiet socket cannot disappear when another profile storms.
+    """
+
+    existing = report.get("transport_profiles")
+    by_name: dict[str, dict[str, object]] = {}
+    if isinstance(existing, list):
+        for item in existing:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("transport_profile")
+            if isinstance(name, str) and name:
+                by_name[name] = dict(item)
+    close_counts: dict[str, dict[str, int]] = {}
+    exception_counts: dict[str, dict[str, int]] = {}
+    pong_closes: dict[str, int] = {}
+    starved_reconnects: dict[str, int] = {}
+    last_close: dict[str, int] = {}
+    last_exception: dict[str, str] = {}
+    session_columns = _table_columns(connection, "sessions")
+    order_column = "message_ordinal" if "message_ordinal" in session_columns else "1"
+    rows = connection.execute(
+        f"""
+        SELECT
+            coalesce(
+                json_extract_string(marker_json, '$.transport_profile'),
+                'unknown'
+            ) AS transport_profile,
+            event,
+            json_extract_string(marker_json, '$.reason') AS reason,
+            json_extract_string(marker_json, '$.close_code') AS close_code,
+            json_extract_string(marker_json, '$.exception_class') AS exception_class,
+            json_extract_string(marker_json, '$.close_reason_rcvd') AS close_reason_rcvd,
+            json_extract_string(marker_json, '$.close_reason_sent') AS close_reason_sent
+        FROM sessions
+        WHERE event IN ('disconnect', 'reconnect')
+        ORDER BY {order_column}
+        """
+    ).fetchall()
+    for profile, event, reason, close_code, exception_class, reason_rcvd, reason_sent in rows:
+        name = str(profile)
+        if event == "disconnect":
+            if isinstance(close_code, str) and close_code.isdigit():
+                bucket = close_counts.setdefault(name, {})
+                bucket[close_code] = bucket.get(close_code, 0) + 1
+                last_close[name] = int(close_code)
+            if isinstance(exception_class, str) and exception_class.isidentifier():
+                bucket = exception_counts.setdefault(name, {})
+                bucket[exception_class] = bucket.get(exception_class, 0) + 1
+                last_exception[name] = exception_class
+            if close_is_pong_class(
+                close_reason_rcvd=reason_rcvd,
+                close_reason_sent=reason_sent,
+            ):
+                pong_closes[name] = pong_closes.get(name, 0) + 1
+        elif event == "reconnect" and reason == "required_stream_starved":
+            starved_reconnects[name] = starved_reconnects.get(name, 0) + 1
+    names = list(profile_names)
+    for name in by_name:
+        if name not in names:
+            names.append(name)
+    profiles: list[dict[str, object]] = []
+    for name in names:
+        item = by_name.get(
+            name,
+            {
+                "transport_profile": name,
+                "gaps": 0,
+                "reconnects": 0,
+                "reconnect_clusters": 0,
+            },
+        )
+        item["transport_profile"] = name
+        item["close_code_counts"] = close_counts.get(name, {})
+        item["exception_class_counts"] = exception_counts.get(name, {})
+        item["pong_closes"] = pong_closes.get(name, 0)
+        item["starved_reconnects"] = starved_reconnects.get(name, 0)
+        item["last_close_code"] = last_close.get(name)
+        item["last_exception_class"] = last_exception.get(name)
+        profiles.append(item)
+    report["transport_profiles"] = profiles
+    report["integrity_liveness"] = _integrity_liveness(connection)
+    return report
+
+
+def _table_columns(connection: duckdb.DuckDBPyConnection, table: str) -> set[str]:
+    if table not in {"sessions", "data_quality_events"}:
+        raise ValueError("unexpected capture table.")
+    return {str(row[0]) for row in connection.execute(f"DESCRIBE {table}").fetchall()}
+
+
+def _integrity_liveness(connection: duckdb.DuckDBPyConnection) -> str:
+    if "data_quality_events" not in {
+        str(row[0]) for row in connection.execute("SHOW TABLES").fetchall()
+    }:
+        return "ok"
+    rows = connection.execute(
+        """
+        SELECT json_extract_string(marker_json, '$.reason')
+        FROM data_quality_events
+        WHERE event = 'liveness_error'
+        """
+    ).fetchall()
+    reasons = {str(row[0]) for row in rows if row[0] is not None}
+    for reason in _LIVENESS_PRIORITY:
+        if reason in reasons:
+            return reason
+    if reasons:
+        return sorted(reasons)[0]
+    return "ok"
+
+
 def attach_observability_health(
     health: dict[str, object],
     report: dict[str, object],

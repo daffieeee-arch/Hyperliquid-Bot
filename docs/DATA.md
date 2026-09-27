@@ -1146,34 +1146,56 @@ Official update speeds for the required channels are real-time (`trade`, both `b
 streams, USD-M `aggTrade`) or periodic (`depth@100ms` at 100 ms, `markPrice@1s` at 1 s). Official
 Spot JSON and SBE market streams send a server `ping` frame every 20 seconds and disconnect if no
 `pong` arrives within one minute; a connection is valid for about 24 hours and may emit
-`serverShutdown`. Official USD-M Connect sends a server `ping` every 3 minutes and disconnects if
-no `pong` arrives within 10 minutes. Those ping/pong rules are **transport keepalive**, not an
-application-data SLA. Unsolicited client pongs are allowed; they do not replace answering the
-server ping. DATA-1F therefore sets `ping_interval=None` / `ping_timeout=None` so the Python
-`websockets` client does not send its own keepalive Pings. The library still auto-replies to
-Binance server Pings. A leftover library default (`ping_interval=20`, `ping_timeout=20`) closed
-with **code 1011** (`ConnectionClosedError`, keepalive ping timeout) when `/public` bookTicker
-did not answer client Pings — the TerraPC `usdm_public` reconnect churn after #52. Spot and
-`usdm_market` share the same keepalive kwargs but see far fewer 1011s because those sockets
-are quieter and their clusters more often answer client Pings; the documented keepalive is
-still server-driven on every profile. Spot and `usdm_public` also use `max_queue=1024`
-(library default is 16) so high-frequency `bookTicker` / `depth@100ms` frames do not stall
-the incoming buffer; `usdm_market` stays at 16. Gaps stay honest: a 1011 still writes `gap` /
-`transport_disconnect` and a reconnect marker. Reconnect wait uses mild exponential backoff
-(3s, 6s, 12s, cap 24s) so a three-profile storm stays under the official **300 connections /
-5 minutes / IP** Spot limit. The cap is below the 60s starve bound. It uses **60 seconds** of
-required-stream **application** silence (`required_stream_starvation_seconds`) as the integrity
-bound: the official one-minute pong window, and 60× the slowest required periodic stream
-(`markPrice@1s`). Mid-run silence past that bound emits a `liveness_error` quality marker and
-fails the run (`FAILED`). Transport `gaps` / `reconnects` stay honest and separate; they are
-not this abort. `forceOrder` silence is never treated as starvation. An empty required stream
-cannot be accepted as a healthy retain on `OPERATOR_STOP` or duration end.
+`serverShutdown`. The February 2025 Spot notice (changelog) moved that window from a 3-minute
+ping / 10-minute pong to 20 seconds / 1 minute. Official USD-M Connect, re-checked 2026-09-27
+against the 2026-06-17 Connect page, still sends a server `ping` every 3 minutes and disconnects
+if no `pong` arrives within 10 minutes. Unsolicited client pongs are allowed there. The USD-M
+**Important WebSocket Change Notice** is the `/public` `/market` `/private` split, not a ping
+change: `bookTicker` stays on `/public`, and `aggTrade` / `markPrice` / `forceOrder` stay on
+`/market`. Those ping/pong rules are **transport keepalive**, not an application-data SLA.
+Unsolicited client pongs do not replace answering the server ping. DATA-1F therefore sets
+`ping_interval=None` / `ping_timeout=None` so the Python `websockets` client does not send its
+own keepalive Pings. The library still auto-replies to Binance server Pings. A leftover library
+default (`ping_interval=20`, `ping_timeout=20`) closed with **code 1011** (`ConnectionClosedError`,
+keepalive ping timeout) when `/public` bookTicker did not answer client Pings — the TerraPC
+`usdm_public` reconnect churn after #52. #58 removed that client ping. It does not stop Binance
+from closing a socket that misses the **server** pong (Spot code **1008**, reason `Pong timeout`)
+when the shared event loop is busy, and it does not disable the 60s required-stream starve
+reconnect. All three profiles use `max_queue=1024` (library default is 16).
 
-**Apply path:** `ping_interval=None` is process-start state. The live TerraPC BN collector must
-be restarted to pick it up. Prefer waiting until the current 72h retain finishes unless Chupa
-explicitly approves a BN-only restart (CoS gates). Do not stop HL / BV / KR. Until restart,
-the current run can still finish a useful tape — it is not silent — but Quant
-`bn_gap_fraction` may stay high and H1 remain fail-closed.
+Phase A code-restart `20260924t164936z-phase-a-72h-code-restart` still recorded **269**
+reconnects after #58: spot about 138, `usdm_public` about 128, `usdm_market` about 3. The themes
+were pong and required-stream starvation. Minute bars stayed dense (`gap_frac` about 0) because
+each hole was shorter than a minute. That is not a healthy microstructure tape. Spot and
+`usdm_public` are the high-frequency sockets, so they dominate. `usdm_market` rarely hits the
+10-minute USD-M pong window.
+
+Reconnect wait is exponential backoff (3s, 6s, 12s, cap 24s) plus a deterministic per-profile
+jitter of at most 20% of that cap. The total stays **under the 60s starve bound** so backoff
+does not swallow the liveness gate. A flat 3s on all three profiles would sit on the official
+Spot ceiling of **300 connection attempts / 5 minutes / IP**. DATA-1F therefore fail-closes
+before that ceiling:
+
+| Gate | Threshold | Status |
+| --- | --- | --- |
+| Per-profile reconnect storm | 6 admitted reconnects in any rolling 5 minutes; the next attempt is refused | `liveness_error` / `reconnect_storm` |
+| Process storm (`spot` + `usdm_public` + `usdm_market`) | 15 admitted reconnects in any rolling 5 minutes; the next attempt is refused | `liveness_error` / `reconnect_storm` |
+| Pong or starve pattern | 8 admitted pong-class closes or `required_stream_starved` reconnects on one profile in any rolling 60 minutes; the next is refused | `liveness_error` / `pong_starvation_pattern` |
+
+Pong-class means a sanitized close reason containing `pong`, `ping timeout`, or `keepalive ping`
+(server 1008 `Pong timeout`, or a regressed client 1011). Close code alone is not enough.
+The fail-closed marker is **`integrity_liveness`**. It is not added to transport `gaps`.
+The disconnect that crossed the threshold still writes its own transport `gap` and close code.
+A single starve reconnect under the budget stays a gap plus a profile reconnect. Empty or
+never-observed required streams, or starve after the reconnect bound is exhausted, still fail
+closed. `forceOrder` silence is never starvation. `capture-health.json` always lists `spot`,
+`usdm_market`, and `usdm_public` with `reconnects`, `gaps`, `close_code_counts`,
+`exception_class_counts`, `pong_closes`, and `starved_reconnects`, including zeros. A run can
+show those counters while `gaps` is 0 and minute-bar `gap_frac` is about 0.
+
+**Apply path:** backoff, storm gates, and `ping_interval=None` are process-start state. A
+**BN process restart is required** before a live collector uses them. CoS / VPS ops only.
+This change does not restart `bn-capture` or any other lane. Do not stop HL / BV / KR.
 
 Spot disconnects now persist sanitized close-reason text (`close_reason_rcvd` /
 `close_reason_sent`) in addition to codes. Official Spot streams document both
@@ -1185,8 +1207,8 @@ is a server policy close (overload / too-many-requests / payload-too-long in pub
 the documented 24-hour connection lifespan does not explain a ~5–5.5 minute cadence. DATA-1F
 keeps `data-stream.binance.vision` and the combined Spot URL. It does not invent a silent
 proactive rotate or drop samples: without the reason text a host or packing change would be
-guesswork. The USD-M `/public` vs `/market` fail-closed split and `max_queue=1024` on Spot
-and `/public` stay unchanged.
+guesswork. The USD-M `/public` vs `/market` fail-closed split stays unchanged, and
+`max_queue=1024` stays on all three profiles.
 
 The four source-linked, string-preserving research views are:
 
@@ -1295,6 +1317,8 @@ Official contracts checked for this slice:
 - https://developers.binance.com/en/docs/products/spot/market-data/web-socket-streams
 - https://developers.binance.com/en/docs/products/spot/market-data/rest-api/Order-Book
 - https://developers.binance.com/en/docs/products/derivatives-trading-usds-futures/websocket-market-streams/Connect
+- https://web.archive.org/web/20260617191147/https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/Connect
+- https://web.archive.org/web/20260520231941/https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/Important-WebSocket-Change-Notice
 - https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/ws-streams/public
 - https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/ws-streams/market
 - https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/market-data

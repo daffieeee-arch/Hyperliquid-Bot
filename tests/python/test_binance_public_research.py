@@ -24,6 +24,11 @@ from hyperliquid_bot.binance_public_research import (
     _USDM_MARKET_PROFILE,
     _USDM_PUBLIC_PROFILE,
     BINANCE_NATIVE_SYMBOL,
+    BINANCE_OFFICIAL_CONNECTION_ATTEMPTS_PER_5_MIN,
+    BINANCE_PONG_STARVATION_LIMIT,
+    BINANCE_PONG_STARVATION_WINDOW_SECONDS,
+    BINANCE_PROCESS_STORM_LIMIT,
+    BINANCE_PROFILE_STORM_LIMIT,
     BINANCE_RECONNECT_BACKOFF_CAP_SECONDS,
     BINANCE_SPOT_DEPTH_URL,
     BINANCE_SPOT_PRODUCT,
@@ -43,6 +48,7 @@ from hyperliquid_bot.binance_public_research import (
     BinanceDataIntegrityError,
     BinancePublicResearchCollector,
     BinancePublicResearchConfig,
+    BinanceReconnectLedger,
     BinanceSinkError,
     BinanceTransportError,
     WebSocketConnection,
@@ -65,6 +71,10 @@ from hyperliquid_bot.binance_public_research import (
     data1f_capture_claim,
     data1f_capture_health,
     run_reconstructable_capture,
+)
+from hyperliquid_bot.capture_observability import (
+    add_transport_counts,
+    annotate_profile_close_honesty,
 )
 from hyperliquid_bot.parquet_research import (
     RESEARCH_VIEW_NAMES,
@@ -332,6 +342,67 @@ def test_reconnect_backoff_is_mild_and_stays_under_starve_bound() -> None:
     assert BINANCE_RECONNECT_BACKOFF_CAP_SECONDS < REQUIRED_STREAM_STARVATION_SECONDS
     with pytest.raises(ValueError, match="positive integer"):
         _reconnect_wait_seconds(3.0, 0)
+    waits = {
+        profile: _reconnect_wait_seconds(3.0, 4, profile=profile)
+        for profile in ("spot", "usdm_public", "usdm_market")
+    }
+    assert len(set(waits.values())) == 3
+    for delay in waits.values():
+        assert BINANCE_RECONNECT_BACKOFF_CAP_SECONDS <= delay < REQUIRED_STREAM_STARVATION_SECONDS
+    for attempt in range(1, 8):
+        for profile in ("spot", "usdm_public", "usdm_market"):
+            delay = _reconnect_wait_seconds(3.0, attempt, profile=profile)
+            assert 0.0 < delay < REQUIRED_STREAM_STARVATION_SECONDS
+    assert BINANCE_PROFILE_STORM_LIMIT * 3 > BINANCE_PROCESS_STORM_LIMIT
+    assert BINANCE_PROCESS_STORM_LIMIT < BINANCE_OFFICIAL_CONNECTION_ATTEMPTS_PER_5_MIN
+
+
+def test_reconnect_ledger_fail_closes_storm_and_spaced_pong_pattern() -> None:
+    ledger = BinanceReconnectLedger()
+    for index in range(BINANCE_PROFILE_STORM_LIMIT):
+        decision = ledger.admit("spot", float(index), pong_or_starve=False)
+        assert decision.reason is None
+    storm = ledger.admit("spot", float(BINANCE_PROFILE_STORM_LIMIT), pong_or_starve=False)
+    assert storm.reason == "reconnect_storm"
+    assert storm.scope == "profile"
+    assert storm.observed == BINANCE_PROFILE_STORM_LIMIT + 1
+    assert storm.pong_or_starve is False
+
+    spaced = BinanceReconnectLedger()
+    step = 400.0
+    for index in range(BINANCE_PONG_STARVATION_LIMIT):
+        decision = spaced.admit(
+            "usdm_public",
+            step * float(index + 1),
+            pong_or_starve=True,
+        )
+        assert decision.reason is None
+        assert step > 300.0
+    pattern = spaced.admit(
+        "usdm_public",
+        step * float(BINANCE_PONG_STARVATION_LIMIT + 1),
+        pong_or_starve=True,
+    )
+    assert pattern.reason == "pong_starvation_pattern"
+    assert pattern.threshold == BINANCE_PONG_STARVATION_LIMIT
+    assert pattern.window_seconds == BINANCE_PONG_STARVATION_WINDOW_SECONDS
+    assert pattern.observed == BINANCE_PONG_STARVATION_LIMIT + 1
+    last_admitted = step * float(BINANCE_PONG_STARVATION_LIMIT)
+    aged = spaced.admit(
+        "usdm_public",
+        last_admitted + BINANCE_PONG_STARVATION_WINDOW_SECONDS,
+        pong_or_starve=True,
+    )
+    assert aged.reason is None
+    process = BinanceReconnectLedger()
+    for profile, base in (("spot", 0.0), ("usdm_public", 0.1), ("usdm_market", 0.2)):
+        for index in range(5):
+            decision = process.admit(profile, base + float(index), pong_or_starve=False)
+            assert decision.reason is None
+    blocked = process.admit("spot", 20.0, pong_or_starve=False)
+    assert blocked.reason == "reconnect_storm"
+    assert blocked.scope == "process"
+    assert blocked.threshold == BINANCE_PROCESS_STORM_LIMIT
 
 
 @pytest.mark.asyncio
@@ -1354,6 +1425,236 @@ async def test_client_keepalive_1011_is_recorded_as_transport_gap() -> None:
         and marker.get("close_code") == 1011
         for marker in sessions
     )
+
+
+class _Clock:
+    def __init__(self, start: float) -> None:
+        self.now = start
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _observed_then_idle(frames: Sequence[str]) -> ScriptedConnectionFactory:
+    """Deliver required frames once, then block until the shared stop cancels recv."""
+
+    return ScriptedConnectionFactory((FakeConnection(frames),))
+
+
+def _failing_profile_collector(
+    sink: MemorySink,
+    connections: Sequence[WebSocketConnection],
+    *,
+    profile: str,
+    max_reconnects: int,
+) -> BinancePublicResearchCollector:
+    failing = ScriptedConnectionFactory(connections)
+
+    async def spot_snapshot() -> CapturedApplicationPayload:
+        return _captured("public_spot_depth_snapshot.json", utc_ns=200, monotonic_ns=201)
+
+    async def open_interest() -> CapturedApplicationPayload:
+        return _captured("public_usdm_open_interest.json", utc_ns=202, monotonic_ns=203)
+
+    factories = {
+        "spot": _observed_then_idle(
+            (
+                _fixture_text("public_spot_trade_frame.json"),
+                _fixture_text("public_spot_book_ticker_frame.json"),
+                _fixture_text("public_spot_depth_frame.json"),
+            )
+        ),
+        "usdm_market": _observed_then_idle(
+            (
+                _fixture_text("public_usdm_agg_trade_frame.json"),
+                _fixture_text("public_usdm_mark_price_frame.json"),
+            )
+        ),
+        "usdm_public": _observed_then_idle((_fixture_text("public_usdm_book_ticker_frame.json"),)),
+    }
+    factories[profile] = failing
+    return BinancePublicResearchCollector(
+        sink,
+        config=BinancePublicResearchConfig(
+            reconnect_delay_seconds=0,
+            max_reconnects=max_reconnects,
+            required_stream_starvation_seconds=60,
+        ),
+        spot_connection_factory=factories["spot"],
+        usdm_market_connection_factory=factories["usdm_market"],
+        usdm_public_connection_factory=factories["usdm_public"],
+        spot_depth_fetcher=spot_snapshot,
+        usdm_open_interest_fetcher=open_interest,
+        utc_ns=Counter(1000),
+        monotonic_ns=Counter(2000),
+        session_id_factory=SessionIds(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_reconnect_storm_fail_closes_without_replacing_transport_gaps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "hyperliquid_bot.binance_public_research.emit_capture_operator_alert",
+        lambda **_kwargs: None,
+    )
+    sink = MemorySink()
+    failures = tuple(
+        FakeConnection((ConnectionError("synthetic transport"),))
+        for _ in range(BINANCE_PROFILE_STORM_LIMIT + 1)
+    )
+    collector = _failing_profile_collector(
+        sink,
+        failures,
+        profile="spot",
+        max_reconnects=20,
+    )
+    with pytest.raises(BinanceDataIntegrityError, match="reconnect storm") as raised:
+        await collector.capture_for(30)
+    assert raised.value.quality_event == "liveness_error"
+    quality = _local_documents(sink.records, "data_quality")
+    gaps = [
+        marker
+        for marker in quality
+        if marker["event"] == "gap" and marker.get("transport_profile") == "spot"
+    ]
+    storms = [
+        marker
+        for marker in quality
+        if marker["event"] == "liveness_error" and marker["reason"] == "reconnect_storm"
+    ]
+    assert len(gaps) == BINANCE_PROFILE_STORM_LIMIT + 1
+    assert len(storms) == 1
+    assert storms[0]["continuity"] == "fail_closed"
+    assert storms[0]["observed"] == BINANCE_PROFILE_STORM_LIMIT + 1
+    assert int(cast(int, storms[0]["official_connection_attempts_per_5_min_per_ip"])) == (
+        BINANCE_OFFICIAL_CONNECTION_ATTEMPTS_PER_5_MIN
+    )
+    sessions = _local_documents(sink.records, "session")
+    reconnects = [
+        marker
+        for marker in sessions
+        if marker["event"] == "reconnect" and marker.get("transport_profile") == "spot"
+    ]
+    assert len(reconnects) == BINANCE_PROFILE_STORM_LIMIT
+
+
+@pytest.mark.asyncio
+async def test_spaced_pong_starvation_pattern_fail_closes_mid_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "hyperliquid_bot.binance_public_research.emit_capture_operator_alert",
+        lambda **_kwargs: None,
+    )
+    sink = MemorySink()
+    clock = _Clock(0.0)
+
+    class _PongTimeout:
+        async def recv(self) -> str | bytes:
+            clock.now += 400.0
+            raise ConnectionClosedError(Close(1008, "Pong timeout"), None)
+
+    collector = _failing_profile_collector(
+        sink,
+        tuple(_PongTimeout() for _ in range(BINANCE_PONG_STARVATION_LIMIT + 1)),
+        profile="usdm_public",
+        max_reconnects=20,
+    )
+    collector._reconnect_clock = clock
+    with pytest.raises(BinanceDataIntegrityError, match="pong or starvation") as raised:
+        await collector.capture_for(30)
+    assert raised.value.quality_event == "liveness_error"
+    quality = _local_documents(sink.records, "data_quality")
+    pattern = [
+        marker
+        for marker in quality
+        if marker["event"] == "liveness_error" and marker["reason"] == "pong_starvation_pattern"
+    ]
+    assert len(pattern) == 1
+    assert pattern[0]["transport_profile"] == "usdm_public"
+    assert pattern[0]["pong_or_starve"] is True
+    assert pattern[0]["continuity"] == "fail_closed"
+    gaps = [marker for marker in quality if marker["event"] == "gap"]
+    assert len(gaps) == BINANCE_PONG_STARVATION_LIMIT + 1
+    assert all(marker.get("close_code") == 1008 for marker in gaps)
+    sessions = _local_documents(sink.records, "session")
+    reconnects = [marker for marker in sessions if marker["event"] == "reconnect"]
+    assert len(reconnects) == BINANCE_PONG_STARVATION_LIMIT
+
+
+def test_health_profiles_keep_close_codes_when_gap_counters_are_zero(tmp_path: Path) -> None:
+    database = tmp_path / "research.duckdb"
+    connection = duckdb.connect(str(database))
+    try:
+        connection.execute(
+            """
+            CREATE TABLE sessions (
+                event VARCHAR,
+                message_ordinal BIGINT,
+                marker_json VARCHAR
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE data_quality_events (
+                event VARCHAR,
+                marker_json VARCHAR
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO sessions VALUES
+                ('disconnect', 1, '{"event":"disconnect","transport_profile":"usdm_public",
+                  "close_code":1008,"exception_class":"ConnectionClosedError",
+                  "close_reason_rcvd":"Pong timeout"}'),
+                ('reconnect', 2, '{"event":"reconnect","transport_profile":"usdm_public"}'),
+                ('disconnect', 3, '{"event":"disconnect","transport_profile":"spot",
+                  "close_code":1011,"exception_class":"ConnectionClosedError",
+                  "close_reason_sent":"keepalive ping timeout"}'),
+                ('reconnect', 4, '{"event":"reconnect","transport_profile":"spot",
+                  "reason":"required_stream_starved"}')
+            """
+        )
+        report: dict[str, object] = {"elapsed_seconds": 86_400.0, "gaps": 0, "reconnects": 2}
+        add_transport_counts(connection, report, gap_event="gap", reconnect_event="reconnect")
+        annotate_profile_close_honesty(
+            connection,
+            report,
+            profile_names=("spot", "usdm_market", "usdm_public"),
+        )
+    finally:
+        connection.close()
+    assert report["gaps"] == 0
+    assert report["reconnects"] == 2
+    assert report["integrity_liveness"] == "ok"
+    health = data1f_capture_health(
+        run_id="sample-run",
+        duration_seconds=86_400,
+        status="COMPLETED",
+        report=report,
+    )
+    profiles = health["transport_profiles"]
+    assert isinstance(profiles, list)
+    by_name = {item["transport_profile"]: item for item in profiles}
+    assert list(by_name) == ["spot", "usdm_market", "usdm_public"]
+    assert by_name["usdm_market"]["reconnects"] == 0
+    assert by_name["usdm_market"]["gaps"] == 0
+    assert by_name["usdm_market"]["close_code_counts"] == {}
+    assert by_name["usdm_public"]["close_code_counts"] == {"1008": 1}
+    assert by_name["usdm_public"]["exception_class_counts"] == {"ConnectionClosedError": 1}
+    assert by_name["usdm_public"]["pong_closes"] == 1
+    assert by_name["usdm_public"]["last_close_code"] == 1008
+    assert by_name["spot"]["close_code_counts"] == {"1011": 1}
+    assert by_name["spot"]["pong_closes"] == 1
+    assert by_name["spot"]["starved_reconnects"] == 1
+    assert health["gaps"] == 0
+    assert health["integrity_liveness"] == "ok"
+    assert health["reconnect_storm_limit"] == BINANCE_PROFILE_STORM_LIMIT
+    assert health["pong_starvation_limit"] == BINANCE_PONG_STARVATION_LIMIT
 
 
 @pytest.mark.asyncio

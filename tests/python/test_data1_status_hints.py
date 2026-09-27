@@ -54,6 +54,46 @@ def test_health_profiles_win_and_malformed_health_stays_na(tmp_path: Path) -> No
     ]
 
 
+def test_health_honesty_lines_do_not_hide_reconnects_when_gaps_are_zero(tmp_path: Path) -> None:
+    hints = _hints()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "capture-health.json").write_text(
+        json.dumps(
+            {
+                "integrity_liveness": "ok",
+                "gaps": 0,
+                "transport_profiles": [
+                    {
+                        "transport_profile": "spot",
+                        "reconnects": 138,
+                        "gaps": 0,
+                        "close_code_counts": {"1008": 100},
+                    },
+                    {
+                        "transport_profile": "usdm_public",
+                        "reconnects": 128,
+                        "gaps": 0,
+                        "close_code_counts": {"1008": 90},
+                    },
+                    {
+                        "transport_profile": "usdm_market",
+                        "reconnects": 3,
+                        "gaps": 0,
+                        "close_code_counts": {},
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    lines = hints.render_transport_hints(run_dir, "phase-a")
+    assert lines[1] == "transport_reconnects=spot:138,usdm_market:3,usdm_public:128"
+    assert lines[2] == "transport_gaps=spot:0,usdm_market:0,usdm_public:0"
+    assert "integrity_liveness=ok" in lines
+    assert "transport_close_codes=spot:1008:100;usdm_public:1008:90" in lines
+
+
 def test_capture_log_counts_usdm_public_reconnects_and_leaves_gaps_na(tmp_path: Path) -> None:
     hints = _hints()
     run_dir = tmp_path / "run"

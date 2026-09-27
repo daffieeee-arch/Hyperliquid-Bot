@@ -102,6 +102,14 @@ BINANCE_WEBSOCKET_CLIENT_PING_TIMEOUT: Final[float | None] = None
 # shallow queue plus blocked processing surfaces as Spot 1008 Pong timeout.
 BINANCE_WEBSOCKET_HIGH_FREQUENCY_MAX_QUEUE: Final = 1024
 BINANCE_WEBSOCKET_MARKET_MAX_QUEUE: Final = 1024
+# The library pauses socket reads once max_queue is full, so a server PING
+# sitting in the kernel is not auto-ponged. Phase A on c8893c2 (parquet
+# handoff already in) still closed spot and usdm_public with 1008
+# "Pong timeout": recv waited on the shared append lock. This bounded drain
+# sits in front of that wait. 16384 frames covers the Spot 60s pong deadline
+# at the observed ~150 USD-M bookTicker frames/s before the library pauses.
+# It does not drop frames and it is not an unbounded buffer.
+BINANCE_SOCKET_DRAIN_MAX: Final = 16_384
 # Cap below required_stream_starvation_seconds so backoff cannot swallow the
 # mid-run liveness gate. Official Spot limit: 300 connections / 5 min / IP.
 BINANCE_RECONNECT_BACKOFF_CAP_SECONDS: Final = 24.0
@@ -1106,6 +1114,123 @@ class BinancePublicResearchCollector:
                 stop_event.set()
                 raise BinanceTransportError("Binance public transport boundary failed.") from None
 
+    async def _drain_profile_socket(
+        self,
+        profile: _StreamProfile,
+        connection: WebSocketConnection,
+        stop_event: asyncio.Event,
+        inbound: asyncio.Queue[CapturedApplicationPayload],
+        drain_error: list[BaseException],
+        drain_idle: asyncio.Event,
+    ) -> None:
+        """Recv and stamp frames without waiting on Parquet or sibling appends.
+
+        Starvation is signaled only when the socket itself is idle and nothing
+        is already buffered. A slow append must not look like a dead stream.
+        """
+
+        try:
+            while not stop_event.is_set():
+                while inbound.full() and not stop_event.is_set():
+                    await asyncio.sleep(0.01)
+                if stop_event.is_set():
+                    return
+                remaining = self._remaining_required_stream_seconds(profile)
+                # Wait the full silence budget in one recv. A shorter poll cancels
+                # the in-flight read and can drop a frame that would have refreshed
+                # the stream clock.
+                timeout = 0.05 if remaining <= 0 else max(remaining, 0.01)
+                captured = await _receive_or_stop(
+                    connection,
+                    stop_event,
+                    utc_ns=self._utc_ns,
+                    monotonic_ns=self._monotonic_ns,
+                    timeout_seconds=timeout,
+                )
+                if captured is None:
+                    if stop_event.is_set():
+                        return
+                    if inbound.empty() and self._starved_required_stream(profile) is not None:
+                        drain_idle.set()
+                        return
+                    continue
+                inbound.put_nowait(captured)
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:
+            drain_error.append(exc)
+            drain_idle.set()
+
+    async def _take_drained_frame(
+        self,
+        inbound: asyncio.Queue[CapturedApplicationPayload],
+        stop_event: asyncio.Event,
+        drain_task: asyncio.Task[None],
+        drain_error: list[BaseException],
+        drain_idle: asyncio.Event,
+    ) -> CapturedApplicationPayload | None:
+        """Next stamped frame, or None when the caller should stop or check liveness.
+
+        Stop has to wake this wait. A plain queue timeout would sit until the
+        silence budget expired and turn a healthy operator stop into starvation.
+        """
+
+        while True:
+            if not inbound.empty():
+                return inbound.get_nowait()
+            if drain_error and inbound.empty():
+                raise drain_error[0]
+            if stop_event.is_set() or drain_idle.is_set() or drain_task.done():
+                # The drain may still be putting a frame it already read when
+                # stop was set inside that recv. Wait for it to finish, then
+                # take whatever it buffered.
+                if not drain_task.done():
+                    await drain_task
+                if not inbound.empty():
+                    return inbound.get_nowait()
+                if drain_error:
+                    raise drain_error[0]
+                return None
+            get_task = asyncio.create_task(inbound.get())
+            stop_task = asyncio.create_task(stop_event.wait())
+            idle_task = asyncio.create_task(drain_idle.wait())
+            done: set[asyncio.Task[object]] = set()
+            try:
+                done, _pending = await asyncio.wait(
+                    {get_task, stop_task, idle_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            finally:
+                if get_task not in done:
+                    get_task.cancel()
+                stop_task.cancel()
+                idle_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await stop_task
+                with suppress(asyncio.CancelledError):
+                    await idle_task
+                if get_task.cancelled():
+                    with suppress(asyncio.CancelledError):
+                        await get_task
+            if get_task in done and not get_task.cancelled():
+                return get_task.result()
+            if not inbound.empty():
+                continue
+            if drain_error and (stop_event.is_set() or drain_idle.is_set() or drain_task.done()):
+                if not drain_task.done():
+                    await drain_task
+                if not inbound.empty():
+                    continue
+                raise drain_error[0]
+            if stop_event.is_set() or drain_idle.is_set() or drain_task.done():
+                if not drain_task.done():
+                    await drain_task
+                if not inbound.empty():
+                    continue
+                if drain_error:
+                    raise drain_error[0]
+                return None
+
     async def _receive_session(
         self,
         profile: _StreamProfile,
@@ -1116,143 +1241,49 @@ class BinancePublicResearchCollector:
     ) -> None:
         observed: set[str] = set()
         self._mark_profile_watch_start(profile)
-        while not stop_event.is_set():
-            remaining = self._remaining_required_stream_seconds(profile)
-            if remaining <= 0:
-                await self._raise_if_required_stream_starved(profile, session_id)
-            captured = await _receive_or_stop(
+        inbound: asyncio.Queue[CapturedApplicationPayload] = asyncio.Queue(
+            maxsize=BINANCE_SOCKET_DRAIN_MAX
+        )
+        drain_error: list[BaseException] = []
+        drain_idle = asyncio.Event()
+        drain_task = asyncio.create_task(
+            self._drain_profile_socket(
+                profile,
                 connection,
                 stop_event,
-                utc_ns=self._utc_ns,
-                monotonic_ns=self._monotonic_ns,
-                timeout_seconds=max(remaining, 0.01),
-            )
-            if captured is None:
-                if stop_event.is_set():
-                    break
-                await self._raise_if_required_stream_starved(profile, session_id)
-                continue
-            if len(captured.payload_bytes) > self._config.max_application_payload_bytes:
-                raw_ordinal = await self._raw(
-                    profile.product,
-                    "unrouted",
-                    session_id,
+                inbound,
+                drain_error,
+                drain_idle,
+            ),
+            name=f"binance-socket-drain-{profile.name}",
+        )
+        try:
+            while True:
+                captured = await self._take_drained_frame(
+                    inbound,
+                    stop_event,
+                    drain_task,
+                    drain_error,
+                    drain_idle,
+                )
+                if captured is None:
+                    if drain_error and not stop_event.is_set() and inbound.empty():
+                        raise drain_error[0]
+                    if stop_event.is_set():
+                        break
+                    await self._raise_if_required_stream_starved(profile, session_id)
+                    continue
+                await self._consume_captured_frame(
+                    profile,
                     captured,
-                )
-                await self._quality(
-                    profile.product,
                     session_id,
-                    "truncation_error",
-                    "application_payload_oversize",
-                    raw_ordinal,
+                    book_state,
+                    observed,
                 )
-                raise BinanceDataIntegrityError(
-                    "Binance complete application payload exceeded its bound.",
-                    quality_event="truncation_error",
-                )
-            if captured.frame_type is not FrameType.TEXT:
-                raw_ordinal = await self._raw(
-                    profile.product,
-                    "unrouted",
-                    session_id,
-                    captured,
-                )
-                await self._quality(
-                    profile.product,
-                    session_id,
-                    "schema_error",
-                    "non_text_application_frame",
-                    raw_ordinal,
-                )
-                raise BinanceDataIntegrityError(
-                    "Binance JSON stream returned a non-text application frame."
-                )
-            try:
-                document = _decode_json_object(captured.payload_bytes)
-                if profile is _SPOT_PROFILE and _is_server_shutdown(document):
-                    await self._raw(
-                        profile.product,
-                        "server_shutdown",
-                        session_id,
-                        captured,
-                    )
-                    raise _BinanceServerShutdown(
-                        "Binance Spot server announced a controlled shutdown."
-                    )
-                stream, data = _combined_stream(document, profile.channels)
-            except _BinanceServerShutdown:
-                raise
-            except BinanceDataIntegrityError as error:
-                raw_ordinal = await self._raw(
-                    profile.product,
-                    "unrouted",
-                    session_id,
-                    captured,
-                )
-                await self._quality(
-                    profile.product,
-                    session_id,
-                    error.quality_event,
-                    "inbound_identity_or_schema",
-                    raw_ordinal,
-                )
-                raise
-
-            source_channel = profile.channels[stream]
-            raw_ordinal = await self._raw(
-                profile.product,
-                source_channel,
-                session_id,
-                captured,
-            )
-            try:
-                if profile is _SPOT_PROFILE:
-                    if book_state is None:
-                        raise AssertionError("Spot profile must carry book state")
-                    await self._handle_spot(
-                        stream,
-                        data,
-                        raw_ordinal,
-                        session_id,
-                        book_state,
-                    )
-                else:
-                    normalized = _normalize_usdm(stream, data, raw_ordinal)
-                    await self._normalized(
-                        profile.product,
-                        "normalized_usdm_context",
-                        session_id,
-                        normalized,
-                    )
-            except BinanceDataIntegrityError as error:
-                if not error.reported:
-                    await self._quality(
-                        profile.product,
-                        session_id,
-                        error.quality_event,
-                        "inbound_validation",
-                        raw_ordinal,
-                    )
-                    error.reported = True
-                raise
-
-            self._note_required_stream(profile, stream, book_state)
-            if stream not in observed:
-                observed.add(stream)
-                await self._marker(
-                    profile.product,
-                    "subscription",
-                    session_id,
-                    {
-                        "event": "subscription_observed",
-                        "transport_profile": profile.name,
-                        "stream": stream,
-                        "authenticated": False,
-                    },
-                )
-            # Yield so sibling profile sockets can answer Binance server pings
-            # (Spot pong within ~1 minute). Three profiles share one event loop.
-            await asyncio.sleep(0)
+        finally:
+            drain_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await drain_task
 
         # Idle reconnect + operator/duration stop is allowed only when this
         # profile already observed every required stream earlier in the run
@@ -1287,6 +1318,133 @@ class BinancePublicResearchCollector:
             )
             missing_snapshot_error.reported = True
             raise missing_snapshot_error
+
+    async def _consume_captured_frame(
+        self,
+        profile: _StreamProfile,
+        captured: CapturedApplicationPayload,
+        session_id: str,
+        book_state: _SpotBookState | None,
+        observed: set[str],
+    ) -> None:
+        if len(captured.payload_bytes) > self._config.max_application_payload_bytes:
+            raw_ordinal = await self._raw(
+                profile.product,
+                "unrouted",
+                session_id,
+                captured,
+            )
+            await self._quality(
+                profile.product,
+                session_id,
+                "truncation_error",
+                "application_payload_oversize",
+                raw_ordinal,
+            )
+            raise BinanceDataIntegrityError(
+                "Binance complete application payload exceeded its bound.",
+                quality_event="truncation_error",
+            )
+        if captured.frame_type is not FrameType.TEXT:
+            raw_ordinal = await self._raw(
+                profile.product,
+                "unrouted",
+                session_id,
+                captured,
+            )
+            await self._quality(
+                profile.product,
+                session_id,
+                "schema_error",
+                "non_text_application_frame",
+                raw_ordinal,
+            )
+            raise BinanceDataIntegrityError(
+                "Binance JSON stream returned a non-text application frame."
+            )
+        try:
+            document = _decode_json_object(captured.payload_bytes)
+            if profile is _SPOT_PROFILE and _is_server_shutdown(document):
+                await self._raw(
+                    profile.product,
+                    "server_shutdown",
+                    session_id,
+                    captured,
+                )
+                raise _BinanceServerShutdown("Binance Spot server announced a controlled shutdown.")
+            stream, data = _combined_stream(document, profile.channels)
+        except _BinanceServerShutdown:
+            raise
+        except BinanceDataIntegrityError as error:
+            raw_ordinal = await self._raw(
+                profile.product,
+                "unrouted",
+                session_id,
+                captured,
+            )
+            await self._quality(
+                profile.product,
+                session_id,
+                error.quality_event,
+                "inbound_identity_or_schema",
+                raw_ordinal,
+            )
+            raise
+
+        source_channel = profile.channels[stream]
+        raw_ordinal = await self._raw(
+            profile.product,
+            source_channel,
+            session_id,
+            captured,
+        )
+        try:
+            if profile is _SPOT_PROFILE:
+                if book_state is None:
+                    raise AssertionError("Spot profile must carry book state")
+                await self._handle_spot(
+                    stream,
+                    data,
+                    raw_ordinal,
+                    session_id,
+                    book_state,
+                )
+            else:
+                normalized = _normalize_usdm(stream, data, raw_ordinal)
+                await self._normalized(
+                    profile.product,
+                    "normalized_usdm_context",
+                    session_id,
+                    normalized,
+                )
+        except BinanceDataIntegrityError as error:
+            if not error.reported:
+                await self._quality(
+                    profile.product,
+                    session_id,
+                    error.quality_event,
+                    "inbound_validation",
+                    raw_ordinal,
+                )
+                error.reported = True
+            raise
+
+        self._note_required_stream(profile, stream, book_state)
+        if stream not in observed:
+            observed.add(stream)
+            await self._marker(
+                profile.product,
+                "subscription",
+                session_id,
+                {
+                    "event": "subscription_observed",
+                    "transport_profile": profile.name,
+                    "stream": stream,
+                    "authenticated": False,
+                },
+            )
+        # Yield so sibling drain tasks keep reading while this frame is stored.
+        await asyncio.sleep(0)
 
     def set_live_status_path(self, path: Path, run_id: str) -> None:
         self._live_status_path = path
@@ -2786,6 +2944,17 @@ def _finalize_binance_transport_health(
     return profiles, liveness
 
 
+def _reconnect_microstructure(report: dict[str, object]) -> str:
+    """Minute coverage is not book continuity. Reconnects reset Spot depth sync."""
+
+    reconnects = report.get("reconnects")
+    if type(reconnects) is not int or reconnects < 0:
+        return "unknown"
+    if reconnects == 0:
+        return "stable"
+    return "fragile"
+
+
 def data1f_capture_health(
     *,
     run_id: str,
@@ -2866,6 +3035,11 @@ def data1f_capture_health(
                 "/ 5 min / IP). Pong-class closes plus required-stream starve "
                 f"reconnects fail closed at {BINANCE_PONG_STARVATION_LIMIT} / "
                 f"{BINANCE_PONG_STARVATION_WINDOW_SECONDS:g}s / profile.",
+                "reconnect_microstructure is fragile when reconnects > 0, including "
+                "server close 1008 Pong timeout and required_stream_starved. Those "
+                "reconnects reset Spot depth sync. Minute bins can stay complete "
+                "while the book is fragile. twenty_four_seven stays false. Short "
+                "reconnects do not emit capture_operator_alert.",
             ],
         },
         report,
@@ -2882,6 +3056,7 @@ def data1f_capture_health(
     health["official_connection_attempts_per_5_min_per_ip"] = (
         BINANCE_OFFICIAL_CONNECTION_ATTEMPTS_PER_5_MIN
     )
+    health["reconnect_microstructure"] = _reconnect_microstructure(report)
     preserved_class = report.get("preserved_profile_error_class")
     preserved_message = report.get("preserved_profile_error_message")
     if type(preserved_class) is str and preserved_class:

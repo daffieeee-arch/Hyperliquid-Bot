@@ -286,7 +286,12 @@ When the assigned goal is a 72-hour reconstructable tape (`DURATION_SECONDS=2592
   client Ping timed out as **close_code=1011** on high-frequency `/public`
   bookTicker and caused `usdm_public` reconnect churn. All three profiles
   use `max_queue=1024` so HF frames do not stall the default 16-frame buffer.
-  Gaps remain recorded.
+  The library pauses reads when that queue is full, which misses server PINGs
+  if recv waits on Parquet. Each profile drains into a bounded 16384-frame
+  queue first (`BINANCE_SOCKET_DRAIN_MAX`). Starvation reconnects only when
+  the socket is idle and that queue is empty. A slow append is not starvation.
+  Health `reconnect_microstructure` is `fragile` when reconnects are non-zero;
+  `twenty_four_seven` stays false. Gaps remain recorded.
   Reconnect backoff (cap 24s) plus per-profile jitter stays under the 300
   connections / 5 minutes / IP Spot limit and under the 60s starve bound.
   A profile storm (6 admitted reconnects / 5 min), a three-profile storm
@@ -308,8 +313,9 @@ When the assigned goal is a 72-hour reconstructable tape (`DURATION_SECONDS=2592
   `CAPTURE_ALERT_WEBHOOK_AUTHORIZATION`, bounded retries, HTTP status logged,
   no secret text); no polling cron.
 - **Apply path:** BN process restart is required before this reconnect policy
-  is live. CoS / VPS ops only. Do not restart `bn-capture` from this note.
-  Do not stop `hl-capture` / `bv-capture` / `kr-capture`.
+  and the socket drain are live. CoS / VPS ops only. Do not restart
+  `bn-capture` from this note. Do not stop `hl-capture` / `bv-capture` /
+  `kr-capture`.
 - A Spot depth REST transport error retries the snapshot, then reconnects that
   profile only. If a profile still stops the shared run before the requested
   duration, health is `FAILED` (and one operator alert), not `COMPLETED`.

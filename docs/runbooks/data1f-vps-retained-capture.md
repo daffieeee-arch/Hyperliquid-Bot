@@ -140,7 +140,16 @@ disconnects can ban an IP.
 
 `ping_interval=None` (Binance server ping only; library auto-pong). A leftover
 client keepalive Ping times out as **close_code=1011** on `/public` bookTicker.
-#58 stopped that client ping. Phase A code-restart
+#58 stopped that client ping. `websockets` pauses socket reads once `max_queue`
+(1024) is full, so a server PING is not answered while recv waits on Parquet.
+Each profile drains the socket into a bounded queue (`BINANCE_SOCKET_DRAIN_MAX`,
+16384 frames, about one Spot pong window at ~150 bookTicker frames/s) before
+append. The queue does not drop frames. `required_stream_starved` still
+force-reconnects a profile only when that socket is idle and the drain queue
+is empty. A slow append is not starvation. Health field
+`reconnect_microstructure` is `fragile` when `reconnects > 0` (minute bins can
+still be complete; Spot depth sync resets). `twenty_four_seven` stays false.
+Short reconnects do not emit `capture_operator_alert`. Phase A code-restart
 `20260924t164936z-phase-a-72h-code-restart` still saw **269** reconnects
 (spot ~138, `usdm_public` ~128, `usdm_market` ~3) from server pong misses and
 the 60s starve gate. Minute-bar `gap_frac` stayed ~0. That is not silence.
@@ -167,9 +176,9 @@ POSTs of 2s; 401/403 are not retried; failures stay in the log as
 `http_status` and do not crash the writer. Ochtendbriefing stays separate —
 no polling cron.
 
-**Apply path:** BN process restart is required. CoS / VPS ops only. Do not
-restart `bn-capture` from a cloud agent or from this note. Live HL/BV/KR
-untouched.
+**Apply path:** BN process restart is required before backoff, storm gates,
+and the socket drain are live. CoS / VPS ops only. Do not restart `bn-capture`
+from a cloud agent or from this note. Live HL/BV/KR untouched.
 
 ## How to continue later (there is no resume)
 

@@ -30,6 +30,7 @@ from hyperliquid_bot.binance_public_research import (
     BINANCE_PROCESS_STORM_LIMIT,
     BINANCE_PROFILE_STORM_LIMIT,
     BINANCE_RECONNECT_BACKOFF_CAP_SECONDS,
+    BINANCE_SOCKET_DRAIN_MAX,
     BINANCE_SPOT_DEPTH_URL,
     BINANCE_SPOT_PRODUCT,
     BINANCE_SPOT_WEBSOCKET_URL,
@@ -330,6 +331,15 @@ def test_websocket_connect_disables_client_keepalive_pings() -> None:
     )
     with pytest.raises(ValueError, match="unknown Binance public research WebSocket URL"):
         _websocket_incoming_max_queue("wss://example.invalid/stream")
+
+
+def test_socket_drain_covers_one_spot_pong_window_of_book_ticker() -> None:
+    # Phase A usdm_public bookTicker was ~142 frames/s. Spot must pong within 60s.
+    # The library pauses reads at max_queue=1024 (~7s at that rate), so the drain
+    # in front of Parquet has to hold the pong window before that pause.
+    assert BINANCE_SOCKET_DRAIN_MAX >= 150 * 60
+    assert BINANCE_SOCKET_DRAIN_MAX == 16_384
+    assert BINANCE_WEBSOCKET_HIGH_FREQUENCY_MAX_QUEUE == 1024
 
 
 def test_reconnect_backoff_is_mild_and_stays_under_starve_bound() -> None:
@@ -934,6 +944,230 @@ async def test_mid_run_required_stream_starvation_force_reconnects_profile() -> 
         marker["event"] == "reconnect" and marker.get("reason") == "required_stream_starved"
         for marker in sessions
     )
+
+
+@pytest.mark.asyncio
+async def test_append_backpressure_keeps_sibling_socket_readable() -> None:
+    """Parquet wait must not pause a sibling recv. That pause misses server PINGs."""
+
+    stop_event = asyncio.Event()
+    release = asyncio.Event()
+    blocked = asyncio.Event()
+    public_recvs = 0
+
+    class GatedSink(MemorySink):
+        async def append(self, record: RawResearchRecord) -> None:
+            if (
+                not blocked.is_set()
+                and record.channel == "spot_trade"
+                and record.direction is MessageDirection.INBOUND
+            ):
+                blocked.set()
+                await release.wait()
+            await MemorySink.append(self, record)
+
+    class CountingConnection:
+        async def recv(self) -> str:
+            nonlocal public_recvs
+            public_recvs += 1
+            await asyncio.sleep(0)
+            return _fixture_text("public_usdm_book_ticker_frame.json")
+
+    class RepeatingRequiredConnection:
+        def __init__(self, frames: Sequence[str]) -> None:
+            self._cycle = tuple(frames)
+            self._index = 0
+
+        async def recv(self) -> str:
+            await asyncio.sleep(0)
+            if stop_event.is_set():
+                await asyncio.Event().wait()
+            frame = self._cycle[self._index]
+            self._index = (self._index + 1) % len(self._cycle)
+            return frame
+
+    async def spot_snapshot() -> CapturedApplicationPayload:
+        return _captured("public_spot_depth_snapshot.json", utc_ns=200, monotonic_ns=201)
+
+    async def open_interest() -> CapturedApplicationPayload:
+        return _captured("public_usdm_open_interest.json", utc_ns=202, monotonic_ns=203)
+
+    sink = GatedSink()
+    collector = BinancePublicResearchCollector(
+        sink,
+        config=BinancePublicResearchConfig(
+            reconnect_delay_seconds=0,
+            max_reconnects=0,
+            required_stream_starvation_seconds=30,
+        ),
+        spot_connection_factory=ScriptedConnectionFactory(
+            (
+                RepeatingRequiredConnection(
+                    (
+                        _fixture_text("public_spot_trade_frame.json"),
+                        _fixture_text("public_spot_book_ticker_frame.json"),
+                        _fixture_text("public_spot_depth_frame.json"),
+                    )
+                ),
+            )
+        ),
+        usdm_market_connection_factory=ScriptedConnectionFactory(
+            (
+                RepeatingRequiredConnection(
+                    (
+                        _fixture_text("public_usdm_agg_trade_frame.json"),
+                        _fixture_text("public_usdm_mark_price_frame.json"),
+                    )
+                ),
+            )
+        ),
+        usdm_public_connection_factory=ScriptedConnectionFactory((CountingConnection(),)),
+        spot_depth_fetcher=spot_snapshot,
+        usdm_open_interest_fetcher=open_interest,
+        utc_ns=Counter(1000),
+        monotonic_ns=Counter(2000),
+        session_id_factory=SessionIds(),
+    )
+
+    async def release_after_sibling_recvs() -> None:
+        await asyncio.wait_for(blocked.wait(), timeout=2)
+        baseline = public_recvs
+        deadline = time.monotonic() + 2
+        while public_recvs < baseline + 8:
+            if time.monotonic() > deadline:
+                release.set()
+                stop_event.set()
+                raise AssertionError(
+                    f"usdm_public recv stalled at {public_recvs} while spot append was blocked"
+                )
+            await asyncio.sleep(0.005)
+        release.set()
+        needed = {
+            "spot_trade",
+            "spot_book_ticker",
+            "spot_depth",
+            "spot_depth_snapshot",
+            "usdm_agg_trade",
+            "usdm_mark_price",
+            "usdm_book_ticker",
+            "normalized_spot_depth",
+        }
+        for _ in range(200):
+            channels = {record.channel for record in sink.records}
+            if needed <= channels:
+                break
+            await asyncio.sleep(0.01)
+        else:
+            stop_event.set()
+            raise AssertionError(f"missing channels: {needed - channels}")
+        stop_event.set()
+
+    watcher = asyncio.create_task(release_after_sibling_recvs())
+    try:
+        await collector.capture_for(30, stop_event=stop_event)
+    finally:
+        release.set()
+        stop_event.set()
+        await watcher
+    quality = _local_documents(sink.records, "data_quality")
+    assert not any(marker["event"] == "liveness_error" for marker in quality)
+    assert not any(
+        marker["event"] == "gap" and marker["reason"] == "required_stream_starved"
+        for marker in quality
+    )
+    assert public_recvs >= 8
+
+
+@pytest.mark.asyncio
+async def test_slow_append_does_not_starve_a_socket_that_still_has_frames() -> None:
+    stop_event = asyncio.Event()
+
+    class SlowFirstAppend(MemorySink):
+        def __init__(self) -> None:
+            super().__init__()
+            self._slowed = False
+
+        async def append(self, record: RawResearchRecord) -> None:
+            if not self._slowed and record.direction is MessageDirection.INBOUND:
+                self._slowed = True
+                await asyncio.sleep(0.2)
+            await MemorySink.append(self, record)
+
+    class RepeatingRequiredConnection:
+        def __init__(self, frames: Sequence[str]) -> None:
+            self._cycle = tuple(frames)
+            self._index = 0
+
+        async def recv(self) -> str:
+            await asyncio.sleep(0.01)
+            if stop_event.is_set():
+                await asyncio.Event().wait()
+            frame = self._cycle[self._index]
+            self._index = (self._index + 1) % len(self._cycle)
+            return frame
+
+    async def spot_snapshot() -> CapturedApplicationPayload:
+        return _captured("public_spot_depth_snapshot.json", utc_ns=200, monotonic_ns=201)
+
+    async def open_interest() -> CapturedApplicationPayload:
+        return _captured("public_usdm_open_interest.json", utc_ns=202, monotonic_ns=203)
+
+    sink = SlowFirstAppend()
+    collector = BinancePublicResearchCollector(
+        sink,
+        config=BinancePublicResearchConfig(
+            reconnect_delay_seconds=0,
+            max_reconnects=0,
+            required_stream_starvation_seconds=0.05,
+        ),
+        spot_connection_factory=ScriptedConnectionFactory(
+            (
+                RepeatingRequiredConnection(
+                    (
+                        _fixture_text("public_spot_trade_frame.json"),
+                        _fixture_text("public_spot_book_ticker_frame.json"),
+                        _fixture_text("public_spot_depth_frame.json"),
+                    )
+                ),
+            )
+        ),
+        usdm_market_connection_factory=ScriptedConnectionFactory(
+            (
+                RepeatingRequiredConnection(
+                    (
+                        _fixture_text("public_usdm_agg_trade_frame.json"),
+                        _fixture_text("public_usdm_mark_price_frame.json"),
+                    )
+                ),
+            )
+        ),
+        usdm_public_connection_factory=ScriptedConnectionFactory(
+            (RepeatingRequiredConnection((_fixture_text("public_usdm_book_ticker_frame.json"),)),)
+        ),
+        spot_depth_fetcher=spot_snapshot,
+        usdm_open_interest_fetcher=open_interest,
+        utc_ns=Counter(1000),
+        monotonic_ns=Counter(2000),
+        session_id_factory=SessionIds(),
+    )
+
+    async def request_stop() -> None:
+        await asyncio.sleep(0.45)
+        stop_event.set()
+
+    stopper = asyncio.create_task(request_stop())
+    try:
+        await collector.capture_for(10, stop_event=stop_event)
+    finally:
+        stopper.cancel()
+    quality = _local_documents(sink.records, "data_quality")
+    assert not any(marker["event"] == "liveness_error" for marker in quality)
+    assert not any(
+        marker["event"] == "gap" and marker["reason"] == "required_stream_starved"
+        for marker in quality
+    )
+    assert any(record.channel == "spot_trade" for record in sink.records)
+    assert any(record.channel == "usdm_book_ticker" for record in sink.records)
 
 
 @pytest.mark.asyncio
@@ -2017,6 +2251,7 @@ def test_data1f_claim_and_health_are_create_only_and_not_twenty_four_seven() -> 
     assert claim["resume_policy"] == "never resume or overwrite an existing DATA-1F run directory"
     assert claim["retained"] is True
     assert health["twenty_four_seven"] is False
+    assert health["reconnect_microstructure"] == "stable"
     assert health["credentialless"] is True
     assert health["elapsed_seconds"] == 86_400.0
     assert health["duration_seconds"] == 86_400.0
@@ -2029,6 +2264,60 @@ def test_data1f_claim_and_health_are_create_only_and_not_twenty_four_seven() -> 
     assert any("liveness_error" in str(item) for item in limitations)
     assert any("profile_transport_error" in str(item) for item in limitations)
     assert any("FAILED, not COMPLETED" in str(item) for item in limitations)
+    assert any("reconnect_microstructure" in str(item) for item in limitations)
+    fragile = data1f_capture_health(
+        run_id="sample-run",
+        duration_seconds=86_400,
+        status="COMPLETED",
+        report={
+            "events": 10,
+            "payload_bytes": 10,
+            "parquet_files": 1,
+            "parquet_bytes": 10,
+            "gaps": 0,
+            "reconnects": 269,
+            "elapsed_seconds": 86_400.0,
+            "integrity_events": 0,
+        },
+    )
+    assert fragile["status"] == "COMPLETED"
+    assert fragile["twenty_four_seven"] is False
+    assert fragile["reconnect_microstructure"] == "fragile"
+    assert fragile["gaps"] == 0
+    failed = data1f_capture_health(
+        run_id="sample-run",
+        duration_seconds=86_400,
+        status="FAILED",
+        report={
+            "events": 10,
+            "payload_bytes": 10,
+            "parquet_files": 1,
+            "parquet_bytes": 10,
+            "gaps": 1,
+            "reconnects": 3,
+            "elapsed_seconds": 12.0,
+            "integrity_events": 1,
+        },
+    )
+    assert failed["status"] == "FAILED"
+    assert failed["twenty_four_seven"] is False
+    assert failed["reconnect_microstructure"] == "fragile"
+    unknown = data1f_capture_health(
+        run_id="sample-run",
+        duration_seconds=60,
+        status="OPERATOR_STOP",
+        report={
+            "events": 0,
+            "payload_bytes": 0,
+            "parquet_files": 0,
+            "parquet_bytes": 0,
+            "gaps": 0,
+            "elapsed_seconds": 1.0,
+            "integrity_events": 0,
+        },
+    )
+    assert unknown["status"] == "OPERATOR_STOP"
+    assert unknown["reconnect_microstructure"] == "unknown"
     profiles = health["transport_profiles"]
     assert isinstance(profiles, list)
     assert profiles[0]["transport_profile"] == "spot"

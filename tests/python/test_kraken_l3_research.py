@@ -1960,10 +1960,21 @@ async def test_reconstructable_public_capture_writes_the_path_contract(tmp_path:
     health = json.loads(paths.capture_health_path.read_text(encoding="utf-8"))
     assert claim["retained"] is True
     assert claim["authenticated_l3"] is False
+    assert isinstance(claim["code_version"], str) and claim["code_version"]
+    assert isinstance(claim["config_identity"], str) and len(str(claim["config_identity"])) == 64
     assert claim["credentialless"] is True
     assert claim["l2_depth"] == DEFAULT_L2_DEPTH
     assert claim["l3_depth"] is None
     assert claim["checksum_price_levels"] == CHECKSUM_PRICE_LEVELS
+    live = json.loads((paths.run_dir / "capture-live.json").read_text(encoding="utf-8"))
+    assert live["schema"] == "capture-live-v1"
+    assert live["run_id"] == "sample-run"
+    assert live["definitive_outage"] is None
+    feeds = {item["name"]: item for item in live["feeds"]}
+    assert set(feeds) == {"book", "trade"}
+    assert feeds["book"]["state"] == "fresh"
+    assert feeds["book"]["role"] == "required"
+    assert feeds["trade"]["state"] == "unknown"
     assert health["status"] == "COMPLETED"
     with pytest.raises(FileExistsError, match="refuses to reuse"):
         await run_reconstructable_capture(
@@ -2008,6 +2019,8 @@ def test_data1b_claim_and_health_are_create_only_and_not_twenty_four_seven() -> 
     assert claim["feed"] == "kraken-public-btc-usd-book-trades"
     assert claim["resume_policy"] == "never resume or overwrite an existing DATA-1B run directory"
     assert claim["retained"] is True
+    assert isinstance(claim["code_version"], str) and claim["code_version"]
+    assert isinstance(claim["config_identity"], str) and len(str(claim["config_identity"])) == 64
     assert claim["l2_depth"] == DEFAULT_L2_DEPTH
     assert claim["l3_depth"] is None
     assert claim["checksum_price_levels"] == CHECKSUM_PRICE_LEVELS
@@ -2020,6 +2033,15 @@ def test_data1b_claim_and_health_are_create_only_and_not_twenty_four_seven() -> 
         "EUR microstructure is Bitvavo" in item for item in cast(list[str], health["limitations"])
     )
     assert any("no silent EUR fallback" in item for item in cast(list[str], health["limitations"]))
+    l3_claim = data1b_capture_claim(
+        run_id="sample-run",
+        duration_seconds=86_400,
+        paths=paths,
+        include_l3=True,
+    )
+    assert l3_claim["config_identity"] != claim["config_identity"]
+    assert l3_claim["authenticated_l3"] is True
+    assert "KRAKEN_WS_API" not in json.dumps(l3_claim)
 
 
 def test_data1b_product_identity_is_usd_and_fails_closed_on_eur_aliases() -> None:
@@ -2101,3 +2123,82 @@ def test_cli_modes_are_mutually_exclusive(tmp_path: Path) -> None:
     )
     assert overridden.l2_depth == 10
     assert overridden.l3_depth == 10
+
+
+_CAPTURE_LIVE_CONTRACT_DIR = Path(__file__).parents[1] / "fixtures" / "capture-live"
+_CONTRACT_RUN_ID = "20260924t120000z-publisher-contract"
+
+
+class _IdleTokenProvider:
+    async def get_token(self) -> KrakenWebSocketToken:
+        raise AssertionError("live status must not request a token")
+
+
+def _contract_collector(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    token_provider: _IdleTokenProvider | None = None,
+) -> KrakenL3ResearchCollector:
+    monkeypatch.setattr(
+        "hyperliquid_bot.kraken_l3_research.utc_now_text",
+        lambda: "2026-09-24T12:00:00Z",
+    )
+    monkeypatch.setattr(
+        "hyperliquid_bot.capture_live_status.utc_now_text",
+        lambda: "2026-09-24T12:00:10Z",
+    )
+    collector = KrakenL3ResearchCollector(MemorySink(), token_provider)
+    collector.set_live_status_path(tmp_path / "capture-live.json", _CONTRACT_RUN_ID)
+    return collector
+
+
+def _read_live(path: Path) -> dict[str, object]:
+    return cast(dict[str, object], json.loads(path.read_text(encoding="utf-8")))
+
+
+def test_publisher_live_documents_match_cockpit_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real publish_live_status documents are the cockpit contract fixtures."""
+
+    cases = {
+        "kraken-unknown.json": (),
+        "kraken-partial.json": ("book",),
+        "kraken-recovered.json": ("book", "trade"),
+    }
+    for name, notes in cases.items():
+        root = tmp_path / name
+        collector = _contract_collector(root, monkeypatch)
+        for feed in notes:
+            collector._note_required_market(feed)
+        collector.publish_live_status()
+        assert _read_live(root / "capture-live.json") == _read_live(
+            _CAPTURE_LIVE_CONTRACT_DIR / name
+        )
+
+    root = tmp_path / "recovering"
+    collector = _contract_collector(root, monkeypatch)
+    collector._note_required_market("book")
+    collector._note_required_market("trade")
+    receipt = collector._feed_last_market_utc["book"]
+    collector._mark_named_feeds_recovering(("book", "trade"))
+    assert collector._feed_last_market_utc["book"] == receipt
+    assert collector._feed_last_market_utc["trade"] == receipt
+    collector.publish_live_status()
+    assert _read_live(root / "capture-live.json") == _read_live(
+        _CAPTURE_LIVE_CONTRACT_DIR / "kraken-recovering.json"
+    )
+
+    optional_root = tmp_path / "optional"
+    optional = _contract_collector(optional_root, monkeypatch, token_provider=_IdleTokenProvider())
+    optional._note_required_market("book")
+    optional._note_required_market("trade")
+    optional.publish_live_status()
+    document = _read_live(optional_root / "capture-live.json")
+    assert document == _read_live(_CAPTURE_LIVE_CONTRACT_DIR / "kraken-optional-l3-unknown.json")
+    feeds = cast(list[dict[str, object]], document["feeds"])
+    level3 = next(item for item in feeds if item["name"] == "level3")
+    assert level3["role"] == "optional"
+    assert level3["state"] == "unknown"

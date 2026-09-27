@@ -788,3 +788,160 @@ describe("cockpit reads Binance publisher capture-live documents", () => {
     expect(binance.reason).toBe(LIVE_STATUS_STALLED_REASON);
   });
 });
+
+type VenuePublisherCase = {
+  label: string;
+  id: "bitvavo" | "bitvavo-std" | "kraken";
+  envKey: "DATA1E_RUN_ID" | "DATA1D_RUN_ID" | "DATA1B_RUN_ID";
+  relative: readonly string[];
+  schema: string;
+  pathContract: string;
+  prefix: string;
+  venue: string;
+  product: string;
+};
+
+const venuePublisherCases: VenuePublisherCase[] = [
+  {
+    label: "Bitvavo Pro",
+    id: "bitvavo",
+    envKey: "DATA1E_RUN_ID",
+    relative: ["data-1e", "bitvavo", "BTC-EUR"],
+    schema: DATA1E_CLAIM_SCHEMA,
+    pathContract: DATA1E_PATH_CONTRACT_ID,
+    prefix: "bitvavo-pro",
+    venue: "bitvavo",
+    product: "BTC-EUR",
+  },
+  {
+    label: "Bitvavo Standard",
+    id: "bitvavo-std",
+    envKey: "DATA1D_RUN_ID",
+    relative: ["data-1d", "bitvavo", "BTC-EUR"],
+    schema: DATA1D_CLAIM_SCHEMA,
+    pathContract: DATA1D_PATH_CONTRACT_ID,
+    prefix: "bitvavo-std",
+    venue: "bitvavo",
+    product: "BTC-EUR",
+  },
+  {
+    label: "Kraken",
+    id: "kraken",
+    envKey: "DATA1B_RUN_ID",
+    relative: ["data-1b", "kraken", "BTC-USD"],
+    schema: DATA1B_CLAIM_SCHEMA,
+    pathContract: DATA1B_PATH_CONTRACT_ID,
+    prefix: "kraken",
+    venue: "kraken",
+    product: "BTC-USD",
+  },
+];
+
+function loadVenuePublisher(venue: VenuePublisherCase, fixtureName: string, mtimeUtc: string) {
+  const artifactRoot = mkdtempSync(join(tmpdir(), "publisher-live-"));
+  const runDir = join(artifactRoot, ...venue.relative, publisherContractRunId);
+  writeClaim(runDir, venue.schema, venue.pathContract, publisherContractRunId, {
+    venue: venue.venue,
+    product: venue.product,
+  });
+  const livePath = join(runDir, "capture-live.json");
+  writeFileSync(livePath, readFileSync(join(publisherContractDir, fixtureName)));
+  utimesSync(livePath, new Date(mtimeUtc), new Date(mtimeUtc));
+  const strip = loadVenueCaptureStrip(
+    {
+      TRADING_MODE: "PAPER",
+      ARTIFACT_ROOT: artifactRoot,
+      [venue.envKey]: publisherContractRunId,
+    },
+    repoRoot,
+    {},
+    () => publisherObservedAt,
+  );
+  const chip = strip.venues.find((item) => item.id === venue.id);
+  if (chip === undefined) {
+    throw new Error(`${venue.id} chip missing`);
+  }
+  return chip;
+}
+
+describe("cockpit reads Bitvavo and Kraken publisher capture-live documents", () => {
+  it.each(venuePublisherCases)(
+    "$label keeps an unknown publisher document off RUNNING",
+    (venue) => {
+      const chip = loadVenuePublisher(
+        venue,
+        `${venue.prefix}-unknown.json`,
+        "2026-09-24T12:00:10.000Z",
+      );
+      expect(chip.status).toBe("UNKNOWN");
+      expect(chip.live).toBe(false);
+    },
+  );
+
+  it.each(venuePublisherCases)(
+    "$label keeps one fresh required feed from proving the venue is RUNNING",
+    (venue) => {
+      const chip = loadVenuePublisher(
+        venue,
+        `${venue.prefix}-partial.json`,
+        "2026-09-24T12:00:10.000Z",
+      );
+      expect(chip.status).toBe("UNKNOWN");
+      expect(chip.live).toBe(false);
+      expect(chip.status_detail).toMatch(/not recovered/);
+    },
+  );
+
+  it.each(venuePublisherCases)("$label keeps a recovering receipt off RUNNING", (venue) => {
+    const chip = loadVenuePublisher(
+      venue,
+      `${venue.prefix}-recovering.json`,
+      "2026-09-24T12:00:10.000Z",
+    );
+    expect(chip.status).toBe("STALE");
+    expect(chip.live).toBe(false);
+    expect(chip.status_detail).toBe("STALE (reconnecting)");
+  });
+
+  it.each(venuePublisherCases)(
+    "$label shows RUNNING only when required feeds are fresh",
+    (venue) => {
+      const chip = loadVenuePublisher(
+        venue,
+        `${venue.prefix}-recovered.json`,
+        "2026-09-24T12:00:10.000Z",
+      );
+      expect(chip.status).toBe("RUNNING");
+      expect(chip.live).toBe(true);
+      expect(chip.tone).toBe("ok");
+    },
+  );
+
+  it.each(venuePublisherCases)(
+    "$label marks a stalled publisher file even when embedded feeds are fresh",
+    (venue) => {
+      const chip = loadVenuePublisher(
+        venue,
+        `${venue.prefix}-recovered.json`,
+        "2026-09-24T11:00:00.000Z",
+      );
+      expect(chip.status).toBe("STALE");
+      expect(chip.live).toBe(false);
+      expect(chip.reason).toBe(LIVE_STATUS_STALLED_REASON);
+    },
+  );
+
+  it("keeps optional Kraken L3 unknown from blocking a fresh public book and trade", () => {
+    const kraken = venuePublisherCases.find((venue) => venue.id === "kraken");
+    if (kraken === undefined) {
+      throw new Error("kraken publisher case missing");
+    }
+    const chip = loadVenuePublisher(
+      kraken,
+      "kraken-optional-l3-unknown.json",
+      "2026-09-24T12:00:10.000Z",
+    );
+    expect(chip.status).toBe("RUNNING");
+    expect(chip.live).toBe(true);
+  });
+});

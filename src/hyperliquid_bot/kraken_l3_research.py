@@ -40,6 +40,12 @@ import duckdb
 from websockets.asyncio.client import connect
 from websockets.exceptions import PayloadTooBig, WebSocketException
 
+from .capture_live_status import (
+    CAPTURE_LIVE_NAME,
+    stamp_start_metadata,
+    utc_now_text,
+    write_capture_live,
+)
 from .capture_observability import (
     DISCONNECT_LOG_SUFFIX,
     add_transport_counts,
@@ -110,6 +116,9 @@ KRAKEN_WEBSOCKET_CLIENT_PING_INTERVAL: Final[float | None] = None
 KRAKEN_WEBSOCKET_CLIENT_PING_TIMEOUT: Final[float | None] = None
 KRAKEN_APP_PING_INTERVAL_SECONDS: Final = 50.0
 KRAKEN_APP_PING_TEXT: Final = '{"method":"ping"}'
+# Heartbeat and application ping keep the socket up. They are not market-data
+# proof. Cockpit silence uses this bound the same way DATA-1A uses 90s.
+KRAKEN_MARKET_DATA_STALE_SECONDS: Final = 90.0
 KRAKEN_WS_API_KEY_ENV: Final = "KRAKEN_WS_API_KEY"
 KRAKEN_WS_API_SECRET_ENV: Final = "KRAKEN_WS_API_SECRET"
 KRAKEN_L3_OPTIONAL_ENV: Final = (KRAKEN_WS_API_KEY_ENV, KRAKEN_WS_API_SECRET_ENV)
@@ -695,6 +704,10 @@ class KrakenL3ResearchCollector:
         )
         self._message_ordinal = 0
         self._append_lock = asyncio.Lock()
+        self._live_status_path: Path | None = None
+        self._live_run_id: str | None = None
+        self._feed_last_market_utc: dict[str, str | None] = {}
+        self._feed_state: dict[str, str] = {}
 
     async def capture_for(
         self,
@@ -714,15 +727,21 @@ class KrakenL3ResearchCollector:
             self._run_public_stream(capture_stop),
             name="kraken-public-research-stream",
         )
+        live_stop = asyncio.Event()
+        live_task = asyncio.create_task(
+            self._publish_live_until(live_stop),
+            name="kraken-live-status",
+        )
         if self._token_provider is None:
             try:
                 await public_task
             finally:
                 capture_stop.set()
+                live_stop.set()
                 timer.cancel()
                 if not public_task.done():
                     public_task.cancel()
-                await asyncio.gather(timer, public_task, return_exceptions=True)
+                await asyncio.gather(timer, public_task, live_task, return_exceptions=True)
             return
         l3_task = asyncio.create_task(
             self._run_l3_stream(capture_stop),
@@ -746,15 +765,76 @@ class KrakenL3ResearchCollector:
             await asyncio.gather(*pending)
         finally:
             capture_stop.set()
+            live_stop.set()
             timer.cancel()
             for task in (public_task, l3_task):
                 if not task.done():
                     task.cancel()
-            await asyncio.gather(timer, public_task, l3_task, return_exceptions=True)
+            await asyncio.gather(timer, public_task, l3_task, live_task, return_exceptions=True)
 
     async def _stop_after(self, stop_event: asyncio.Event, duration_seconds: float) -> None:
         await asyncio.sleep(duration_seconds)
         stop_event.set()
+
+    def set_live_status_path(self, path: Path, run_id: str) -> None:
+        self._live_status_path = path
+        self._live_run_id = run_id
+
+    def _live_feed_specs(self) -> tuple[tuple[str, str], ...]:
+        public = (("book", "required"), ("trade", "required"))
+        if self._token_provider is None:
+            return public
+        return (*public, ("level3", "optional"))
+
+    def _note_required_market(self, name: str) -> None:
+        self._feed_last_market_utc[name] = utc_now_text()
+        self._feed_state[name] = "fresh"
+
+    def _mark_named_feeds_recovering(self, names: tuple[str, ...]) -> None:
+        for name in names:
+            self._feed_state[name] = "recovering"
+
+    def publish_live_status(self) -> None:
+        path = self._live_status_path
+        run_id = self._live_run_id
+        if path is None or run_id is None:
+            return
+        pending: int | None = None
+        published: int | None = None
+        if isinstance(self._sink, ParquetResearchWriter):
+            pending = self._sink.pending_record_count
+            published = self._sink.published_part_count
+        feeds: list[dict[str, object]] = []
+        for name, role in self._live_feed_specs():
+            feeds.append(
+                {
+                    "name": name,
+                    "role": role,
+                    "state": self._feed_state.get(name, "unknown"),
+                    "last_market_utc": self._feed_last_market_utc.get(name),
+                    "silence_bound_seconds": float(KRAKEN_MARKET_DATA_STALE_SECONDS),
+                }
+            )
+        try:
+            write_capture_live(
+                path,
+                run_id=run_id,
+                writer_pending_records=pending,
+                writer_published_parts=published,
+                feeds=feeds,
+                definitive_outage=None,
+            )
+        except OSError:
+            capture_logger().info("kraken live_status_write_failed")
+
+    async def _publish_live_until(self, stop_event: asyncio.Event) -> None:
+        while not stop_event.is_set():
+            self.publish_live_status()
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=5)
+            except TimeoutError:
+                continue
+        self.publish_live_status()
 
     async def _run_public_stream(self, stop_event: asyncio.Event) -> None:
         previous_session_id: str | None = None
@@ -801,6 +881,7 @@ class KrakenL3ResearchCollector:
                 if not connected:
                     await self._connection_failed(session_id, "public", previous_session_id)
                 else:
+                    self._mark_named_feeds_recovering(("book", "trade"))
                     await self._disconnected(session_id, "public", disconnect_fields)
                 previous_session_id = session_id
             except Exception:
@@ -919,6 +1000,7 @@ class KrakenL3ResearchCollector:
                 if not connected:
                     await self._connection_failed(session_id, "l3", previous_session_id)
                 else:
+                    self._mark_named_feeds_recovering(("level3",))
                     await self._disconnected(session_id, "l3", disconnect_fields)
                 previous_session_id = session_id
             except Exception:
@@ -999,6 +1081,12 @@ class KrakenL3ResearchCollector:
                     await self._integrity_failure(session_id, "public", raw_ordinal, error)
                     raise
                 await self._append_normalized(session_id, channel, normalized)
+                # Heartbeat, ping, and status never reach this branch.
+                # A book update before its snapshot is an integrity failure.
+                if channel == "trade":
+                    self._note_required_market("trade")
+                elif channel == "book" and book_state.has_snapshot:
+                    self._note_required_market("book")
         finally:
             ping_task.cancel()
             await asyncio.gather(ping_task, return_exceptions=True)
@@ -1078,6 +1166,8 @@ class KrakenL3ResearchCollector:
                     await self._integrity_failure(session_id, "l3", raw_ordinal, error)
                     raise
                 await self._append_normalized(session_id, "level3", normalized)
+                if book_state.has_snapshot:
+                    self._note_required_market("level3")
         finally:
             ping_task.cancel()
             await asyncio.gather(ping_task, return_exceptions=True)
@@ -1891,6 +1981,8 @@ async def run_bounded_capture(
     stop_event: asyncio.Event | None = None,
     config: KrakenL3ResearchConfig | None = None,
     collector_factory: Callable[[RawResearchSink], KrakenL3ResearchCollector] | None = None,
+    live_status_path: Path | None = None,
+    live_run_id: str | None = None,
 ) -> dict[str, object]:
     """Run public (and optional L3) capture, close Parquet, and build the catalog."""
 
@@ -1901,6 +1993,8 @@ async def run_bounded_capture(
         if collector_factory is not None
         else KrakenL3ResearchCollector(writer, token_provider, config=config)
     )
+    if live_status_path is not None and live_run_id is not None:
+        active.set_live_status_path(live_status_path, live_run_id)
     try:
         await active.capture_for(duration, stop_event=stop_event)
     finally:
@@ -1921,7 +2015,7 @@ def data1b_capture_claim(
 
     duration = _require_bounded_duration(duration_seconds)
     depths = config if config is not None else KrakenL3ResearchConfig()
-    return {
+    claim: dict[str, object] = {
         "schema": DATA1B_CLAIM_SCHEMA,
         "state": "STARTED_FAIL_CLOSED",
         "path_contract": DATA1B_PATH_CONTRACT_ID,
@@ -1951,6 +2045,19 @@ def data1b_capture_claim(
         "raw_dir": paths.raw_dir.as_posix(),
         "database_path": paths.database_path.as_posix(),
     }
+    return stamp_start_metadata(
+        claim,
+        config_fields={
+            "feed": claim["feed"],
+            "public_websocket_url": claim["public_websocket_url"],
+            "l3_websocket_url": claim["l3_websocket_url"],
+            "authenticated_l3": claim["authenticated_l3"],
+            "l2_depth": claim["l2_depth"],
+            "l3_depth": claim["l3_depth"],
+            "required_channels": ["book", "trade"],
+            "market_data_stale_seconds": KRAKEN_MARKET_DATA_STALE_SECONDS,
+        },
+    )
 
 
 def data1b_capture_health(
@@ -2075,6 +2182,8 @@ async def run_reconstructable_capture(
             stop_event=stop_event,
             config=config,
             collector_factory=collector_factory,
+            live_status_path=paths.run_dir / CAPTURE_LIVE_NAME,
+            live_run_id=run_id,
         )
         if operator_stop is not None and operator_stop():
             status = "OPERATOR_STOP"

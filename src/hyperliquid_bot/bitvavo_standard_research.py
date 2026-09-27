@@ -30,6 +30,12 @@ import duckdb
 from websockets.asyncio.client import connect
 from websockets.exceptions import PayloadTooBig, WebSocketException
 
+from .capture_live_status import (
+    CAPTURE_LIVE_NAME,
+    stamp_start_metadata,
+    utc_now_text,
+    write_capture_live,
+)
 from .capture_observability import (
     add_transport_counts,
     attach_observability_health,
@@ -369,6 +375,10 @@ class BitvavoStandardResearchCollector:
         self._message_ordinal = 0
         self._append_lock = asyncio.Lock()
         self._sink_failed = False
+        self._live_status_path: Path | None = None
+        self._live_run_id: str | None = None
+        self._feed_last_market_utc: dict[str, str | None] = {}
+        self._feed_state: dict[str, str] = {}
 
     async def capture_for(
         self,
@@ -388,18 +398,85 @@ class BitvavoStandardResearchCollector:
             self._run_stream(capture_stop),
             name="bitvavo-standard-research-stream",
         )
+        live_stop = asyncio.Event()
+        live_task = asyncio.create_task(
+            self._publish_live_until(live_stop),
+            name="bitvavo-standard-live-status",
+        )
         try:
             await stream
         finally:
             capture_stop.set()
+            live_stop.set()
             timer.cancel()
             if not stream.done():
                 stream.cancel()
-            await asyncio.gather(timer, stream, return_exceptions=True)
+            await asyncio.gather(timer, stream, live_task, return_exceptions=True)
 
     async def _stop_after(self, stop_event: asyncio.Event, duration_seconds: float) -> None:
         await asyncio.sleep(duration_seconds)
         stop_event.set()
+
+    def set_live_status_path(self, path: Path, run_id: str) -> None:
+        self._live_status_path = path
+        self._live_run_id = run_id
+
+    def _required_live_feeds(self) -> tuple[str, ...]:
+        # Ticker is subscribed, but only book and trades have an idle bound.
+        # A ticker frame must not prove those feeds recovered.
+        return ("book", "trades")
+
+    def _note_required_market(self, name: str) -> None:
+        self._feed_last_market_utc[name] = utc_now_text()
+        self._feed_state[name] = "fresh"
+
+    def _mark_feeds_recovering(self) -> None:
+        for name in self._required_live_feeds():
+            self._feed_state[name] = "recovering"
+
+    def publish_live_status(self) -> None:
+        path = self._live_status_path
+        run_id = self._live_run_id
+        if path is None or run_id is None:
+            return
+        pending: int | None = None
+        published: int | None = None
+        if isinstance(self._sink, ParquetResearchWriter):
+            pending = self._sink.pending_record_count
+            published = self._sink.published_part_count
+        feeds: list[dict[str, object]] = []
+        for name in self._required_live_feeds():
+            feeds.append(
+                {
+                    "name": name,
+                    "role": "required",
+                    "state": self._feed_state.get(name, "unknown"),
+                    "last_market_utc": self._feed_last_market_utc.get(name),
+                    "silence_bound_seconds": float(
+                        BITVAVO_STANDARD_APPLICATION_IDLE_RECONNECT_SECONDS
+                    ),
+                }
+            )
+        try:
+            write_capture_live(
+                path,
+                run_id=run_id,
+                writer_pending_records=pending,
+                writer_published_parts=published,
+                feeds=feeds,
+                definitive_outage=None,
+            )
+        except OSError:
+            capture_logger().info("bitvavo_standard live_status_write_failed")
+
+    async def _publish_live_until(self, stop_event: asyncio.Event) -> None:
+        while not stop_event.is_set():
+            self.publish_live_status()
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=5)
+            except TimeoutError:
+                continue
+        self.publish_live_status()
 
     async def _run_stream(self, stop_event: asyncio.Event) -> None:
         previous_session_id: str | None = None
@@ -438,6 +515,8 @@ class BitvavoStandardResearchCollector:
             except (BitvavoSinkError, BitvavoDataIntegrityError):
                 raise
             except (WebSocketException, OSError) as error:
+                if connected:
+                    self._mark_feeds_recovering()
                 idle_reconnect_reason = _standard_idle_reconnect_reason(error)
                 del error
                 if not connected:
@@ -771,10 +850,15 @@ class BitvavoStandardResearchCollector:
                     normalized,
                 )
 
+            # Ticker and candles must not refresh book or trades.
+            # A book frame before the depth snapshot is buffered, not recovered.
             if channel in {"book", "book_snapshot"}:
                 last_book_ns = self._monotonic_ns()
+                if book_state.has_snapshot:
+                    self._note_required_market("book")
             elif channel == "trades":
                 last_trade_ns = self._monotonic_ns()
+                self._note_required_market("trades")
             if subscriptions_active_marked and book_state.has_snapshot and not session_healthy:
                 session_healthy = True
                 recovered_ns = self._monotonic_ns()
@@ -1697,6 +1781,8 @@ async def run_bounded_capture(
     collector_factory: Callable[[RawResearchSink], BitvavoStandardResearchCollector] | None = None,
     include_candles: bool = False,
     candle_interval: str = DEFAULT_CANDLE_INTERVAL,
+    live_status_path: Path | None = None,
+    live_run_id: str | None = None,
 ) -> dict[str, object]:
     """Run the public Standard capture, close Parquet, and build the DuckDB catalog."""
 
@@ -1714,6 +1800,8 @@ async def run_bounded_capture(
             ),
         )
     )
+    if live_status_path is not None and live_run_id is not None:
+        active.set_live_status_path(live_status_path, live_run_id)
     try:
         await active.capture_for(duration, stop_event=stop_event)
     finally:
@@ -1732,7 +1820,7 @@ def data1d_capture_claim(
 ) -> dict[str, object]:
     duration = _require_bounded_duration(duration_seconds)
     channels = list(standard_subscription_channels(include_candles=include_candles))
-    return {
+    claim: dict[str, object] = {
         "schema": DATA1D_CLAIM_SCHEMA,
         "state": "STARTED_FAIL_CLOSED",
         "run_id": run_id,
@@ -1762,6 +1850,19 @@ def data1d_capture_claim(
         "database_path": str(paths.database_path),
         "twenty_four_seven": False,
     }
+    return stamp_start_metadata(
+        claim,
+        config_fields={
+            "feed": claim["feed"],
+            "websocket_url": claim["websocket_url"],
+            "channels": claim["channels"],
+            "include_candles": claim["include_candles"],
+            "candle_interval": claim["candle_interval"],
+            "application_idle_reconnect_seconds": (
+                BITVAVO_STANDARD_APPLICATION_IDLE_RECONNECT_SECONDS
+            ),
+        },
+    )
 
 
 def data1d_capture_health(
@@ -1887,6 +1988,8 @@ async def run_reconstructable_capture(
             collector_factory=collector_factory,
             include_candles=include_candles,
             candle_interval=candle_interval,
+            live_status_path=paths.run_dir / CAPTURE_LIVE_NAME,
+            live_run_id=run_id,
         )
         if operator_stop is not None and operator_stop():
             status = "OPERATOR_STOP"

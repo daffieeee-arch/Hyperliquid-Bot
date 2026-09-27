@@ -33,6 +33,12 @@ import duckdb
 from websockets.asyncio.client import connect
 from websockets.exceptions import PayloadTooBig, WebSocketException
 
+from .capture_live_status import (
+    CAPTURE_LIVE_NAME,
+    stamp_start_metadata,
+    utc_now_text,
+    write_capture_live,
+)
 from .capture_observability import (
     DISCONNECT_LOG_SUFFIX,
     add_transport_counts,
@@ -502,6 +508,10 @@ class BitvavoMdProResearchCollector:
         self._message_ordinal = 0
         self._append_lock = asyncio.Lock()
         self._sink_failed = False
+        self._live_status_path: Path | None = None
+        self._live_run_id: str | None = None
+        self._feed_last_market_utc: dict[str, str | None] = {}
+        self._feed_state: dict[str, str] = {}
 
     async def capture_for(
         self,
@@ -521,18 +531,83 @@ class BitvavoMdProResearchCollector:
             self._run_stream(capture_stop),
             name="bitvavo-mdpro-research-stream",
         )
+        live_stop = asyncio.Event()
+        live_task = asyncio.create_task(
+            self._publish_live_until(live_stop),
+            name="bitvavo-mdpro-live-status",
+        )
         try:
             await stream
         finally:
             capture_stop.set()
+            live_stop.set()
             timer.cancel()
             if not stream.done():
                 stream.cancel()
-            await asyncio.gather(timer, stream, return_exceptions=True)
+            await asyncio.gather(timer, stream, live_task, return_exceptions=True)
 
     async def _stop_after(self, stop_event: asyncio.Event, duration_seconds: float) -> None:
         await asyncio.sleep(duration_seconds)
         stop_event.set()
+
+    def set_live_status_path(self, path: Path, run_id: str) -> None:
+        self._live_status_path = path
+        self._live_run_id = run_id
+
+    def _required_live_feeds(self) -> tuple[str, ...]:
+        return BITVAVO_MDPRO_REQUIRED_CHANNELS
+
+    def _note_required_market(self, name: str) -> None:
+        self._feed_last_market_utc[name] = utc_now_text()
+        self._feed_state[name] = "fresh"
+
+    def _mark_feeds_recovering(self) -> None:
+        for name in self._required_live_feeds():
+            self._feed_state[name] = "recovering"
+
+    def publish_live_status(self) -> None:
+        path = self._live_status_path
+        run_id = self._live_run_id
+        if path is None or run_id is None:
+            return
+        pending: int | None = None
+        published: int | None = None
+        if isinstance(self._sink, ParquetResearchWriter):
+            pending = self._sink.pending_record_count
+            published = self._sink.published_part_count
+        feeds: list[dict[str, object]] = []
+        for name in self._required_live_feeds():
+            feeds.append(
+                {
+                    "name": name,
+                    "role": "required",
+                    "state": self._feed_state.get(name, "unknown"),
+                    "last_market_utc": self._feed_last_market_utc.get(name),
+                    "silence_bound_seconds": float(
+                        BITVAVO_MDPRO_APPLICATION_IDLE_RECONNECT_SECONDS
+                    ),
+                }
+            )
+        try:
+            write_capture_live(
+                path,
+                run_id=run_id,
+                writer_pending_records=pending,
+                writer_published_parts=published,
+                feeds=feeds,
+                definitive_outage=None,
+            )
+        except OSError:
+            capture_logger().info("bitvavo_mdpro live_status_write_failed")
+
+    async def _publish_live_until(self, stop_event: asyncio.Event) -> None:
+        while not stop_event.is_set():
+            self.publish_live_status()
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=5)
+            except TimeoutError:
+                continue
+        self.publish_live_status()
 
     async def _run_stream(self, stop_event: asyncio.Event) -> None:
         previous_session_id: str | None = None
@@ -601,6 +676,8 @@ class BitvavoMdProResearchCollector:
                     "Bitvavo Market Data Pro transport boundary failed."
                 ) from None
             if failure in {"transport", "subscription"}:
+                if connected:
+                    self._mark_feeds_recovering()
                 if not connected:
                     await self._connection_failed(session_id, previous_session_id)
                 elif failure == "subscription":
@@ -805,10 +882,14 @@ class BitvavoMdProResearchCollector:
                     normalized,
                 )
             # Ticker must not refresh book or trades. One feed cannot mask the other.
+            # A book frame before the depth snapshot is buffered, not recovered.
             if channel in {"mdpro_book", "mdpro_book_snapshot"}:
                 last_book_ns = self._monotonic_ns()
+                if book_state.has_snapshot:
+                    self._note_required_market("book")
             elif channel == "mdpro_trades":
                 last_trade_ns = self._monotonic_ns()
+                self._note_required_market("trades")
             if book_state.has_snapshot and not session_healthy:
                 session_healthy = True
                 recovered_ns = self._monotonic_ns()
@@ -2064,6 +2145,8 @@ async def run_bounded_capture(
     stop_event: asyncio.Event | None = None,
     collector_factory: Callable[[RawResearchSink], BitvavoMdProResearchCollector] | None = None,
     include_ticker: bool = False,
+    live_status_path: Path | None = None,
+    live_run_id: str | None = None,
 ) -> dict[str, object]:
     """Run the authenticated capture, close Parquet, and build the DuckDB catalog."""
 
@@ -2078,6 +2161,8 @@ async def run_bounded_capture(
             config=_config_for_duration(duration, include_ticker=include_ticker),
         )
     )
+    if live_status_path is not None and live_run_id is not None:
+        active.set_live_status_path(live_status_path, live_run_id)
     try:
         await active.capture_for(duration, stop_event=stop_event)
     finally:
@@ -2097,7 +2182,7 @@ def data1e_capture_claim(
 
     duration = _require_bounded_duration(duration_seconds)
     channels = list(mdpro_subscription_channels(include_ticker=include_ticker))
-    return {
+    claim: dict[str, object] = {
         "schema": DATA1E_CLAIM_SCHEMA,
         "state": "STARTED_FAIL_CLOSED",
         "path_contract": DATA1E_PATH_CONTRACT_ID,
@@ -2123,6 +2208,17 @@ def data1e_capture_claim(
         "raw_dir": paths.raw_dir.as_posix(),
         "database_path": paths.database_path.as_posix(),
     }
+    return stamp_start_metadata(
+        claim,
+        config_fields={
+            "feed": claim["feed"],
+            "websocket_url": claim["websocket_url"],
+            "channels": claim["channels"],
+            "book_depth": claim["book_depth"],
+            "include_ticker": claim["include_ticker"],
+            "application_idle_reconnect_seconds": BITVAVO_MDPRO_APPLICATION_IDLE_RECONNECT_SECONDS,
+        },
+    )
 
 
 def data1e_capture_health(
@@ -2254,6 +2350,8 @@ async def run_reconstructable_capture(
             stop_event=stop_event,
             collector_factory=collector_factory,
             include_ticker=include_ticker,
+            live_status_path=paths.run_dir / CAPTURE_LIVE_NAME,
+            live_run_id=run_id,
         )
         if operator_stop is not None and operator_stop():
             status = "OPERATOR_STOP"

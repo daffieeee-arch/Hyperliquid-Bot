@@ -1849,9 +1849,19 @@ async def test_reconstructable_capture_writes_the_path_contract(tmp_path: Path) 
     assert claim["retained"] is True
     assert claim["signing"] is False
     assert claim["authenticated_read_only"] is True
+    assert isinstance(claim["code_version"], str) and claim["code_version"]
+    assert isinstance(claim["config_identity"], str) and len(str(claim["config_identity"])) == 64
     assert claim["feed"] == "bitvavo-mdpro-btc-eur-book-trades"
     assert claim["standard_fallback"] is False
     assert claim["channels"] == ["book", "trades"]
+    live = json.loads((paths.run_dir / "capture-live.json").read_text(encoding="utf-8"))
+    assert live["schema"] == "capture-live-v1"
+    assert live["run_id"] == "sample-run"
+    assert live["definitive_outage"] is None
+    feeds = {item["name"]: item for item in live["feeds"]}
+    assert feeds["book"]["state"] == "fresh"
+    assert feeds["book"]["last_market_utc"]
+    assert feeds["trades"]["state"] == "unknown"
     assert health["status"] == "COMPLETED"
     assert health["path_contract"] == DATA1E_PATH_CONTRACT_ID
     with pytest.raises(FileExistsError, match="refuses to reuse"):
@@ -1864,7 +1874,9 @@ async def test_reconstructable_capture_writes_the_path_contract(tmp_path: Path) 
         )
 
 
-def test_data1e_claim_and_health_are_create_only_and_not_twenty_four_seven() -> None:
+def test_data1e_claim_and_health_are_create_only_and_not_twenty_four_seven(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     paths = data1e_run_paths(Path("/var/reconstructable"), "sample-run")
     claim = data1e_capture_claim(run_id="sample-run", duration_seconds=86_400, paths=paths)
     health = data1e_capture_health(
@@ -1909,6 +1921,11 @@ def test_data1e_claim_and_health_are_create_only_and_not_twenty_four_seven() -> 
     assert ticker_claim["channels"] == ["book", "trades", "ticker"]
     assert ticker_claim["include_ticker"] is True
     assert ticker_claim["standard_fallback"] is False
+    assert ticker_claim["config_identity"] != claim["config_identity"]
+    monkeypatch.setenv("CAPTURE_CODE_SHA", "c8893c2")
+    stamped = data1e_capture_claim(run_id="sample-run", duration_seconds=86_400, paths=paths)
+    assert stamped["code_version"] == "c8893c2"
+    assert stamped["config_identity"] == claim["config_identity"]
 
 
 def test_cli_modes_are_mutually_exclusive(tmp_path: Path) -> None:
@@ -2157,3 +2174,62 @@ async def test_trades_do_not_mask_a_silent_book(
     )
     assert not any(item.get("reason") == "trades_idle" for item in quality)
     assert factory.calls == 2
+
+
+_CAPTURE_LIVE_CONTRACT_DIR = Path(__file__).parents[1] / "fixtures" / "capture-live"
+_CONTRACT_RUN_ID = "20260924t120000z-publisher-contract"
+
+
+def _contract_collector(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> BitvavoMdProResearchCollector:
+    monkeypatch.setattr(
+        "hyperliquid_bot.bitvavo_mdpro_research.utc_now_text",
+        lambda: "2026-09-24T12:00:00Z",
+    )
+    monkeypatch.setattr(
+        "hyperliquid_bot.capture_live_status.utc_now_text",
+        lambda: "2026-09-24T12:00:10Z",
+    )
+    collector = BitvavoMdProResearchCollector(MemorySink(), _credentials())
+    collector.set_live_status_path(tmp_path / "capture-live.json", _CONTRACT_RUN_ID)
+    return collector
+
+
+def _read_live(path: Path) -> dict[str, object]:
+    return cast(dict[str, object], json.loads(path.read_text(encoding="utf-8")))
+
+
+def test_publisher_live_documents_match_cockpit_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real publish_live_status documents are the cockpit contract fixtures."""
+
+    cases = {
+        "bitvavo-pro-unknown.json": (),
+        "bitvavo-pro-partial.json": ("book",),
+        "bitvavo-pro-recovered.json": ("book", "trades"),
+    }
+    for name, notes in cases.items():
+        root = tmp_path / name
+        collector = _contract_collector(root, monkeypatch)
+        for feed in notes:
+            collector._note_required_market(feed)
+        collector.publish_live_status()
+        expected = _read_live(_CAPTURE_LIVE_CONTRACT_DIR / name)
+        assert _read_live(root / "capture-live.json") == expected
+
+    root = tmp_path / "recovering"
+    collector = _contract_collector(root, monkeypatch)
+    collector._note_required_market("book")
+    collector._note_required_market("trades")
+    receipt = collector._feed_last_market_utc["book"]
+    collector._mark_feeds_recovering()
+    assert collector._feed_last_market_utc["book"] == receipt
+    assert collector._feed_last_market_utc["trades"] == receipt
+    collector.publish_live_status()
+    assert _read_live(root / "capture-live.json") == _read_live(
+        _CAPTURE_LIVE_CONTRACT_DIR / "bitvavo-pro-recovering.json"
+    )

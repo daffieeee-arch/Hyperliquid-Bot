@@ -35,6 +35,8 @@ from hyperliquid_bot.bitvavo_standard_research import (
     _normalize_ticker,
     _normalize_trade,
     _subscription_channels,
+    data1d_capture_claim,
+    run_reconstructable_capture,
 )
 from hyperliquid_bot.parquet_research import (
     RESEARCH_VIEW_NAMES,
@@ -48,8 +50,10 @@ from hyperliquid_bot.raw_research import (
     MessageDirection,
     PayloadEncoding,
     RawResearchRecord,
+    RawResearchSink,
     capture_application_payload,
 )
+from hyperliquid_bot.reconstructable_paths import DATA1D_PATH_CONTRACT_ID, data1d_run_paths
 
 _FIXTURE_DIR = Path(__file__).parents[1] / "fixtures" / "bitvavo"
 
@@ -1179,9 +1183,6 @@ def test_production_singular_candle_event_array_rows_classify_and_normalize() ->
 
 
 def test_data1d_capture_claim_never_uses_pro_paths(tmp_path: Path) -> None:
-    from hyperliquid_bot.bitvavo_standard_research import data1d_capture_claim
-    from hyperliquid_bot.reconstructable_paths import data1d_run_paths
-
     paths = data1d_run_paths(tmp_path, "sample-run")
     claim = data1d_capture_claim(run_id="sample-run", duration_seconds=259200, paths=paths)
     assert claim["schema"] == "data-1d-retained-capture-claim-v1"
@@ -1205,3 +1206,101 @@ def test_data1d_capture_claim_never_uses_pro_paths(tmp_path: Path) -> None:
     assert candles_claim["candle_interval"] == "1h"
     assert candles_claim["retained"] is False
     assert "candles" in cast(list[str], candles_claim["channels"])
+    assert isinstance(claim["code_version"], str) and claim["code_version"]
+    assert isinstance(claim["config_identity"], str) and len(str(claim["config_identity"])) == 64
+    assert candles_claim["config_identity"] != claim["config_identity"]
+
+
+@pytest.mark.asyncio
+async def test_reconstructable_capture_writes_live_health(tmp_path: Path) -> None:
+    stop_event = asyncio.Event()
+
+    def collector_factory(sink: RawResearchSink) -> BitvavoStandardResearchCollector:
+        return BitvavoStandardResearchCollector(
+            sink,
+            connection_factory=ScriptedConnectionFactory(
+                [FakeConnection(_standard_messages(), on_last=stop_event.set)]
+            ),
+            session_id_factory=SessionIds(),
+        )
+
+    report = await run_reconstructable_capture(
+        artifact_root=tmp_path,
+        run_id="sample-run",
+        duration_seconds=86_400,
+        stop_event=stop_event,
+        collector_factory=collector_factory,
+    )
+    paths = data1d_run_paths(tmp_path, "sample-run")
+    assert report["status"] == "COMPLETED"
+    assert report["path_contract"] == DATA1D_PATH_CONTRACT_ID
+    claim = json.loads(paths.capture_claim_path.read_text(encoding="utf-8"))
+    assert isinstance(claim["code_version"], str) and claim["code_version"]
+    assert isinstance(claim["config_identity"], str) and len(str(claim["config_identity"])) == 64
+    live = json.loads((paths.run_dir / "capture-live.json").read_text(encoding="utf-8"))
+    assert live["schema"] == "capture-live-v1"
+    assert live["run_id"] == "sample-run"
+    feeds = {item["name"]: item for item in live["feeds"]}
+    assert feeds["book"]["state"] == "fresh"
+    assert feeds["trades"]["state"] == "fresh"
+    assert feeds["book"]["last_market_utc"]
+    assert feeds["trades"]["last_market_utc"]
+
+
+_CAPTURE_LIVE_CONTRACT_DIR = Path(__file__).parents[1] / "fixtures" / "capture-live"
+_CONTRACT_RUN_ID = "20260924t120000z-publisher-contract"
+
+
+def _contract_collector(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> BitvavoStandardResearchCollector:
+    monkeypatch.setattr(
+        "hyperliquid_bot.bitvavo_standard_research.utc_now_text",
+        lambda: "2026-09-24T12:00:00Z",
+    )
+    monkeypatch.setattr(
+        "hyperliquid_bot.capture_live_status.utc_now_text",
+        lambda: "2026-09-24T12:00:10Z",
+    )
+    collector = BitvavoStandardResearchCollector(MemorySink())
+    collector.set_live_status_path(tmp_path / "capture-live.json", _CONTRACT_RUN_ID)
+    return collector
+
+
+def _read_live(path: Path) -> dict[str, object]:
+    return cast(dict[str, object], json.loads(path.read_text(encoding="utf-8")))
+
+
+def test_publisher_live_documents_match_cockpit_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real publish_live_status documents are the cockpit contract fixtures."""
+
+    cases = {
+        "bitvavo-std-unknown.json": (),
+        "bitvavo-std-partial.json": ("book",),
+        "bitvavo-std-recovered.json": ("book", "trades"),
+    }
+    for name, notes in cases.items():
+        root = tmp_path / name
+        collector = _contract_collector(root, monkeypatch)
+        for feed in notes:
+            collector._note_required_market(feed)
+        collector.publish_live_status()
+        assert _read_live(root / "capture-live.json") == _read_live(
+            _CAPTURE_LIVE_CONTRACT_DIR / name
+        )
+
+    root = tmp_path / "recovering"
+    collector = _contract_collector(root, monkeypatch)
+    collector._note_required_market("book")
+    collector._note_required_market("trades")
+    receipt = collector._feed_last_market_utc["book"]
+    collector._mark_feeds_recovering()
+    assert collector._feed_last_market_utc["book"] == receipt
+    collector.publish_live_status()
+    assert _read_live(root / "capture-live.json") == _read_live(
+        _CAPTURE_LIVE_CONTRACT_DIR / "bitvavo-std-recovering.json"
+    )

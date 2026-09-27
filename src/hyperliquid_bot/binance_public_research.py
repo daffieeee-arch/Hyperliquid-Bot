@@ -38,9 +38,11 @@ from .capture_live_status import (
 from .capture_observability import (
     DISCONNECT_LOG_SUFFIX,
     add_transport_counts,
+    annotate_profile_close_honesty,
     attach_observability_health,
     capture_log_path,
     capture_logger,
+    close_is_pong_class,
     configure_capture_logger,
     disconnect_log_values,
     elapsed_from_report,
@@ -100,9 +102,29 @@ BINANCE_WEBSOCKET_CLIENT_PING_TIMEOUT: Final[float | None] = None
 # shallow queue plus blocked processing surfaces as Spot 1008 Pong timeout.
 BINANCE_WEBSOCKET_HIGH_FREQUENCY_MAX_QUEUE: Final = 1024
 BINANCE_WEBSOCKET_MARKET_MAX_QUEUE: Final = 1024
-# Cap below required_stream_starvation_seconds so backoff cannot starve
-# the mid-run liveness gate. Official Spot limit: 300 connections / 5 min / IP.
+# Cap below required_stream_starvation_seconds so backoff cannot swallow the
+# mid-run liveness gate. Official Spot limit: 300 connections / 5 min / IP.
 BINANCE_RECONNECT_BACKOFF_CAP_SECONDS: Final = 24.0
+# Deterministic spread so spot / usdm_public / usdm_market do not reconnect
+# on the same instant. Added on top of the capped backoff; the sum stays
+# under the 60s starve bound.
+BINANCE_RECONNECT_JITTER_FRACTION: Final = 0.2
+# Spot WebSocket Streams: 300 connection attempts / 5 minutes / IP.
+# DATA-1F keeps a much smaller budget so three profiles cannot sit on that
+# ceiling, and so HL/BV/KR on the same IP keep headroom. Six on one profile
+# is the per-socket storm. Fifteen across the three sockets fails closed
+# before any single profile has to reach six.
+BINANCE_OFFICIAL_CONNECTION_ATTEMPTS_PER_5_MIN: Final = 300
+BINANCE_CONNECTION_WINDOW_SECONDS: Final = 300.0
+BINANCE_PROFILE_STORM_LIMIT: Final = 6
+BINANCE_PROCESS_STORM_LIMIT: Final = 15
+# Pong-class closes and required-stream starve reconnects. Eight in an hour
+# on one profile is a sustained microstructure failure (Phase A averaged
+# about two per hour on spot and usdm_public). A single starve reconnect
+# stays a transport gap and does not trip this.
+BINANCE_PONG_STARVATION_LIMIT: Final = 8
+BINANCE_PONG_STARVATION_WINDOW_SECONDS: Final = 3600.0
+_BINANCE_PROFILE_NAMES: Final = ("spot", "usdm_market", "usdm_public")
 
 # Official market-data-only host (no user-data streams). Combined packing of
 # three channels is within the 1024-stream limit. 1008 is a server policy
@@ -186,6 +208,102 @@ class _BinanceRequiredStreamStarved(BinanceCaptureError):
         super().__init__("Binance required public stream was starved.")
         self.stream = stream
         self.silence_seconds = silence_seconds
+
+
+@dataclass(frozen=True, slots=True)
+class BinanceReconnectDecision:
+    """Admit a profile reconnect, or name the fail-closed pattern that refuses it."""
+
+    reason: str | None
+    observed: int
+    threshold: int
+    window_seconds: float
+    scope: str
+    pong_or_starve: bool
+
+
+class BinanceReconnectLedger:
+    """Rolling reconnect budget for the three DATA-1F sockets.
+
+    Counts are monotonic timestamps supplied by the caller so tests can space
+    pong/starve events without sleeping. A refused attempt is not recorded:
+    the collector fail-closes instead of opening another socket.
+    """
+
+    def __init__(self) -> None:
+        self._attempts: dict[str, list[float]] = {}
+        self._pattern: dict[str, list[float]] = {}
+
+    def admit(
+        self,
+        profile: str,
+        now: float,
+        *,
+        pong_or_starve: bool,
+    ) -> BinanceReconnectDecision:
+        if not math.isfinite(now):
+            raise ValueError("reconnect clock must be finite.")
+        attempts = _fresh_stamps(
+            self._attempts.get(profile, ()),
+            now,
+            BINANCE_CONNECTION_WINDOW_SECONDS,
+        )
+        pattern = _fresh_stamps(
+            self._pattern.get(profile, ()),
+            now,
+            BINANCE_PONG_STARVATION_WINDOW_SECONDS,
+        )
+        process_attempts = attempts[:]
+        for name, stamps in self._attempts.items():
+            if name == profile:
+                continue
+            process_attempts.extend(_fresh_stamps(stamps, now, BINANCE_CONNECTION_WINDOW_SECONDS))
+        self._attempts[profile] = attempts
+        self._pattern[profile] = pattern
+        if pong_or_starve and len(pattern) >= BINANCE_PONG_STARVATION_LIMIT:
+            return BinanceReconnectDecision(
+                reason="pong_starvation_pattern",
+                observed=len(pattern) + 1,
+                threshold=BINANCE_PONG_STARVATION_LIMIT,
+                window_seconds=BINANCE_PONG_STARVATION_WINDOW_SECONDS,
+                scope="profile",
+                pong_or_starve=True,
+            )
+        if len(attempts) >= BINANCE_PROFILE_STORM_LIMIT:
+            return BinanceReconnectDecision(
+                reason="reconnect_storm",
+                observed=len(attempts) + 1,
+                threshold=BINANCE_PROFILE_STORM_LIMIT,
+                window_seconds=BINANCE_CONNECTION_WINDOW_SECONDS,
+                scope="profile",
+                pong_or_starve=pong_or_starve,
+            )
+        if len(process_attempts) >= BINANCE_PROCESS_STORM_LIMIT:
+            return BinanceReconnectDecision(
+                reason="reconnect_storm",
+                observed=len(process_attempts) + 1,
+                threshold=BINANCE_PROCESS_STORM_LIMIT,
+                window_seconds=BINANCE_CONNECTION_WINDOW_SECONDS,
+                scope="process",
+                pong_or_starve=pong_or_starve,
+            )
+        attempts.append(now)
+        self._attempts[profile] = attempts
+        if pong_or_starve:
+            pattern.append(now)
+            self._pattern[profile] = pattern
+        return BinanceReconnectDecision(
+            reason=None,
+            observed=len(attempts),
+            threshold=BINANCE_PROFILE_STORM_LIMIT,
+            window_seconds=BINANCE_CONNECTION_WINDOW_SECONDS,
+            scope="admitted",
+            pong_or_starve=pong_or_starve,
+        )
+
+
+def _fresh_stamps(stamps: Sequence[float], now: float, window_seconds: float) -> list[float]:
+    return [stamp for stamp in stamps if now - stamp < window_seconds]
 
 
 class _IntegerLexeme(str):
@@ -488,6 +606,8 @@ class BinancePublicResearchCollector:
         self._alerted_errors: list[BaseException] = []
         self.preserved_profile_failure: BaseException | None = None
         self.notice_while_siblings_active = False
+        self._reconnect_ledger = BinanceReconnectLedger()
+        self._reconnect_clock: Callable[[], float] = time.monotonic
 
     async def capture_for(
         self,
@@ -737,7 +857,14 @@ class BinancePublicResearchCollector:
                         stream=starved.stream,
                         silence_seconds=starved.silence_seconds,
                     )
-                reconnects += 1
+                reconnects = await self._reconnect_or_fail_closed(
+                    profile,
+                    session_id,
+                    stop_event,
+                    reconnects=reconnects,
+                    pong_or_starve=True,
+                    stream=starved.stream,
+                )
                 self._reset_profile_stream_watch(profile)
                 capture_logger().info(
                     "binance reconnect transport_profile=%s attempt=%s "
@@ -762,6 +889,7 @@ class BinancePublicResearchCollector:
                     _reconnect_wait_seconds(
                         self._config.reconnect_delay_seconds,
                         reconnects,
+                        profile=profile.name,
                     ),
                     stop_event,
                 )
@@ -788,7 +916,13 @@ class BinancePublicResearchCollector:
                     raise BinanceTransportError(
                         "Binance public reconnect bound was exhausted."
                     ) from None
-                reconnects += 1
+                reconnects = await self._reconnect_or_fail_closed(
+                    profile,
+                    session_id,
+                    stop_event,
+                    reconnects=reconnects,
+                    pong_or_starve=False,
+                )
                 self._reset_profile_stream_watch(profile)
                 capture_logger().info(
                     "binance reconnect transport_profile=%s attempt=%s "
@@ -810,6 +944,7 @@ class BinancePublicResearchCollector:
                     _reconnect_wait_seconds(
                         self._config.reconnect_delay_seconds,
                         reconnects,
+                        profile=profile.name,
                     ),
                     stop_event,
                 )
@@ -860,7 +995,16 @@ class BinancePublicResearchCollector:
                     raise BinanceTransportError(
                         "Binance public reconnect bound was exhausted."
                     ) from None
-                reconnects += 1
+                reconnects = await self._reconnect_or_fail_closed(
+                    profile,
+                    session_id,
+                    stop_event,
+                    reconnects=reconnects,
+                    pong_or_starve=close_is_pong_class(
+                        close_reason_rcvd=failure_fields.get("close_reason_rcvd"),
+                        close_reason_sent=failure_fields.get("close_reason_sent"),
+                    ),
+                )
                 self._reset_profile_stream_watch(profile)
                 capture_logger().info(
                     "binance reconnect transport_profile=%s attempt=%s",
@@ -881,6 +1025,7 @@ class BinancePublicResearchCollector:
                     _reconnect_wait_seconds(
                         self._config.reconnect_delay_seconds,
                         reconnects,
+                        profile=profile.name,
                     ),
                     stop_event,
                 )
@@ -924,7 +1069,13 @@ class BinancePublicResearchCollector:
                     raise BinanceTransportError(
                         "Binance public reconnect bound was exhausted."
                     ) from None
-                reconnects += 1
+                reconnects = await self._reconnect_or_fail_closed(
+                    profile,
+                    session_id,
+                    stop_event,
+                    reconnects=reconnects,
+                    pong_or_starve=False,
+                )
                 self._reset_profile_stream_watch(profile)
                 capture_logger().info(
                     "binance reconnect transport_profile=%s attempt=%s "
@@ -947,6 +1098,7 @@ class BinancePublicResearchCollector:
                     _reconnect_wait_seconds(
                         self._config.reconnect_delay_seconds,
                         reconnects,
+                        profile=profile.name,
                     ),
                     stop_event,
                 )
@@ -1433,6 +1585,84 @@ class BinancePublicResearchCollector:
             "Binance required public stream was starved."
             if reason == "required_stream_starved"
             else "Binance required public streams were not observed."
+        )
+        error = BinanceDataIntegrityError(message, quality_event="liveness_error")
+        error.reported = True
+        raise error
+
+    async def _reconnect_or_fail_closed(
+        self,
+        profile: _StreamProfile,
+        session_id: str,
+        stop_event: asyncio.Event,
+        *,
+        reconnects: int,
+        pong_or_starve: bool,
+        stream: str | None = None,
+    ) -> int:
+        """Count this reconnect toward the storm and pong/starve budgets.
+
+        A breach writes `liveness_error` and does not open another socket.
+        That status is not a transport gap.
+        """
+
+        decision = self._reconnect_ledger.admit(
+            profile.name,
+            self._reconnect_clock(),
+            pong_or_starve=pong_or_starve,
+        )
+        if decision.reason is not None:
+            stop_event.set()
+            await self._raise_reconnect_pattern(
+                profile,
+                session_id,
+                decision,
+                stream=stream,
+            )
+        return reconnects + 1
+
+    async def _raise_reconnect_pattern(
+        self,
+        profile: _StreamProfile,
+        session_id: str,
+        decision: BinanceReconnectDecision,
+        *,
+        stream: str | None,
+    ) -> NoReturn:
+        reason = decision.reason or "reconnect_storm"
+        extra: dict[str, object] = {
+            "transport_profile": profile.name,
+            "threshold": decision.threshold,
+            "window_seconds": decision.window_seconds,
+            "observed": decision.observed,
+            "scope": decision.scope,
+            "pong_or_starve": decision.pong_or_starve,
+            "continuity": "fail_closed",
+            "official_connection_attempts_per_5_min_per_ip": (
+                BINANCE_OFFICIAL_CONNECTION_ATTEMPTS_PER_5_MIN
+            ),
+        }
+        if stream is not None:
+            extra["stream"] = stream
+        capture_logger().info(
+            "binance liveness_error transport_profile=%s reason=%s observed=%s threshold=%s",
+            profile.name,
+            reason,
+            decision.observed,
+            decision.threshold,
+        )
+        await self._quality(
+            profile.product,
+            session_id,
+            "liveness_error",
+            reason,
+            None,
+            extra=extra,
+        )
+        message = (
+            "Binance pong or starvation pattern exceeded the documented threshold."
+            if reason == "pong_starvation_pattern"
+            else "Binance public reconnect storm exceeded the documented threshold."
         )
         error = BinanceDataIntegrityError(message, quality_event="liveness_error")
         error.reported = True
@@ -2201,21 +2431,44 @@ async def _wait_or_stop(delay_seconds: float, stop_event: asyncio.Event) -> None
         return
 
 
-def _reconnect_wait_seconds(base_seconds: float, attempt: int) -> float:
-    """Mild exponential backoff, capped below the 60s starve bound.
+def _reconnect_jitter_seconds(delay: float, profile: str, attempt: int) -> float:
+    """Stable 0-20% spread. Empty profile keeps the historical exact delay."""
 
-    Three profiles at a flat 3s would be 300 connection attempts / 5 minutes
-    if every socket stormed — the official Spot IP connection limit.
+    if delay <= 0.0 or profile == "":
+        return 0.0
+    mix = sum(ord(character) for character in profile) * 31 + attempt * 17
+    unit = (mix % 1000) / 999.0
+    return delay * BINANCE_RECONNECT_JITTER_FRACTION * unit
+
+
+def _reconnect_wait_seconds(
+    base_seconds: float,
+    attempt: int,
+    *,
+    profile: str = "",
+) -> float:
+    """Exponential backoff plus per-profile jitter, still under the 60s starve bound.
+
+    The fail-closed storm budget, not this delay, is what keeps three DATA-1F
+    sockets under the official Spot limit of 300 connection attempts / 5 minutes
+    / IP. A flat 3s on all three profiles would sit on that ceiling.
     """
 
     if base_seconds <= 0:
         return 0.0
     if type(attempt) is not int or attempt < 1:
         raise ValueError("reconnect attempt must be a positive integer.")
+    if type(profile) is not str:
+        raise ValueError("reconnect profile must be a string.")
     exponent = min(attempt - 1, 3)
     delay = float(base_seconds) * float(2**exponent)
     cap = float(BINANCE_RECONNECT_BACKOFF_CAP_SECONDS)
-    return delay if delay < cap else cap
+    capped = delay if delay < cap else cap
+    total = capped + _reconnect_jitter_seconds(capped, profile, attempt)
+    starve = float(REQUIRED_STREAM_STARVATION_SECONDS)
+    if total >= starve:
+        return starve - 1.0
+    return total
 
 
 def _websocket_incoming_max_queue(websocket_url: str) -> int:
@@ -2368,6 +2621,11 @@ def build_capture_report(database_path: Path, parquet_dir: Path) -> dict[str, ob
             gap_event="gap",
             reconnect_event="reconnect",
         )
+        annotate_profile_close_honesty(
+            connection,
+            report,
+            profile_names=_BINANCE_PROFILE_NAMES,
+        )
     finally:
         connection.close()
 
@@ -2483,6 +2741,51 @@ def data1f_capture_claim(
     )
 
 
+def _finalize_binance_transport_health(
+    report: dict[str, object],
+) -> tuple[list[dict[str, object]], str]:
+    """Always emit spot, usdm_market, and usdm_public, including zero rows."""
+
+    raw = report.get("transport_profiles")
+    by_name: dict[str, dict[str, object]] = {}
+    if isinstance(raw, list):
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("transport_profile")
+            if isinstance(name, str) and name:
+                by_name[name] = dict(item)
+    profiles: list[dict[str, object]] = []
+    names = list(_BINANCE_PROFILE_NAMES)
+    for name in by_name:
+        if name not in names:
+            names.append(name)
+    for name in names:
+        item = by_name.get(
+            name,
+            {
+                "transport_profile": name,
+                "gaps": 0,
+                "reconnects": 0,
+                "reconnect_clusters": 0,
+            },
+        )
+        item.setdefault("gaps", 0)
+        item.setdefault("reconnects", 0)
+        item.setdefault("reconnect_clusters", 0)
+        item.setdefault("close_code_counts", {})
+        item.setdefault("exception_class_counts", {})
+        item.setdefault("pong_closes", 0)
+        item.setdefault("starved_reconnects", 0)
+        item.setdefault("last_close_code", None)
+        item.setdefault("last_exception_class", None)
+        profiles.append(item)
+    liveness = report.get("integrity_liveness")
+    if not isinstance(liveness, str) or not liveness:
+        liveness = "ok"
+    return profiles, liveness
+
+
 def data1f_capture_health(
     *,
     run_id: str,
@@ -2551,10 +2854,33 @@ def data1f_capture_health(
                 "A required profile that exhausts reconnects is logged and alerted "
                 "while sibling profiles are still running. A later operator stop "
                 "stays OPERATOR_STOP and keeps that original error_class.",
+                "integrity_liveness is the fail-closed reconnect-storm or "
+                "pong/starvation status. It is not a transport gap. Per-profile "
+                "reconnects, close_code_counts, and exception_class_counts stay "
+                "visible when minute-bar gap_frac is near zero.",
+                "Reconnect storm budget is "
+                f"{BINANCE_PROFILE_STORM_LIMIT} attempts / "
+                f"{BINANCE_CONNECTION_WINDOW_SECONDS:g}s / profile and "
+                f"{BINANCE_PROCESS_STORM_LIMIT} across spot+usdm_public+usdm_market "
+                f"(official Spot ceiling {BINANCE_OFFICIAL_CONNECTION_ATTEMPTS_PER_5_MIN} "
+                "/ 5 min / IP). Pong-class closes plus required-stream starve "
+                f"reconnects fail closed at {BINANCE_PONG_STARVATION_LIMIT} / "
+                f"{BINANCE_PONG_STARVATION_WINDOW_SECONDS:g}s / profile.",
             ],
         },
         report,
         elapsed_seconds=elapsed,
+    )
+    profiles, liveness = _finalize_binance_transport_health(report)
+    health["transport_profiles"] = profiles
+    health["integrity_liveness"] = liveness
+    health["reconnect_storm_limit"] = BINANCE_PROFILE_STORM_LIMIT
+    health["reconnect_storm_window_seconds"] = BINANCE_CONNECTION_WINDOW_SECONDS
+    health["process_reconnect_storm_limit"] = BINANCE_PROCESS_STORM_LIMIT
+    health["pong_starvation_limit"] = BINANCE_PONG_STARVATION_LIMIT
+    health["pong_starvation_window_seconds"] = BINANCE_PONG_STARVATION_WINDOW_SECONDS
+    health["official_connection_attempts_per_5_min_per_ip"] = (
+        BINANCE_OFFICIAL_CONNECTION_ATTEMPTS_PER_5_MIN
     )
     preserved_class = report.get("preserved_profile_error_class")
     preserved_message = report.get("preserved_profile_error_message")

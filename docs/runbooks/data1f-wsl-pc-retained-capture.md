@@ -284,11 +284,19 @@ When the assigned goal is a 72-hour reconstructable tape (`DURATION_SECONDS=2592
   100ms–1s. DATA-1F sets `ping_interval=None` so only Binance server pings drive
   keepalive; the library still auto-pongs. The previous `websockets` default
   client Ping timed out as **close_code=1011** on high-frequency `/public`
-  bookTicker and caused `usdm_public` reconnect churn. Spot and `usdm_public`
+  bookTicker and caused `usdm_public` reconnect churn. All three profiles
   use `max_queue=1024` so HF frames do not stall the default 16-frame buffer.
   Gaps remain recorded.
-  Mild reconnect backoff (cap 24s) stays under the 300 connections / 5 minutes /
-  IP limit and under the 60s starve bound.   Application silence past `required_stream_starvation_seconds` (60s) on a
+  Reconnect backoff (cap 24s) plus per-profile jitter stays under the 300
+  connections / 5 minutes / IP Spot limit and under the 60s starve bound.
+  A profile storm (6 admitted reconnects / 5 min), a three-profile storm
+  (15 admitted / 5 min), or a pong/starve pattern (8 admitted / 60 min on one
+  profile) refuses the next attempt and fails closed as
+  `integrity_liveness` (`reconnect_storm` or `pong_starvation_pattern`). That
+  status is not a transport gap. Health lists `spot`, `usdm_market`, and
+  `usdm_public` with close codes even when `gaps` is 0. See the VPS runbook
+  for the Phase A 269-reconnect RCA. Application silence past
+  `required_stream_starvation_seconds` (60s) on a
   previously observed required stream records a transport `gap`
   (`reason=required_stream_starved`) and force-reconnects that profile only.
   Empty / never-observed streams, or starve after the reconnect bound is
@@ -299,10 +307,9 @@ When the assigned goal is a 72-hour reconstructable tape (`DURATION_SECONDS=2592
   `capture_operator_alert` (optional `CAPTURE_ALERT_WEBHOOK_URL` and
   `CAPTURE_ALERT_WEBHOOK_AUTHORIZATION`, bounded retries, HTTP status logged,
   no secret text); no polling cron.
-- **Apply path:** this keepalive fix needs a BN process restart. Prefer after the
-  current 72h retain unless Chupa explicitly OKs a BN-only restart (CoS gates).
-  Do not stop `hl-capture` / `bv-capture` / `kr-capture`. Until restart, the
-  live tape is not silent but Quant `bn_gap_fraction` may stay high.
+- **Apply path:** BN process restart is required before this reconnect policy
+  is live. CoS / VPS ops only. Do not restart `bn-capture` from this note.
+  Do not stop `hl-capture` / `bv-capture` / `kr-capture`.
 - A Spot depth REST transport error retries the snapshot, then reconnects that
   profile only. If a profile still stops the shared run before the requested
   duration, health is `FAILED` (and one operator alert), not `COMPLETED`.

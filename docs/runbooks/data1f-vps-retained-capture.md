@@ -126,22 +126,50 @@ exhausted, still fail closed mid-run with `liveness_error` and status `FAILED`;
 that is not a transport `gap`. A profile that still stops the shared run before
 the requested duration writes `FAILED` and one `capture_operator_alert`, not
 `COMPLETED`.
-Official Spot JSON/SBE: server ping ~20s, pong within 1 minute,
-connection ~24h, `serverShutdown`. Official USD-M Connect: server ping every 3
-minutes, pong within 10 minutes (≫ the 60s app bound). Required update speeds are
-real-time or 100ms–1s. Set `ping_interval=None` (Binance server ping only; library
-auto-pong). A leftover client keepalive Ping times out as **close_code=1011** on
-`/public` bookTicker. Gaps stay recorded. Mild reconnect backoff (cap 24s) stays
-under the 300 connections / 5 minutes / IP limit. `forceOrder` silence is optional
-and is not starvation. An empty required stream must not be accepted as a healthy
-retain on `OPERATOR_STOP`. Terminal `FAILED` emits one event-driven
+Official Spot JSON/SBE (checked 2026-09-27,
+`binance-spot-api-docs` `web-socket-streams.md`): server ping every 20s, pong
+within 1 minute, connection ~24h, `serverShutdown`. The February 2025 changelog
+notice moved Spot from a 3-minute ping / 10-minute pong to that 20s / 1 minute
+window. Official USD-M Connect (2026-06-17 page, re-checked 2026-09-27): server
+ping every 3 minutes, pong within 10 minutes (≫ the 60s app bound). The USD-M
+**Important WebSocket Change Notice** is the `/public` vs `/market` split:
+`bookTicker` stays on `/public`; `aggTrade` / `markPrice@1s` / `forceOrder` stay
+on `/market`. Do not mix them. Spot limit: **300 connection attempts / 5 minutes
+/ IP**. USD-M also caps 10 client messages/s and 1024 streams; repeated
+disconnects can ban an IP.
+
+`ping_interval=None` (Binance server ping only; library auto-pong). A leftover
+client keepalive Ping times out as **close_code=1011** on `/public` bookTicker.
+#58 stopped that client ping. Phase A code-restart
+`20260924t164936z-phase-a-72h-code-restart` still saw **269** reconnects
+(spot ~138, `usdm_public` ~128, `usdm_market` ~3) from server pong misses and
+the 60s starve gate. Minute-bar `gap_frac` stayed ~0. That is not silence.
+
+Reconnect wait is 3s / 6s / 12s, cap 24s, plus per-profile jitter ≤20%. The
+total stays under the 60s starve bound. Fail closed, as `integrity_liveness`
+and not as an extra gap, when either budget trips:
+
+- 6 admitted reconnects / 5 min on one profile, or 15 admitted reconnects /
+  5 min across the three profiles; the next attempt is refused
+  (`reconnect_storm`)
+- 8 admitted pong-class closes or `required_stream_starved` reconnects /
+  60 min on one profile; the next attempt is refused
+  (`pong_starvation_pattern`)
+
+`capture-health.json` lists `spot`, `usdm_market`, and `usdm_public` separately
+with reconnects, gaps, `close_code_counts`, and `exception_class_counts` even
+when `gaps` is 0. `forceOrder` silence is optional and is not starvation. An
+empty required stream must not be accepted as a healthy retain on
+`OPERATOR_STOP`. Terminal `FAILED` emits one event-driven
 `capture_operator_alert`. Optional `CAPTURE_ALERT_WEBHOOK_URL` plus
 `CAPTURE_ALERT_WEBHOOK_AUTHORIZATION` (header value, never logged): up to 3
 POSTs of 2s; 401/403 are not retried; failures stay in the log as
 `http_status` and do not crash the writer. Ochtendbriefing stays separate —
-no polling cron. Apply path: BN process restart;
-prefer after the current 72h retain unless Chupa explicitly OKs a BN-only restart.
-Live HL/BV/KR untouched.
+no polling cron.
+
+**Apply path:** BN process restart is required. CoS / VPS ops only. Do not
+restart `bn-capture` from a cloud agent or from this note. Live HL/BV/KR
+untouched.
 
 ## How to continue later (there is no resume)
 

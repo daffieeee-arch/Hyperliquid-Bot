@@ -60,12 +60,16 @@ repository change):
 7. Commit and push the branch.
 8. Open a pull request targeting `main`.
 9. Let all required CI checks complete successfully.
-10. **Bugbot review is standard** for feature PRs on this project. After the
-    PR exists (or after material follow-up commits), run the Bugbot review
-    subagent on the branch changes (`review-bugbot` / Task `bugbot`). Address
-    blocking findings on the same branch, push, and re-run Bugbot when the
-    diff changed materially. Skip only for trivial docs/chore PRs unless the
-    user asks for Bugbot anyway.
+10. **Claude Code code review is standard** for feature PRs on this project.
+    After the PR exists (or after material follow-up commits), run Claude
+    Code's built-in `/code-review` on the branch changes, for example
+    `/code-review high <branch>`. Verify each finding before acting on it:
+    fix the real ones on the same branch, push, and re-run the review when
+    the diff changed materially. Report findings you judge not to be bugs,
+    with the reason. Agents that cannot run `/code-review` themselves (Cursor,
+    Codex) ask the operator to run it in a Claude Code session; the PR is not
+    Ready until it has run. Skip only for trivial docs/chore PRs unless the
+    user asks for the review anyway.
 11. For material or high-risk changes (execution, risk, secrets, LIVE gates,
     infra/runtime, non-trivial strategy/data contracts), also obtain any
     additional independent review the user requests before merge.

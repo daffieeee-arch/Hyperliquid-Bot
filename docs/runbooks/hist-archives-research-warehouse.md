@@ -56,7 +56,7 @@ publishes `.CHECKSUM` / SHA256 manifests.
     binance/{spot,um}/{aggtrades,klines_1m,klines_1h,funding}/
     kraken/xbtusd_{1m,5m,15m,1h,4h,12h,1d}.parquet
   scripts/
-    convert_all.py            # ZIP/CSV → Parquet ETL (lives on VPS disk)
+    convert_all.py            # legacy ZIP/CSV → Parquet ETL (VPS disk only)
     build_catalog.sh
     open_research.sh          # open DuckDB catalog in a Python REPL
     run_etl.sh
@@ -66,6 +66,11 @@ publishes `.CHECKSUM` / SHA256 manifests.
 
 Parquet, ZIP, CSV, and `research.duckdb` stay **off git**. Only documentation
 and tiny stubs belong in the Hyperliquid-Bot repo.
+
+The repeatable pipeline lives in the repo as `python -m research.hist_etl`
+(`plan`, `sync`, `verify`, `catalog`). It reads `HIST_ARCHIVES_ROOT` and does
+not embed this host path. See [hist-etl.md](hist-etl.md). The legacy
+`convert_all.py` on disk is not the supported entry point.
 
 ## How to open the catalog
 

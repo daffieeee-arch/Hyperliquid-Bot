@@ -1,0 +1,161 @@
+# Offline historical datasets for research.hist_etl.
+# Paths come from --root / HIST_ARCHIVES_ROOT. This file names no host.
+#
+# `end = "today"` keeps the daily tail incremental.
+# Disabled entries are the extra bundle (funding from 2020, older 1m klines,
+# mark/index/premium 1m, USD-M metrics). Select them explicitly:
+#   python -m research.hist_etl sync --dataset bn-um-btcusdt-funding-2020
+
+min_free_bytes = 10737418240
+requests_per_second = 2.0
+max_retries = 5
+timeout_seconds = 60.0
+
+[[binance]]
+id = "bn-spot-btcusdt-klines-1m"
+market = "spot"
+dataset = "klines"
+symbol = "BTCUSDT"
+interval = "1m"
+start = "2025-09-01"
+end = "today"
+granularity = "monthly_with_daily_tail"
+
+[[binance]]
+id = "bn-spot-btcusdt-klines-1m-backfill"
+market = "spot"
+dataset = "klines"
+symbol = "BTCUSDT"
+interval = "1m"
+start = "2017-08-17"
+end = "2025-08-31"
+granularity = "monthly_with_daily_tail"
+enabled = false
+
+[[binance]]
+id = "bn-spot-btcusdt-klines-1h"
+market = "spot"
+dataset = "klines"
+symbol = "BTCUSDT"
+interval = "1h"
+start = "2025-09-01"
+end = "today"
+granularity = "monthly_with_daily_tail"
+
+[[binance]]
+id = "bn-spot-btcusdt-aggtrades"
+market = "spot"
+dataset = "aggTrades"
+symbol = "BTCUSDT"
+start = "2025-09-01"
+end = "today"
+granularity = "monthly_with_daily_tail"
+
+[[binance]]
+id = "bn-um-btcusdt-klines-1m"
+market = "um"
+dataset = "klines"
+symbol = "BTCUSDT"
+interval = "1m"
+start = "2025-09-01"
+end = "today"
+granularity = "monthly_with_daily_tail"
+
+[[binance]]
+id = "bn-um-btcusdt-klines-1m-backfill"
+market = "um"
+dataset = "klines"
+symbol = "BTCUSDT"
+interval = "1m"
+start = "2019-09-08"
+end = "2025-08-31"
+granularity = "monthly_with_daily_tail"
+enabled = false
+
+[[binance]]
+id = "bn-um-btcusdt-klines-1h"
+market = "um"
+dataset = "klines"
+symbol = "BTCUSDT"
+interval = "1h"
+start = "2025-09-01"
+end = "today"
+granularity = "monthly_with_daily_tail"
+
+[[binance]]
+id = "bn-um-btcusdt-aggtrades"
+market = "um"
+dataset = "aggTrades"
+symbol = "BTCUSDT"
+start = "2025-09-01"
+end = "today"
+granularity = "monthly_with_daily_tail"
+
+[[binance]]
+id = "bn-um-btcusdt-funding"
+market = "um"
+dataset = "fundingRate"
+symbol = "BTCUSDT"
+start = "2025-09-01"
+end = "today"
+granularity = "monthly"
+
+[[binance]]
+id = "bn-um-btcusdt-funding-2020"
+market = "um"
+dataset = "fundingRate"
+symbol = "BTCUSDT"
+start = "2020-01-01"
+end = "2025-08-31"
+granularity = "monthly"
+enabled = false
+
+[[binance]]
+id = "bn-um-btcusdt-mark-1m"
+market = "um"
+dataset = "markPriceKlines"
+symbol = "BTCUSDT"
+interval = "1m"
+start = "2020-01-01"
+end = "today"
+granularity = "monthly_with_daily_tail"
+enabled = false
+
+[[binance]]
+id = "bn-um-btcusdt-index-1m"
+market = "um"
+dataset = "indexPriceKlines"
+symbol = "BTCUSDT"
+interval = "1m"
+start = "2020-01-01"
+end = "today"
+granularity = "monthly_with_daily_tail"
+enabled = false
+
+[[binance]]
+id = "bn-um-btcusdt-premium-1m"
+market = "um"
+dataset = "premiumIndexKlines"
+symbol = "BTCUSDT"
+interval = "1m"
+start = "2020-01-01"
+end = "today"
+granularity = "monthly_with_daily_tail"
+enabled = false
+
+[[binance]]
+id = "bn-um-btcusdt-metrics"
+market = "um"
+dataset = "metrics"
+symbol = "BTCUSDT"
+start = "2020-01-01"
+end = "today"
+granularity = "daily"
+enabled = false
+
+[[kraken]]
+id = "kraken-ohlcvt-xbtusd"
+pairs = ["XBTUSD"]
+intervals = ["1m", "5m", "15m", "30m", "1h", "4h", "12h", "1d"]
+zip_glob = "kraken-ohlcvt/Kraken_OHLCVT*.zip"
+enabled = true

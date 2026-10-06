@@ -11,9 +11,14 @@ PYTHONPATH=src uv run --frozen python -m research.harness run path/to/spec.yaml 
   --output-dir path/to/out
 ```
 
-`lock` writes `spec.yaml.lock.json` with the canonical sha256. `run` refuses
-the job if the spec changed after that lock. Re-lock only when you intend a
-new pre-registration. The artifact repeats the hash.
+`lock` writes `spec.yaml.lock.json` with the canonical sha256 and a data
+fingerprint. The fingerprint records, per input, the row count, the minimum
+and maximum timestamp, and a content checksum. Parquet checksums are the
+sha256 of the file bytes. A DuckDB view checksum is a sha256 of row-hash
+aggregates over the declared columns, so an unrelated catalog table does not
+change it. `run` refuses the
+job if the spec or the fingerprint changed after that lock. Re-lock only when
+you intend a new pre-registration. The artifact repeats both digests.
 
 DuckDB catalogs are not hard-coded. For `data.backend: duckdb` set
 `RESEARCH_DUCKDB_PATH` to the catalog file, or set `HIST_ARCHIVES_ROOT` to the
@@ -30,15 +35,19 @@ fields:
 - `selection_method`: `bonferroni` (always reported), or `holm` / `bh`
 - one signal feature, known at a declared availability clock
 - one or more configs (`threshold`, `horizon_bars`) — this is the whole grid
-- costs in bps (`fee_bps`, `slippage_bps`, `spread_bps`) and `latency_bars`
+- costs in bps (`fee_bps`, `slippage_bps`, `spread_bps`) and `latency_bars`.
+  `spread_bps` is the half-spread per side, not the full quoted spread
 - walk-forward `expanding` or `rolling`, plus a final `holdout_bars` suffix
 - sample floors for folds and for validation / holdout trade counts
 
 The harness does not search parameters and does not fit anything on the train
 window. Train length only delays the first test fold. Configs are scored on
 the walk-forward **test** folds. The selected config, if any, is scored once
-on the untouched holdout. Holdout prices are not readable from a validation
-trade.
+on the untouched holdout. If validation selects no config, the holdout is not
+read: `result.json` has `holdout: null` and `result.md` says
+`holdout sealed (not evaluated)`. Holdout prices are not readable from a
+validation trade. A `holdout_bars` suffix that covers the whole series fails
+closed instead of treating every row as holdout.
 
 Labels:
 
@@ -47,17 +56,25 @@ Labels:
 | `not_enough_data` | Not enough folds or trades to decide |
 | `no_edge` | Enough data, and no config survived costs and multiple testing |
 | `interesting_but_fragile` | A gross, unadjusted, or in-sample result died on costs, stress, multiplicity, or the holdout |
-| `passes_h1` | The validation-selected config kept a positive mean net on the holdout at 1.0×, 1.5×, and 2.0× cost, with a one-sided t p-value ≤ alpha |
+| `passes_h1` | The validation-selected config kept a positive mean net on the holdout at 1.0×, 1.5×, and 2.0× cost. The p-value is the larger of the iid t and a Newey-West HAC t, and it is ≤ alpha |
 
 `promotion_decision` is `forbidden` unless the label is `passes_h1`. The pass
 value is `paper_candidate`: eligible for a later PAPER review, not a trading
 authorization.
 
-Gross and net means are both in `result.json` and `result.md`. Net subtracts
-the round trip `2 * (fee + slippage + spread)` bps, multiplied by the stress.
-Latency is not a bps add-on. A fill uses the close of
-`decision_bar + latency_bars`, and the exit is `horizon_bars` later. Use
-`latency_bars >= 1` when the feature is computed from the decision bar's close.
+Gross and net means are both in `result.json` and `result.md` when the holdout
+was evaluated. Net subtracts the round trip
+`2 * (fee_bps + slippage_bps + spread_bps) / 10000`, multiplied by the stress.
+`spread_bps` is the half-spread per side, so the round trip charges it on
+entry and again on exit. Latency is not a bps add-on. A fill uses the close of
+`decision_bar + latency_bars`, and the exit is `horizon_bars` later. When the
+signal's availability clock is the bar timestamp column, `latency_bars` must
+be at least 1. `latency_bars: 0` is accepted only with
+`costs.allow_zero_latency: true`, and that flag is printed in the report.
+
+Each metric block reports the iid one-sided t and a Newey-West HAC t
+(Bartlett kernel, lag `floor(4 * (n / 100) ** (2 / 9))`). Bonferroni, Holm,
+and BH, and the holdout check, use the larger of the two p-values.
 
 Point-in-time checks fail closed (no statistical label) for schema mismatch,
 nulls, duplicate or backwards timestamps, gaps above `max_gap`, non-positive
@@ -136,11 +153,12 @@ the start of the interval if the print arrives at the end.
 ## Reading the artifact
 
 `result.json` is the machine record (`status`, `label`, `promotion_decision`,
-`spec_sha256`, validation family with Bonferroni, Holm, and BH p-values,
-holdout gross and net at 1.0 / 1.5 / 2.0). `result.md` is the same conclusion
-in prose. A `failed_closed` status (gap, duplicate, schema, look-ahead, lock,
+`spec_sha256`, `data_fingerprint`, validation family with Bonferroni, Holm,
+and BH p-values, and holdout gross and net at 1.0 / 1.5 / 2.0 when a config
+was selected). `result.md` is the same conclusion in prose. A `failed_closed`
+status (gap, duplicate, schema, look-ahead, lock, fingerprint mismatch,
 unsafe mode) has `label: null` and `promotion_decision: forbidden`.
 
-Limitations live in every artifact: iid t-test, per-trade Sharpe, flat costs,
-no funding cashflow, and no detection of a leaked feature that was falsely
-stamped with the bar clock.
+Limitations live in every artifact: the conservative t / HAC gate, per-trade
+Sharpe, flat half-spread costs, no funding cashflow, and no detection of a
+leaked feature that was falsely stamped with the bar clock.

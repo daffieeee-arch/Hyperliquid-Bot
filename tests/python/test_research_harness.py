@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import random
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -17,11 +18,17 @@ import duckdb
 import pytest
 
 from research.harness.errors import HarnessError
-from research.harness.evaluate import collect_gross_returns
+from research.harness.evaluate import collect_gross_returns, summarize
 from research.harness.run import execute, lock_spec
 from research.harness.spec import Json, SplitSpec, load_document, spec_sha256, validate_spec
 from research.harness.splits import walk_forward
-from research.harness.stats import benjamini_hochberg, bonferroni, holm, student_t_upper_tail
+from research.harness.stats import (
+    benjamini_hochberg,
+    bonferroni,
+    holm,
+    newey_west_mean_test,
+    student_t_upper_tail,
+)
 from research.harness.yaml_subset import loads
 
 _REPO = Path(__file__).resolve().parents[2]
@@ -35,6 +42,21 @@ def test_student_t_upper_tail_matches_published_quantiles() -> None:
     assert math.isclose(student_t_upper_tail(1.8124611228, 10), 0.05, abs_tol=1e-5)
     # One-sided 5% critical value, df=30.
     assert math.isclose(student_t_upper_tail(1.697260887, 30), 0.05, abs_tol=1e-4)
+
+
+def test_newey_west_lag_and_conservative_gate() -> None:
+    t_stat, p_value, lag = newey_west_mean_test([0.01] * 100)
+    assert t_stat is None
+    assert p_value == 0.0
+    assert lag == 4
+    _, negative_p, _ = newey_west_mean_test([-0.01] * 100)
+    assert negative_p == 1.0
+    persistent = ([0.03] * 25 + [-0.01] * 25) * 4
+    block = summarize(persistent)
+    assert block.naive_p_value is not None
+    assert block.hac_p_value is not None
+    assert block.hac_p_value > block.naive_p_value
+    assert block.p_value == max(block.naive_p_value, block.hac_p_value)
 
 
 def test_multiple_testing_adjustments() -> None:
@@ -59,6 +81,11 @@ def test_expanding_and_rolling_folds_leave_the_holdout_untouched() -> None:
     assert all(fold.train_start == 0 for fold in expanding)
     assert [fold.train_start for fold in rolling] == [0, 5]
     assert all(fold.test_end <= holdout[0] for fold in expanding)
+    with pytest.raises(HarnessError, match="holdout_bars") as covered:
+        walk_forward(10, _split(method="expanding", train_bars=4, test_bars=2, holdout_bars=10))
+    assert covered.value.failure_kind == "split"
+    with pytest.raises(HarnessError, match="holdout_bars"):
+        walk_forward(10, _split(method="rolling", train_bars=4, test_bars=2, holdout_bars=11))
 
 
 def test_validation_window_does_not_read_holdout_prices() -> None:
@@ -114,6 +141,10 @@ def test_noise_series_is_no_edge(tmp_path: Path) -> None:
     assert document["label"] == "no_edge"
     assert document["promotion_decision"] == "forbidden"
     assert document["selected_config_id"] is None
+    assert document["holdout"] is None
+    markdown = (tmp_path / "out" / "result.md").read_text(encoding="utf-8")
+    assert "holdout sealed (not evaluated)" in markdown
+    assert "net 1.0 mean" not in markdown
 
 
 def test_cost_wipe_is_fragile(tmp_path: Path) -> None:
@@ -126,6 +157,8 @@ def test_cost_wipe_is_fragile(tmp_path: Path) -> None:
     )
     assert document["label"] == "interesting_but_fragile"
     assert document["promotion_decision"] == "forbidden"
+    assert document["selected_config_id"] is None
+    assert document["holdout"] is None
 
 
 def test_holdout_reversal_is_fragile(tmp_path: Path) -> None:
@@ -133,6 +166,9 @@ def test_holdout_reversal_is_fragile(tmp_path: Path) -> None:
     assert document["label"] == "interesting_but_fragile"
     assert document["promotion_decision"] == "forbidden"
     assert document["label"] != "passes_h1"
+    assert document["selected_config_id"] == "real"
+    holdout = _mapping(document["holdout"])
+    assert _mapping(holdout["gross"])["trade_count"] is not None
 
 
 def test_lookahead_is_fail_closed(tmp_path: Path) -> None:
@@ -171,6 +207,136 @@ def test_short_series_is_not_enough_data(tmp_path: Path) -> None:
     assert document["status"] == "completed"
     assert document["label"] == "not_enough_data"
     assert document["promotion_decision"] == "forbidden"
+    assert document["selected_config_id"] is None
+    assert document["holdout"] is None
+
+
+def test_holdout_covering_the_series_fails_closed(tmp_path: Path) -> None:
+    document = _run_rows(
+        tmp_path,
+        _regime_rows(40),
+        train_bars=10,
+        test_bars=5,
+        holdout_bars=40,
+        min_folds=1,
+    )
+    assert document["status"] == "failed_closed"
+    assert document["failure_kind"] == "split"
+    assert document["label"] is None
+    assert "holdout" not in document
+
+
+def test_zero_latency_on_the_bar_clock_requires_an_explicit_flag(tmp_path: Path) -> None:
+    _write_parquet(tmp_path / "bars.parquet", _regime_rows(80))
+    spec = _spec_body(parquet=True)
+    spec["features"] = [
+        {
+            "name": "taker_imbalance",
+            "column": "taker_imbalance",
+            "available_at_column": "ts",
+        }
+    ]
+    costs = _mapping(spec["costs"])
+    costs["latency_bars"] = 0
+    split = _mapping(spec["split"])
+    split["train_bars"] = 20
+    split["test_bars"] = 10
+    split["holdout_bars"] = 15
+    sample = _mapping(spec["sample"])
+    sample["min_trades_validation"] = 5
+    sample["min_trades_holdout"] = 2
+    spec_path = tmp_path / "spec.json"
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+    with pytest.raises(HarnessError, match="allow_zero_latency") as caught:
+        validate_spec(load_document(spec_path))
+    assert caught.value.failure_kind == "spec"
+    costs["allow_zero_latency"] = True
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+    lock_spec(spec_path)
+    outcome = execute(spec_path, tmp_path / "out")
+    assert outcome.document["status"] == "completed"
+    reported = _mapping(outcome.document["costs"])
+    assert reported["allow_zero_latency"] is True
+    markdown = (tmp_path / "out" / "result.md").read_text(encoding="utf-8")
+    assert "allow_zero_latency: true" in markdown
+
+
+def test_separate_availability_clock_may_use_zero_latency_without_the_flag() -> None:
+    body = _spec_body(parquet=True)
+    _mapping(body["costs"])["latency_bars"] = 0
+    document = json.loads(json.dumps(body))
+    assert isinstance(document, dict)
+    spec = validate_spec(document)
+    assert spec.costs.latency_bars == 0
+    assert spec.costs.allow_zero_latency is False
+
+
+def test_data_fingerprint_mismatch_requires_relock(tmp_path: Path) -> None:
+    spec_path = _write_spec(
+        tmp_path,
+        _regime_rows(120),
+        train_bars=40,
+        test_bars=20,
+        holdout_bars=20,
+        min_trades_validation=5,
+        min_trades_holdout=2,
+    )
+    lock_spec(spec_path)
+    lock_payload = json.loads((tmp_path / "spec.json.lock.json").read_text(encoding="utf-8"))
+    assert isinstance(lock_payload, dict)
+    locked = _mapping(lock_payload["data_fingerprint"])
+    _write_parquet(tmp_path / "bars.parquet", _alternating_rows(120, bar_return=0.0))
+    refused = execute(spec_path, tmp_path / "refused")
+    assert refused.exit_code == 2
+    assert refused.document["failure_kind"] == "lock"
+    assert refused.document["label"] is None
+    lock_spec(spec_path)
+    rerun = execute(spec_path, tmp_path / "rerun")
+    assert rerun.document["failure_kind"] is None
+    fingerprint = _mapping(rerun.document["data_fingerprint"])
+    assert fingerprint != locked
+    inputs = fingerprint["inputs"]
+    assert isinstance(inputs, list) and len(inputs) == 1
+    entry = _mapping(inputs[0])
+    assert entry["row_count"] == 120
+    assert entry["timestamp_min"] == 0
+    assert entry["timestamp_max"] == 119
+    assert entry["checksum_algorithm"] == "sha256"
+    checksum = entry["content_checksum"]
+    assert isinstance(checksum, str) and len(checksum) == 64
+
+
+def test_random_walk_zero_cost_false_positive_rate_stays_near_alpha(tmp_path: Path) -> None:
+    """Zero-drift walk, zero costs, one config. Validation rejects stay near alpha.
+
+    Ceiling is 6 of 40. Under a Binomial(40, 0.05) draw, P(X >= 7) is about 0.003,
+    so a gate sized at alpha stays under the ceiling. Seeds are fixed.
+    """
+
+    survivals = 0
+    passes = 0
+    for seed in range(40):
+        document = _run_rows(
+            tmp_path / f"rw-{seed}",
+            _random_walk_rows(480, seed),
+            fee_bps=0.0,
+            slippage_bps=0.0,
+            spread_bps=0.0,
+            train_bars=80,
+            test_bars=40,
+            holdout_bars=80,
+            min_trades_validation=15,
+            min_trades_holdout=8,
+        )
+        assert document["status"] == "completed"
+        if document["selected_config_id"] is not None:
+            survivals += 1
+        else:
+            assert document["holdout"] is None
+        if document["label"] == "passes_h1":
+            passes += 1
+    assert survivals <= 6
+    assert passes <= survivals
 
 
 def test_lock_mismatch_refuses_to_run(tmp_path: Path) -> None:
@@ -204,6 +370,20 @@ def test_duckdb_view_backend(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     outcome = execute(spec_path, tmp_path / "out")
     assert outcome.document["label"] == "passes_h1"
     assert outcome.document["promotion_decision"] == "paper_candidate"
+    fingerprint = _mapping(outcome.document["data_fingerprint"])
+    inputs = fingerprint["inputs"]
+    assert isinstance(inputs, list) and len(inputs) == 1
+    entry = _mapping(inputs[0])
+    assert entry["locator"] == "hist_bn_um_bars"
+    assert entry["checksum_algorithm"] == "duckdb-row-hash-sha256"
+    duckdb_checksum = entry["content_checksum"]
+    assert isinstance(duckdb_checksum, str) and len(duckdb_checksum) == 64
+    assert entry["row_count"] == 420
+    connection = duckdb.connect(str(database))
+    connection.execute("INSERT INTO bars VALUES (1000, 101.0, 0.0, 1000)")
+    connection.close()
+    changed = execute(spec_path, tmp_path / "changed")
+    assert changed.document["failure_kind"] == "lock"
 
 
 def test_lock_refuses_unsafe_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -389,6 +569,19 @@ def _regime_rows(
             price *= 1.0 + 0.004 * sign
         available = timestamp + 1 if lookahead else timestamp
         rows.append((timestamp, price, regime, available))
+    return rows
+
+
+def _random_walk_rows(n_rows: int, seed: int) -> list[tuple[int, float, float, int]]:
+    rng = random.Random(seed)
+    price = 100.0
+    rows: list[tuple[int, float, float, int]] = []
+    for timestamp in range(n_rows):
+        feature = 1.0 if rng.randrange(2) == 0 else -1.0
+        if timestamp > 0:
+            shock = 0.01 if rng.randrange(2) == 0 else -0.01
+            price *= 1.0 + shock
+        rows.append((timestamp, price, feature, timestamp))
     return rows
 
 

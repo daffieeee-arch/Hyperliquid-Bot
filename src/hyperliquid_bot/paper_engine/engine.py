@@ -11,6 +11,7 @@ checks around that gate, and it turns a drawdown breach into a flatten halt.
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -42,6 +43,7 @@ from hyperliquid_bot.paper_engine.execution import (
 from hyperliquid_bot.paper_engine.ledger import (
     CLAIM_SCHEMA,
     HEALTH_SCHEMA,
+    STATE_RECENT_RECORD_LIMIT,
     STATE_SCHEMA,
     RunStore,
 )
@@ -170,9 +172,19 @@ class _DesiredOrder:
 
 @dataclass(frozen=True, slots=True)
 class _WorkingOrder:
+    """A pending IOC order.
+
+    ``quantity`` is the floored, risk-clipped size that will be filled.
+    ``desired_quantity`` is the unrounded size the strategy asked for. A
+    repeated target is matched against ``desired_quantity`` so a clipped
+    order is not cancelled and re-armed on every event while it waits out
+    the configured latency.
+    """
+
     client_order_id: str
     side: str
     quantity: Decimal
+    desired_quantity: Decimal
     reduce_only: bool
     eligible_received_ns: int
     decision_received_ns: int
@@ -234,9 +246,17 @@ class PaperEngine:
         self._last_event_time: datetime | None = None
         self._working: _WorkingOrder | None = None
         self._next_order_number = 1
-        self._orders: list[dict[str, object]] = []
-        self._fills: list[dict[str, object]] = []
-        self._rejections: list[dict[str, object]] = []
+        # state.json is rewritten on every event, so it keeps only the most
+        # recent records. ledger.jsonl stays the complete audit trail.
+        self._orders: deque[dict[str, object]] = deque(maxlen=STATE_RECENT_RECORD_LIMIT)
+        self._fills: deque[dict[str, object]] = deque(maxlen=STATE_RECENT_RECORD_LIMIT)
+        self._rejections: deque[dict[str, object]] = deque(maxlen=STATE_RECENT_RECORD_LIMIT)
+        self._order_count = 0
+        self._fill_count = 0
+        self._rejection_count = 0
+        self._repeat_key: tuple[str, str | None, str] | None = None
+        self._repeat_count = 0
+        self._repeat_last_ns: int | None = None
         self._closed = False
         self._missing_flatten = False
         self._store.write_claim(self._claim())
@@ -325,6 +345,7 @@ class PaperEngine:
 
         if self._closed:
             raise PaperEngineError("run is already closed.")
+        self._flush_repeated_rejections()
         self._closed = True
         self._persist(self._last_event_time or self._created_at)
 
@@ -527,6 +548,7 @@ class PaperEngine:
             client_order_id=client_order_id,
             side=desired.side,
             quantity=quantity,
+            desired_quantity=desired.quantity,
             reduce_only=desired.reduce_only,
             eligible_received_ns=received_ns + latency,
             decision_received_ns=received_ns,
@@ -534,7 +556,7 @@ class PaperEngine:
             clipped=clipped,
         )
         self._missing_flatten = False
-        self._store.append(
+        self._append(
             {
                 "type": "order_accepted",
                 "mode": "PAPER",
@@ -710,7 +732,8 @@ class PaperEngine:
                 "venue_fill": False,
             }
             self._fills.append(fill_record)
-            self._store.append({"type": "fill", "mode": "PAPER", **fill_record})
+            self._fill_count += 1
+            self._append({"type": "fill", "mode": "PAPER", **fill_record})
         if filled <= 0:
             status = "CANCELED"
         elif filled < working.quantity:
@@ -736,7 +759,8 @@ class PaperEngine:
             "venue_orders_submitted": False,
         }
         self._orders.append(order_record)
-        self._store.append({"type": "order_completed", **order_record})
+        self._order_count += 1
+        self._append({"type": "order_completed", **order_record})
         self._working = None
         if working.reduce_only and self._position.position_quantity != 0 and filled <= 0:
             self._missing_flatten = True
@@ -759,21 +783,65 @@ class PaperEngine:
             "venue_orders_submitted": False,
         }
         self._orders.append(order_record)
-        self._store.append({"type": "order_canceled", **order_record})
+        self._order_count += 1
+        self._append({"type": "order_canceled", **order_record})
         self._working = None
 
     def _book_complete(self) -> bool:
         return self._bbo is not None and bbo_is_complete(self._bbo)
 
     def _reject(self, *, reason: str, detail: str | None, received_utc_ns: int | None) -> None:
+        """Record a rejection. Back-to-back identical rejections share one record.
+
+        A strategy that keeps asking for a blocked target is rejected on every
+        event. Only the first rejection of such a streak is written in full;
+        the repeats are counted and written as one ``risk_rejected_repeats``
+        line when the streak ends, so the ledger stays complete but bounded.
+        """
+
+        self._rejection_count += 1
+        key = (reason, detail, self._kill.value)
+        if key == self._repeat_key and self._rejections:
+            self._repeat_count += 1
+            self._repeat_last_ns = received_utc_ns
+            latest = self._rejections[-1]
+            latest["repeats"] = self._repeat_count
+            latest["last_received_utc_ns"] = received_utc_ns
+            return
         record: dict[str, object] = {
             "reason": reason,
             "detail": detail,
             "received_utc_ns": received_utc_ns,
             "kill_switch": self._kill.value,
         }
-        self._rejections.append(record)
-        self._store.append({"type": "risk_rejected", "mode": "PAPER", **record})
+        self._append({"type": "risk_rejected", "mode": "PAPER", **record})
+        self._rejections.append({**record, "repeats": 0, "last_received_utc_ns": received_utc_ns})
+        self._repeat_key = key
+
+    def _append(self, payload: dict[str, object]) -> None:
+        """Write one ledger line after closing any open rejection streak."""
+
+        self._flush_repeated_rejections()
+        self._repeat_key = None
+        self._store.append(payload)
+
+    def _flush_repeated_rejections(self) -> None:
+        if self._repeat_count == 0 or self._repeat_key is None:
+            return
+        reason, detail, kill_switch = self._repeat_key
+        self._store.append(
+            {
+                "type": "risk_rejected_repeats",
+                "mode": "PAPER",
+                "reason": reason,
+                "detail": detail,
+                "kill_switch": kill_switch,
+                "repeats": self._repeat_count,
+                "last_received_utc_ns": self._repeat_last_ns,
+            }
+        )
+        self._repeat_count = 0
+        self._repeat_last_ns = None
 
     def _halt_new(self, reason: str) -> None:
         if self._kill is KillSwitch.FLATTEN_HALT:
@@ -781,14 +849,14 @@ class PaperEngine:
         if self._kill is KillSwitch.NONE:
             self._kill = KillSwitch.HALT_NEW
             self._kill_reason = reason
-            self._store.append({"type": "kill_switch", "state": self._kill.value, "reason": reason})
+            self._append({"type": "kill_switch", "state": self._kill.value, "reason": reason})
 
     def _flatten_halt(self, reason: str) -> None:
         if self._kill is KillSwitch.FLATTEN_HALT:
             return
         self._kill = KillSwitch.FLATTEN_HALT
         self._kill_reason = reason
-        self._store.append({"type": "kill_switch", "state": self._kill.value, "reason": reason})
+        self._append({"type": "kill_switch", "state": self._kill.value, "reason": reason})
 
     def _view(self) -> StrategyView:
         return StrategyView(
@@ -853,9 +921,13 @@ class PaperEngine:
             "fees_usdc": decimal_text(self._position.fees_usdc),
             "kill_switch": self._kill.value,
             "kill_reason": self._kill_reason,
-            "orders": self._orders,
-            "fills": self._fills,
-            "risk_rejections": self._rejections,
+            "orders": list(self._orders),
+            "fills": list(self._fills),
+            "risk_rejections": list(self._rejections),
+            "recent_record_limit": STATE_RECENT_RECORD_LIMIT,
+            "order_count": self._order_count,
+            "fill_count": self._fill_count,
+            "risk_rejection_count": self._rejection_count,
             "open_order": None if self._working is None else self._working.client_order_id,
             "venue_orders_submitted": False,
             "resume": False,
@@ -908,9 +980,9 @@ class PaperEngine:
             "observed_at_utc": format_utc(observed_at, field_name="observed_at_utc"),
             "observed_at_local": format_amsterdam(observed_at, field_name="observed_at_local"),
             "timezone": TIMEZONE_NAME,
-            "order_count": len(self._orders),
-            "fill_count": len(self._fills),
-            "risk_rejection_count": len(self._rejections),
+            "order_count": self._order_count,
+            "fill_count": self._fill_count,
+            "risk_rejection_count": self._rejection_count,
             "source_commit": self._config.source_commit,
             "image_digest": self._config.image_digest,
             "venue": self._config.venue,
@@ -948,7 +1020,7 @@ def _flatten_desired(position: Decimal) -> _DesiredOrder | None:
 def _same_desire(working: _WorkingOrder, desired: _DesiredOrder) -> bool:
     return (
         working.side == desired.side
-        and working.quantity == desired.quantity
+        and working.desired_quantity == desired.quantity
         and working.reduce_only == desired.reduce_only
     )
 

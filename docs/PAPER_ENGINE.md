@@ -26,6 +26,19 @@ Each `run_id` is create-only. If the directory exists, opening it raises
 <store>/<run_id>/health.json
 ```
 
+`ledger.jsonl` is the complete, append-only audit trail and is fsynced on
+every append. A strategy that keeps asking for a blocked target is rejected
+on every event; the first rejection of such a back-to-back streak is written
+as `risk_rejected` and the rest as one `risk_rejected_repeats` line with a
+`repeats` count when the streak ends (or at `close()`).
+
+`state.json` (`paper-engine-state-v2`) and `health.json` are projections
+rewritten on every event. They are replaced atomically but not fsynced. To
+keep that rewrite constant-size on a long run, `state.json` holds only the
+most recent `recent_record_limit` (100) orders, fills, and rejections, plus
+the full `order_count`, `fill_count`, and `risk_rejection_count`. Rebuild the
+full history from the ledger.
+
 `health.json` (`paper-engine-health-v1`) is the cockpit status file. Machine
 timestamps are UTC. `observed_at_local` and `last_event_at_local` use
 Europe/Amsterdam with a `CEST` or `CET` label. `venue_orders_submitted` is
@@ -51,7 +64,9 @@ A buy fills the ask and a sell fills the bid, worsened by the configured
 slippage fraction, then rounded to that grid. Quantity is capped by the
 displayed size (or the trade size when the book is not complete). The
 unfilled remainder is cancelled (IOC). Latency waits for a later event
-before that touch is eligible. A missing side, a crossed book, or a missing
+before that touch is eligible. While an order waits, the same target from
+the strategy keeps it working, even when the order was rounded or clipped
+to the risk size; only a changed target cancels and replaces it. A missing side, a crossed book, or a missing
 mark does not become a mid. New risk is rejected. Unrealized PnL stays null
 until a venue mark or a complete two-sided book exists.
 

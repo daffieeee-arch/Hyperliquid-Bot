@@ -331,6 +331,75 @@ def test_per_trade_sizing_clips_down_and_fee_matches(tmp_path: Path) -> None:
     assert Decimal(str(fills[0]["quantity"])) < Decimal("1")
 
 
+def test_clipped_order_with_latency_fills_instead_of_rearming(tmp_path: Path) -> None:
+    # A clipped working order must survive the same target on later events.
+    # Otherwise it is cancelled and re-armed on every event and never fills
+    # while events arrive faster than the configured latency.
+    engine = _engine(
+        tmp_path,
+        "cliplat01",
+        strategy=ScriptedStrategy((Decimal("1"),)),
+        config=PaperEngineConfig(latency_ns=250_000_000),
+    )
+    for index in range(10):
+        engine.on_event(_bbo(ns=index * 100_000_000, bid="99999", ask="100000", ordinal=index + 1))
+    engine.close()
+    state = _state(engine)
+    assert engine.position_quantity == Decimal("0.125")
+    orders = _objects(state["orders"])
+    assert [order["status"] for order in orders] == ["FILLED"]
+    assert _objects(state["fills"])[0]["received_utc_ns"] == 300_000_000
+
+
+def test_repeated_rejections_are_coalesced_in_state_and_ledger(tmp_path: Path) -> None:
+    engine = _engine(
+        tmp_path,
+        "repeatrej1",
+        strategy=ScriptedStrategy((Decimal("1"),)),
+    )
+    for index in range(300):
+        engine.on_event(_bbo(ns=index * 1_000_000, bid="99999", ask="100000", ordinal=index + 1))
+    engine.close()
+    assert engine.position_quantity == Decimal("0.125")
+    state = _state(engine)
+    rejections = _objects(state["risk_rejections"])
+    assert len(rejections) == 1
+    assert rejections[0]["reason"] == "paper_risk"
+    assert rejections[0]["repeats"] == 298
+    assert state["risk_rejection_count"] == 299
+    assert read_health(engine.health_path)["risk_rejection_count"] == 299
+    ledger = _ledger(tmp_path / "repeatrej1")
+    rejected = [row for row in ledger if row["type"] == "risk_rejected"]
+    repeats = [row for row in ledger if row["type"] == "risk_rejected_repeats"]
+    assert len(rejected) == 1
+    assert len(repeats) == 1
+    assert repeats[0]["repeats"] == 298
+    assert repeats[0]["reason"] == "paper_risk"
+    assert repeats[0]["detail"] == rejected[0]["detail"]
+
+
+def test_state_keeps_recent_records_and_full_counts(tmp_path: Path) -> None:
+    targets = tuple(Decimal("0.01") if index % 2 == 0 else Decimal("0") for index in range(240))
+    engine = _engine(tmp_path, "bounded01", strategy=ScriptedStrategy(targets))
+    for index in range(240):
+        engine.on_event(_bbo(ns=index * 1_000_000, bid="99999", ask="100000", ordinal=index + 1))
+    engine.close()
+    state = _state(engine)
+    assert state["schema"] == "paper-engine-state-v2"
+    assert state["recent_record_limit"] == 100
+    assert state["order_count"] == 240
+    assert state["fill_count"] == 240
+    assert len(_objects(state["orders"])) == 100
+    assert len(_objects(state["fills"])) == 100
+    assert _objects(state["orders"])[-1]["side"] == "SELL"
+    health = read_health(engine.health_path)
+    assert health["order_count"] == 240
+    assert health["fill_count"] == 240
+    ledger = _ledger(tmp_path / "bounded01")
+    assert sum(1 for row in ledger if row["type"] == "order_completed") == 240
+    assert sum(1 for row in ledger if row["type"] == "fill") == 240
+
+
 def test_daily_loss_halts_entries_but_allows_flatten(tmp_path: Path) -> None:
     engine = _engine(
         tmp_path,
@@ -573,6 +642,11 @@ def _state(engine: PaperEngine) -> dict[str, object]:
     if type(payload) is not dict:
         raise AssertionError("state file must be an object.")
     return payload
+
+
+def _ledger(run_dir: Path) -> list[dict[str, object]]:
+    lines = (run_dir / "ledger.jsonl").read_text(encoding="utf-8").splitlines()
+    return _objects([json.loads(line) for line in lines])
 
 
 def _objects(value: object) -> list[dict[str, object]]:

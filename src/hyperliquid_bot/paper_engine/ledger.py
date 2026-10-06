@@ -3,6 +3,11 @@
 A ``run_id`` is a single new directory. If it already exists, opening it
 raises and nothing is appended. There is no resume API. Human-facing times in
 the health file use Europe/Amsterdam; numeric state stays decimal text and UTC.
+
+``ledger.jsonl`` is the complete audit trail and is fsynced on every append.
+``state.json`` and ``health.json`` are projections rewritten on every event.
+They are replaced atomically but not fsynced, and ``state.json`` keeps only
+the most recent records so its size does not grow with run length.
 """
 
 from __future__ import annotations
@@ -16,7 +21,8 @@ from typing import Final
 from hyperliquid_bot.paper_engine.errors import RunAlreadyExistsError
 
 HEALTH_SCHEMA: Final = "paper-engine-health-v1"
-STATE_SCHEMA: Final = "paper-engine-state-v1"
+STATE_SCHEMA: Final = "paper-engine-state-v2"
+STATE_RECENT_RECORD_LIMIT: Final = 100
 CLAIM_SCHEMA: Final = "paper-engine-run-claim-v1"
 _RUN_ID_PATTERN: Final = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
@@ -52,12 +58,14 @@ class RunStore:
         self.ledger_path.touch()
 
     def write_claim(self, payload: dict[str, object]) -> None:
-        _write_json(self.claim_path, payload)
+        _write_json(self.claim_path, payload, durable=True)
 
     def append(self, payload: dict[str, object]) -> None:
         line = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         with self.ledger_path.open("a", encoding="utf-8") as handle:
             handle.write(line + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
 
     def write_state(self, payload: dict[str, object]) -> None:
         _write_json(self.state_path, payload)
@@ -83,10 +91,11 @@ def read_health(path: Path) -> dict[str, object]:
     return payload
 
 
-def _write_json(path: Path, payload: dict[str, object]) -> None:
+def _write_json(path: Path, payload: dict[str, object], *, durable: bool = False) -> None:
     temporary = path.with_name(f".{path.name}.tmp")
-    temporary.write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    with temporary.open("w", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        if durable:
+            handle.flush()
+            os.fsync(handle.fileno())
     os.replace(temporary, path)

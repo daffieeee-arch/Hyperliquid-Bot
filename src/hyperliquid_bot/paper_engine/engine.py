@@ -311,12 +311,14 @@ class PaperEngine:
         # only uses a trade that arrived after the stop was set.
         self._trade_count = 0
         self._stop_set_trade_count: int | None = None
+        self._stop_set_event_time: datetime | None = None
         self._stop_exit_pending = False
         # +1 after a long was stopped, -1 after a short: blocks re-entering the
         # same direction until the strategy's target goes flat or reverses.
         self._stop_lockout = 0
-        # Displayed size already taken from the current quote. Reset when a
-        # new BBO or trade arrives, so no two fills use the same quote twice.
+        # Size PAPER already took at the touch. The size left there is the
+        # displayed size minus this. A BBO side resets when its price changes,
+        # a trade print on the next trade.
         self._bid_taken = Decimal("0")
         self._ask_taken = Decimal("0")
         self._trade_taken = Decimal("0")
@@ -335,6 +337,8 @@ class PaperEngine:
         self._failed = False
         self._failed_at: datetime | None = None
         self._missing_flatten = False
+        # An immediate exit is waiting because PAPER already used up the quote.
+        self._exit_waiting_for_quote = False
         self._store.write_claim(self._claim())
         self._persist(self._created_at)
 
@@ -482,11 +486,15 @@ class PaperEngine:
 
     def _update_market(self, event: MarketEvent) -> None:
         if isinstance(event, BboEvent):
-            # Each new quote is fresh liquidity: PAPER fills have no market
-            # impact across updates, only within the quote they filled on.
+            # PAPER fills never move the real book. Had the fill been real, the
+            # level would still be short what PAPER took while its price stays
+            # at the touch, so only a new price on a side counts as fresh.
+            previous = self._bbo
+            if previous is None or previous.bid_price != event.bid_price:
+                self._bid_taken = Decimal("0")
+            if previous is None or previous.ask_price != event.ask_price:
+                self._ask_taken = Decimal("0")
             self._bbo = event
-            self._bid_taken = Decimal("0")
-            self._ask_taken = Decimal("0")
             if bbo_is_complete(event):
                 mid = bbo_mid(event)
                 self._bbo_mark = mid
@@ -640,7 +648,11 @@ class PaperEngine:
                 marked is None
                 and trade is not None
                 and self._stop_set_trade_count is not None
+                and self._stop_set_event_time is not None
                 and self._trade_count > self._stop_set_trade_count
+                # A print re-delivered after a reconnect carries its old venue
+                # time; only a print no older than the stop counts.
+                and trade.event_time_utc >= self._stop_set_event_time
             ):
                 # No mark at all (one-sided book, no venue mark): a trade printed
                 # since the stop was set still protects the position. This is an
@@ -674,12 +686,14 @@ class PaperEngine:
         self, desired: _DesiredOrder | None, received_ns: int, reason: str
     ) -> None:
         if desired is not None and self._touch_used_up(desired.side):
-            # Our own earlier fill took this quote (for example a partial
-            # exit): retry on the next quote rather than take it twice. A
-            # strategy order must not fill meanwhile, so it is cancelled.
+            # Our own earlier fill took what this quote shows (for example a
+            # partial exit): wait for new size or a new price rather than take
+            # it twice. A strategy order must not fill meanwhile: cancel it.
+            self._exit_waiting_for_quote = True
             if self._working is not None and not self._working.immediate_exit:
                 self._cancel_working(received_ns, f"{reason}-pending")
             return
+        self._exit_waiting_for_quote = False
         self._submit_desired(desired, received_ns=received_ns, reason=reason, immediate=True)
         self._fill_working_from_book(received_ns)
 
@@ -778,6 +792,15 @@ class PaperEngine:
             )
             return
         touch_price, _touch_size = priced
+        if not immediate and self._touch_used_up(desired.side):
+            # PAPER already took what this quote shows; wait for new size.
+            self._reject(
+                reason="touch_consumed",
+                detail=reason,
+                received_utc_ns=received_ns,
+                desired=desired,
+            )
+            return
         limit_price = self._limit_price(desired, touch_price)
         # The notional a fill can reach. A BUY limit caps it; a SELL limit only
         # floors the price, so a short gets the same cushion above the touch
@@ -1013,7 +1036,7 @@ class PaperEngine:
             return
         event = self._current_touch_event()
         if event is None:
-            self._missing_flatten = True
+            self._missing_flatten = working.reduce_only
             return
         self._fill_against(working, event, received_ns=received_ns)
 
@@ -1153,7 +1176,9 @@ class PaperEngine:
         if after == 0:
             self._stop_price = None
             self._stop_set_trade_count = None
+            self._stop_set_event_time = None
             self._stop_exit_pending = False
+            self._exit_waiting_for_quote = False
             return
         if abs(after) <= abs(before) and _sign(after) == _sign(before):
             return
@@ -1168,6 +1193,7 @@ class PaperEngine:
             average * (Decimal(1) - distance) if after > 0 else average * (Decimal(1) + distance)
         )
         self._stop_set_trade_count = self._trade_count
+        self._stop_set_event_time = self._last_event_time
         self._store.append(
             {
                 "type": "stop_set",
@@ -1382,6 +1408,7 @@ class PaperEngine:
             "stale": self._kill_reason == "stale_data",
             **self._stop_projection(),
             "flatten_blocked_missing_price": self._missing_flatten,
+            "exit_waiting_for_quote": self._exit_waiting_for_quote,
             "ledger_write_failed": self._store.write_failed,
             "last_event_at_utc": (
                 None

@@ -98,17 +98,26 @@ at decision time: entries use `entry_price_band_fraction`, exits
 `exit_price_band_fraction`, and the limit is rounded so it never widens the
 band. A fill beyond the limit does not happen; the order completes as
 `CANCELED` with `unfilled_reason: price_band` (other reasons: `no_touch`,
-`touch_size`, `touch_consumed`). Displayed size is used up per quote: fills
-on the same BBO message or trade print never add up to more than its size.
-A new BBO message or trade print is fresh liquidity, because PAPER fills
-have no market impact across quote updates; an exit waiting on a used-up
-quote retries on the next one. While an order waits, the same target from
-the strategy keeps it working, even when the order was rounded or clipped
-to the risk size; only a changed target cancels and replaces it. A kill
-flatten and a stop exit are zero-latency: they replace a matching strategy
-order that is still waiting out its latency and fill on the same event. A missing side, a crossed book, or a missing
-mark does not become a mid. New risk is rejected. Unrealized PnL stays null
-until a venue mark or a complete two-sided book exists.
+`touch_size`, `touch_consumed`).
+
+Displayed size is used up per price level at the touch. PAPER fills do not
+move the real book, so had a fill been real, that level would still be short
+what PAPER took: while a BBO side keeps its price, the size left there is the
+displayed size minus what PAPER already took. A new price on that side is a
+new level with its full displayed size. A trade print stays used up until
+the next print. A strategy order on a used-up quote is rejected with
+`touch_consumed` (recorded once while the block lasts). A stop exit or kill
+flatten on a used-up quote waits for new size or a new price, cancels a
+strategy order meanwhile, and `health.json` shows
+`exit_waiting_for_quote: true`.
+
+While an order waits, the same target from the strategy keeps it working,
+even when the order was rounded or clipped to the risk size; only a changed
+target cancels and replaces it. A kill flatten and a stop exit are
+zero-latency: they replace a matching strategy order that is still waiting
+out its latency and fill on the same event. A missing side, a crossed book,
+or a missing mark does not become a mid. New risk is rejected. Unrealized
+PnL stays null until a venue mark or a complete two-sided book exists.
 
 ## Risk
 
@@ -132,8 +141,9 @@ until a venue mark or a complete two-sided book exists.
   price as missing. The config refuses a stop distance not wider than
   `slippage_fraction`, which would stop out every fill at once. Choose it
   wider than half the spread plus slippage as well; the spread cannot be
-  checked up front, and a narrower stop fires on the first mark after a fill. A gap fills at
-  the touch, beyond the stop: the loss is then larger than the risk budget.
+  checked up front, and a narrower stop fires on the first mark after a
+  fill. A gap fills at the touch, beyond the stop: the loss is then larger
+  than the risk budget.
 - After a stop-out the strategy cannot re-open the same direction
   (`stop_lockout`, recorded once) until its target goes flat or reverses
   (`stop_lockout_cleared`). A stop-out does not halt the engine.
@@ -144,7 +154,8 @@ until a venue mark or a complete two-sided book exists.
   (`kill_switch` state `NONE`, reason `daily_loss_window_reset` /
   `weekly_loss_window_reset`); the guard re-checks against the new baseline
   at once. Windows start at the first event (a replay is created after its
-  tape), and a late event stamped in an earlier window never rolls one back. Drawdown, stale-data and missing-price halts do not lift by
+  tape), and a late event stamped in an earlier window never rolls one
+  back. Drawdown, stale-data and missing-price halts do not lift by
   themselves.
 - Drawdown at or beyond `drawdown_kill_fraction` flattens and halts.
 - A gap longer than `stale_after_ns` flattens and halts. The caller can also
@@ -165,7 +176,8 @@ same strategy, risk, and fill path.
   settlement, no venue reconciliation.
 - The stop is simulated by the engine, not resting on the venue: PAPER
   triggers on its own mark and only when an event arrives.
-- Depletion is tracked per displayed quote only; the book behind the touch
-  is not modelled.
+- Depletion is tracked at the touch only; the book behind it is not
+  modelled. A level that leaves the touch and comes back (a flickering
+  quote) is treated as new, so its full displayed size is available again.
 - A create-only run does not recover an open position after a process restart.
 - Paper fills are not evidence of edge, capacity, or LIVE readiness.

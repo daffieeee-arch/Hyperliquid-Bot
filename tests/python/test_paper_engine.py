@@ -107,11 +107,21 @@ def _bbo(
     )
 
 
-def _trade(*, ns: int, price: str, size: str, side: str = "SELL", ordinal: int = 1) -> TradeEvent:
+def _trade(
+    *,
+    ns: int,
+    price: str,
+    size: str,
+    side: str = "SELL",
+    ordinal: int = 1,
+    event_time: datetime | None = None,
+) -> TradeEvent:
     return TradeEvent(
         venue=VENUE,
         instrument_id=INSTRUMENT,
-        event_time_utc=CREATED + timedelta(microseconds=ns // 1000),
+        event_time_utc=(
+            CREATED + timedelta(microseconds=ns // 1000) if event_time is None else event_time
+        ),
         received_utc_ns=ns,
         source_event_id=f"trade-{ordinal}",
         price=Decimal(price),
@@ -578,7 +588,19 @@ def test_state_keeps_recent_records_and_full_counts(tmp_path: Path) -> None:
     targets = tuple(Decimal("0.01") if index % 2 == 0 else Decimal("0") for index in range(240))
     engine = _engine(tmp_path, "bounded01", strategy=ScriptedStrategy(targets))
     for index in range(240):
-        engine.on_event(_bbo(ns=index * 1_000_000, bid="99999", ask="100000", ordinal=index + 1))
+        # The displayed size grows faster than PAPER takes it, so its own
+        # earlier fills at the unchanged prices never use the touch up.
+        size = str(index + 1)
+        engine.on_event(
+            _bbo(
+                ns=index * 1_000_000,
+                bid="99999",
+                ask="100000",
+                bid_size=size,
+                ask_size=size,
+                ordinal=index + 1,
+            )
+        )
     engine.close()
     state = _state(engine)
     assert state["schema"] == "paper-engine-state-v2"
@@ -907,26 +929,87 @@ def test_stop_fallback_follows_processing_order_not_receive_stamps(tmp_path: Pat
     engine = _engine(tmp_path, "tradeorder", strategy=ScriptedStrategy((Decimal("0.1"),)))
     engine.on_event(_bbo(ns=2_000_000, bid="100000", ask="100001", ordinal=1))
     engine.on_event(_bbo(ns=3_000_000, bid="99990", ask=None, ask_size=None, ordinal=2))
-    # Processed after the stop was set, though stamped earlier by its feed.
-    engine.on_event(_trade(ns=1_000_000, price="97000", size="0.5", ordinal=3))
+    # A new print processed after the stop, though its receive stamp is earlier.
+    engine.on_event(
+        _trade(
+            ns=1_000_000,
+            price="97000",
+            size="0.5",
+            ordinal=3,
+            event_time=CREATED + timedelta(milliseconds=4),
+        )
+    )
     engine.close()
     assert engine.position_quantity == Decimal("0")
     triggered = [row for row in _ledger(tmp_path / "tradeorder") if row["type"] == "stop_triggered"]
     assert triggered[0]["mark_source"] == "last_trade"
 
 
-def test_each_new_quote_is_fresh_liquidity_but_a_mark_is_not(tmp_path: Path) -> None:
-    # PAPER fills have no market impact across quote updates: a new BBO
-    # message offers its displayed size again, a mark-only event does not.
-    engine = _engine(tmp_path, "freshquote", strategy=ScriptedStrategy((Decimal("0.1"),)))
+def test_stop_ignores_an_old_print_redelivered_after_the_stop(tmp_path: Path) -> None:
+    engine = _engine(tmp_path, "redeliver", strategy=ScriptedStrategy((Decimal("0.1"),)))
+    engine.on_event(_bbo(ns=2_000_000, bid="100000", ask="100001", ordinal=1))
+    engine.on_event(_bbo(ns=3_000_000, bid="99990", ask=None, ask_size=None, ordinal=2))
+    # A reconnect snapshot re-sends a print from before the position opened.
+    engine.on_event(_trade(ns=4_000_000, price="97000", size="0.5", ordinal=3, event_time=CREATED))
+    engine.close()
+    assert engine.position_quantity == Decimal("0.1")
+    assert not [row for row in _ledger(tmp_path / "redeliver") if row["type"] == "stop_triggered"]
+
+
+def test_unchanged_side_stays_used_up_and_the_wait_is_visible(tmp_path: Path) -> None:
+    # PAPER fills never move the real book: a bid the feed repeats unchanged
+    # (or a mark-only event) does not offer the taken size again.
+    engine = _engine(tmp_path, "sameside1", strategy=ScriptedStrategy((Decimal("0.1"),)))
     engine.on_event(_bbo(ns=0, bid="100000", ask="100001", ordinal=1))
     engine.on_event(_bbo(ns=1_000_000, bid="97990", ask="97991", bid_size="0.04", ordinal=2))
     assert engine.position_quantity == Decimal("0.06")
     engine.on_event(_mark(ns=2_000_000, price="97990", ordinal=3))
-    assert engine.position_quantity == Decimal("0.06")
     engine.on_event(_bbo(ns=3_000_000, bid="97990", ask="97995", bid_size="0.04", ordinal=4))
+    assert engine.position_quantity == Decimal("0.06")
+    health = read_health(engine.health_path)
+    assert health["exit_waiting_for_quote"] is True
+    assert health["flatten_blocked_missing_price"] is False
+    engine.on_event(_bbo(ns=4_000_000, bid="97980", ask="97995", bid_size="1", ordinal=5))
+    engine.close()
+    assert engine.position_quantity == Decimal("0")
+    assert read_health(engine.health_path)["exit_waiting_for_quote"] is False
+
+
+def test_new_size_at_the_same_price_offers_only_the_untaken_part(tmp_path: Path) -> None:
+    # Had the 0.04 BTC fill been real, the 97990 bid would still be short that
+    # size: a different size at the same price offers only what is left.
+    engine = _engine(tmp_path, "sameprice", strategy=ScriptedStrategy((Decimal("0.1"),)))
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001", ordinal=1))
+    engine.on_event(_bbo(ns=1_000_000, bid="97990", ask="97991", bid_size="0.04", ordinal=2))
+    assert engine.position_quantity == Decimal("0.06")
+    engine.on_event(_bbo(ns=2_000_000, bid="97990", ask="97991", bid_size="0.05", ordinal=3))
+    assert engine.position_quantity == Decimal("0.05")
+    engine.on_event(_bbo(ns=3_000_000, bid="97990", ask="97991", bid_size="0.03", ordinal=4))
+    assert engine.position_quantity == Decimal("0.05")
+    assert read_health(engine.health_path)["exit_waiting_for_quote"] is True
+    # A new price on the bid is a new level: its displayed size is available.
+    engine.on_event(_bbo(ns=4_000_000, bid="97985", ask="97991", bid_size="0.03", ordinal=5))
     engine.close()
     assert engine.position_quantity == Decimal("0.02")
+    exits = [row for row in _objects(_state(engine)["orders"]) if row["reason"] == "stop-exit"]
+    assert [row["filled_quantity"] for row in exits] == ["0.04", "0.01", "0.03"]
+
+
+def test_strategy_order_on_a_used_up_quote_is_one_recorded_block(tmp_path: Path) -> None:
+    targets = tuple(Decimal(text) for text in ("0.05", "0", "0.05", "0.05", "0.05"))
+    engine = _engine(tmp_path, "usedquote", strategy=ScriptedStrategy(targets))
+    for index in range(len(targets)):
+        engine.on_event(
+            _bbo(ns=index * 1_000_000, bid="99999", ask="100000", ask_size="0.05", ordinal=index)
+        )
+    engine.close()
+    state = _state(engine)
+    assert engine.position_quantity == Decimal("0")
+    assert [row["side"] for row in _objects(state["orders"])] == ["BUY", "SELL"]
+    rejections = _objects(state["risk_rejections"])
+    assert [(row["reason"], row["received_utc_ns"]) for row in rejections] == [
+        ("touch_consumed", 2_000_000)
+    ]
 
 
 def test_zero_displayed_size_blocks_a_flatten_as_missing_price(tmp_path: Path) -> None:

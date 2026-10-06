@@ -266,6 +266,7 @@ class PaperEngine:
         self._last_block: tuple[str, str | None, str, _DesiredOrder | None] | None = None
         self._closed = False
         self._failed = False
+        self._failed_at: datetime | None = None
         self._missing_flatten = False
         self._store.write_claim(self._claim())
         self._persist(self._created_at)
@@ -357,11 +358,14 @@ class PaperEngine:
         if self._closed:
             raise PaperEngineError("run is already closed.")
         self._closed = True
-        observed = self._last_event_time or self._created_at
         if self._failed:
-            self._write_failed_projections(observed)
+            # The ledger is refused after a failure; write the final
+            # projections directly and let a write error reach the caller.
+            observed = self._failed_at or self._created_at
+            self._store.write_health(self._health(observed))
+            self._store.write_state(self._state())
             return
-        self._persist(observed)
+        self._persist(self._last_event_time or self._created_at)
 
     def _require_open(self) -> None:
         if self._failed:
@@ -385,6 +389,7 @@ class PaperEngine:
             yield
         except BaseException:
             self._failed = True
+            self._failed_at = observed_at
             with contextlib.suppress(Exception):
                 self._store.commit()
             self._write_failed_projections(observed_at)

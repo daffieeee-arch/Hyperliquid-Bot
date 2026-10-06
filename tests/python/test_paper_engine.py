@@ -474,6 +474,7 @@ def test_exception_mid_event_fails_the_run_closed(tmp_path: Path) -> None:
     closed = read_health(engine.health_path)
     assert closed["status"] == "FAILED"
     assert closed["run_closed"] is True
+    assert closed["observed_at_utc"] == health["observed_at_utc"]
 
 
 def test_failed_ledger_write_is_not_retried_into_duplicates(

@@ -40,8 +40,9 @@ closed. Fills and orders already applied are written to the ledger,
 `health.json` reports status `FAILED`, and the run refuses further events;
 `close()` keeps that status. Start a new `run_id`. After a failed ledger
 write the store refuses later appends rather than risk writing a partly
-written batch twice, and `health.json` sets `ledger_write_failed: true`: the
-projections may then show fills the ledger does not have.
+written batch twice, and `health.json` sets `ledger_write_failed: true`. The
+flag means the last batch may be missing from the ledger or may not be
+durable; reconcile the projections against the ledger before trusting either.
 
 A strategy that keeps asking for the same blocked order is re-checked on
 every event, but that is one rejection: a `risk_rejected` line is written

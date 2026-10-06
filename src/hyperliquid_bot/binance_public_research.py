@@ -20,7 +20,7 @@ from contextlib import AbstractAsyncContextManager, suppress
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Final, NoReturn, Protocol, cast
+from typing import Any, Final, NoReturn, Protocol, cast
 from urllib.request import ProxyHandler, Request, build_opener
 
 import duckdb
@@ -1209,17 +1209,10 @@ class BinancePublicResearchCollector:
                     return_when=asyncio.FIRST_COMPLETED,
                 )
             finally:
-                if get_task not in done:
-                    get_task.cancel()
-                stop_task.cancel()
-                idle_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await stop_task
-                with suppress(asyncio.CancelledError):
-                    await idle_task
-                if get_task.cancelled():
-                    with suppress(asyncio.CancelledError):
-                        await get_task
+                # Queue.get is cancellation-safe: a frame it had not returned
+                # stays in the queue and is taken on the next pass.
+                unfinished = [task for task in (get_task, stop_task, idle_task) if task not in done]
+                await _cancel_and_wait(*unfinished)
             if get_task in done and not get_task.cancelled():
                 return get_task.result()
             if not inbound.empty():
@@ -1289,9 +1282,7 @@ class BinancePublicResearchCollector:
                     observed,
                 )
         finally:
-            drain_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await drain_task
+            await _cancel_and_wait(drain_task)
 
         # Idle reconnect + operator/duration stop is allowed only when this
         # profile already observed every required stream earlier in the run
@@ -2579,15 +2570,38 @@ async def _receive_or_stop(
             return_when=asyncio.FIRST_COMPLETED,
         )
         if receive_task in done:
-            return await receive_task
-        receive_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await receive_task
-        return None
+            return receive_task.result()
+        await _cancel_and_wait(receive_task)
+        if receive_task.cancelled():
+            return None
+        # The read finished just as the timeout fired: keep its frame, or
+        # raise its error, rather than dropping it.
+        return receive_task.result()
     finally:
-        stop_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await stop_task
+        # Also reached when our own task is cancelled mid-recv: do not leave
+        # a read running.
+        await _cancel_and_wait(*(task for task in (receive_task, stop_task) if not task.done()))
+
+
+async def _cancel_and_wait(*tasks: asyncio.Task[Any]) -> None:
+    """Cancel child tasks and wait until every one has finished.
+
+    ``with suppress(CancelledError): await task`` cannot tell the child's
+    CancelledError from a cancellation of the calling task, so it swallows
+    both. A cancelled socket-drain task then keeps reading until the queue is
+    full or the capture stops, and its session's failure surfaces only at
+    stop. ``gather(..., return_exceptions=True)`` keeps a cancellation of the
+    caller and re-raises it only after every child has finished, so no child
+    outlives its owner (for example a drain still reading a socket the owner
+    is about to close). Child outcomes are retrieved, not raised; callers that
+    need a child's result read it from the task.
+    """
+
+    if not tasks:
+        return
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def _wait_or_stop(delay_seconds: float, stop_event: asyncio.Event) -> None:

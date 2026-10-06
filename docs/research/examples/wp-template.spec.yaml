@@ -1,0 +1,55 @@
+# Template only. This file does not claim an edge and does not point at a
+# machine-specific warehouse path. Copy it, point data.view at a bar table,
+# lock it, then run it. See docs/research/hypothesis-harness.md.
+
+hypothesis_id: wp1-taker-flow-template
+universe: binance-um-btcusdt-bars
+dataset_version: hist-archives-bar-view
+h0: Mean net return per trade is less than or equal to zero after costs.
+h1: Mean net return per trade is greater than zero after costs on the untouched holdout.
+alpha: 0.05
+selection_method: bonferroni
+direction: signed
+signal_feature: taker_imbalance
+costs:
+  fee_bps: 4.0
+  slippage_bps: 1.0
+  spread_bps: 1.0
+  latency_bars: 1
+split:
+  method: expanding
+  train_bars: 2160
+  test_bars: 720
+  holdout_bars: 2160
+sample:
+  min_trades_validation: 30
+  min_trades_holdout: 30
+  min_folds: 3
+data:
+  backend: duckdb
+  view: hist_bn_um_bars
+  timestamp_column: ts
+  price_column: close
+  max_gap: 3600000
+  max_rows: 500000
+  columns:
+    ts:
+      dtype: int64
+      role: timestamp
+    close:
+      dtype: float64
+      role: price
+    taker_imbalance:
+      dtype: float64
+      role: feature
+    imbalance_available_ts:
+      dtype: int64
+      role: availability
+features:
+  - name: taker_imbalance
+    column: taker_imbalance
+    available_at_column: imbalance_available_ts
+configs:
+  - id: predeclared
+    threshold: 0.2
+    horizon_bars: 4

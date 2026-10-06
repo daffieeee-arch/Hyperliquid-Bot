@@ -33,6 +33,7 @@ The browser never receives trading secrets.
 | D01 bind | `same_d01_smoke_risk` | soak fixture | **UNAVAILABLE** if preflight omitted |
 | BN `usdm_public` | documented DATA-1F profile + copied BN chip | n/a | G/R stay n/a without health JSON |
 | RESEARCH P0 | strip claims/health + optional `research-out/**/panel-summary.json` | none in-repo | **UNAVAILABLE** if missing; no edge / no strategy PnL |
+| Hypothesis results | `hypothesis-result-v1` under `COCKPIT_HYPOTHESIS_RESULTS` or `<artifact-root>/hypothesis-results` | `tests/fixtures/hypothesis_results` (not auto-loaded) | **UNAVAILABLE** per missing field; unknown schema or non-PAPER file is unreadable; no invented bps |
 | Capture run IDs | operator docs / picker hint only | unset on VPS | auto-detect prefers a live retain |
 
 LAN phone: `PORT=3001 pnpm --filter @hyperliquid-bot/cockpit dev:lan` then
@@ -59,7 +60,10 @@ control, and on mobile the sidebar collapses into a drawer. Routes:
    registry, capture health, WP-Q1 sufficiency, instrument identity and the
    overlap clock. No live mid chart lives here. Missing files stay
    **UNAVAILABLE**; there is no edge, no strategy PnL and no 72h claim
-   mid-run.
+   mid-run. **`/research/results`** lists hypothesis work-package artifacts
+   (`result.json` + optional `report.md`). It is read-only: promotion stays
+   forbidden unless the artifact records an H1 pass, and the screen never
+   places an order.
 4. **`/paper` (COURSE-1 soak only):** What ran, why the last decision was
    accepted or rejected, assumed-overlay results, the intent tape and the
    read-only preflight caps. DATA retain stays a separate identity card.
@@ -158,11 +162,31 @@ than inventing a second store:
   research.duckdb
 
 <artifact-root>/research-out/**/panel-summary.json
+
+<artifact-root>/hypothesis-results/<work-package>/result.json
+<artifact-root>/hypothesis-results/<work-package>/report.md
 ```
 
 Optional `COCKPIT_RESEARCH_OUT` overrides the research-out root. `GET
 /api/research-summaries` lists or reads `panel-summary.json` only. No
 collectors. Missing files stay **UNAVAILABLE**.
+
+Optional `COCKPIT_HYPOTHESIS_RESULTS` points at a directory of
+`hypothesis-result-v1` artifacts (`GET /api/hypothesis-results`). When it is
+unset and an artifact root is set, the cockpit reads
+`<artifact-root>/hypothesis-results`. There is no baked VPS path, and the
+in-repo fixture is not loaded unless that variable points at it. Absent
+fields stay **UNAVAILABLE**. Every row shows `run_id`, `product`, and
+`path_contract`, as **UNAVAILABLE** when the artifact omits them. `passes_h1`
+must be a boolean. The table prints Amsterdam calendar days; the detail and
+the cell tooltip keep the full CEST/CET timestamp. Net bps/trade is shown
+before gross. On a narrow viewport the work-package column stays pinned
+while the nowrap table scrolls. Per-trade bps use
+`best_gross_bps_per_trade` and `best_net_bps_per_trade` (aliases
+`best_gross_bps` / `best_net_bps`). Window bounds are ISO-8601; a UTC
+nanosecond bound is accepted only as a digit string. An unknown
+`schema_version` or a `trading_mode` other than `PAPER` is unreadable and its
+metrics are not shown. One malformed file does not drop the rest.
 
 `paper-pnl.json` is assumed PAPER overlay economics, not venue PnL. COURSE-1
 `capture-health.json` is a bounded-run summary, not a 24/7 heartbeat. DATA-1A
@@ -376,8 +400,14 @@ Mean Reversion     QUARANTINE  0%          ...      ...      DEGRADED
 
 First PAPER slice (now on the first screen): Quant P0 only. Run registry,
 capture health, WP-Q1 sufficiency, instrument identity, and overlap clock.
-Hypothesis / OOS / H1 stay **UNAVAILABLE**. No edge, no mixed Spot+USDM
-price, no promotion.
+Hypothesis / OOS / H1 on that capture screen stay **UNAVAILABLE**. No edge,
+no mixed Spot+USDM price, no promotion.
+
+`/research/results` is the hypothesis work-package table: label, `passes_h1`,
+configs passed/tested, gross versus net bps/trade, OOS, holdout, data range,
+and `promotion_decision`, plus the report markdown. Times are Europe/Amsterdam
+with a CEST/CET label and `updated … ago`. Promotion is forbidden unless H1
+passed. The view does not promote and does not trade.
 
 Later: experiment registry, backtest comparison, promotion gates, parameter
 stability and paper-vs-backtest decay.

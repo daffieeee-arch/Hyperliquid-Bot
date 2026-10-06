@@ -52,6 +52,7 @@ from .capture_operator_alert import (
     CAPTURE_ALERT_LANE_DRAIN_SECONDS,
     CaptureAlertLane,
     emit_capture_operator_alert,
+    write_health_then_alert,
 )
 from .parquet_research import ParquetResearchWriter, ParquetRotation, create_research_catalog
 from .raw_research import (
@@ -612,6 +613,7 @@ class BinancePublicResearchCollector:
         self._alert_lane = CaptureAlertLane()
         self._alerted_profiles: set[str] = set()
         self._alerted_errors: list[BaseException] = []
+        self._webhook_delivered_error_ids: list[int] = []
         self.preserved_profile_failure: BaseException | None = None
         self.notice_while_siblings_active = False
         self._reconnect_ledger = BinanceReconnectLedger()
@@ -672,10 +674,8 @@ class BinancePublicResearchCollector:
         try:
             while not internal_stop.is_set():
                 done, _ = await asyncio.wait(watchers, return_when=asyncio.FIRST_COMPLETED)
-                if timer in done:
-                    end_reason = "duration"
-                    internal_stop.set()
-                    break
+                # Operator stop wins over a same-wait profile error so SIGINT
+                # stays OPERATOR_STOP and does not page.
                 if external_wait is not None and external_wait in done:
                     end_reason = "external_stop"
                     internal_stop.set()
@@ -689,6 +689,11 @@ class BinancePublicResearchCollector:
                     if task not in done:
                         continue
                     task_error = task.exception()
+                    # A sibling that returned because the shared stop is already
+                    # set is a controlled unwind, not a second failure.
+                    if task_error is None and internal_stop.is_set():
+                        watchers.discard(cast(asyncio.Task[object], task))
+                        continue
                     if task_error is not None:
                         profile_failures.append(task_error)
                         raised_profile_errors.append(task_error)
@@ -696,7 +701,7 @@ class BinancePublicResearchCollector:
                             "binance profile_task_failed error_class=%s",
                             type(task_error).__name__,
                         )
-                        failure = task_error
+                        failure: BaseException = task_error
                     else:
                         failure = BinanceTransportError(
                             "Binance required public stream ended unexpectedly."
@@ -713,6 +718,10 @@ class BinancePublicResearchCollector:
                         siblings_active=siblings_active,
                     )
                     watchers.discard(cast(asyncio.Task[object], task))
+                if timer in done:
+                    end_reason = "duration"
+                    internal_stop.set()
+                    break
                 if oi_task in done:
                     # Keep the other sockets running until their own stop. The
                     # open-interest exception is folded into the terminal status
@@ -789,10 +798,9 @@ class BinancePublicResearchCollector:
             raise oi_error
         if raised_profile_errors:
             raise raised_profile_errors[0]
-        if len(profile_failures) >= len(stream_tasks) and all(
-            isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError)
-            for result in stream_results
-        ):
+        # A required profile that ended without an exception is still a hard
+        # failure. Duration expiry must not rewrite that as COMPLETED.
+        if profile_failures:
             raise profile_failures[0]
 
     async def _run_stream(
@@ -1534,12 +1542,14 @@ class BinancePublicResearchCollector:
         run_id = self._live_run_id or "unscoped"
 
         def _send() -> None:
-            emit_capture_operator_alert(
+            result = emit_capture_operator_alert(
                 venue=BINANCE_RESEARCH_VENUE,
                 run_id=run_id,
                 status="FAILED",
                 error=error,
             )
+            if isinstance(result, dict) and result.get("webhook_delivered") == "yes":
+                self._webhook_delivered_error_ids.append(id(error))
 
         self._alert_lane.submit(_send)
 
@@ -2835,6 +2845,7 @@ async def run_bounded_capture(
             failure = active.preserved_profile_failure
             capture_notes["definitive_alert_sent"] = bool(active._alerted_profiles)
             capture_notes["alerted_error_ids"] = [id(item) for item in active._alerted_errors]
+            capture_notes["webhook_delivered_error_ids"] = list(active._webhook_delivered_error_ids)
             if failure is not None:
                 capture_notes["preserved_profile_error_class"] = type(failure).__name__
                 capture_notes["preserved_profile_error_message"] = str(failure)
@@ -3140,7 +3151,12 @@ async def run_reconstructable_capture(
         preserved = {
             key: value
             for key, value in capture_notes.items()
-            if key not in {"definitive_alert_sent", "alerted_error_ids"}
+            if key
+            not in {
+                "definitive_alert_sent",
+                "alerted_error_ids",
+                "webhook_delivered_error_ids",
+            }
         }
         report = {**report, **preserved, "elapsed_seconds": round(time.monotonic() - started, 6)}
         capture_logger().info(
@@ -3150,8 +3166,15 @@ async def run_reconstructable_capture(
             duration_seconds,
             report["elapsed_seconds"],
         )
-        if not paths.capture_health_path.exists():
-            _write_create_only_json(
+        delivered_ids = capture_notes.get("webhook_delivered_error_ids")
+        already_delivered = (
+            terminal_error is not None
+            and isinstance(delivered_ids, list)
+            and id(terminal_error) in delivered_ids
+        )
+        write_health_then_alert(
+            should_write_health=not paths.capture_health_path.exists(),
+            write_health=lambda: _write_create_only_json(
                 paths.capture_health_path,
                 data1f_capture_health(
                     run_id=run_id,
@@ -3159,20 +3182,14 @@ async def run_reconstructable_capture(
                     status=status,
                     report=report,
                 ),
-            )
-        alerted_ids = capture_notes.get("alerted_error_ids")
-        already_alerted = (
-            terminal_error is not None
-            and isinstance(alerted_ids, list)
-            and id(terminal_error) in alerted_ids
+            ),
+            status=status,
+            venue=BINANCE_RESEARCH_VENUE,
+            run_id=run_id,
+            error=terminal_error,
+            raw_dir=paths.raw_dir,
+            skip_alert=already_delivered,
         )
-        if status == "FAILED" and not already_alerted:
-            emit_capture_operator_alert(
-                venue=BINANCE_RESEARCH_VENUE,
-                run_id=run_id,
-                status=status,
-                error=terminal_error,
-            )
     return {
         **report,
         "run_id": run_id,

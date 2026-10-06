@@ -120,15 +120,18 @@ close, including one during the authenticate window, reconnects with a fresh
 signature. A real authenticate rejection stays fail-closed. Subscribe-ack races
 reconnect the same way.
 
-Terminal `FAILED` emits one event-driven `capture_operator_alert`. When
-`CAPTURE_ALERT_WEBHOOK_URL` is set, the process POSTs the JSON payload up to 3
-times (2s each). Set `CAPTURE_ALERT_WEBHOOK_AUTHORIZATION` to the full header
+Terminal `FAILED` emits one event-driven `capture_operator_alert`. The process
+loads `~/.config/hyperliquid-bot/capture-alert.env` when
+`CAPTURE_ALERT_WEBHOOK_URL` is not already in the environment, then POSTs up to
+3 times (5s each). Set `CAPTURE_ALERT_WEBHOOK_AUTHORIZATION` to the full header
 value (for example `Bearer …`); it is not logged. HTTP status is logged as
 `http_status` only. Auth rejects (401/403) are not retried. A failed POST does
 not raise into the writer. Point that webhook at the Grok Bot / CoS capture-fail
-endpoint; ochtendbriefing stays separate. Do **not** add interval watchdogs or
-`*/15` polls. This keepalive change applies on the next BV-Pro process start.
-Do not restart the live Phase A `bv-capture` session from this change.
+endpoint; ochtendbriefing stays separate. A dead process cannot POST; the
+optional external checker is `scripts/capture_alert.sh watch` (see
+`docs/runbooks/capture-failure-alert.md`). This keepalive change applies on the
+next BV-Pro process start. Do not restart the live Phase A `bv-capture` session
+from this change.
 
 HL, KR, BV-Std, and BN already emit the same alert on `FAILED`. The BN #101
 early-`COMPLETED` path (a profile set the shared stop and the runner returned

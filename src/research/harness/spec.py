@@ -1,0 +1,559 @@
+"""Hypothesis pre-registration: load, validate, and sha256-lock a spec."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+import re
+from dataclasses import dataclass
+from pathlib import Path
+
+from research.harness.errors import LockError, SpecError
+from research.harness.yaml_subset import JsonValue
+from research.harness.yaml_subset import loads as load_yaml_subset
+
+type Json = JsonValue
+
+_HYPOTHESIS_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,80}$")
+_CONFIG_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,40}$")
+_FEATURE_NAME = re.compile(r"^[a-z][a-z0-9_]{0,40}$")
+_VIEW_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_COLUMN_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_MAX_ROWS_CAP = 2_000_000
+_TOP_KEYS = frozenset(
+    {
+        "hypothesis_id",
+        "universe",
+        "dataset_version",
+        "h0",
+        "h1",
+        "alpha",
+        "selection_method",
+        "direction",
+        "signal_feature",
+        "costs",
+        "split",
+        "sample",
+        "data",
+        "features",
+        "configs",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ColumnSpec:
+    name: str
+    dtype: str
+    role: str
+
+
+@dataclass(frozen=True, slots=True)
+class FeatureSpec:
+    name: str
+    column: str
+    available_at_column: str
+
+
+@dataclass(frozen=True, slots=True)
+class ConfigSpec:
+    id: str
+    threshold: float
+    horizon_bars: int
+
+
+@dataclass(frozen=True, slots=True)
+class CostSpec:
+    fee_bps: float
+    slippage_bps: float
+    spread_bps: float
+    latency_bars: int
+
+
+@dataclass(frozen=True, slots=True)
+class SplitSpec:
+    method: str
+    train_bars: int
+    test_bars: int
+    holdout_bars: int
+
+
+@dataclass(frozen=True, slots=True)
+class SampleSpec:
+    min_trades_validation: int
+    min_trades_holdout: int
+    min_folds: int
+
+
+@dataclass(frozen=True, slots=True)
+class DataSpec:
+    backend: str
+    parquet_path: str | None
+    view: str | None
+    timestamp_column: str
+    price_column: str
+    max_gap: int
+    max_rows: int
+    columns: tuple[ColumnSpec, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class HypothesisSpec:
+    hypothesis_id: str
+    universe: str
+    dataset_version: str
+    h0: str
+    h1: str
+    alpha: float
+    selection_method: str
+    direction: str
+    signal_feature: str
+    costs: CostSpec
+    split: SplitSpec
+    sample: SampleSpec
+    data: DataSpec
+    features: tuple[FeatureSpec, ...]
+    configs: tuple[ConfigSpec, ...]
+
+
+def load_document(path: Path) -> dict[str, Json]:
+    """Read a JSON or YAML-subset spec. The return value is the hash input."""
+
+    if not path.is_file() or path.is_symlink():
+        raise SpecError("Spec path must be a regular file.")
+    text = path.read_text(encoding="utf-8")
+    suffix = path.suffix.lower()
+    if suffix == ".json":
+        value = _decode_json(text)
+    elif suffix in {".yaml", ".yml"}:
+        value = load_yaml_subset(text)
+    else:
+        raise SpecError("Spec file must end in .json, .yaml, or .yml.")
+    if not isinstance(value, dict):
+        raise SpecError("Spec root must be a mapping.")
+    return value
+
+
+def canonical_bytes(document: dict[str, Json]) -> bytes:
+    """Stable UTF-8 JSON used as the sha256 preimage."""
+
+    try:
+        encoded = json.dumps(
+            document,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as error:
+        raise SpecError("Spec is not canonical JSON.") from error
+    return encoded.encode("ascii")
+
+
+def spec_sha256(document: dict[str, Json]) -> str:
+    """sha256 hex digest of the canonical spec. Computed before any backtest."""
+
+    return hashlib.sha256(canonical_bytes(document)).hexdigest()
+
+
+def validate_spec(document: dict[str, Json]) -> HypothesisSpec:
+    """Reject unknown keys and build the typed spec. Does not read market data."""
+
+    _exact(document, _TOP_KEYS, "spec")
+    hypothesis_id = _identifier(
+        _require_str(document["hypothesis_id"], "hypothesis_id", 81),
+        _HYPOTHESIS_ID,
+        "hypothesis_id",
+    )
+    universe = _require_str(document["universe"], "universe", 200)
+    dataset_version = _require_str(document["dataset_version"], "dataset_version", 200)
+    h0 = _require_str(document["h0"], "h0", 2000)
+    h1 = _require_str(document["h1"], "h1", 2000)
+    alpha = _require_number(document["alpha"], "alpha")
+    if not 0.0 < alpha <= 0.2:
+        raise SpecError("alpha must lie in (0, 0.2].")
+    selection_method = _require_str(document["selection_method"], "selection_method", 16)
+    if selection_method not in {"bonferroni", "holm", "bh"}:
+        raise SpecError("selection_method must be bonferroni, holm, or bh.")
+    direction = _require_str(document["direction"], "direction", 16)
+    if direction not in {"signed", "long_only"}:
+        raise SpecError("direction must be signed or long_only.")
+    signal_feature = _identifier(
+        _require_str(document["signal_feature"], "signal_feature", 41),
+        _FEATURE_NAME,
+        "signal_feature",
+    )
+    costs = _parse_costs(_require_mapping(document["costs"], "costs"))
+    split = _parse_split(_require_mapping(document["split"], "split"))
+    sample = _parse_sample(_require_mapping(document["sample"], "sample"))
+    data = _parse_data(_require_mapping(document["data"], "data"))
+    features = _parse_features(document["features"], data)
+    configs = _parse_configs(document["configs"])
+    if signal_feature not in {feature.name for feature in features}:
+        raise SpecError("signal_feature must name a declared feature.")
+    return HypothesisSpec(
+        hypothesis_id=hypothesis_id,
+        universe=universe,
+        dataset_version=dataset_version,
+        h0=h0,
+        h1=h1,
+        alpha=alpha,
+        selection_method=selection_method,
+        direction=direction,
+        signal_feature=signal_feature,
+        costs=costs,
+        split=split,
+        sample=sample,
+        data=data,
+        features=features,
+        configs=configs,
+    )
+
+
+def lock_path_for(spec_path: Path) -> Path:
+    """Sidecar lock path. The spec file itself is not rewritten."""
+
+    return spec_path.with_name(spec_path.name + ".lock.json")
+
+
+def write_lock(spec_path: Path) -> tuple[Path, str]:
+    """Validate the spec and write a hash lock. No market data is read."""
+
+    document = load_document(spec_path)
+    validate_spec(document)
+    digest = spec_sha256(document)
+    payload = {"spec_sha256": digest, "canonical_spec": document}
+    destination = lock_path_for(spec_path)
+    temporary = destination.with_suffix(destination.suffix + ".tmp")
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.replace(destination)
+    return destination, digest
+
+
+def verify_lock(spec_path: Path, document: dict[str, Json], digest: str) -> None:
+    """Fail closed unless the sidecar matches this exact canonical spec."""
+
+    path = lock_path_for(spec_path)
+    if not path.is_file() or path.is_symlink():
+        raise LockError("Spec is not hash-locked. Run the lock command before run.")
+    payload = _decode_json(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise LockError("Lock file must be a JSON object.")
+    _exact(payload, {"spec_sha256", "canonical_spec"}, "lock")
+    locked_hash = payload["spec_sha256"]
+    if not isinstance(locked_hash, str) or locked_hash != digest:
+        raise LockError(
+            "Spec sha256 does not match the lock. Re-lock only as a new pre-registration."
+        )
+    canonical = payload["canonical_spec"]
+    if not isinstance(canonical, dict):
+        raise LockError("Lock canonical_spec must be an object.")
+    if spec_sha256(canonical) != digest:
+        raise LockError("Lock canonical_spec does not hash to spec_sha256.")
+
+
+def _parse_costs(raw: dict[str, Json]) -> CostSpec:
+    _exact(raw, {"fee_bps", "slippage_bps", "spread_bps", "latency_bars"}, "costs")
+    fee_bps = _non_negative(_require_number(raw["fee_bps"], "costs.fee_bps"), "costs.fee_bps")
+    slippage_bps = _non_negative(
+        _require_number(raw["slippage_bps"], "costs.slippage_bps"),
+        "costs.slippage_bps",
+    )
+    spread_bps = _non_negative(
+        _require_number(raw["spread_bps"], "costs.spread_bps"), "costs.spread_bps"
+    )
+    latency_bars = _require_int(raw["latency_bars"], "costs.latency_bars")
+    if latency_bars < 0 or latency_bars > 100:
+        raise SpecError("costs.latency_bars must lie in [0, 100].")
+    return CostSpec(
+        fee_bps=fee_bps,
+        slippage_bps=slippage_bps,
+        spread_bps=spread_bps,
+        latency_bars=latency_bars,
+    )
+
+
+def _parse_split(raw: dict[str, Json]) -> SplitSpec:
+    _exact(raw, {"method", "train_bars", "test_bars", "holdout_bars"}, "split")
+    method = _require_str(raw["method"], "split.method", 16)
+    if method not in {"expanding", "rolling"}:
+        raise SpecError("split.method must be expanding or rolling.")
+    train_bars = _positive_int(raw["train_bars"], "split.train_bars", 1_000_000)
+    test_bars = _positive_int(raw["test_bars"], "split.test_bars", 1_000_000)
+    holdout_bars = _positive_int(raw["holdout_bars"], "split.holdout_bars", 1_000_000)
+    return SplitSpec(
+        method=method,
+        train_bars=train_bars,
+        test_bars=test_bars,
+        holdout_bars=holdout_bars,
+    )
+
+
+def _parse_sample(raw: dict[str, Json]) -> SampleSpec:
+    _exact(
+        raw,
+        {"min_trades_validation", "min_trades_holdout", "min_folds"},
+        "sample",
+    )
+    return SampleSpec(
+        min_trades_validation=_positive_int(
+            raw["min_trades_validation"], "sample.min_trades_validation", 1_000_000, minimum=2
+        ),
+        min_trades_holdout=_positive_int(
+            raw["min_trades_holdout"], "sample.min_trades_holdout", 1_000_000, minimum=2
+        ),
+        min_folds=_positive_int(raw["min_folds"], "sample.min_folds", 10_000),
+    )
+
+
+def _parse_data(raw: dict[str, Json]) -> DataSpec:
+    backend = raw.get("backend")
+    if backend == "parquet":
+        _exact(
+            raw,
+            {
+                "backend",
+                "parquet_path",
+                "timestamp_column",
+                "price_column",
+                "max_gap",
+                "max_rows",
+                "columns",
+            },
+            "data",
+        )
+        parquet_path = _relative_path(_require_str(raw["parquet_path"], "data.parquet_path", 240))
+        view = None
+    elif backend == "duckdb":
+        _exact(
+            raw,
+            {
+                "backend",
+                "view",
+                "timestamp_column",
+                "price_column",
+                "max_gap",
+                "max_rows",
+                "columns",
+            },
+            "data",
+        )
+        view = _identifier(_require_str(raw["view"], "data.view", 64), _VIEW_NAME, "data.view")
+        parquet_path = None
+    else:
+        raise SpecError("data.backend must be parquet or duckdb.")
+    timestamp_column = _identifier(
+        _require_str(raw["timestamp_column"], "data.timestamp_column", 64),
+        _COLUMN_NAME,
+        "data.timestamp_column",
+    )
+    price_column = _identifier(
+        _require_str(raw["price_column"], "data.price_column", 64),
+        _COLUMN_NAME,
+        "data.price_column",
+    )
+    max_gap = _positive_int(raw["max_gap"], "data.max_gap", 10**18)
+    max_rows = _positive_int(raw["max_rows"], "data.max_rows", _MAX_ROWS_CAP)
+    columns = _parse_columns(raw["columns"], timestamp_column, price_column)
+    return DataSpec(
+        backend=str(backend),
+        parquet_path=parquet_path,
+        view=view,
+        timestamp_column=timestamp_column,
+        price_column=price_column,
+        max_gap=max_gap,
+        max_rows=max_rows,
+        columns=columns,
+    )
+
+
+def _parse_columns(raw: Json, timestamp_column: str, price_column: str) -> tuple[ColumnSpec, ...]:
+    mapping = _require_mapping(raw, "data.columns")
+    if not mapping:
+        raise SpecError("data.columns must name at least one column.")
+    columns: list[ColumnSpec] = []
+    for name, value in mapping.items():
+        column_name = _identifier(name, _COLUMN_NAME, "data.columns key")
+        body = _require_mapping(value, f"data.columns.{column_name}")
+        _exact(body, {"dtype", "role"}, f"data.columns.{column_name}")
+        dtype = _require_str(body["dtype"], f"data.columns.{column_name}.dtype", 16)
+        role = _require_str(body["role"], f"data.columns.{column_name}.role", 16)
+        if dtype not in {"int64", "float64"}:
+            raise SpecError(f"data.columns.{column_name}.dtype must be int64 or float64.")
+        if role not in {"timestamp", "price", "feature", "availability"}:
+            raise SpecError(
+                f"Column {column_name} role must be timestamp, price, feature, or availability."
+            )
+        if role in {"timestamp", "availability"} and dtype != "int64":
+            raise SpecError(f"data.columns.{column_name} must be int64.")
+        if role in {"price", "feature"} and dtype != "float64":
+            raise SpecError(f"data.columns.{column_name} must be float64.")
+        columns.append(ColumnSpec(name=column_name, dtype=dtype, role=role))
+    names = [column.name for column in columns]
+    timestamp_hits = [column for column in columns if column.role == "timestamp"]
+    price_hits = [column for column in columns if column.role == "price"]
+    if len(timestamp_hits) != 1 or timestamp_hits[0].name != timestamp_column:
+        raise SpecError("data.timestamp_column must be the unique timestamp-role column.")
+    if len(price_hits) != 1 or price_hits[0].name != price_column:
+        raise SpecError("data.price_column must be the unique price-role column.")
+    if len(names) != len(set(names)):
+        raise SpecError("data.columns has a duplicate name.")
+    return tuple(columns)
+
+
+def _parse_features(raw: Json, data: DataSpec) -> tuple[FeatureSpec, ...]:
+    if not isinstance(raw, list) or not raw:
+        raise SpecError("features must be a non-empty list.")
+    by_name = {column.name: column for column in data.columns}
+    features: list[FeatureSpec] = []
+    seen: set[str] = set()
+    for index, item in enumerate(raw):
+        body = _require_mapping(item, f"features[{index}]")
+        _exact(body, {"name", "column", "available_at_column"}, f"features[{index}]")
+        name = _identifier(
+            _require_str(body["name"], f"features[{index}].name", 41), _FEATURE_NAME, "feature name"
+        )
+        column_name = _identifier(
+            _require_str(body["column"], f"features[{index}].column", 64),
+            _COLUMN_NAME,
+            "feature column",
+        )
+        available = _identifier(
+            _require_str(body["available_at_column"], f"features[{index}].available_at_column", 64),
+            _COLUMN_NAME,
+            "feature available_at_column",
+        )
+        if name in seen:
+            raise SpecError(f"Duplicate feature name {name}.")
+        seen.add(name)
+        column = by_name.get(column_name)
+        if column is None or column.role != "feature":
+            raise SpecError(f"Feature {name} must use a feature-role column.")
+        clock = by_name.get(available)
+        if clock is None or clock.role not in {"availability", "timestamp"}:
+            raise SpecError(
+                f"Feature {name} available_at_column must be an availability or timestamp column."
+            )
+        features.append(FeatureSpec(name=name, column=column_name, available_at_column=available))
+    return tuple(features)
+
+
+def _parse_configs(raw: Json) -> tuple[ConfigSpec, ...]:
+    if not isinstance(raw, list) or not raw:
+        raise SpecError("configs must be a non-empty list.")
+    configs: list[ConfigSpec] = []
+    seen: set[str] = set()
+    for index, item in enumerate(raw):
+        body = _require_mapping(item, f"configs[{index}]")
+        _exact(body, {"id", "threshold", "horizon_bars"}, f"configs[{index}]")
+        config_id = _identifier(
+            _require_str(body["id"], f"configs[{index}].id", 41),
+            _CONFIG_ID,
+            "config id",
+        )
+        if config_id in seen:
+            raise SpecError(f"Duplicate config id {config_id}.")
+        seen.add(config_id)
+        threshold = _non_negative(
+            _require_number(body["threshold"], f"configs[{index}].threshold"), "threshold"
+        )
+        horizon_bars = _positive_int(body["horizon_bars"], f"configs[{index}].horizon_bars", 10_000)
+        configs.append(ConfigSpec(id=config_id, threshold=threshold, horizon_bars=horizon_bars))
+    return tuple(configs)
+
+
+def _relative_path(raw: str) -> str:
+    if raw.startswith(("/", "\\", "~")) or ":" in raw:
+        raise SpecError("parquet_path must be a relative path.")
+    parts = Path(raw).parts
+    if not parts or ".." in parts or raw.strip() != raw:
+        raise SpecError("parquet_path must be a relative path without '..'.")
+    return raw
+
+
+def _decode_json(text: str) -> Json:
+    try:
+        raw = json.loads(text)
+    except json.JSONDecodeError as error:
+        raise SpecError("Spec JSON could not be parsed.") from error
+    return _as_json(raw)
+
+
+def _as_json(value: object) -> Json:
+    if value is None or isinstance(value, str):
+        return value
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise SpecError("Spec numbers must be finite.")
+        return value
+    if isinstance(value, list):
+        return [_as_json(item) for item in value]
+    if isinstance(value, dict):
+        mapped: dict[str, Json] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise SpecError("JSON keys must be strings.")
+            mapped[key] = _as_json(item)
+        return mapped
+    raise SpecError("Spec contains an unsupported JSON value.")
+
+
+def _require_mapping(value: Json, label: str) -> dict[str, Json]:
+    if not isinstance(value, dict):
+        raise SpecError(f"{label} must be a mapping.")
+    return value
+
+
+def _require_str(value: Json, label: str, max_len: int) -> str:
+    if not isinstance(value, str) or value.strip() == "" or value != value.strip():
+        raise SpecError(f"{label} must be a non-empty string.")
+    if len(value) > max_len or any(ord(char) < 32 for char in value):
+        raise SpecError(f"{label} must be a single line up to {max_len} characters.")
+    return value
+
+
+def _require_int(value: Json, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise SpecError(f"{label} must be an integer.")
+    return value
+
+
+def _require_number(value: Json, label: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise SpecError(f"{label} must be a number.")
+    number = float(value)
+    if not math.isfinite(number):
+        raise SpecError(f"{label} must be finite.")
+    return number
+
+
+def _non_negative(value: float, label: str) -> float:
+    if value < 0.0:
+        raise SpecError(f"{label} must be >= 0.")
+    return value
+
+
+def _positive_int(value: Json, label: str, maximum: int, *, minimum: int = 1) -> int:
+    number = _require_int(value, label)
+    if number < minimum or number > maximum:
+        raise SpecError(f"{label} must lie in [{minimum}, {maximum}].")
+    return number
+
+
+def _identifier(value: str, pattern: re.Pattern[str], label: str) -> str:
+    if pattern.fullmatch(value) is None:
+        raise SpecError(f"{label} has an illegal identifier {value!r}.")
+    return value
+
+
+def _exact(data: dict[str, Json], required: frozenset[str] | set[str], label: str) -> None:
+    keys = set(data)
+    if keys != set(required):
+        missing = sorted(set(required) - keys)
+        extra = sorted(keys - set(required))
+        raise SpecError(f"{label} keys mismatch; missing={missing} extra={extra}.")

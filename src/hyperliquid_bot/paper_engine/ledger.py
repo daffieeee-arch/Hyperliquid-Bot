@@ -1,0 +1,92 @@
+"""Create-only PAPER run directory.
+
+A ``run_id`` is a single new directory. If it already exists, opening it
+raises and nothing is appended. There is no resume API. Human-facing times in
+the health file use Europe/Amsterdam; numeric state stays decimal text and UTC.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+from pathlib import Path
+from typing import Final
+
+from hyperliquid_bot.paper_engine.errors import RunAlreadyExistsError
+
+HEALTH_SCHEMA: Final = "paper-engine-health-v1"
+STATE_SCHEMA: Final = "paper-engine-state-v1"
+CLAIM_SCHEMA: Final = "paper-engine-run-claim-v1"
+_RUN_ID_PATTERN: Final = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+
+
+def validate_run_id(run_id: str) -> str:
+    """Reject path-like or empty run identifiers before any directory is created."""
+
+    if type(run_id) is not str or _RUN_ID_PATTERN.fullmatch(run_id) is None:
+        raise ValueError("run_id must match ^[a-z0-9][a-z0-9._-]{0,63}$ so it cannot be a path.")
+    return run_id
+
+
+class RunStore:
+    """Append-only ledger plus replaceable state and health projections."""
+
+    def __init__(self, root: Path, run_id: str) -> None:
+        if not isinstance(root, Path):
+            raise TypeError("root must be a pathlib.Path.")
+        self.run_id = validate_run_id(run_id)
+        self.root = root.resolve()
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.run_dir = self.root / self.run_id
+        try:
+            self.run_dir.mkdir(parents=False, exist_ok=False)
+        except FileExistsError as exc:
+            raise RunAlreadyExistsError(
+                f"run_id {self.run_id!r} already exists and cannot be resumed."
+            ) from exc
+        self.claim_path = self.run_dir / "run-claim.json"
+        self.ledger_path = self.run_dir / "ledger.jsonl"
+        self.state_path = self.run_dir / "state.json"
+        self.health_path = self.run_dir / "health.json"
+        self.ledger_path.touch()
+
+    def write_claim(self, payload: dict[str, object]) -> None:
+        _write_json(self.claim_path, payload)
+
+    def append(self, payload: dict[str, object]) -> None:
+        line = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        with self.ledger_path.open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+
+    def write_state(self, payload: dict[str, object]) -> None:
+        _write_json(self.state_path, payload)
+
+    def write_health(self, payload: dict[str, object]) -> None:
+        _write_json(self.health_path, payload)
+
+
+def read_health(path: Path) -> dict[str, object]:
+    """Read a health file. This does not open a run and cannot resume one."""
+
+    if not isinstance(path, Path):
+        raise TypeError("path must be a pathlib.Path.")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if type(payload) is not dict:
+        raise ValueError("health file must be a JSON object.")
+    if payload.get("schema") != HEALTH_SCHEMA:
+        raise ValueError("health schema is not paper-engine-health-v1.")
+    if payload.get("mode") != "PAPER":
+        raise ValueError("health file is not a PAPER run.")
+    if payload.get("venue_orders_submitted") is not False:
+        raise ValueError("health file must record that no venue order was submitted.")
+    return payload
+
+
+def _write_json(path: Path, payload: dict[str, object]) -> None:
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, path)

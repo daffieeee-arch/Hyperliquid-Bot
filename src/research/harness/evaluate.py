@@ -12,7 +12,13 @@ from research.harness.data import BarTable
 from research.harness.errors import HarnessError
 from research.harness.spec import ConfigSpec, HypothesisSpec
 from research.harness.splits import Fold, walk_forward
-from research.harness.stats import benjamini_hochberg, bonferroni, holm, student_t_upper_tail
+from research.harness.stats import (
+    benjamini_hochberg,
+    bonferroni,
+    holm,
+    newey_west_mean_test,
+    student_t_upper_tail,
+)
 
 LABEL_NOT_ENOUGH_DATA: Final = "not_enough_data"
 LABEL_NO_EDGE: Final = "no_edge"
@@ -35,6 +41,10 @@ class MetricBlock:
     expectancy: float | None
     t_stat: float | None
     p_value: float | None
+    naive_p_value: float | None
+    hac_t_stat: float | None
+    hac_p_value: float | None
+    hac_lag: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,9 +70,9 @@ class Decision:
     selected_config_id: str | None
     primary_config_id: str
     scores: tuple[ConfigScore, ...]
-    holdout_config_id: str
-    holdout_gross: MetricBlock
-    holdout_net: dict[str, MetricBlock]
+    holdout_config_id: str | None
+    holdout_gross: MetricBlock | None
+    holdout_net: dict[str, MetricBlock] | None
 
 
 def decide(spec: HypothesisSpec, table: BarTable) -> Decision:
@@ -95,15 +105,17 @@ def decide(spec: HypothesisSpec, table: BarTable) -> Decision:
     }
     scores = _build_scores(spec, gross_by_config, family_p, adjusted)
     label, reasons, selected_index = _validation_label(spec, scores, folds)
+    holdout_config_id: str | None = None
+    holdout_gross: MetricBlock | None = None
+    holdout_net: dict[str, MetricBlock] | None = None
     if selected_index is None:
-        holdout_config = spec.configs[0]
         selected_id = None
         scored = scores
     else:
         holdout_config = spec.configs[selected_index]
         selected_id = holdout_config.id
         scored = _mark_selected(scores, selected_index)
-        label, holdout_reasons = _confirm_holdout(
+        label, holdout_reasons, holdout_gross, holdout_net = _confirm_holdout(
             spec,
             feature,
             table.prices,
@@ -112,16 +124,7 @@ def decide(spec: HypothesisSpec, table: BarTable) -> Decision:
             holdout_end,
         )
         reasons = (*reasons, *holdout_reasons)
-    holdout_gross = collect_gross_returns(
-        feature,
-        table.prices,
-        threshold=holdout_config.threshold,
-        horizon_bars=holdout_config.horizon_bars,
-        latency_bars=spec.costs.latency_bars,
-        direction=spec.direction,
-        start=holdout_start,
-        end=holdout_end,
-    )
+        holdout_config_id = holdout_config.id
     decision = Decision(
         label=label,
         promotion_decision=_promotion_for(label),
@@ -132,14 +135,9 @@ def decide(spec: HypothesisSpec, table: BarTable) -> Decision:
         selected_config_id=selected_id,
         primary_config_id=spec.configs[0].id,
         scores=scored,
-        holdout_config_id=holdout_config.id,
-        holdout_gross=summarize(holdout_gross),
-        holdout_net={
-            stress_key(stress): summarize(
-                _apply_cost(holdout_gross, round_trip_cost(spec.costs, stress))
-            )
-            for stress in STRESS_MULTIPLIERS
-        },
+        holdout_config_id=holdout_config_id,
+        holdout_gross=holdout_gross,
+        holdout_net=holdout_net,
     )
     _assert_promotion_invariant(decision)
     return decision
@@ -186,12 +184,13 @@ def summarize(values: Sequence[float]) -> MetricBlock:
 
     count = len(values)
     if count == 0:
-        return MetricBlock(0, None, None, None, None, None, None, None, None, None, None)
+        return _empty_metric()
     total = math.fsum(values)
     mean = total / count
     stdev = _sample_stdev(values, mean) if count >= 2 else None
     sharpe = None if stdev is None or stdev == 0.0 else mean / stdev
-    t_stat, p_value = _mean_test(mean, stdev, count)
+    naive_t, naive_p = _mean_test(mean, stdev, count)
+    hac_t, hac_p, hac_lag = newey_west_mean_test(values)
     return MetricBlock(
         trade_count=count,
         mean_return=mean,
@@ -202,8 +201,12 @@ def summarize(values: Sequence[float]) -> MetricBlock:
         profit_factor=_profit_factor(values),
         win_rate=sum(1 for value in values if value > 0.0) / count,
         expectancy=mean,
-        t_stat=t_stat,
-        p_value=p_value,
+        t_stat=naive_t,
+        p_value=_conservative_p(naive_p, hac_p),
+        naive_p_value=naive_p,
+        hac_t_stat=hac_t,
+        hac_p_value=hac_p,
+        hac_lag=hac_lag,
     )
 
 
@@ -214,7 +217,7 @@ def _confirm_holdout(
     config: ConfigSpec,
     holdout_start: int,
     holdout_end: int,
-) -> tuple[str, tuple[str, ...]]:
+) -> tuple[str, tuple[str, ...], MetricBlock, dict[str, MetricBlock]]:
     gross = collect_gross_returns(
         feature,
         prices,
@@ -225,11 +228,12 @@ def _confirm_holdout(
         start=holdout_start,
         end=holdout_end,
     )
+    gross_block = summarize(gross)
     net = {
-        stress: summarize(_apply_cost(gross, round_trip_cost(spec.costs, stress)))
+        stress_key(stress): summarize(_apply_cost(gross, round_trip_cost(spec.costs, stress)))
         for stress in STRESS_MULTIPLIERS
     }
-    base = net[1.0]
+    base = net["1.0"]
     if base.trade_count < spec.sample.min_trades_holdout:
         return (
             LABEL_NOT_ENOUGH_DATA,
@@ -237,16 +241,22 @@ def _confirm_holdout(
                 f"Holdout has {base.trade_count} trades; "
                 f"sample.min_trades_holdout is {spec.sample.min_trades_holdout}.",
             ),
+            gross_block,
+            net,
         )
-    stresses_hold = all(_mean_positive(net[stress]) for stress in (1.5, 2.0))
+    stresses_hold = all(_mean_positive(net[stress_key(stress)]) for stress in (1.5, 2.0))
     if _significant(spec, base) and stresses_hold:
         return (
             LABEL_PASSES_H1,
             ("Untouched holdout mean net stayed positive after costs at 1.0x, 1.5x, and 2.0x.",),
+            gross_block,
+            net,
         )
     return (
         LABEL_FRAGILE,
         ("Validation survived, but the untouched holdout did not confirm H1 after costs.",),
+        gross_block,
+        net,
     )
 
 
@@ -493,6 +503,36 @@ def _assert_promotion_invariant(decision: Decision) -> None:
         raise HarnessError("invariant", "promotion_decision must stay forbidden unless H1 passes.")
     if passed and decision.selected_config_id is None:
         raise HarnessError("invariant", "passes_h1 requires a validation-selected config.")
+
+
+def _empty_metric() -> MetricBlock:
+    return MetricBlock(
+        trade_count=0,
+        mean_return=None,
+        sum_return=None,
+        stdev=None,
+        sharpe_per_trade=None,
+        max_drawdown=None,
+        profit_factor=None,
+        win_rate=None,
+        expectancy=None,
+        t_stat=None,
+        p_value=None,
+        naive_p_value=None,
+        hac_t_stat=None,
+        hac_p_value=None,
+        hac_lag=None,
+    )
+
+
+def _conservative_p(naive_p: float | None, hac_p: float | None) -> float | None:
+    """The multiple-testing gate and holdout check use the larger tail probability."""
+
+    if naive_p is None:
+        return hac_p
+    if hac_p is None:
+        return naive_p
+    return max(naive_p, hac_p)
 
 
 def _sample_stdev(values: Sequence[float], mean: float) -> float:

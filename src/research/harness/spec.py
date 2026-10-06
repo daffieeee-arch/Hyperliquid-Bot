@@ -69,6 +69,7 @@ class CostSpec:
     slippage_bps: float
     spread_bps: float
     latency_bars: int
+    allow_zero_latency: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,6 +193,7 @@ def validate_spec(document: dict[str, Json]) -> HypothesisSpec:
     configs = _parse_configs(document["configs"])
     if signal_feature not in {feature.name for feature in features}:
         raise SpecError("signal_feature must name a declared feature.")
+    _require_latency_floor(costs, features, data, signal_feature)
     return HypothesisSpec(
         hypothesis_id=hypothesis_id,
         universe=universe,
@@ -217,13 +219,17 @@ def lock_path_for(spec_path: Path) -> Path:
     return spec_path.with_name(spec_path.name + ".lock.json")
 
 
-def write_lock(spec_path: Path) -> tuple[Path, str]:
-    """Validate the spec and write a hash lock. No market data is read."""
+def write_lock(spec_path: Path, data_fingerprint: dict[str, Json]) -> tuple[Path, str]:
+    """Validate the spec and write a hash lock that includes the data fingerprint."""
 
     document = load_document(spec_path)
     validate_spec(document)
     digest = spec_sha256(document)
-    payload = {"spec_sha256": digest, "canonical_spec": document}
+    payload = {
+        "spec_sha256": digest,
+        "canonical_spec": document,
+        "data_fingerprint": data_fingerprint,
+    }
     destination = lock_path_for(spec_path)
     temporary = destination.with_suffix(destination.suffix + ".tmp")
     temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -231,8 +237,11 @@ def write_lock(spec_path: Path) -> tuple[Path, str]:
     return destination, digest
 
 
-def verify_lock(spec_path: Path, document: dict[str, Json], digest: str) -> None:
-    """Fail closed unless the sidecar matches this exact canonical spec."""
+def verify_lock(spec_path: Path, document: dict[str, Json], digest: str) -> dict[str, Json]:
+    """Fail closed unless the sidecar matches this exact canonical spec.
+
+    Returns the locked data fingerprint. The caller compares it to the live input.
+    """
 
     path = lock_path_for(spec_path)
     if not path.is_file() or path.is_symlink():
@@ -240,7 +249,7 @@ def verify_lock(spec_path: Path, document: dict[str, Json], digest: str) -> None
     payload = _decode_json(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise LockError("Lock file must be a JSON object.")
-    _exact(payload, {"spec_sha256", "canonical_spec"}, "lock")
+    _exact(payload, {"canonical_spec", "data_fingerprint", "spec_sha256"}, "lock")
     locked_hash = payload["spec_sha256"]
     if not isinstance(locked_hash, str) or locked_hash != digest:
         raise LockError(
@@ -251,10 +260,20 @@ def verify_lock(spec_path: Path, document: dict[str, Json], digest: str) -> None
         raise LockError("Lock canonical_spec must be an object.")
     if spec_sha256(canonical) != digest:
         raise LockError("Lock canonical_spec does not hash to spec_sha256.")
+    fingerprint = payload["data_fingerprint"]
+    if not isinstance(fingerprint, dict):
+        raise LockError("Lock data_fingerprint must be an object.")
+    return fingerprint
 
 
 def _parse_costs(raw: dict[str, Json]) -> CostSpec:
-    _exact(raw, {"fee_bps", "slippage_bps", "spread_bps", "latency_bars"}, "costs")
+    required = {"fee_bps", "slippage_bps", "spread_bps", "latency_bars"}
+    optional = {"allow_zero_latency"}
+    keys = set(raw)
+    if not required <= keys or keys - required - optional:
+        missing = sorted(required - keys)
+        extra = sorted(keys - required - optional)
+        raise SpecError(f"costs keys mismatch; missing={missing} extra={extra}.")
     fee_bps = _non_negative(_require_number(raw["fee_bps"], "costs.fee_bps"), "costs.fee_bps")
     slippage_bps = _non_negative(
         _require_number(raw["slippage_bps"], "costs.slippage_bps"),
@@ -266,11 +285,34 @@ def _parse_costs(raw: dict[str, Json]) -> CostSpec:
     latency_bars = _require_int(raw["latency_bars"], "costs.latency_bars")
     if latency_bars < 0 or latency_bars > 100:
         raise SpecError("costs.latency_bars must lie in [0, 100].")
+    allow_zero_latency = False
+    if "allow_zero_latency" in raw:
+        allow_zero_latency = _require_bool(raw["allow_zero_latency"], "costs.allow_zero_latency")
     return CostSpec(
         fee_bps=fee_bps,
         slippage_bps=slippage_bps,
         spread_bps=spread_bps,
         latency_bars=latency_bars,
+        allow_zero_latency=allow_zero_latency,
+    )
+
+
+def _require_latency_floor(
+    costs: CostSpec,
+    features: tuple[FeatureSpec, ...],
+    data: DataSpec,
+    signal_feature: str,
+) -> None:
+    """Bar-timestamp clocks fill on a later bar unless zero latency is explicit."""
+
+    if costs.latency_bars >= 1 or costs.allow_zero_latency:
+        return
+    signal = next(feature for feature in features if feature.name == signal_feature)
+    if signal.available_at_column != data.timestamp_column:
+        return
+    raise SpecError(
+        "costs.latency_bars must be >= 1 when the signal clock is the bar timestamp. "
+        "latency_bars 0 requires costs.allow_zero_latency: true."
     )
 
 
@@ -514,6 +556,12 @@ def _require_str(value: Json, label: str, max_len: int) -> str:
         raise SpecError(f"{label} must be a non-empty string.")
     if len(value) > max_len or any(ord(char) < 32 for char in value):
         raise SpecError(f"{label} must be a single line up to {max_len} characters.")
+    return value
+
+
+def _require_bool(value: Json, label: str) -> bool:
+    if not isinstance(value, bool):
+        raise SpecError(f"{label} must be true or false.")
     return value
 
 

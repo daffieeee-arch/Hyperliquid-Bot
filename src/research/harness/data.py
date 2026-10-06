@@ -6,6 +6,8 @@ HIST_ARCHIVES_ROOT. This module does not embed a machine-specific warehouse path
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import os
 from dataclasses import dataclass
@@ -14,7 +16,7 @@ from pathlib import Path
 import duckdb
 
 from research.harness.errors import IntegrityError
-from research.harness.spec import DataSpec, FeatureSpec, HypothesisSpec
+from research.harness.spec import DataSpec, FeatureSpec, HypothesisSpec, Json
 
 _INT_TYPES = frozenset(
     {
@@ -40,6 +42,56 @@ class BarTable:
     prices: tuple[float, ...]
     features: dict[str, tuple[float, ...]]
     availability: dict[str, tuple[int, ...]]
+
+
+def fingerprint_inputs(spec: HypothesisSpec, spec_dir: Path) -> dict[str, Json]:
+    """Row count, timestamp bounds, and a content checksum for the declared input.
+
+    Parquet checksums are the sha256 of the file bytes. A DuckDB view checksum
+    is the sha256 of four row-hash aggregates over the declared columns, so an
+    unrelated catalog table does not change it.
+    """
+
+    data = spec.data
+    connection, relation_sql, parameters = _open_source(data, spec_dir)
+    try:
+        count, timestamp_min, timestamp_max, logical_hash = _fingerprint_query(
+            connection, data, relation_sql, parameters
+        )
+    except IntegrityError:
+        raise
+    except duckdb.Error as error:
+        raise IntegrityError("schema", f"DuckDB read failed: {_short(str(error))}") from error
+    finally:
+        connection.close()
+    if data.backend == "parquet":
+        if data.parquet_path is None:
+            raise IntegrityError("data_config", "parquet backend is missing parquet_path.")
+        checksum = _sha256_file(spec_dir / data.parquet_path)
+        algorithm = "sha256"
+        locator = data.parquet_path
+    else:
+        if data.view is None:
+            raise IntegrityError("data_config", "duckdb backend is missing a view name.")
+        checksum = logical_hash
+        algorithm = "duckdb-row-hash-sha256"
+        locator = data.view
+    inputs: list[Json] = [
+        {
+            "backend": data.backend,
+            "locator": locator,
+            "row_count": count,
+            "timestamp_min": timestamp_min,
+            "timestamp_max": timestamp_max,
+            "checksum_algorithm": algorithm,
+            "content_checksum": checksum,
+        }
+    ]
+    encoded = _canonical_inputs(inputs)
+    return {
+        "fingerprint_sha256": hashlib.sha256(encoded).hexdigest(),
+        "inputs": inputs,
+    }
 
 
 def load_bars(spec: HypothesisSpec, spec_dir: Path) -> BarTable:
@@ -79,6 +131,78 @@ def _open_source(
         raise IntegrityError("data_config", "DuckDB catalog must be a regular file.")
     connection = duckdb.connect(str(database), read_only=True)
     return connection, f'"{data.view}"', []
+
+
+def _fingerprint_query(
+    connection: duckdb.DuckDBPyConnection,
+    data: DataSpec,
+    relation_sql: str,
+    parameters: list[object],
+) -> tuple[int, int | None, int | None, str]:
+    quoted = ", ".join(f'"{column.name}"' for column in data.columns)
+    timestamp = f'"{data.timestamp_column}"'
+    hash_exprs = ", ".join(f"printf('%016x', bit_xor(hash({quoted}, {seed})))" for seed in range(4))
+    sql = (
+        f"SELECT count(*)::BIGINT, min({timestamp}), max({timestamp}), {hash_exprs} "
+        f"FROM {relation_sql}"
+    )
+    fetched = connection.execute(sql, parameters).fetchone()
+    if fetched is None or len(fetched) != 7:
+        raise IntegrityError("schema", "Fingerprint query returned no row.")
+    count_raw, min_raw, max_raw = fetched[0], fetched[1], fetched[2]
+    if isinstance(count_raw, bool) or not isinstance(count_raw, int):
+        raise IntegrityError("schema", "Fingerprint row count was not an integer.")
+    parts = [_optional_hash(raw, count_raw) for raw in fetched[3:]]
+    return (
+        count_raw,
+        _optional_int(min_raw, "timestamp_min"),
+        _optional_int(max_raw, "timestamp_max"),
+        _combine_row_hashes(count_raw, parts),
+    )
+
+
+def _optional_int(value: object, label: str) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise IntegrityError("schema", f"Fingerprint {label} was not an integer.")
+    return value
+
+
+def _optional_hash(value: object, row_count: int) -> str | None:
+    if value is None:
+        if row_count == 0:
+            return None
+        raise IntegrityError("schema", "Fingerprint content hash was null.")
+    if not isinstance(value, str) or len(value) != 16:
+        raise IntegrityError("schema", "Fingerprint content hash was not 16 hex characters.")
+    if any(char not in "0123456789abcdef" for char in value):
+        raise IntegrityError("schema", "Fingerprint content hash was not hexadecimal.")
+    return value
+
+
+def _combine_row_hashes(row_count: int, parts: list[str | None]) -> str:
+    if row_count == 0 or any(part is None for part in parts):
+        return hashlib.sha256(b"").hexdigest()
+    payload = "|".join(part for part in parts if part is not None)
+    return hashlib.sha256(payload.encode("ascii")).hexdigest()
+
+
+def _sha256_file(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def _canonical_inputs(inputs: list[Json]) -> bytes:
+    return json.dumps(inputs, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
+        "ascii"
+    )
 
 
 def _duckdb_path() -> Path:

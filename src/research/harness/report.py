@@ -15,13 +15,13 @@ from research.harness.evaluate import ConfigScore, Decision, MetricBlock
 from research.harness.spec import HypothesisSpec, Json
 from research.harness.splits import Fold
 
-HARNESS_VERSION: Final = "1"
+HARNESS_VERSION: Final = "2"
 _ENVIRONMENTS: Final = frozenset({"DEV", "CI", "VPS_RESEARCH"})
 LIMITATIONS: Final[tuple[str, ...]] = (
-    "The t-test treats trades as iid. Persistent regimes can inflate significance.",
+    "The gate uses the larger of the iid t p-value and a Newey-West HAC t p-value.",
     "Sharpe is per trade, not annualized. Drawdown sums simple returns.",
-    "Costs are flat bps, stressed at 1.0x, 1.5x, and 2.0x. No queue or funding cashflow.",
-    "Latency fills at the close of decision_bar + latency_bars. Zero latency is optimistic.",
+    "spread_bps is the half-spread per side. Costs are flat bps at 1.0x, 1.5x, and 2.0x.",
+    "Latency fills at decision_bar + latency_bars. Zero latency requires allow_zero_latency.",
     "Look-ahead control uses the declared clock. A falsely stamped future value is invisible.",
     "paper_candidate is not LIVE, SHADOW, TESTNET, or an order authorization.",
     "Spot Vision timestamps from 2025-01-01 are microseconds; USD-M examples are milliseconds.",
@@ -81,6 +81,7 @@ def completed_document(
     digest: str,
     table: BarTable,
     decision: Decision,
+    data_fingerprint: dict[str, Json],
 ) -> dict[str, Json]:
     timestamps = table.timestamps
     return {
@@ -104,11 +105,13 @@ def completed_document(
         "bar_count": len(timestamps),
         "timestamp_min": timestamps[0] if timestamps else None,
         "timestamp_max": timestamps[-1] if timestamps else None,
+        "data_fingerprint": data_fingerprint,
         "costs": {
             "fee_bps": spec.costs.fee_bps,
             "slippage_bps": spec.costs.slippage_bps,
             "spread_bps": spec.costs.spread_bps,
             "latency_bars": spec.costs.latency_bars,
+            "allow_zero_latency": spec.costs.allow_zero_latency,
             "round_trip_cost": {
                 stress_key(stress): round_trip_cost(spec.costs, stress)
                 for stress in STRESS_MULTIPLIERS
@@ -129,11 +132,7 @@ def completed_document(
         },
         "selected_config_id": decision.selected_config_id,
         "primary_config_id": decision.primary_config_id,
-        "holdout": {
-            "config_id": decision.holdout_config_id,
-            "gross": _metric_json(decision.holdout_gross),
-            "net": {key: _metric_json(block) for key, block in decision.holdout_net.items()},
-        },
+        "holdout": _holdout_json(decision),
         "reasons": list(decision.reasons),
         "limitations": list(LIMITATIONS),
         "generated_at_utc": _now(),
@@ -157,12 +156,20 @@ def render_markdown(document: dict[str, Json]) -> str:
         f"- spec_sha256: `{document.get('spec_sha256')}`",
         f"- hypothesis_id: `{document.get('hypothesis_id')}`",
         "",
-        "paper_candidate means H1 passed the untouched holdout after costs. "
-        "It does not authorize LIVE, SHADOW, TESTNET, or order placement.",
-        "",
-        "## Reasons",
-        "",
     ]
+    costs = document.get("costs")
+    if isinstance(costs, dict) and costs.get("allow_zero_latency") is True:
+        lines.append("- allow_zero_latency: true")
+        lines.append("")
+    lines.extend(
+        [
+            "paper_candidate means H1 passed the untouched holdout after costs. "
+            "It does not authorize LIVE, SHADOW, TESTNET, or order placement.",
+            "",
+            "## Reasons",
+            "",
+        ]
+    )
     reasons = document.get("reasons")
     if isinstance(reasons, list) and reasons:
         lines.extend(f"- {reason}" for reason in reasons)
@@ -171,8 +178,13 @@ def render_markdown(document: dict[str, Json]) -> str:
     if status == "completed":
         lines.extend(["", "## Validation", ""])
         lines.extend(_validation_lines(document))
-        lines.extend(["", "## Holdout", "", "Gross and net are both reported.", ""])
-        lines.extend(_holdout_lines(document))
+        lines.extend(["", "## Holdout", ""])
+        if document.get("holdout") is None:
+            lines.append("holdout sealed (not evaluated)")
+        else:
+            lines.append("Gross and net are both reported.")
+            lines.append("")
+            lines.extend(_holdout_lines(document))
     lines.extend(["", "## Limitations", ""])
     limitations = document.get("limitations")
     if isinstance(limitations, list):
@@ -222,6 +234,8 @@ def _validation_lines(document: dict[str, Json]) -> list[str]:
                 selected=config.get("selected"),
             )
         )
+    lines.append("")
+    lines.append("p is the more conservative of the iid t and the Newey-West HAC t.")
     return lines
 
 
@@ -238,6 +252,20 @@ def _holdout_lines(document: dict[str, Json]) -> list[str]:
         for key in ("1.0", "1.5", "2.0"):
             lines.append(f"- net {key} mean: `{_metric_field(net.get(key), 'mean_return')}`")
     return lines
+
+
+def _holdout_json(decision: Decision) -> dict[str, Json] | None:
+    if (
+        decision.holdout_config_id is None
+        or decision.holdout_gross is None
+        or decision.holdout_net is None
+    ):
+        return None
+    return {
+        "config_id": decision.holdout_config_id,
+        "gross": _metric_json(decision.holdout_gross),
+        "net": {key: _metric_json(block) for key, block in decision.holdout_net.items()},
+    }
 
 
 def _fold_json(fold: Fold) -> dict[str, Json]:
@@ -276,6 +304,10 @@ def _metric_json(block: MetricBlock) -> dict[str, Json]:
         "expectancy": block.expectancy,
         "t_stat": block.t_stat,
         "p_value": block.p_value,
+        "naive_p_value": block.naive_p_value,
+        "hac_t_stat": block.hac_t_stat,
+        "hac_p_value": block.hac_p_value,
+        "hac_lag": block.hac_lag,
     }
 
 

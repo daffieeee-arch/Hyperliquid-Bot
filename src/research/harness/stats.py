@@ -1,13 +1,15 @@
-"""One-sided t tail and multiple-testing adjustments.
+"""One-sided t tail, Newey-West HAC t, and multiple-testing adjustments.
 
 The t tail uses the regularized incomplete beta identity. Adjusted p-values
 are reported for every pre-registered config; the spec chooses which family
-gates selection.
+gates selection. The gate uses the larger of the iid t p-value and the HAC
+p-value.
 """
 
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 
 from research.harness.errors import HarnessError
 
@@ -83,6 +85,43 @@ def student_t_upper_tail(t_stat: float, degrees: int) -> float:
     if t_stat > 0.0:
         return two_tailed / 2.0
     return 1.0 - two_tailed / 2.0
+
+
+def newey_west_mean_test(values: Sequence[float]) -> tuple[float | None, float | None, int | None]:
+    """One-sided HAC t-test of H1: mean > 0.
+
+    Bartlett kernel. The lag is ``floor(4 * (n / 100) ** (2 / 9))``, capped
+    at ``n - 1``. Returns ``(t_stat, p_value, lag)``. A non-positive HAC
+    variance does not reject (p = 1) unless every observation is identical,
+    in which case the same degenerate rule as the iid t-test applies.
+    """
+
+    count = len(values)
+    if count < 2:
+        return None, None, None
+    mean = math.fsum(values) / count
+    demeaned = [value - mean for value in values]
+    gamma0 = math.fsum(value * value for value in demeaned) / count
+    lag = _newey_west_lag(count)
+    if gamma0 == 0.0:
+        return None, _degenerate_upper_tail(mean), lag
+    hac = gamma0
+    for lag_index in range(1, lag + 1):
+        weight = 1.0 - lag_index / (lag + 1.0)
+        gamma = (
+            math.fsum(
+                demeaned[index] * demeaned[index - lag_index] for index in range(lag_index, count)
+            )
+            / count
+        )
+        hac += 2.0 * weight * gamma
+    if hac <= 0.0:
+        return None, 1.0, lag
+    standard_error = math.sqrt(hac / count)
+    if standard_error == 0.0:
+        return None, 1.0, lag
+    t_stat = mean / standard_error
+    return t_stat, student_t_upper_tail(t_stat, count - 1), lag
 
 
 def bonferroni(p_values: list[float]) -> list[float]:
@@ -162,6 +201,19 @@ def _beta_continued_fraction(a: float, b: float, x: float) -> float:
         if abs(delta - 1.0) < epsilon:
             return h_value
     raise HarnessError("stats", "incomplete beta continued fraction did not converge.")
+
+
+def _newey_west_lag(count: int) -> int:
+    raw = math.floor(4.0 * (count / 100.0) ** (2.0 / 9.0))
+    return max(0, min(count - 1, int(raw)))
+
+
+def _degenerate_upper_tail(mean: float) -> float:
+    if mean > 0.0:
+        return 0.0
+    if mean < 0.0:
+        return 1.0
+    return 0.5
 
 
 def _require_p_values(p_values: list[float]) -> None:

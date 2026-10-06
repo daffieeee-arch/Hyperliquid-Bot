@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from hyperliquid_bot.local_mode import UnsafeTradingModeError, require_local_paper_mode
-from research.harness.data import load_bars
+from research.harness.data import fingerprint_inputs, load_bars
 from research.harness.errors import HarnessError, LockError, SpecError
 from research.harness.evaluate import decide
 from research.harness.report import (
@@ -37,10 +37,13 @@ class RunOutcome:
 
 
 def lock_spec(spec_path: Path) -> tuple[Path, str]:
-    """Hash-lock a spec without reading market data."""
+    """Hash-lock a spec and the declared input. Does not score the hypothesis."""
 
     _require_paper()
-    return write_lock(spec_path)
+    document = load_document(spec_path)
+    spec = validate_spec(document)
+    fingerprint = fingerprint_inputs(spec, spec_path.parent)
+    return write_lock(spec_path, fingerprint)
 
 
 def execute(spec_path: Path, output_dir: Path) -> RunOutcome:
@@ -61,10 +64,13 @@ def execute(spec_path: Path, output_dir: Path) -> RunOutcome:
         digest = spec_sha256(document)
         spec = validate_spec(document)
         hypothesis_id = spec.hypothesis_id
-        verify_lock(spec_path, document, digest)
+        locked_fingerprint = verify_lock(spec_path, document, digest)
+        fingerprint = fingerprint_inputs(spec, spec_path.parent)
+        if fingerprint != locked_fingerprint:
+            raise LockError("Data fingerprint differs from the lock. Re-lock the spec before run.")
         table = load_bars(spec, spec_path.parent)
         decision = decide(spec, table)
-        payload = completed_document(spec, digest, table, decision)
+        payload = completed_document(spec, digest, table, decision, fingerprint)
     except (SpecError, LockError, HarnessError) as error:
         payload = _failure(error.failure_kind, (str(error),), digest, hypothesis_id, "PAPER")
     _write_pair(output_dir, payload)

@@ -15,6 +15,15 @@ CSV / DuckDB binaries here.
 Operator runbook:
 [docs/runbooks/hist-archives-research-warehouse.md](../../docs/runbooks/hist-archives-research-warehouse.md).
 
+Repo ETL (no download unless you run `sync`; paths come from the environment):
+
+```bash
+export HIST_ARCHIVES_ROOT="$HOME/Hyperliquid Project/hist-archives"
+PYTHONPATH=src uv run --frozen python -m research.hist_etl plan
+```
+
+How-to: [docs/runbooks/hist-etl.md](../../docs/runbooks/hist-etl.md).
+
 Open the catalog on the VPS:
 
 ```bash

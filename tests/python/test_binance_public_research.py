@@ -2813,14 +2813,71 @@ async def test_slow_webhook_does_not_stall_healthy_profile_processing(
 
 
 @pytest.mark.asyncio
-async def test_same_profile_failure_is_not_alerted_twice_at_terminal_stop(
+async def test_unconfirmed_profile_alert_is_retried_at_terminal_stop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A submitted alert that did not confirm delivery is tried again at stop."""
+
+    alerts: list[dict[str, object]] = []
+
+    def _record(**kwargs: object) -> None:
+        alerts.append(kwargs)
+
+    monkeypatch.setattr(
+        "hyperliquid_bot.binance_public_research.emit_capture_operator_alert",
+        _record,
+    )
+    monkeypatch.setattr(
+        "hyperliquid_bot.capture_operator_alert.emit_capture_operator_alert",
+        _record,
+    )
+    _spot, market, public = _hanging_profile_frames()
+    spot = FakeConnection((ConnectionError("spot socket down"),))
+    open_interest, spot_snapshot = _open_interest_and_snapshot()
+
+    def collector_factory(sink: RawResearchSink) -> BinancePublicResearchCollector:
+        return BinancePublicResearchCollector(
+            sink,
+            config=BinancePublicResearchConfig(reconnect_delay_seconds=0, max_reconnects=0),
+            spot_connection_factory=ScriptedConnectionFactory((spot,)),
+            usdm_market_connection_factory=ScriptedConnectionFactory((market,)),
+            usdm_public_connection_factory=ScriptedConnectionFactory((public,)),
+            spot_depth_fetcher=spot_snapshot,
+            usdm_open_interest_fetcher=open_interest,
+            utc_ns=Counter(1000),
+            monotonic_ns=Counter(2000),
+            session_id_factory=SessionIds(),
+        )
+
+    with pytest.raises(BinanceTransportError, match="reconnect bound"):
+        await run_reconstructable_capture(
+            artifact_root=tmp_path,
+            run_id="one-alert",
+            duration_seconds=1,
+            collector_factory=collector_factory,
+        )
+    assert [type(item["error"]).__name__ for item in alerts] == [
+        "BinanceTransportError",
+        "BinanceTransportError",
+    ]
+    assert all(item["status"] == "FAILED" for item in alerts)
+
+
+@pytest.mark.asyncio
+async def test_confirmed_profile_alert_is_not_repeated_at_terminal_stop(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     alerts: list[dict[str, object]] = []
+
+    def _confirm(**kwargs: object) -> dict[str, str]:
+        alerts.append(kwargs)
+        return {"webhook_delivered": "yes"}
+
     monkeypatch.setattr(
         "hyperliquid_bot.binance_public_research.emit_capture_operator_alert",
-        lambda **kwargs: alerts.append(kwargs),
+        _confirm,
     )
     _spot, market, public = _hanging_profile_frames()
     spot = FakeConnection((ConnectionError("spot socket down"),))

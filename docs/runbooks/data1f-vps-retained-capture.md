@@ -171,10 +171,12 @@ when `gaps` is 0. `forceOrder` silence is optional and is not starvation. An
 empty required stream must not be accepted as a healthy retain on
 `OPERATOR_STOP`. Terminal `FAILED` emits one event-driven
 `capture_operator_alert`. Optional `CAPTURE_ALERT_WEBHOOK_URL` plus
-`CAPTURE_ALERT_WEBHOOK_AUTHORIZATION` (header value, never logged): up to 3
-POSTs of 2s; 401/403 are not retried; failures stay in the log as
-`http_status` and do not crash the writer. Ochtendbriefing stays separate —
-no polling cron.
+`CAPTURE_ALERT_WEBHOOK_AUTHORIZATION` (header value, never logged), also read
+from `~/.config/hyperliquid-bot/capture-alert.env` when unset in the process:
+up to 3 POSTs of 5s; 401/403 are not retried; failures stay in the log as
+`http_status` and do not crash the writer. Ochtendbriefing stays separate.
+A dead process is covered by `scripts/capture_alert.sh watch`
+(`docs/runbooks/capture-failure-alert.md`).
 
 **Apply path:** BN process restart is required before backoff, storm gates,
 and the socket drain are live. CoS / VPS ops only. Do not restart `bn-capture`

@@ -25,8 +25,14 @@ def walk_forward(n_rows: int, split: SplitSpec) -> tuple[tuple[Fold, ...], tuple
     fit parameters on them. An empty fold tuple means the prefix is too short.
     """
 
-    if split.holdout_bars >= n_rows:
-        return (), (0, n_rows)
+    if n_rows <= 0 or split.holdout_bars >= n_rows:
+        raise HarnessError(
+            "split",
+            (
+                f"holdout_bars {split.holdout_bars} leaves no validation prefix "
+                f"in a series of {n_rows} rows."
+            ),
+        )
     prefix = n_rows - split.holdout_bars
     holdout = (prefix, n_rows)
     folds: list[Fold] = []

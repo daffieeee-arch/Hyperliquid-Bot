@@ -32,6 +32,7 @@ from hyperliquid_bot.paper_engine import (
     quote_taker_fill,
     read_health,
 )
+from hyperliquid_bot.paper_engine.errors import PaperEngineError
 from hyperliquid_bot.paper_engine.execution import FillQuote, PositionState, apply_fill
 from hyperliquid_bot.paper_engine.precision import adverse_price
 from hyperliquid_bot.paper_risk import PaperRiskLimits
@@ -422,25 +423,25 @@ def test_kill_flatten_replaces_strategy_exit_waiting_on_latency(tmp_path: Path) 
     assert read_health(engine.health_path)["flatten_blocked_missing_price"] is False
 
 
-def test_waiting_entry_does_not_fill_once_a_kill_switch_is_set(tmp_path: Path) -> None:
-    # Defense in depth: whatever sets the switch, a waiting entry order is
-    # cancelled at fill time instead of adding new risk.
+def test_waiting_entry_is_cancelled_when_a_kill_switch_is_set(tmp_path: Path) -> None:
+    # A quiet feed trips the stale-data kill while a flat run still has an
+    # entry waiting out its latency. The entry is cancelled at that moment.
     engine = _engine(
         tmp_path,
         "haltwait1",
         strategy=ScriptedStrategy((Decimal("0.1"),)),
-        config=PaperEngineConfig(latency_ns=250_000_000),
+        config=PaperEngineConfig(latency_ns=250_000_000, stale_after_ns=1_000_000_000),
     )
     engine.on_event(_bbo(ns=0, bid="99999", ask="100000", ordinal=1))
-    engine._halt_new("test-halt")
-    engine.on_event(_bbo(ns=300_000_000, bid="99999", ask="100000", ordinal=2))
+    engine.on_clock(now_utc_ns=2_000_000_000, now_utc=CREATED + timedelta(seconds=2))
+    assert engine.kill_switch == "FLATTEN_HALT"
     engine.close()
     assert engine.position_quantity == Decimal("0")
     state = _state(engine)
+    assert state["open_order"] is None
     assert [(order["status"], order["reason"]) for order in _objects(state["orders"])] == [
         ("CANCELED", "halted")
     ]
-    assert [row["reason"] for row in _objects(state["risk_rejections"])] == ["halt_new"]
 
 
 class _RaisingAfterFirstCall(ScriptedStrategy):
@@ -450,7 +451,7 @@ class _RaisingAfterFirstCall(ScriptedStrategy):
         return super().on_market(event, view)
 
 
-def test_ledger_keeps_fills_when_a_later_step_raises(tmp_path: Path) -> None:
+def test_exception_mid_event_fails_the_run_closed(tmp_path: Path) -> None:
     engine = _engine(
         tmp_path,
         "raising01",
@@ -460,9 +461,37 @@ def test_ledger_keeps_fills_when_a_later_step_raises(tmp_path: Path) -> None:
     engine.on_event(_bbo(ns=0, bid="99999", ask="100000", ordinal=1))
     with pytest.raises(RuntimeError, match="strategy failure"):
         engine.on_event(_bbo(ns=300_000_000, bid="99999", ask="100000", ordinal=2))
-    assert engine.position_quantity == Decimal("0.1")
     types = [row["type"] for row in _ledger(tmp_path / "raising01")]
     assert types == ["order_accepted", "fill", "order_completed"]
+    health = read_health(engine.health_path)
+    assert health["status"] == "FAILED"
+    assert health["position_quantity"] == "0.1"
+    assert health["fill_count"] == 1
+    with pytest.raises(PaperEngineError, match="failed"):
+        engine.on_event(_bbo(ns=400_000_000, bid="99999", ask="100000", ordinal=3))
+
+
+def test_failed_ledger_write_is_not_retried_into_duplicates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = _engine(
+        tmp_path,
+        "ioerror01",
+        strategy=ScriptedStrategy((Decimal("0.1"),)),
+    )
+
+    def failing_fsync(descriptor: int) -> None:
+        del descriptor
+        raise OSError("disk failure")
+
+    monkeypatch.setattr("os.fsync", failing_fsync)
+    with pytest.raises(OSError, match="disk failure"):
+        engine.on_event(_bbo(ns=0, bid="99999", ask="100000", ordinal=1))
+    monkeypatch.undo()
+    types = [row["type"] for row in _ledger(tmp_path / "ioerror01")]
+    assert types == ["order_accepted", "fill", "order_completed"]
+    assert read_health(engine.health_path)["status"] == "FAILED"
 
 
 @pytest.mark.parametrize(("durable", "expect_fsync"), [(True, True), (False, False)])

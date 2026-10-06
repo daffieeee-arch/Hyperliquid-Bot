@@ -11,6 +11,7 @@ checks around that gate, and it turns a drawdown breach into a flatten halt.
 
 from __future__ import annotations
 
+import contextlib
 from collections import deque
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -264,6 +265,7 @@ class PaperEngine:
         # on later events is not a new rejection and writes nothing.
         self._last_block: tuple[str, str | None, str, _DesiredOrder | None] | None = None
         self._closed = False
+        self._failed = False
         self._missing_flatten = False
         self._store.write_claim(self._claim())
         self._persist(self._created_at)
@@ -311,9 +313,7 @@ class PaperEngine:
         try:
             self._advance(event)
         except BaseException:
-            # Fills and orders already applied in memory must still reach the
-            # ledger even when a strategy or later step raises.
-            self._store.commit()
+            self._fail()
             raise
 
     def _advance(self, event: MarketEvent) -> None:
@@ -348,12 +348,16 @@ class PaperEngine:
         anchor = self._created_ns if self._last_data_ns is None else self._last_data_ns
         if now_utc_ns < anchor:
             raise PaperEngineError("clock moved backwards.")
-        if now_utc_ns - anchor <= self._config.stale_after_ns:
+        try:
+            if now_utc_ns - anchor <= self._config.stale_after_ns:
+                self._persist(observed)
+                return
+            self._flatten_halt("stale_data")
+            self._enforce_flat(now_utc_ns, observed)
             self._persist(observed)
-            return
-        self._flatten_halt("stale_data")
-        self._enforce_flat(now_utc_ns, observed)
-        self._persist(observed)
+        except BaseException:
+            self._fail()
+            raise
 
     def close(self) -> None:
         """Write the final health file. The run still cannot be resumed."""
@@ -364,8 +368,29 @@ class PaperEngine:
         self._persist(self._last_event_time or self._created_at)
 
     def _require_open(self) -> None:
+        if self._failed:
+            raise PaperEngineError("run failed mid-event; start a new run_id.")
         if self._closed:
             raise PaperEngineError("run is closed.")
+
+    def _fail(self) -> None:
+        """Stop the run after an exception mid-event; keep what is on disk honest.
+
+        Fills and orders already applied in memory are written to the ledger
+        and the projections are rewritten with status FAILED. The run then
+        refuses further events, so it never continues from a half-applied
+        event. A failure while writing is swallowed here so the original
+        exception is the one the caller sees; the store refuses later writes
+        after a failed one, so nothing is appended twice.
+        """
+
+        self._failed = True
+        observed = self._last_event_time or self._created_at
+        with contextlib.suppress(Exception):
+            self._store.commit()
+        with contextlib.suppress(Exception):
+            self._store.write_state(self._state())
+            self._store.write_health(self._health(observed))
 
     def _check_event(self, event: MarketEvent) -> None:
         if event.venue != self._config.venue or event.instrument_id != self._config.instrument_id:
@@ -471,7 +496,14 @@ class PaperEngine:
         )
 
     def _enforce_flat(self, received_ns: int, event_time: datetime) -> None:
+        """Apply the kill switch. Runs after every limit check and stale-data halt."""
+
         del event_time
+        if self._kill is KillSwitch.NONE:
+            return
+        if self._working is not None and not self._working.reduce_only:
+            # A waiting entry would add risk the switch now forbids.
+            self._cancel_working(received_ns, "halted")
         if self._kill is not KillSwitch.FLATTEN_HALT:
             return
         desired = _flatten_desired(self._position.position_quantity)
@@ -504,10 +536,14 @@ class PaperEngine:
         if (
             self._working is not None
             and _same_desire(self._working, desired)
-            and not (kill_latency and not self._working.kill_flatten)
+            and not (
+                kill_latency
+                and not self._working.kill_flatten
+                and self._working.eligible_received_ns > received_ns
+            )
         ):
-            # A kill flatten is zero-latency. A matching strategy order, which
-            # may still be waiting out its latency, is replaced, not reused.
+            # A kill flatten is zero-latency. A matching strategy order that is
+            # still waiting out its latency is replaced, not reused.
             return
         if self._working is not None:
             self._cancel_working(received_ns, "replaced")
@@ -737,9 +773,6 @@ class PaperEngine:
         working = self._working
         if working is None or event.received_utc_ns < working.eligible_received_ns:
             return
-        if self._entry_halted(working):
-            self._cancel_working(event.received_utc_ns, "halted")
-            return
         if isinstance(event, BboEvent):
             quote = None if not bbo_is_complete(event) else self._quote(working, event=event)
             self._complete_ioc(working, quote, received_utc_ns=event.received_utc_ns)
@@ -752,9 +785,6 @@ class PaperEngine:
         working = self._working
         if working is None or received_ns < working.eligible_received_ns:
             return
-        if self._entry_halted(working):
-            self._cancel_working(received_ns, "halted")
-            return
         if self._bbo is not None and bbo_is_complete(self._bbo):
             quote = self._quote(working, event=self._bbo)
             self._complete_ioc(working, quote, received_utc_ns=received_ns)
@@ -764,11 +794,6 @@ class PaperEngine:
             self._complete_ioc(working, quote, received_utc_ns=received_ns)
             return
         self._missing_flatten = True
-
-    def _entry_halted(self, working: _WorkingOrder) -> bool:
-        """A waiting entry order must not fill once any kill switch is set."""
-
-        return not working.reduce_only and self._kill is not KillSwitch.NONE
 
     def _quote(self, working: _WorkingOrder, *, event: BboEvent | TradeEvent) -> FillQuote | None:
         source: FillSource
@@ -1008,6 +1033,8 @@ class PaperEngine:
         )
         last_event = self._last_event_time
         status = self._kill.value if self._kill is not KillSwitch.NONE else "RUNNING"
+        if self._failed:
+            status = "FAILED"
         if self._closed and self._kill is KillSwitch.NONE:
             status = "COMPLETED"
         return {

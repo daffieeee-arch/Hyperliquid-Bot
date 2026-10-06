@@ -31,7 +31,15 @@ one event is processed are written together before `state.json` and
 `health.json` are rewritten. With `durable_ledger=True` (the default) that
 write, the run claim, and the new directory entries are fsynced, so every
 completed event survives a crash or power loss. An offline replay that can
-simply be re-run may set `durable_ledger=False` to skip the fsync cost.
+simply be re-run may set `durable_ledger=False` to skip the fsync cost. The
+store root should already exist; when the engine creates it, the root's own
+entry in its parent directory is not fsynced.
+
+If anything raises while an event or clock tick is applied, the run fails
+closed. Fills and orders already applied are written to the ledger,
+`health.json` reports status `FAILED`, and the run refuses further events;
+start a new `run_id`. After a failed ledger write the store refuses later
+appends rather than risk writing a partly written batch twice.
 
 A strategy that keeps asking for the same blocked order is re-checked on
 every event, but that is one rejection: a `risk_rejected` line is written

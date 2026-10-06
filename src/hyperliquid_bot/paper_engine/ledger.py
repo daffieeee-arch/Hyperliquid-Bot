@@ -49,6 +49,7 @@ class RunStore:
             raise TypeError("durable must be a bool.")
         self.durable = durable
         self._pending: list[str] = []
+        self._write_failed = False
         self.run_id = validate_run_id(run_id)
         self.root = root.resolve()
         self.root.mkdir(parents=True, exist_ok=True)
@@ -71,7 +72,6 @@ class RunStore:
             # Persist the run directory entry and its claim/ledger entries.
             _fsync_directory(self.run_dir)
             _fsync_directory(self.root)
-            _fsync_directory(self.root.parent)
 
     def append(self, payload: dict[str, object]) -> None:
         """Buffer one ledger line. ``commit()`` writes it."""
@@ -81,16 +81,23 @@ class RunStore:
     def commit(self) -> None:
         """Write buffered ledger lines in one append, fsynced when durable."""
 
+        if self._write_failed:
+            # A failed append may have left part of the batch on disk. Writing
+            # it again would duplicate records, so the store fails closed.
+            raise OSError("an earlier ledger write failed; this run cannot append.")
         if not self._pending:
             return
         text = "".join(self._pending)
-        with self.ledger_path.open("a", encoding="utf-8") as handle:
-            handle.write(text)
-            # Clear only after the write, so a failed write can be retried.
-            self._pending.clear()
-            if self.durable:
-                handle.flush()
-                os.fsync(handle.fileno())
+        try:
+            with self.ledger_path.open("a", encoding="utf-8") as handle:
+                handle.write(text)
+                if self.durable:
+                    handle.flush()
+                    os.fsync(handle.fileno())
+        except BaseException:
+            self._write_failed = True
+            raise
+        self._pending.clear()
 
     def write_state(self, payload: dict[str, object]) -> None:
         _write_json(self.state_path, payload)

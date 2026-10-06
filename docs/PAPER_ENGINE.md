@@ -98,7 +98,9 @@ at decision time: entries use `entry_price_band_fraction`, exits
 `exit_price_band_fraction`, and the limit is rounded so it never widens the
 band. A fill beyond the limit does not happen; the order completes as
 `CANCELED` with `unfilled_reason: price_band` (other reasons: `no_touch`,
-`touch_size`). While an order waits, the same target from
+`touch_size`, `touch_consumed`). Displayed size is used up per quote: fills
+on the same BBO side or trade print never add up to more than its size, and
+a new quote resets it. While an order waits, the same target from
 the strategy keeps it working, even when the order was rounded or clipped
 to the risk size; only a changed target cancels and replaces it. A kill
 flatten and a stop exit are zero-latency: they replace a matching strategy
@@ -109,17 +111,23 @@ until a venue mark or a complete two-sided book exists.
 ## Risk
 
 - Per-trade size is `equity * risk_per_trade / stop_distance`, rounded down
-  to the lot, at the entry's limit price. Max notional, the `paper_risk`
-  hard limits and the risk-based size are all checked at that limit price,
-  the worst price the IOC can fill at, so they still hold after slippage.
-  Hard max position and max notional reject instead of clipping.
+  to the lot, at the risk price `touch * (1 + entry_price_band_fraction)`.
+  Max notional, the `paper_risk` hard limits and the risk-based size are all
+  checked at that price, so they hold wherever the IOC fills inside its band.
+  For a BUY the limit caps the fill; a SELL limit only floors it, so a short
+  gets the same cushion above the bid, but a bid rise beyond the band while
+  the order waits is not bounded. Hard max position and max notional reject
+  instead of clipping.
 - Every open position carries a stop at the effective stop distance
   (`stop_distance_fraction * volatility_multiple`) from its average entry,
   the same distance the size assumed. A `stop_set` line records it. When
   the engine mark (the venue mark when fresher, else the BBO mid; the venue
   triggers TP/SL on its mark price) crosses the stop, a `stop_triggered`
   line is written and a zero-latency reduce-only IOC (`stop-exit`) closes the
-  position at the touch, retried on later events until flat. A gap fills at
+  position at the touch, retried on later quotes until flat. With no mark at
+  all (one-sided book, no venue mark) the last trade price triggers it. The
+  config refuses a stop distance that is not wider than the entry band plus
+  slippage, which would stop out a valid fill at once. A gap fills at
   the touch, beyond the stop: the loss is then larger than the risk budget.
 - After a stop-out the strategy cannot re-open the same direction
   (`stop_lockout`, recorded once) until its target goes flat or reverses
@@ -130,8 +138,8 @@ until a venue mark or a complete two-sided book exists.
   lifts at the next UTC day and a weekly-loss halt at the next ISO week
   (`kill_switch` state `NONE`, reason `daily_loss_window_reset` /
   `weekly_loss_window_reset`); the guard re-checks against the new baseline
-  at once. A late event stamped in an earlier window never rolls a window
-  back. Drawdown, stale-data and missing-price halts do not lift by
+  at once. Windows start at the first event (a replay is created after its
+  tape), and a late event stamped in an earlier window never rolls one back. Drawdown, stale-data and missing-price halts do not lift by
   themselves.
 - Drawdown at or beyond `drawdown_kill_fraction` flattens and halts.
 - A gap longer than `stale_after_ns` flattens and halts. The caller can also
@@ -152,8 +160,7 @@ same strategy, risk, and fill path.
   settlement, no venue reconciliation.
 - The stop is simulated by the engine, not resting on the venue: PAPER
   triggers on its own mark and only when an event arrives.
-- An immediate exit (stop or kill flatten) takes a displayed size at most
-  once per event and retries on the next one. Other orders that fill on the
-  same quote within one event are not depleted against each other.
+- Depletion is tracked per displayed quote only; the book behind the touch
+  is not modelled.
 - A create-only run does not recover an open position after a process restart.
 - Paper fills are not evidence of edge, capacity, or LIVE readiness.

@@ -81,16 +81,8 @@ def adverse_price(price: Decimal, *, side: str, max_decimals: int) -> Decimal:
 
     if side not in {"BUY", "SELL"}:
         raise ValueError("side must be exactly BUY or SELL.")
-    quantum = price_quantum(price, max_decimals=max_decimals)
-    steps = price / quantum
     rounding = ROUND_CEILING if side == "BUY" else ROUND_FLOOR
-    rounded = steps.to_integral_value(rounding=rounding) * quantum
-    if rounded <= 0:
-        raise ValueError("adverse price rounded to a non-positive value.")
-    result_quantum = price_quantum(rounded, max_decimals=max_decimals)
-    if result_quantum == quantum:
-        return rounded
-    return adverse_price(rounded, side=side, max_decimals=max_decimals)
+    return _round_to_grid(price, rounding=rounding, max_decimals=max_decimals)
 
 
 def protective_price(price: Decimal, *, side: str, max_decimals: int) -> Decimal:
@@ -102,13 +94,16 @@ def protective_price(price: Decimal, *, side: str, max_decimals: int) -> Decimal
 
     if side not in {"BUY", "SELL"}:
         raise ValueError("side must be exactly BUY or SELL.")
-    quantum = price_quantum(price, max_decimals=max_decimals)
-    steps = price / quantum
     rounding = ROUND_FLOOR if side == "BUY" else ROUND_CEILING
-    rounded = steps.to_integral_value(rounding=rounding) * quantum
+    return _round_to_grid(price, rounding=rounding, max_decimals=max_decimals)
+
+
+def _round_to_grid(price: Decimal, *, rounding: str, max_decimals: int) -> Decimal:
+    quantum = price_quantum(price, max_decimals=max_decimals)
+    rounded = (price / quantum).to_integral_value(rounding=rounding) * quantum
     if rounded <= 0:
-        raise ValueError("protective price rounded to a non-positive value.")
-    result_quantum = price_quantum(rounded, max_decimals=max_decimals)
-    if result_quantum == quantum:
+        raise ValueError("price rounded to a non-positive value.")
+    if price_quantum(rounded, max_decimals=max_decimals) == quantum:
         return rounded
-    return protective_price(rounded, side=side, max_decimals=max_decimals)
+    # Rounding crossed a power of ten, which changes the grid: round again.
+    return _round_to_grid(rounded, rounding=rounding, max_decimals=max_decimals)

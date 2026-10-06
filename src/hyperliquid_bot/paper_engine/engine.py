@@ -17,7 +17,7 @@ import contextlib
 from collections import deque
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
@@ -195,8 +195,14 @@ class PaperEngineConfig:
         _require_positive(self.volatility_multiple, field_name="volatility_multiple")
         if self.volatility_multiple < 1:
             raise PaperEngineError("volatility_multiple must be >= 1.")
-        if self.stop_distance_fraction * self.volatility_multiple >= 1:
+        effective_stop = self.stop_distance_fraction * self.volatility_multiple
+        if effective_stop >= 1:
             raise PaperEngineError("the effective stop distance must be a fraction below 1.")
+        if effective_stop <= self.entry_price_band_fraction + self.slippage_fraction:
+            raise PaperEngineError(
+                "the effective stop distance must exceed the entry band plus slippage, "
+                "or a fill inside the band could be stopped out at once."
+            )
         if type(self.sz_decimals) is not int:
             raise PaperEngineError("sz_decimals must be an integer.")
         perp_max_price_decimals(self.sz_decimals)
@@ -278,9 +284,11 @@ class PaperEngine:
             fees_usdc=Decimal("0"),
         )
         self._peak = self._config.starting_cash_usdc
-        self._day = self._created_at.date()
+        # Windows start at the first event, not at created_at: a replay is
+        # created after the tape it plays.
+        self._day: date | None = None
         self._day_start = self._config.starting_cash_usdc
-        self._week = self._created_at.isocalendar()[:2]
+        self._week: tuple[int, int] | None = None
         self._week_start = self._config.starting_cash_usdc
         self._last_daily_pnl = Decimal("0")
         self._last_weekly_pnl = Decimal("0")
@@ -303,9 +311,11 @@ class PaperEngine:
         # +1 after a long was stopped, -1 after a short: blocks re-entering the
         # same direction until the strategy's target goes flat or reverses.
         self._stop_lockout = 0
-        # One immediate exit attempt per event: a partial fill must not take
-        # the same displayed size twice on the same quote.
-        self._exit_attempt_ns: int | None = None
+        # Displayed size already taken from the current quote. Reset when a
+        # new BBO or trade arrives, so no two fills use the same liquidity.
+        self._bid_taken = Decimal("0")
+        self._ask_taken = Decimal("0")
+        self._trade_taken = Decimal("0")
         # state.json is rewritten on every event, so it keeps only the most
         # recent records. ledger.jsonl stays the complete audit trail.
         self._orders: deque[dict[str, object]] = deque(maxlen=STATE_RECENT_RECORD_LIMIT)
@@ -469,6 +479,8 @@ class PaperEngine:
     def _update_market(self, event: MarketEvent) -> None:
         if isinstance(event, BboEvent):
             self._bbo = event
+            self._bid_taken = Decimal("0")
+            self._ask_taken = Decimal("0")
             if bbo_is_complete(event):
                 mid = bbo_mid(event)
                 self._bbo_mark = mid
@@ -479,6 +491,7 @@ class PaperEngine:
             return
         if isinstance(event, TradeEvent):
             self._trade = event
+            self._trade_taken = Decimal("0")
             return
         if isinstance(event, MarkEvent):
             self._venue_mark = event.mark_price
@@ -532,7 +545,11 @@ class PaperEngine:
         """Start a new UTC day / ISO week. A late, older event never rolls back."""
 
         day = event_time.date()
-        week = event_time.isocalendar()[:2]
+        week = (event_time.isocalendar()[0], event_time.isocalendar()[1])
+        if self._day is None or self._week is None:
+            self._day = day
+            self._week = week
+            return
         if day > self._day:
             self._day = day
             self._day_start = equity
@@ -610,6 +627,10 @@ class PaperEngine:
             return
         if not self._stop_exit_pending:
             marked = self._display_mark()
+            if marked is None and self._trade is not None:
+                # No mark at all (one-sided book, no venue mark): the last
+                # trade still protects the position rather than nothing.
+                marked = (self._trade.price, "last_trade")
             if marked is None:
                 return
             mark, source = marked
@@ -637,11 +658,26 @@ class PaperEngine:
     def _attempt_immediate_exit(
         self, desired: _DesiredOrder | None, received_ns: int, reason: str
     ) -> None:
-        if self._exit_attempt_ns == received_ns:
+        if desired is not None and self._touch_left(desired.side) == 0:
+            # This quote is used up (for example by a partial exit). Retry on
+            # the next quote instead of filling the same liquidity twice.
             return
-        self._exit_attempt_ns = received_ns
         self._submit_desired(desired, received_ns=received_ns, reason=reason, immediate=True)
         self._fill_working_from_book(received_ns)
+
+    def _touch_left(self, side: str) -> Decimal | None:
+        """Displayed size still available at the current touch; None if no touch."""
+
+        bbo = self._bbo
+        if bbo is not None and bbo_is_complete(bbo):
+            if side == "BUY" and bbo.ask_size is not None:
+                return max(Decimal("0"), bbo.ask_size - self._ask_taken)
+            if side == "SELL" and bbo.bid_size is not None:
+                return max(Decimal("0"), bbo.bid_size - self._bid_taken)
+            return None
+        if self._trade is not None:
+            return max(Decimal("0"), self._trade.quantity - self._trade_taken)
+        return None
 
     def _enforce_flat(self, received_ns: int, event_time: datetime) -> None:
         """Apply the kill switch. Runs after every limit check and stale-data halt."""
@@ -714,6 +750,10 @@ class PaperEngine:
             return
         touch_price, _touch_size = priced
         limit_price = self._limit_price(desired, touch_price)
+        # The notional a fill can reach. A BUY limit caps it; a SELL limit only
+        # floors the price, so a short gets the same cushion above the touch
+        # (a bid rise beyond the band while the order waits is not bounded).
+        risk_price = touch_price * (Decimal(1) + self._config.entry_price_band_fraction)
         quantity = floor_size(desired.quantity, self._size_increment)
         if quantity <= 0:
             self._reject(
@@ -725,9 +765,9 @@ class PaperEngine:
             return
         clipped = False
         if not desired.reduce_only:
-            # Size and check hard limits at the limit price, the worst price
-            # this IOC can fill at, so they still hold after slippage.
-            sized = self._clip_entry(quantity, limit_price)
+            # Size and check hard limits at the risk price, so they still hold
+            # when the IOC fills anywhere inside its band.
+            sized = self._clip_entry(quantity, risk_price)
             if sized is None:
                 self._reject(
                     reason="risk_based_size",
@@ -746,7 +786,7 @@ class PaperEngine:
                     desired=desired,
                 )
                 return
-            projected_notional = abs(projected) * limit_price
+            projected_notional = abs(projected) * risk_price
             if projected_notional > self._config.max_notional_usdc:
                 self._reject(
                     reason="max_notional",
@@ -768,7 +808,7 @@ class PaperEngine:
             if not self._paper_risk_allows(
                 side=desired.side,
                 quantity=quantity,
-                price=limit_price,
+                price=risk_price,
                 reduce_only=False,
                 received_ns=received_ns,
                 desired=desired,
@@ -936,53 +976,59 @@ class PaperEngine:
         working = self._working
         if working is None or event.received_utc_ns < working.eligible_received_ns:
             return
-        if isinstance(event, BboEvent):
-            quote, unfilled = (
-                self._quote(working, event=event) if bbo_is_complete(event) else (None, "no_touch")
-            )
-            self._complete_ioc(
-                working, quote, received_utc_ns=event.received_utc_ns, unfilled_reason=unfilled
-            )
-            return
-        if isinstance(event, TradeEvent) and not self._book_complete():
-            quote, unfilled = self._quote(working, event=event)
-            self._complete_ioc(
-                working, quote, received_utc_ns=event.received_utc_ns, unfilled_reason=unfilled
-            )
+        if isinstance(event, BboEvent) or (
+            isinstance(event, TradeEvent) and not self._book_complete()
+        ):
+            self._fill_against(working, event, received_ns=event.received_utc_ns)
 
     def _fill_working_from_book(self, received_ns: int) -> None:
         working = self._working
         if working is None or received_ns < working.eligible_received_ns:
             return
         if self._bbo is not None and bbo_is_complete(self._bbo):
-            quote, unfilled = self._quote(working, event=self._bbo)
-            self._complete_ioc(
-                working, quote, received_utc_ns=received_ns, unfilled_reason=unfilled
-            )
+            self._fill_against(working, self._bbo, received_ns=received_ns)
             return
         if self._trade is not None and not self._book_complete():
-            quote, unfilled = self._quote(working, event=self._trade)
-            self._complete_ioc(
-                working, quote, received_utc_ns=received_ns, unfilled_reason=unfilled
-            )
+            self._fill_against(working, self._trade, received_ns=received_ns)
             return
         self._missing_flatten = True
+
+    def _fill_against(
+        self, working: _WorkingOrder, event: BboEvent | TradeEvent, *, received_ns: int
+    ) -> None:
+        quote: FillQuote | None
+        unfilled: str | None
+        if isinstance(event, BboEvent) and not bbo_is_complete(event):
+            quote, unfilled = None, "no_touch"
+        else:
+            quote, unfilled = self._quote(working, event=event)
+        self._complete_ioc(working, quote, received_utc_ns=received_ns, unfilled_reason=unfilled)
 
     def _quote(
         self, working: _WorkingOrder, *, event: BboEvent | TradeEvent
     ) -> tuple[FillQuote | None, str | None]:
-        """Price a fill, or say why the IOC does not fill: ``no_touch`` or ``price_band``."""
+        """Price a fill, or say why the IOC does not fill.
+
+        ``no_touch``: no price on that side. ``touch_consumed``: an earlier fill
+        already took the displayed size of this quote. ``price_band``: the
+        fill would be beyond the order's limit.
+        """
 
         source: FillSource
+        taken: Decimal
         if isinstance(event, BboEvent):
             if working.side == "BUY":
-                touch_price, touch_size = event.ask_price, event.ask_size
+                touch_price, touch_size, taken = event.ask_price, event.ask_size, self._ask_taken
             else:
-                touch_price, touch_size = event.bid_price, event.bid_size
+                touch_price, touch_size, taken = event.bid_price, event.bid_size, self._bid_taken
             source = "bbo"
         else:
-            touch_price, touch_size = event.price, event.quantity
+            touch_price, touch_size, taken = event.price, event.quantity, self._trade_taken
             source = "trade"
+        if touch_size is not None and taken > 0:
+            touch_size = touch_size - taken
+            if touch_size <= 0:
+                return None, "touch_consumed"
         quote = quote_taker_fill(
             side=working.side,
             quantity=working.quantity,
@@ -1020,6 +1066,7 @@ class PaperEngine:
         if quote is not None:
             self._position = apply_fill(self._position, quote)
             filled = quote.quantity
+            self._take_touch(quote)
             fill_record: dict[str, object] = {
                 "client_order_id": working.client_order_id,
                 "side": quote.side,
@@ -1067,10 +1114,22 @@ class PaperEngine:
         self._working = None
         if filled > 0:
             self._update_stop_after_fill(before, received_utc_ns)
-        if working.reduce_only and self._position.position_quantity != 0 and filled <= 0:
-            self._missing_flatten = True
+        # Only a missing price blocks a flatten; a band or a used-up quote
+        # retries on the next quote without raising that flag.
+        self._missing_flatten = (
+            working.reduce_only
+            and self._position.position_quantity != 0
+            and filled <= 0
+            and unfilled_reason == "no_touch"
+        )
+
+    def _take_touch(self, quote: FillQuote) -> None:
+        if quote.source == "trade":
+            self._trade_taken += quote.quantity
+        elif quote.side == "BUY":
+            self._ask_taken += quote.quantity
         else:
-            self._missing_flatten = False
+            self._bid_taken += quote.quantity
 
     def _update_stop_after_fill(self, before: Decimal, received_ns: int) -> None:
         """Place the stop when a position opens or grows; clear it when flat."""

@@ -871,6 +871,104 @@ def test_hard_limits_hold_at_the_worst_admissible_price(tmp_path: Path) -> None:
     assert _objects(_state(engine)["risk_rejections"])[0]["reason"] == "max_notional"
 
 
+def test_short_entry_is_sized_at_the_same_risk_price_as_a_long(tmp_path: Path) -> None:
+    # A SELL limit only floors the fill price, so a short is sized at the bid
+    # plus the band, like a long at the ask plus the band: 12500 / 101000.
+    engine = _engine(tmp_path, "shortsize", strategy=ScriptedStrategy((Decimal("-1"),)))
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001"))
+    engine.close()
+    assert engine.position_quantity == Decimal("-0.12376")
+
+
+def test_config_rejects_a_stop_inside_the_entry_band() -> None:
+    with pytest.raises(PaperEngineError, match="exceed the entry band"):
+        _instant(stop_distance_fraction=Decimal("0.01"))
+
+
+def test_used_up_quote_is_not_filled_twice(tmp_path: Path) -> None:
+    # The strategy exit takes the 0.04 BTC bid; the stop that fires on the
+    # same quote must not take that bid again, nor on a mark-only event.
+    engine = _engine(
+        tmp_path,
+        "depleted1",
+        strategy=ScriptedStrategy((Decimal("0.1"), Decimal("0"))),
+        config=PaperEngineConfig(latency_ns=250_000_000),
+    )
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001", ordinal=1))
+    engine.on_event(_bbo(ns=300_000_000, bid="100000", ask="100001", ordinal=2))
+    assert engine.position_quantity == Decimal("0.1")
+    engine.on_event(_bbo(ns=600_000_000, bid="97990", ask="97991", bid_size="0.04", ordinal=3))
+    assert engine.position_quantity == Decimal("0.06")
+    assert read_health(engine.health_path)["stop_exit_pending"] is True
+    engine.on_event(_mark(ns=700_000_000, price="97990", ordinal=4))
+    assert engine.position_quantity == Decimal("0.06")
+    engine.on_event(_bbo(ns=800_000_000, bid="97980", ask="97981", ordinal=5))
+    engine.close()
+    assert engine.position_quantity == Decimal("0")
+
+
+class _SilentAfterTargets(ScriptedStrategy):
+    """Returns no target once its script is used up, so nothing is resubmitted."""
+
+    def on_market(self, event: MarketEvent, view: StrategyView) -> TargetPosition | None:
+        if self._index >= len(self._targets):
+            return None
+        return super().on_market(event, view)
+
+
+def test_band_blocked_exit_is_not_reported_as_a_missing_price(tmp_path: Path) -> None:
+    engine = _engine(
+        tmp_path,
+        "bandflag1",
+        strategy=_SilentAfterTargets((Decimal("0.1"), Decimal("0"))),
+        config=PaperEngineConfig(latency_ns=250_000_000, exit_price_band_fraction=Decimal("0.005")),
+    )
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001", ordinal=1))
+    engine.on_event(_bbo(ns=300_000_000, bid="100000", ask="100001", ordinal=2))
+    # The exit's limit is 99500; a 1% drop is beyond it but above the stop.
+    engine.on_event(_bbo(ns=600_000_000, bid="99000", ask="99001", ordinal=3))
+    assert engine.position_quantity == Decimal("0.1")
+    orders = _objects(_state(engine)["orders"])
+    assert orders[-1]["unfilled_reason"] == "price_band"
+    assert read_health(engine.health_path)["flatten_blocked_missing_price"] is False
+    engine.close()
+
+
+def test_stop_falls_back_to_the_last_trade_without_any_mark(tmp_path: Path) -> None:
+    engine = _engine(tmp_path, "stoptrade", strategy=ScriptedStrategy((Decimal("0.1"),)))
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001", ordinal=1))
+    # One-sided book: no BBO mid and no venue mark, so only trades are left.
+    engine.on_event(_bbo(ns=1_000_000, bid="98500", ask=None, ask_size=None, ordinal=2))
+    engine.on_event(_trade(ns=2_000_000, price="97000", size="0.5", ordinal=3))
+    engine.close()
+    assert engine.position_quantity == Decimal("0")
+    triggered = [row for row in _ledger(tmp_path / "stoptrade") if row["type"] == "stop_triggered"]
+    assert triggered[0]["mark_source"] == "last_trade"
+    assert triggered[0]["mark_price"] == "97000"
+
+
+def test_loss_windows_follow_event_time_when_created_after_the_tape(tmp_path: Path) -> None:
+    # A replay is created after the tape it plays; the windows must still
+    # roll on the tape's own days.
+    engine = PaperEngine(
+        store_root=tmp_path,
+        run_id="replayday",
+        created_at_utc=CREATED + timedelta(days=30),
+        config=_instant(
+            stale_after_ns=2 * 86_400_000_000_000,
+            risk_limits=_loose_loss_limits(drawdown="0.50", daily="0.001"),
+        ),
+        strategy=ScriptedStrategy(tuple(Decimal(text) for text in ("0.1", "0", "0.1"))),
+    )
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001", ordinal=1))
+    engine.on_event(_bbo(ns=1_000_000_000, bid="99000", ask="99001", ordinal=2))
+    assert engine.kill_switch == "HALT_NEW"
+    engine.on_event(_bbo(ns=13 * 3_600_000_000_000, bid="99000", ask="99001", ordinal=3))
+    assert engine.kill_switch == "NONE"
+    assert engine.position_quantity == Decimal("0.1")
+    engine.close()
+
+
 def test_daily_loss_halt_lifts_at_the_next_utc_day_and_never_rolls_back(tmp_path: Path) -> None:
     engine = _engine(
         tmp_path,

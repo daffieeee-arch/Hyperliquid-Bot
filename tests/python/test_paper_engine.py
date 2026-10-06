@@ -467,8 +467,13 @@ def test_exception_mid_event_fails_the_run_closed(tmp_path: Path) -> None:
     assert health["status"] == "FAILED"
     assert health["position_quantity"] == "0.1"
     assert health["fill_count"] == 1
+    assert health["ledger_write_failed"] is False
     with pytest.raises(PaperEngineError, match="failed"):
         engine.on_event(_bbo(ns=400_000_000, bid="99999", ask="100000", ordinal=3))
+    engine.close()
+    closed = read_health(engine.health_path)
+    assert closed["status"] == "FAILED"
+    assert closed["run_closed"] is True
 
 
 def test_failed_ledger_write_is_not_retried_into_duplicates(
@@ -491,7 +496,12 @@ def test_failed_ledger_write_is_not_retried_into_duplicates(
     monkeypatch.undo()
     types = [row["type"] for row in _ledger(tmp_path / "ioerror01")]
     assert types == ["order_accepted", "fill", "order_completed"]
+    health = read_health(engine.health_path)
+    assert health["status"] == "FAILED"
+    assert health["ledger_write_failed"] is True
+    engine.close()
     assert read_health(engine.health_path)["status"] == "FAILED"
+    assert len(_ledger(tmp_path / "ioerror01")) == 3
 
 
 @pytest.mark.parametrize(("durable", "expect_fsync"), [(True, True), (False, False)])

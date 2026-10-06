@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import contextlib
 from collections import deque
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -310,11 +310,8 @@ class PaperEngine:
 
         self._require_open()
         self._check_event(event)
-        try:
+        with self._fail_closed(event.event_time_utc):
             self._advance(event)
-        except BaseException:
-            self._fail()
-            raise
 
     def _advance(self, event: MarketEvent) -> None:
         if self._stale_gap(event.received_utc_ns):
@@ -348,16 +345,11 @@ class PaperEngine:
         anchor = self._created_ns if self._last_data_ns is None else self._last_data_ns
         if now_utc_ns < anchor:
             raise PaperEngineError("clock moved backwards.")
-        try:
-            if now_utc_ns - anchor <= self._config.stale_after_ns:
-                self._persist(observed)
-                return
-            self._flatten_halt("stale_data")
-            self._enforce_flat(now_utc_ns, observed)
+        with self._fail_closed(observed):
+            if now_utc_ns - anchor > self._config.stale_after_ns:
+                self._flatten_halt("stale_data")
+                self._enforce_flat(now_utc_ns, observed)
             self._persist(observed)
-        except BaseException:
-            self._fail()
-            raise
 
     def close(self) -> None:
         """Write the final health file. The run still cannot be resumed."""
@@ -365,7 +357,11 @@ class PaperEngine:
         if self._closed:
             raise PaperEngineError("run is already closed.")
         self._closed = True
-        self._persist(self._last_event_time or self._created_at)
+        observed = self._last_event_time or self._created_at
+        if self._failed:
+            self._write_failed_projections(observed)
+            return
+        self._persist(observed)
 
     def _require_open(self) -> None:
         if self._failed:
@@ -373,24 +369,33 @@ class PaperEngine:
         if self._closed:
             raise PaperEngineError("run is closed.")
 
-    def _fail(self) -> None:
-        """Stop the run after an exception mid-event; keep what is on disk honest.
+    @contextlib.contextmanager
+    def _fail_closed(self, observed_at: datetime) -> Iterator[None]:
+        """Stop the run if applying an event or clock tick raises.
 
         Fills and orders already applied in memory are written to the ledger
         and the projections are rewritten with status FAILED. The run then
         refuses further events, so it never continues from a half-applied
-        event. A failure while writing is swallowed here so the original
-        exception is the one the caller sees; the store refuses later writes
-        after a failed one, so nothing is appended twice.
+        event. Write errors here are swallowed so the caller sees the original
+        exception; the store refuses appends after a failed write, so nothing
+        is written twice.
         """
 
-        self._failed = True
-        observed = self._last_event_time or self._created_at
+        try:
+            yield
+        except BaseException:
+            self._failed = True
+            with contextlib.suppress(Exception):
+                self._store.commit()
+            self._write_failed_projections(observed_at)
+            raise
+
+    def _write_failed_projections(self, observed_at: datetime) -> None:
+        # Health first and on its own: it is what monitoring reads.
         with contextlib.suppress(Exception):
-            self._store.commit()
+            self._store.write_health(self._health(observed_at))
         with contextlib.suppress(Exception):
             self._store.write_state(self._state())
-            self._store.write_health(self._health(observed))
 
     def _check_event(self, event: MarketEvent) -> None:
         if event.venue != self._config.venue or event.instrument_id != self._config.instrument_id:
@@ -1033,10 +1038,10 @@ class PaperEngine:
         )
         last_event = self._last_event_time
         status = self._kill.value if self._kill is not KillSwitch.NONE else "RUNNING"
-        if self._failed:
-            status = "FAILED"
         if self._closed and self._kill is KillSwitch.NONE:
             status = "COMPLETED"
+        if self._failed:
+            status = "FAILED"
         return {
             "schema": HEALTH_SCHEMA,
             "mode": "PAPER",
@@ -1059,6 +1064,7 @@ class PaperEngine:
             "mark_source": None if marked is None else marked[1],
             "stale": self._kill_reason == "stale_data",
             "flatten_blocked_missing_price": self._missing_flatten,
+            "ledger_write_failed": self._store.write_failed,
             "last_event_at_utc": (
                 None
                 if last_event is None

@@ -73,9 +73,15 @@ class RunStore:
             _fsync_directory(self.run_dir)
             _fsync_directory(self.root)
 
+    @property
+    def write_failed(self) -> bool:
+        return self._write_failed
+
     def append(self, payload: dict[str, object]) -> None:
         """Buffer one ledger line. ``commit()`` writes it."""
 
+        if self._write_failed:
+            raise OSError("an earlier ledger write failed; this run cannot append.")
         self._pending.append(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n")
 
     def commit(self) -> None:

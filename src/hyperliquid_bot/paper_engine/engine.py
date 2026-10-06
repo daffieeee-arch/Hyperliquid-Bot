@@ -307,13 +307,16 @@ class PaperEngine:
         self._next_order_number = 1
         # Stop for the open position, set from its average entry when it opens.
         self._stop_price: Decimal | None = None
-        self._stop_set_ns: int | None = None
+        # Trades are counted in processing order; the last-trade stop fallback
+        # only uses a trade that arrived after the stop was set.
+        self._trade_count = 0
+        self._stop_set_trade_count: int | None = None
         self._stop_exit_pending = False
         # +1 after a long was stopped, -1 after a short: blocks re-entering the
         # same direction until the strategy's target goes flat or reverses.
         self._stop_lockout = 0
         # Displayed size already taken from the current quote. Reset when a
-        # new BBO or trade arrives, so no two fills use the same liquidity.
+        # new BBO or trade arrives, so no two fills use the same quote twice.
         self._bid_taken = Decimal("0")
         self._ask_taken = Decimal("0")
         self._trade_taken = Decimal("0")
@@ -479,22 +482,11 @@ class PaperEngine:
 
     def _update_market(self, event: MarketEvent) -> None:
         if isinstance(event, BboEvent):
-            previous = self._bbo
-            # Our PAPER fills never move the real book, so an unchanged side
-            # still shows the size we already took: keep it used up.
-            if (
-                previous is None
-                or previous.bid_price != event.bid_price
-                or previous.bid_size != event.bid_size
-            ):
-                self._bid_taken = Decimal("0")
-            if (
-                previous is None
-                or previous.ask_price != event.ask_price
-                or previous.ask_size != event.ask_size
-            ):
-                self._ask_taken = Decimal("0")
+            # Each new quote is fresh liquidity: PAPER fills have no market
+            # impact across updates, only within the quote they filled on.
             self._bbo = event
+            self._bid_taken = Decimal("0")
+            self._ask_taken = Decimal("0")
             if bbo_is_complete(event):
                 mid = bbo_mid(event)
                 self._bbo_mark = mid
@@ -505,6 +497,7 @@ class PaperEngine:
             return
         if isinstance(event, TradeEvent):
             self._trade = event
+            self._trade_count += 1
             self._trade_taken = Decimal("0")
             return
         if isinstance(event, MarkEvent):
@@ -646,8 +639,8 @@ class PaperEngine:
             if (
                 marked is None
                 and trade is not None
-                and self._stop_set_ns is not None
-                and trade.received_utc_ns >= self._stop_set_ns
+                and self._stop_set_trade_count is not None
+                and self._trade_count > self._stop_set_trade_count
             ):
                 # No mark at all (one-sided book, no venue mark): a trade printed
                 # since the stop was set still protects the position. This is an
@@ -685,7 +678,7 @@ class PaperEngine:
             # exit): retry on the next quote rather than take it twice. A
             # strategy order must not fill meanwhile, so it is cancelled.
             if self._working is not None and not self._working.immediate_exit:
-                self._cancel_working(received_ns, "replaced")
+                self._cancel_working(received_ns, f"{reason}-pending")
             return
         self._submit_desired(desired, received_ns=received_ns, reason=reason, immediate=True)
         self._fill_working_from_book(received_ns)
@@ -1018,13 +1011,11 @@ class PaperEngine:
         working = self._working
         if working is None or received_ns < working.eligible_received_ns:
             return
-        if self._bbo is not None and bbo_is_complete(self._bbo):
-            self._fill_against(working, self._bbo, received_ns=received_ns)
+        event = self._current_touch_event()
+        if event is None:
+            self._missing_flatten = True
             return
-        if self._trade is not None and not self._book_complete():
-            self._fill_against(working, self._trade, received_ns=received_ns)
-            return
-        self._missing_flatten = True
+        self._fill_against(working, event, received_ns=received_ns)
 
     def _fill_against(
         self, working: _WorkingOrder, event: BboEvent | TradeEvent, *, received_ns: int
@@ -1161,7 +1152,7 @@ class PaperEngine:
         after = self._position.position_quantity
         if after == 0:
             self._stop_price = None
-            self._stop_set_ns = None
+            self._stop_set_trade_count = None
             self._stop_exit_pending = False
             return
         if abs(after) <= abs(before) and _sign(after) == _sign(before):
@@ -1176,7 +1167,7 @@ class PaperEngine:
         self._stop_price = (
             average * (Decimal(1) - distance) if after > 0 else average * (Decimal(1) + distance)
         )
-        self._stop_set_ns = received_ns
+        self._stop_set_trade_count = self._trade_count
         self._store.append(
             {
                 "type": "stop_set",

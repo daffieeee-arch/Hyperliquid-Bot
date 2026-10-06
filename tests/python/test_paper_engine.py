@@ -578,19 +578,7 @@ def test_state_keeps_recent_records_and_full_counts(tmp_path: Path) -> None:
     targets = tuple(Decimal("0.01") if index % 2 == 0 else Decimal("0") for index in range(240))
     engine = _engine(tmp_path, "bounded01", strategy=ScriptedStrategy(targets))
     for index in range(240):
-        # A fresh displayed size on every quote, as on a live book; an
-        # unchanged quote would stay used up by the earlier PAPER fills.
-        size = str(index + 1)
-        engine.on_event(
-            _bbo(
-                ns=index * 1_000_000,
-                bid="99999",
-                ask="100000",
-                bid_size=size,
-                ask_size=size,
-                ordinal=index + 1,
-            )
-        )
+        engine.on_event(_bbo(ns=index * 1_000_000, bid="99999", ask="100000", ordinal=index + 1))
     engine.close()
     state = _state(engine)
     assert state["schema"] == "paper-engine-state-v2"
@@ -915,16 +903,30 @@ def test_stop_ignores_a_trade_printed_before_the_position_opened(tmp_path: Path)
     assert not [row for row in _ledger(tmp_path / "oldtrade1") if row["type"] == "stop_triggered"]
 
 
-def test_unchanged_bid_stays_used_up_when_only_the_ask_moves(tmp_path: Path) -> None:
-    engine = _engine(tmp_path, "sameside1", strategy=ScriptedStrategy((Decimal("0.1"),)))
+def test_stop_fallback_follows_processing_order_not_receive_stamps(tmp_path: Path) -> None:
+    engine = _engine(tmp_path, "tradeorder", strategy=ScriptedStrategy((Decimal("0.1"),)))
+    engine.on_event(_bbo(ns=2_000_000, bid="100000", ask="100001", ordinal=1))
+    engine.on_event(_bbo(ns=3_000_000, bid="99990", ask=None, ask_size=None, ordinal=2))
+    # Processed after the stop was set, though stamped earlier by its feed.
+    engine.on_event(_trade(ns=1_000_000, price="97000", size="0.5", ordinal=3))
+    engine.close()
+    assert engine.position_quantity == Decimal("0")
+    triggered = [row for row in _ledger(tmp_path / "tradeorder") if row["type"] == "stop_triggered"]
+    assert triggered[0]["mark_source"] == "last_trade"
+
+
+def test_each_new_quote_is_fresh_liquidity_but_a_mark_is_not(tmp_path: Path) -> None:
+    # PAPER fills have no market impact across quote updates: a new BBO
+    # message offers its displayed size again, a mark-only event does not.
+    engine = _engine(tmp_path, "freshquote", strategy=ScriptedStrategy((Decimal("0.1"),)))
     engine.on_event(_bbo(ns=0, bid="100000", ask="100001", ordinal=1))
     engine.on_event(_bbo(ns=1_000_000, bid="97990", ask="97991", bid_size="0.04", ordinal=2))
     assert engine.position_quantity == Decimal("0.06")
-    engine.on_event(_bbo(ns=2_000_000, bid="97990", ask="97995", bid_size="0.04", ordinal=3))
+    engine.on_event(_mark(ns=2_000_000, price="97990", ordinal=3))
     assert engine.position_quantity == Decimal("0.06")
-    engine.on_event(_bbo(ns=3_000_000, bid="97980", ask="97995", bid_size="1", ordinal=4))
+    engine.on_event(_bbo(ns=3_000_000, bid="97990", ask="97995", bid_size="0.04", ordinal=4))
     engine.close()
-    assert engine.position_quantity == Decimal("0")
+    assert engine.position_quantity == Decimal("0.02")
 
 
 def test_zero_displayed_size_blocks_a_flatten_as_missing_price(tmp_path: Path) -> None:

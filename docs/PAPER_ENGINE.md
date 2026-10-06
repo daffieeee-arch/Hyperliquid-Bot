@@ -99,9 +99,10 @@ at decision time: entries use `entry_price_band_fraction`, exits
 band. A fill beyond the limit does not happen; the order completes as
 `CANCELED` with `unfilled_reason: price_band` (other reasons: `no_touch`,
 `touch_size`, `touch_consumed`). Displayed size is used up per quote: fills
-on the same BBO side or trade print never add up to more than its size. A
-BBO side is reset only when its price or size changes, and a trade print by
-the next trade, because PAPER fills never move the real book. While an order waits, the same target from
+on the same BBO message or trade print never add up to more than its size.
+A new BBO message or trade print is fresh liquidity, because PAPER fills
+have no market impact across quote updates; an exit waiting on a used-up
+quote retries on the next one. While an order waits, the same target from
 the strategy keeps it working, even when the order was rounded or clipped
 to the risk size; only a changed target cancels and replaces it. A kill
 flatten and a stop exit are zero-latency: they replace a matching strategy
@@ -129,7 +130,9 @@ until a venue mark or a complete two-sided book exists.
   all (one-sided book, no venue mark) a trade printed since the stop was set
   triggers it; that is an exit trigger only, and equity still treats the
   price as missing. The config refuses a stop distance not wider than
-  `slippage_fraction`, which would stop out every fill at once. A gap fills at
+  `slippage_fraction`, which would stop out every fill at once. Choose it
+  wider than half the spread plus slippage as well; the spread cannot be
+  checked up front, and a narrower stop fires on the first mark after a fill. A gap fills at
   the touch, beyond the stop: the loss is then larger than the risk budget.
 - After a stop-out the strategy cannot re-open the same direction
   (`stop_lockout`, recorded once) until its target goes flat or reverses

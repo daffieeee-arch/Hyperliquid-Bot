@@ -55,6 +55,12 @@ Default PAPER fractions (starting hypotheses, not live limits):
 | `drawdown_kill` | 7% from peak equity | reject new entry |
 | `no_averaging_down` | no add to an open name | reject new entry |
 
+The PAPER engine (`hyperliquid_bot.paper_engine`, see `docs/PAPER_ENGINE.md`)
+enforces the stop that the sizing assumes: every open position carries a stop
+at the effective stop distance from its entry, with a same-direction
+re-entry lockout after a stop-out. Its daily and weekly loss halts lift at
+the next UTC day and ISO week; drawdown and stale-data halts do not.
+
 Reduce-only exits remain allowed when an entry halt is already breached so an
 open PAPER position can still flatten. Invalid or incomplete portfolio state
 raises rather than passing. Hard limits are never relaxed by this module.

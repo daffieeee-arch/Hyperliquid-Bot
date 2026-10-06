@@ -9,6 +9,7 @@ import pkgutil
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import duckdb
 import pytest
@@ -18,6 +19,7 @@ from hyperliquid_bot.paper_engine import (
     HYPERLIQUID_PERP_BASE_TAKER_FEE_RATE,
     BboEvent,
     MarketEvent,
+    MarkEvent,
     NonProductionReferenceStrategy,
     PaperEngine,
     PaperEngineConfig,
@@ -32,9 +34,10 @@ from hyperliquid_bot.paper_engine import (
     quote_taker_fill,
     read_health,
 )
+from hyperliquid_bot.paper_engine.engine import DEFAULT_PAPER_LATENCY_NS
 from hyperliquid_bot.paper_engine.errors import PaperEngineError
 from hyperliquid_bot.paper_engine.execution import FillQuote, PositionState, apply_fill
-from hyperliquid_bot.paper_engine.precision import adverse_price
+from hyperliquid_bot.paper_engine.precision import adverse_price, protective_price
 from hyperliquid_bot.paper_risk import PaperRiskLimits
 
 CREATED = datetime(2026, 7, 15, 12, 0, tzinfo=UTC)
@@ -118,6 +121,46 @@ def _trade(*, ns: int, price: str, size: str, side: str = "SELL", ordinal: int =
     )
 
 
+def _bbo_at(
+    *,
+    ns: int,
+    event_time: datetime,
+    bid: str,
+    ask: str,
+    ordinal: int,
+) -> BboEvent:
+    return BboEvent(
+        venue=VENUE,
+        instrument_id=INSTRUMENT,
+        event_time_utc=event_time,
+        received_utc_ns=ns,
+        source_event_id=f"bbo-{ordinal}",
+        bid_price=Decimal(bid),
+        bid_size=Decimal("1"),
+        ask_price=Decimal(ask),
+        ask_size=Decimal("1"),
+        message_ordinal=ordinal,
+    )
+
+
+def _mark(*, ns: int, price: str, ordinal: int = 1) -> MarkEvent:
+    return MarkEvent(
+        venue=VENUE,
+        instrument_id=INSTRUMENT,
+        event_time_utc=CREATED + timedelta(microseconds=ns // 1000),
+        received_utc_ns=ns,
+        source_event_id=f"mark-{ordinal}",
+        mark_price=Decimal(price),
+        message_ordinal=ordinal,
+    )
+
+
+def _instant(**overrides: Any) -> PaperEngineConfig:
+    """Zero latency, opted in: for tests that are not about latency."""
+
+    return PaperEngineConfig(latency_ns=0, allow_zero_latency=True, **overrides)
+
+
 def _engine(
     root: Path,
     run_id: str,
@@ -129,7 +172,7 @@ def _engine(
         store_root=root,
         run_id=run_id,
         created_at_utc=CREATED,
-        config=config,
+        config=_instant() if config is None else config,
         strategy=strategy,
     )
 
@@ -297,7 +340,7 @@ def test_max_position_and_max_notional_reject(tmp_path: Path) -> None:
         tmp_path,
         "maxpos001",
         strategy=ScriptedStrategy((Decimal("1"),)),
-        config=PaperEngineConfig(max_position_quantity=Decimal("0.05")),
+        config=_instant(max_position_quantity=Decimal("0.05")),
     )
     position_engine.on_event(_bbo(ns=0, bid="99999", ask="100000"))
     position_engine.close()
@@ -308,7 +351,7 @@ def test_max_position_and_max_notional_reject(tmp_path: Path) -> None:
         tmp_path,
         "maxnot001",
         strategy=ScriptedStrategy((Decimal("0.00020"),)),
-        config=PaperEngineConfig(max_notional_usdc=Decimal("15")),
+        config=_instant(max_notional_usdc=Decimal("15")),
     )
     notional_engine.on_event(_bbo(ns=0, bid="99999", ask="100000"))
     notional_engine.close()
@@ -321,14 +364,17 @@ def test_per_trade_sizing_clips_down_and_fee_matches(tmp_path: Path) -> None:
         tmp_path,
         "sized0001",
         strategy=ScriptedStrategy((Decimal("1"),)),
-        config=PaperEngineConfig(max_position_quantity=Decimal("1")),
+        config=_instant(max_position_quantity=Decimal("1")),
     )
     engine.on_event(_bbo(ns=0, bid="99999", ask="100000"))
     engine.close()
-    assert engine.position_quantity == Decimal("0.125")
+    # 0.25% of 100k over a 2% stop is 12,500 USDC, sized at the 101,000 limit
+    # price (ask + 1% band) so the hard limits hold at the worst admissible fill.
+    assert engine.position_quantity == Decimal("0.12376")
     fills = _objects(_state(engine)["fills"])
-    assert fills[0]["quantity"] == "0.125"
-    assert fills[0]["fee_usdc"] == "5.625"
+    assert fills[0]["quantity"] == "0.12376"
+    assert fills[0]["price"] == "100000"
+    assert fills[0]["fee_usdc"] == "5.5692"
     assert Decimal(str(fills[0]["quantity"])) < Decimal("1")
 
 
@@ -346,7 +392,7 @@ def test_clipped_order_with_latency_fills_instead_of_rearming(tmp_path: Path) ->
         engine.on_event(_bbo(ns=index * 100_000_000, bid="99999", ask="100000", ordinal=index + 1))
     engine.close()
     state = _state(engine)
-    assert engine.position_quantity == Decimal("0.125")
+    assert engine.position_quantity == Decimal("0.12376")
     orders = _objects(state["orders"])
     assert [order["status"] for order in orders] == ["FILLED"]
     assert _objects(state["fills"])[0]["received_utc_ns"] == 300_000_000
@@ -370,7 +416,7 @@ def test_repeated_block_is_one_timestamped_rejection(tmp_path: Path) -> None:
     for index in range(3, 300):
         engine.on_event(_bbo(ns=index * 1_000_000, bid="99999", ask="100000", ordinal=index + 1))
     engine.close()
-    assert engine.position_quantity == Decimal("0.125")
+    assert engine.position_quantity == Decimal("0.12376")
     state = _state(engine)
     rejections = _objects(state["risk_rejections"])
     assert len(rejections) == 1
@@ -384,7 +430,8 @@ def test_repeated_block_is_one_timestamped_rejection(tmp_path: Path) -> None:
 
 
 def test_block_is_recorded_again_after_it_clears(tmp_path: Path) -> None:
-    targets = tuple(Decimal(text) for text in ("1", "1", "1", "0.125", "1", "1"))
+    # "0.12376" is the risk-sized position, so that target clears the block.
+    targets = tuple(Decimal(text) for text in ("1", "1", "1", "0.12376", "1", "1"))
     engine = _engine(tmp_path, "reblock01", strategy=ScriptedStrategy(targets))
     for index in range(len(targets)):
         engine.on_event(_bbo(ns=index * 1_000_000, bid="99999", ask="100000", ordinal=index + 1))
@@ -404,13 +451,13 @@ def test_kill_flatten_replaces_strategy_exit_waiting_on_latency(tmp_path: Path) 
         strategy=ScriptedStrategy((Decimal("0.1"), Decimal("0"))),
         config=PaperEngineConfig(
             latency_ns=250_000_000,
-            risk_limits=_loose_loss_limits(drawdown="0.01", daily="0.50"),
+            risk_limits=_loose_loss_limits(drawdown="0.001", daily="0.50"),
         ),
     )
     engine.on_event(_bbo(ns=0, bid="100000", ask="100001", ordinal=1))
     engine.on_event(_bbo(ns=300_000_000, bid="100000", ask="100001", ordinal=2))
     assert engine.position_quantity == Decimal("0.1")
-    engine.on_event(_bbo(ns=400_000_000, bid="80000", ask="80001", ordinal=3))
+    engine.on_event(_bbo(ns=400_000_000, bid="99000", ask="99001", ordinal=3))
     assert engine.kill_switch == "FLATTEN_HALT"
     assert engine.position_quantity == Decimal("0")
     engine.close()
@@ -462,7 +509,7 @@ def test_exception_mid_event_fails_the_run_closed(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="strategy failure"):
         engine.on_event(_bbo(ns=300_000_000, bid="99999", ask="100000", ordinal=2))
     types = [row["type"] for row in _ledger(tmp_path / "raising01")]
-    assert types == ["order_accepted", "fill", "order_completed"]
+    assert types == ["order_accepted", "fill", "order_completed", "stop_set"]
     health = read_health(engine.health_path)
     assert health["status"] == "FAILED"
     assert health["position_quantity"] == "0.1"
@@ -496,13 +543,13 @@ def test_failed_ledger_write_is_not_retried_into_duplicates(
         engine.on_event(_bbo(ns=0, bid="99999", ask="100000", ordinal=1))
     monkeypatch.undo()
     types = [row["type"] for row in _ledger(tmp_path / "ioerror01")]
-    assert types == ["order_accepted", "fill", "order_completed"]
+    assert types == ["order_accepted", "fill", "order_completed", "stop_set"]
     health = read_health(engine.health_path)
     assert health["status"] == "FAILED"
     assert health["ledger_write_failed"] is True
     engine.close()
     assert read_health(engine.health_path)["status"] == "FAILED"
-    assert len(_ledger(tmp_path / "ioerror01")) == 3
+    assert len(_ledger(tmp_path / "ioerror01")) == 4
 
 
 @pytest.mark.parametrize(("durable", "expect_fsync"), [(True, True), (False, False)])
@@ -518,13 +565,13 @@ def test_durable_ledger_controls_fsync(
         tmp_path,
         "durable01",
         strategy=ScriptedStrategy((Decimal("0.1"),)),
-        config=PaperEngineConfig(durable_ledger=durable),
+        config=_instant(durable_ledger=durable),
     )
     engine.on_event(_bbo(ns=0, bid="99999", ask="100000"))
     engine.close()
     assert bool(calls) is expect_fsync
     types = [row["type"] for row in _ledger(tmp_path / "durable01")]
-    assert types == ["order_accepted", "fill", "order_completed"]
+    assert types == ["order_accepted", "fill", "order_completed", "stop_set"]
 
 
 def test_state_keeps_recent_records_and_full_counts(tmp_path: Path) -> None:
@@ -554,13 +601,13 @@ def test_daily_loss_halts_entries_but_allows_flatten(tmp_path: Path) -> None:
         tmp_path,
         "dailyloss1",
         strategy=ScriptedStrategy((Decimal("0.1"), Decimal("0.2"), Decimal("0"))),
-        config=PaperEngineConfig(risk_limits=_loose_loss_limits(drawdown="0.50", daily="0.01")),
+        config=_instant(risk_limits=_loose_loss_limits(drawdown="0.50", daily="0.001")),
     )
     engine.on_event(_bbo(ns=0, bid="100000", ask="100001", ordinal=1))
-    engine.on_event(_bbo(ns=1_000_000_000, bid="80000", ask="80001", ordinal=2))
+    engine.on_event(_bbo(ns=1_000_000_000, bid="99000", ask="99001", ordinal=2))
     assert engine.position_quantity == Decimal("0.1")
     assert engine.kill_switch == "HALT_NEW"
-    engine.on_event(_bbo(ns=2_000_000_000, bid="80000", ask="80001", ordinal=3))
+    engine.on_event(_bbo(ns=2_000_000_000, bid="99000", ask="99001", ordinal=3))
     engine.close()
     health = read_health(engine.health_path)
     assert health["kill_reason"] == "daily_loss"
@@ -575,10 +622,10 @@ def test_drawdown_kill_switch_flattens_and_halts(tmp_path: Path) -> None:
         tmp_path,
         "drawdown1",
         strategy=ScriptedStrategy((Decimal("0.1"), Decimal("0.2"))),
-        config=PaperEngineConfig(risk_limits=_loose_loss_limits(drawdown="0.01", daily="0.50")),
+        config=_instant(risk_limits=_loose_loss_limits(drawdown="0.001", daily="0.50")),
     )
     engine.on_event(_bbo(ns=0, bid="100000", ask="100001", ordinal=1))
-    engine.on_event(_bbo(ns=1_000_000_000, bid="80000", ask="80001", ordinal=2))
+    engine.on_event(_bbo(ns=1_000_000_000, bid="99000", ask="99001", ordinal=2))
     engine.close()
     health = read_health(engine.health_path)
     assert health["kill_switch"] == "FLATTEN_HALT"
@@ -593,7 +640,7 @@ def test_stale_data_flattens_and_halts(tmp_path: Path) -> None:
         tmp_path,
         "stale0001",
         strategy=ScriptedStrategy((Decimal("0.00010"), Decimal("0.00010"))),
-        config=PaperEngineConfig(stale_after_ns=5_000_000_000),
+        config=_instant(stale_after_ns=5_000_000_000),
     )
     engine.on_event(_bbo(ns=0, bid="100000", ask="100001", ordinal=1))
     assert engine.position_quantity == Decimal("0.00010")
@@ -611,7 +658,7 @@ def test_on_clock_stale_uses_last_touch_not_a_synthetic_mid(tmp_path: Path) -> N
         tmp_path,
         "clock0001",
         strategy=ScriptedStrategy((Decimal("0.00010"),)),
-        config=PaperEngineConfig(stale_after_ns=5_000_000_000),
+        config=_instant(stale_after_ns=5_000_000_000),
     )
     engine.on_event(_bbo(ns=0, bid="100000", ask="100001"))
     engine.on_clock(now_utc_ns=5_000_000_001, now_utc=CREATED + timedelta(seconds=6))
@@ -622,6 +669,284 @@ def test_on_clock_stale_uses_last_touch_not_a_synthetic_mid(tmp_path: Path) -> N
     assert [item["side"] for item in fills] == ["BUY", "SELL"]
     assert fills[1]["price"] == "100000"
     assert _text(health["observed_at_local"]).endswith("CEST")
+
+
+def test_latency_defaults_above_zero_and_zero_needs_an_opt_in() -> None:
+    assert PaperEngineConfig().latency_ns == DEFAULT_PAPER_LATENCY_NS
+    assert DEFAULT_PAPER_LATENCY_NS > 0
+    with pytest.raises(PaperEngineError, match="allow_zero_latency"):
+        PaperEngineConfig(latency_ns=0)
+    assert _instant().latency_ns == 0
+
+
+def test_config_keeps_slippage_inside_the_bands_and_the_stop_below_one() -> None:
+    with pytest.raises(PaperEngineError, match="entry_price_band_fraction"):
+        _instant(slippage_fraction=Decimal("0.01"))
+    with pytest.raises(PaperEngineError, match="exit_price_band_fraction"):
+        _instant(
+            slippage_fraction=Decimal("0.02"),
+            entry_price_band_fraction=Decimal("0.03"),
+            exit_price_band_fraction=Decimal("0.02"),
+        )
+    with pytest.raises(PaperEngineError, match="effective stop distance"):
+        _instant(stop_distance_fraction=Decimal("0.5"), volatility_multiple=Decimal("2"))
+
+
+def test_protective_price_never_widens_the_band() -> None:
+    assert protective_price(Decimal("101001.01"), side="BUY", max_decimals=1) == Decimal("101001")
+    assert protective_price(Decimal("98999.99"), side="SELL", max_decimals=1) == Decimal("99000")
+    assert protective_price(Decimal("1234.56"), side="BUY", max_decimals=5) == Decimal("1234.5")
+
+
+def test_stop_exits_a_long_once_the_mark_crosses_the_sizing_stop(tmp_path: Path) -> None:
+    engine = _engine(tmp_path, "stoplong1", strategy=ScriptedStrategy((Decimal("0.1"),)))
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001", ordinal=1))
+    # Entry 100001, 2% stop distance (the sizing assumption) -> stop 98000.98.
+    engine.on_event(_bbo(ns=1_000_000, bid="98200", ask="98201", ordinal=2))
+    assert engine.position_quantity == Decimal("0.1")
+    engine.on_event(_bbo(ns=2_000_000, bid="97990", ask="97991", ordinal=3))
+    engine.on_event(_bbo(ns=3_000_000, bid="97990", ask="97991", ordinal=4))
+    engine.close()
+    assert engine.position_quantity == Decimal("0")
+    assert engine.kill_switch == "NONE"
+    ledger = _ledger(tmp_path / "stoplong1")
+    stop_set = [row for row in ledger if row["type"] == "stop_set"]
+    assert len(stop_set) == 1
+    assert stop_set[0]["stop_price"] == "98000.98"
+    assert stop_set[0]["average_entry_price"] == "100001"
+    assert stop_set[0]["stop_distance_fraction"] == "0.02"
+    triggered = [row for row in ledger if row["type"] == "stop_triggered"]
+    assert len(triggered) == 1
+    assert triggered[0]["mark_price"] == "97990.5"
+    assert triggered[0]["mark_source"] == "bbo_mid"
+    assert triggered[0]["received_utc_ns"] == 2_000_000
+    state = _state(engine)
+    assert [(row["side"], row["status"], row["reason"]) for row in _objects(state["orders"])] == [
+        ("BUY", "FILLED", "scripted"),
+        ("SELL", "FILLED", "stop-exit"),
+    ]
+    assert _objects(state["fills"])[1]["price"] == "97990"
+    # The strategy keeps asking for the long it was stopped out of: one block.
+    assert [row["reason"] for row in _objects(state["risk_rejections"])] == ["stop_lockout"]
+    health = read_health(engine.health_path)
+    assert health["status"] == "COMPLETED"
+    assert health["stop_price"] is None
+    assert health["stop_exit_pending"] is False
+    assert health["stop_lockout"] == "long"
+
+
+def test_partial_stop_exit_takes_each_quote_once_and_retries_until_flat(tmp_path: Path) -> None:
+    engine = _engine(tmp_path, "stoppart1", strategy=ScriptedStrategy((Decimal("0.1"),)))
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001", ordinal=1))
+    # Only 0.04 BTC is bid at the stop-out quote: the exit takes it once, not
+    # again for the second stop check of the same event.
+    engine.on_event(_bbo(ns=1_000_000, bid="97990", ask="97991", bid_size="0.04", ordinal=2))
+    assert engine.position_quantity == Decimal("0.06")
+    assert read_health(engine.health_path)["stop_exit_pending"] is True
+    engine.on_event(_bbo(ns=2_000_000, bid="97980", ask="97981", bid_size="0.04", ordinal=3))
+    assert engine.position_quantity == Decimal("0.02")
+    engine.on_event(_bbo(ns=3_000_000, bid="97970", ask="97971", bid_size="0.04", ordinal=4))
+    engine.close()
+    assert engine.position_quantity == Decimal("0")
+    exits = [row for row in _objects(_state(engine)["orders"]) if row["reason"] == "stop-exit"]
+    assert [row["filled_quantity"] for row in exits] == ["0.04", "0.04", "0.02"]
+    assert read_health(engine.health_path)["stop_exit_pending"] is False
+
+
+def test_stop_exits_a_short_when_the_mark_rises_through_the_stop(tmp_path: Path) -> None:
+    engine = _engine(tmp_path, "stopshort", strategy=ScriptedStrategy((Decimal("-0.1"),)))
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001", ordinal=1))
+    assert engine.position_quantity == Decimal("-0.1")
+    # Short entry 100000 -> stop 102000; the mid 102050.5 is above it.
+    engine.on_event(_bbo(ns=1_000_000, bid="102050", ask="102051", ordinal=2))
+    engine.close()
+    assert engine.position_quantity == Decimal("0")
+    state = _state(engine)
+    assert [(row["side"], row["reason"]) for row in _objects(state["orders"])] == [
+        ("SELL", "scripted"),
+        ("BUY", "stop-exit"),
+    ]
+    assert _objects(state["fills"])[1]["price"] == "102051"
+    assert read_health(engine.health_path)["stop_lockout"] == "short"
+
+
+def test_stop_lockout_clears_when_the_target_goes_flat(tmp_path: Path) -> None:
+    targets = tuple(Decimal(text) for text in ("0.1", "0.1", "0.1", "0", "0.1"))
+    engine = _engine(tmp_path, "lockout01", strategy=ScriptedStrategy(targets))
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001", ordinal=1))
+    for index in range(1, 5):
+        engine.on_event(_bbo(ns=index * 1_000_000, bid="97990", ask="97991", ordinal=index + 1))
+    engine.close()
+    state = _state(engine)
+    rejections = _objects(state["risk_rejections"])
+    assert [(row["reason"], row["received_utc_ns"]) for row in rejections] == [
+        ("stop_lockout", 1_000_000)
+    ]
+    cleared = [
+        row for row in _ledger(tmp_path / "lockout01") if row["type"] == "stop_lockout_cleared"
+    ]
+    assert [row["received_utc_ns"] for row in cleared] == [3_000_000]
+    assert [row["side"] for row in _objects(state["orders"])] == ["BUY", "SELL", "BUY"]
+    assert engine.position_quantity == Decimal("0.1")
+    health = read_health(engine.health_path)
+    assert health["stop_lockout"] is None
+    # The re-entry at 97991 carries its own stop: 97991 * 0.98.
+    assert health["stop_price"] == "96031.18"
+
+
+def test_stop_triggers_on_a_fresher_venue_mark(tmp_path: Path) -> None:
+    engine = _engine(
+        tmp_path, "stopmark1", strategy=ScriptedStrategy((Decimal("0.1"), Decimal("0")))
+    )
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001", ordinal=1))
+    engine.on_event(_mark(ns=1_000_000, price="97000", ordinal=2))
+    engine.close()
+    assert engine.position_quantity == Decimal("0")
+    ledger = _ledger(tmp_path / "stopmark1")
+    triggered = [row for row in ledger if row["type"] == "stop_triggered"]
+    assert triggered[0]["mark_source"] == "venue_mark"
+    assert triggered[0]["mark_price"] == "97000"
+    # The exit is an IOC at the real touch, not at the mark or the stop.
+    assert _objects(_state(engine)["fills"])[1]["price"] == "100000"
+
+
+def test_strategy_exit_beyond_its_band_does_not_fill_and_the_stop_still_closes(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(
+        tmp_path,
+        "exitband1",
+        strategy=ScriptedStrategy((Decimal("0.1"), Decimal("0"))),
+        config=PaperEngineConfig(latency_ns=250_000_000),
+    )
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001", ordinal=1))
+    engine.on_event(_bbo(ns=300_000_000, bid="100000", ask="100001", ordinal=2))
+    assert engine.position_quantity == Decimal("0.1")
+    # The strategy exit was priced at bid 100000 with a 10% band (limit 90000);
+    # by the time it is eligible the bid is 85000, so the IOC does not fill.
+    engine.on_event(_bbo(ns=600_000_000, bid="85000", ask="85001", ordinal=3))
+    engine.close()
+    assert engine.position_quantity == Decimal("0")
+    orders = _objects(_state(engine)["orders"])
+    assert [(row["side"], row["status"], row["reason"]) for row in orders] == [
+        ("BUY", "FILLED", "scripted"),
+        ("SELL", "CANCELED", "scripted"),
+        ("SELL", "FILLED", "stop-exit"),
+    ]
+    assert orders[1]["unfilled_reason"] == "price_band"
+    assert orders[1]["limit_price"] == "90000"
+
+
+def test_entry_fill_beyond_its_band_is_cancelled(tmp_path: Path) -> None:
+    engine = _engine(
+        tmp_path,
+        "entryband",
+        strategy=ScriptedStrategy((Decimal("0.1"), Decimal("0"))),
+        config=PaperEngineConfig(latency_ns=250_000_000),
+    )
+    engine.on_event(_bbo(ns=0, bid="99999", ask="100000", ordinal=1))
+    # Limit 101000 (ask + 1%); the ask jumped to 101500 before the order arrived.
+    engine.on_event(_bbo(ns=300_000_000, bid="101499", ask="101500", ordinal=2))
+    engine.close()
+    assert engine.position_quantity == Decimal("0")
+    orders = _objects(_state(engine)["orders"])
+    assert orders[0]["status"] == "CANCELED"
+    assert orders[0]["unfilled_reason"] == "price_band"
+    assert orders[0]["limit_price"] == "101000"
+    assert _objects(_state(engine)["fills"]) == []
+
+
+def test_hard_limits_hold_at_the_worst_admissible_price(tmp_path: Path) -> None:
+    # 0.0001 BTC is 10.00 USDC at the ask but 10.10 at the 101000 limit, so a
+    # 10.05 notional cap must reject it even though the touch alone would pass.
+    engine = _engine(
+        tmp_path,
+        "worstcase",
+        strategy=ScriptedStrategy((Decimal("0.0001"),)),
+        config=_instant(max_notional_usdc=Decimal("10.05")),
+    )
+    engine.on_event(_bbo(ns=0, bid="99999", ask="100000"))
+    engine.close()
+    assert engine.position_quantity == Decimal("0")
+    assert _objects(_state(engine)["risk_rejections"])[0]["reason"] == "max_notional"
+
+
+def test_daily_loss_halt_lifts_at_the_next_utc_day_and_never_rolls_back(tmp_path: Path) -> None:
+    engine = _engine(
+        tmp_path,
+        "dailyreset",
+        strategy=ScriptedStrategy(tuple(Decimal(text) for text in ("0.1", "0", "0.1", "0.1"))),
+        config=_instant(
+            stale_after_ns=2 * 86_400_000_000_000,
+            risk_limits=_loose_loss_limits(drawdown="0.50", daily="0.001"),
+        ),
+    )
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001", ordinal=1))
+    # A 1% drop breaches the 0.1% daily guard; the exit is still allowed.
+    engine.on_event(_bbo(ns=1_000_000_000, bid="99000", ask="99001", ordinal=2))
+    assert engine.kill_switch == "HALT_NEW"
+    assert engine.position_quantity == Decimal("0")
+    engine.on_event(_bbo(ns=2_000_000_000, bid="99000", ask="99001", ordinal=3))
+    assert engine.position_quantity == Decimal("0")
+    # 13h later is 01:00 UTC the next day: a new day, a new baseline.
+    next_day_ns = 13 * 3_600_000_000_000
+    engine.on_event(_bbo(ns=next_day_ns, bid="99000", ask="99001", ordinal=4))
+    assert engine.kill_switch == "NONE"
+    assert engine.position_quantity == Decimal("0.1")
+    # A late event stamped the previous day must not reset the new baseline:
+    # a 1% drop against today's start breaches the guard again.
+    engine.on_event(
+        _bbo_at(
+            ns=next_day_ns + 1_000_000_000,
+            event_time=CREATED + timedelta(hours=11, minutes=59),
+            bid="98000",
+            ask="98001",
+            ordinal=5,
+        )
+    )
+    assert engine.kill_switch == "HALT_NEW"
+    engine.close()
+    switches = [row for row in _ledger(tmp_path / "dailyreset") if row["type"] == "kill_switch"]
+    assert [(row["state"], row["reason"]) for row in switches] == [
+        ("HALT_NEW", "daily_loss"),
+        ("NONE", "daily_loss_window_reset"),
+        ("HALT_NEW", "daily_loss"),
+    ]
+    rejections = _objects(_state(engine)["risk_rejections"])
+    assert [row["reason"] for row in rejections] == ["halt_new"]
+
+
+def test_weekly_loss_halt_lifts_only_at_the_next_iso_week(tmp_path: Path) -> None:
+    engine = _engine(
+        tmp_path,
+        "weekreset",
+        strategy=ScriptedStrategy(tuple(Decimal(text) for text in ("0.1", "0", "0.1", "0.1"))),
+        config=_instant(
+            stale_after_ns=10 * 86_400_000_000_000,
+            risk_limits=PaperRiskLimits(
+                drawdown_kill_fraction=Decimal("0.50"),
+                daily_loss_fraction=Decimal("0.50"),
+                weekly_loss_fraction=Decimal("0.001"),
+            ),
+        ),
+    )
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001", ordinal=1))
+    engine.on_event(_bbo(ns=1_000_000_000, bid="99000", ask="99001", ordinal=2))
+    assert engine.kill_switch == "HALT_NEW"
+    # Thursday: a new day does not lift a weekly halt.
+    engine.on_event(_bbo(ns=24 * 3_600_000_000_000, bid="99000", ask="99001", ordinal=3))
+    assert engine.kill_switch == "HALT_NEW"
+    assert engine.position_quantity == Decimal("0")
+    # Wednesday 12:00 + 108h is Monday 00:00 UTC: a new ISO week.
+    engine.on_event(_bbo(ns=108 * 3_600_000_000_000, bid="99000", ask="99001", ordinal=4))
+    assert engine.kill_switch == "NONE"
+    assert engine.position_quantity == Decimal("0.1")
+    engine.close()
+    switches = [row for row in _ledger(tmp_path / "weekreset") if row["type"] == "kill_switch"]
+    assert [(row["state"], row["reason"]) for row in switches] == [
+        ("HALT_NEW", "weekly_loss"),
+        ("NONE", "weekly_loss_window_reset"),
+    ]
 
 
 def test_linear_perp_pnl_identity() -> None:

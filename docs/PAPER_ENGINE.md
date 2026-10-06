@@ -26,11 +26,19 @@ Each `run_id` is create-only. If the directory exists, opening it raises
 <store>/<run_id>/health.json
 ```
 
-`ledger.jsonl` is the complete, append-only audit trail and is fsynced on
-every append. A strategy that keeps asking for a blocked target is rejected
-on every event; the first rejection of such a back-to-back streak is written
-as `risk_rejected` and the rest as one `risk_rejected_repeats` line with a
-`repeats` count when the streak ends (or at `close()`).
+`ledger.jsonl` is the complete, append-only audit trail. Lines produced while
+one event is processed are written together before `state.json` and
+`health.json` are rewritten. With `durable_ledger=True` (the default) that
+write, the run claim, and the new directory entries are fsynced, so every
+completed event survives a crash or power loss. An offline replay that can
+simply be re-run may set `durable_ledger=False` to skip the fsync cost.
+
+A strategy that keeps asking for the same blocked order is re-checked on
+every event, but that is one rejection: a `risk_rejected` line is written
+when the block starts, with its `received_utc_ns`. A new one is written only
+when the order, reason, detail, or kill switch changes, or after an accepted
+order or a flat target cleared the block. `risk_rejection_count` counts these
+records.
 
 `state.json` (`paper-engine-state-v2`) and `health.json` are projections
 rewritten on every event. They are replaced atomically but not fsynced. To
@@ -66,7 +74,9 @@ displayed size (or the trade size when the book is not complete). The
 unfilled remainder is cancelled (IOC). Latency waits for a later event
 before that touch is eligible. While an order waits, the same target from
 the strategy keeps it working, even when the order was rounded or clipped
-to the risk size; only a changed target cancels and replaces it. A missing side, a crossed book, or a missing
+to the risk size; only a changed target cancels and replaces it. A kill
+flatten is zero-latency: it replaces a matching strategy order that is still
+waiting out its latency and fills on the same event. A missing side, a crossed book, or a missing
 mark does not become a mid. New risk is rejected. Unrealized PnL stays null
 until a venue mark or a complete two-sided book exists.
 

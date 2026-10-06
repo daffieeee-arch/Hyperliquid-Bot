@@ -351,13 +351,22 @@ def test_clipped_order_with_latency_fills_instead_of_rearming(tmp_path: Path) ->
     assert _objects(state["fills"])[0]["received_utc_ns"] == 300_000_000
 
 
-def test_repeated_rejections_are_coalesced_in_state_and_ledger(tmp_path: Path) -> None:
+def test_repeated_block_is_one_timestamped_rejection(tmp_path: Path) -> None:
+    # After the first fill every event asks to add to the open position, which
+    # paper_risk blocks. That is one rejection, recorded when it starts, and it
+    # is already on disk before close() so a crash cannot lose it.
     engine = _engine(
         tmp_path,
         "repeatrej1",
         strategy=ScriptedStrategy((Decimal("1"),)),
     )
-    for index in range(300):
+    for index in range(3):
+        engine.on_event(_bbo(ns=index * 1_000_000, bid="99999", ask="100000", ordinal=index + 1))
+    ledger = _ledger(tmp_path / "repeatrej1")
+    assert [row["received_utc_ns"] for row in ledger if row["type"] == "risk_rejected"] == [
+        1_000_000
+    ]
+    for index in range(3, 300):
         engine.on_event(_bbo(ns=index * 1_000_000, bid="99999", ask="100000", ordinal=index + 1))
     engine.close()
     assert engine.position_quantity == Decimal("0.125")
@@ -365,17 +374,74 @@ def test_repeated_rejections_are_coalesced_in_state_and_ledger(tmp_path: Path) -
     rejections = _objects(state["risk_rejections"])
     assert len(rejections) == 1
     assert rejections[0]["reason"] == "paper_risk"
-    assert rejections[0]["repeats"] == 298
-    assert state["risk_rejection_count"] == 299
-    assert read_health(engine.health_path)["risk_rejection_count"] == 299
-    ledger = _ledger(tmp_path / "repeatrej1")
-    rejected = [row for row in ledger if row["type"] == "risk_rejected"]
-    repeats = [row for row in ledger if row["type"] == "risk_rejected_repeats"]
+    assert rejections[0]["received_utc_ns"] == 1_000_000
+    assert state["risk_rejection_count"] == 1
+    assert read_health(engine.health_path)["risk_rejection_count"] == 1
+    rejected = [row for row in _ledger(tmp_path / "repeatrej1") if row["type"] == "risk_rejected"]
     assert len(rejected) == 1
-    assert len(repeats) == 1
-    assert repeats[0]["repeats"] == 298
-    assert repeats[0]["reason"] == "paper_risk"
-    assert repeats[0]["detail"] == rejected[0]["detail"]
+    assert rejected[0]["received_utc_ns"] == 1_000_000
+
+
+def test_block_is_recorded_again_after_it_clears(tmp_path: Path) -> None:
+    targets = tuple(Decimal(text) for text in ("1", "1", "1", "0.125", "1", "1"))
+    engine = _engine(tmp_path, "reblock01", strategy=ScriptedStrategy(targets))
+    for index in range(len(targets)):
+        engine.on_event(_bbo(ns=index * 1_000_000, bid="99999", ask="100000", ordinal=index + 1))
+    engine.close()
+    rejections = _objects(_state(engine)["risk_rejections"])
+    assert [row["received_utc_ns"] for row in rejections] == [1_000_000, 4_000_000]
+    assert _state(engine)["risk_rejection_count"] == 2
+
+
+def test_kill_flatten_replaces_strategy_exit_waiting_on_latency(tmp_path: Path) -> None:
+    # A strategy exit identical to the flatten is still waiting out its
+    # latency when the drawdown kill fires. The kill flatten is zero-latency,
+    # so it must replace that order and close on the same event.
+    engine = _engine(
+        tmp_path,
+        "killlat01",
+        strategy=ScriptedStrategy((Decimal("0.1"), Decimal("0"))),
+        config=PaperEngineConfig(
+            latency_ns=250_000_000,
+            risk_limits=_loose_loss_limits(drawdown="0.01", daily="0.50"),
+        ),
+    )
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001", ordinal=1))
+    engine.on_event(_bbo(ns=300_000_000, bid="100000", ask="100001", ordinal=2))
+    assert engine.position_quantity == Decimal("0.1")
+    engine.on_event(_bbo(ns=400_000_000, bid="80000", ask="80001", ordinal=3))
+    assert engine.kill_switch == "FLATTEN_HALT"
+    assert engine.position_quantity == Decimal("0")
+    engine.close()
+    orders = _objects(_state(engine)["orders"])
+    assert [(order["side"], order["status"], order["reason"]) for order in orders] == [
+        ("BUY", "FILLED", "scripted"),
+        ("SELL", "CANCELED", "replaced"),
+        ("SELL", "FILLED", "kill-flatten"),
+    ]
+    assert read_health(engine.health_path)["flatten_blocked_missing_price"] is False
+
+
+@pytest.mark.parametrize(("durable", "expect_fsync"), [(True, True), (False, False)])
+def test_durable_ledger_controls_fsync(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    durable: bool,
+    expect_fsync: bool,
+) -> None:
+    calls: list[int] = []
+    monkeypatch.setattr("os.fsync", lambda descriptor: calls.append(descriptor))
+    engine = _engine(
+        tmp_path,
+        "durable01",
+        strategy=ScriptedStrategy((Decimal("0.1"),)),
+        config=PaperEngineConfig(durable_ledger=durable),
+    )
+    engine.on_event(_bbo(ns=0, bid="99999", ask="100000"))
+    engine.close()
+    assert bool(calls) is expect_fsync
+    types = [row["type"] for row in _ledger(tmp_path / "durable01")]
+    assert types == ["order_accepted", "fill", "order_completed"]
 
 
 def test_state_keeps_recent_records_and_full_counts(tmp_path: Path) -> None:

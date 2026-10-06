@@ -4,10 +4,14 @@ A ``run_id`` is a single new directory. If it already exists, opening it
 raises and nothing is appended. There is no resume API. Human-facing times in
 the health file use Europe/Amsterdam; numeric state stays decimal text and UTC.
 
-``ledger.jsonl`` is the complete audit trail and is fsynced on every append.
-``state.json`` and ``health.json`` are projections rewritten on every event.
-They are replaced atomically but not fsynced, and ``state.json`` keeps only
-the most recent records so its size does not grow with run length.
+``ledger.jsonl`` is the complete audit trail. Lines appended while one event
+is processed are buffered and written together by ``commit()``, which the
+engine calls before it rewrites the projections. With ``durable=True`` that
+write, the run claim, and the new directory entries are fsynced, so a
+committed event survives a crash or power loss. ``state.json`` and
+``health.json`` are projections rewritten on every event. They are replaced
+atomically but never fsynced, and ``state.json`` keeps only the most recent
+records so its size does not grow with run length.
 """
 
 from __future__ import annotations
@@ -38,9 +42,13 @@ def validate_run_id(run_id: str) -> str:
 class RunStore:
     """Append-only ledger plus replaceable state and health projections."""
 
-    def __init__(self, root: Path, run_id: str) -> None:
+    def __init__(self, root: Path, run_id: str, *, durable: bool = True) -> None:
         if not isinstance(root, Path):
             raise TypeError("root must be a pathlib.Path.")
+        if type(durable) is not bool:
+            raise TypeError("durable must be a bool.")
+        self.durable = durable
+        self._pending: list[str] = []
         self.run_id = validate_run_id(run_id)
         self.root = root.resolve()
         self.root.mkdir(parents=True, exist_ok=True)
@@ -58,14 +66,29 @@ class RunStore:
         self.ledger_path.touch()
 
     def write_claim(self, payload: dict[str, object]) -> None:
-        _write_json(self.claim_path, payload, durable=True)
+        _write_json(self.claim_path, payload, durable=self.durable)
+        if self.durable:
+            # Persist the run directory entry and its claim/ledger entries.
+            _fsync_directory(self.run_dir)
+            _fsync_directory(self.root)
 
     def append(self, payload: dict[str, object]) -> None:
-        line = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        """Buffer one ledger line. ``commit()`` writes it."""
+
+        self._pending.append(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n")
+
+    def commit(self) -> None:
+        """Write buffered ledger lines in one append, fsynced when durable."""
+
+        if not self._pending:
+            return
+        text = "".join(self._pending)
+        self._pending.clear()
         with self.ledger_path.open("a", encoding="utf-8") as handle:
-            handle.write(line + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
+            handle.write(text)
+            if self.durable:
+                handle.flush()
+                os.fsync(handle.fileno())
 
     def write_state(self, payload: dict[str, object]) -> None:
         _write_json(self.state_path, payload)
@@ -99,3 +122,11 @@ def _write_json(path: Path, payload: dict[str, object], *, durable: bool = False
             handle.flush()
             os.fsync(handle.fileno())
     os.replace(temporary, path)
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)

@@ -131,6 +131,9 @@ class PaperEngineConfig:
     source_commit: str = "unknown"
     image_digest: str = "unknown"
     trading_mode: str | None = None
+    # fsync the ledger and run claim once per event. A live PAPER run keeps
+    # this on; an offline replay may turn it off because it can be re-run.
+    durable_ledger: bool = True
 
     def __post_init__(self) -> None:
         require_local_paper_mode(self.trading_mode)
@@ -161,6 +164,8 @@ class PaperEngineConfig:
             raise PaperEngineError("source_commit must be non-empty text.")
         if type(self.image_digest) is not str or not self.image_digest:
             raise PaperEngineError("image_digest must be non-empty text.")
+        if type(self.durable_ledger) is not bool:
+            raise PaperEngineError("durable_ledger must be a bool.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,7 +221,7 @@ class PaperEngine:
             else NonProductionReferenceStrategy(instrument_id=self._config.instrument_id)
         )
         _require_strategy(self._strategy)
-        self._store = RunStore(store_root, run_id)
+        self._store = RunStore(store_root, run_id, durable=self._config.durable_ledger)
         self._size_increment = size_increment(self._config.sz_decimals)
         self._max_price_decimals = perp_max_price_decimals(self._config.sz_decimals)
         self._position = PositionState(
@@ -254,9 +259,9 @@ class PaperEngine:
         self._order_count = 0
         self._fill_count = 0
         self._rejection_count = 0
-        self._repeat_key: tuple[str, str | None, str] | None = None
-        self._repeat_count = 0
-        self._repeat_last_ns: int | None = None
+        # The last recorded rejection. Re-evaluating the same blocked order
+        # on later events is not a new rejection and writes nothing.
+        self._last_block: tuple[str, str | None, str, _DesiredOrder | None] | None = None
         self._closed = False
         self._missing_flatten = False
         self._store.write_claim(self._claim())
@@ -345,7 +350,6 @@ class PaperEngine:
 
         if self._closed:
             raise PaperEngineError("run is already closed.")
-        self._flush_repeated_rejections()
         self._closed = True
         self._persist(self._last_event_time or self._created_at)
 
@@ -445,6 +449,7 @@ class PaperEngine:
                 reason="instrument_mismatch",
                 detail=target.reason,
                 received_utc_ns=event.received_utc_ns,
+                desired=None,
             )
             return
         desired = _desired_order(self._position.position_quantity, target.target_quantity)
@@ -482,56 +487,98 @@ class PaperEngine:
         kill_latency: bool,
     ) -> None:
         if desired is None:
+            self._last_block = None
             if self._working is not None:
                 self._cancel_working(received_ns, "target-flat")
             return
-        if self._working is not None and _same_desire(self._working, desired):
+        if (
+            self._working is not None
+            and _same_desire(self._working, desired)
+            and not (kill_latency and self._working.eligible_received_ns > received_ns)
+        ):
+            # A kill flatten is zero-latency. A matching strategy order that is
+            # still waiting out its latency is replaced, not reused.
             return
         if self._working is not None:
             self._cancel_working(received_ns, "replaced")
         if self._kill is KillSwitch.HALT_NEW and not desired.reduce_only:
-            self._reject(reason="halt_new", detail=self._kill_reason, received_utc_ns=received_ns)
+            self._reject(
+                reason="halt_new",
+                detail=self._kill_reason,
+                received_utc_ns=received_ns,
+                desired=desired,
+            )
             return
         if self._kill is KillSwitch.FLATTEN_HALT and not desired.reduce_only:
             self._reject(
                 reason="flatten_halt",
                 detail=self._kill_reason,
                 received_utc_ns=received_ns,
+                desired=desired,
             )
             return
         priced = self._price_order(desired.side)
         if priced is None:
             self._missing_flatten = bool(desired.reduce_only)
-            self._reject(reason="missing_price", detail=reason, received_utc_ns=received_ns)
+            self._reject(
+                reason="missing_price", detail=reason, received_utc_ns=received_ns, desired=desired
+            )
             return
         touch_price, _touch_size = priced
         quantity = floor_size(desired.quantity, self._size_increment)
         if quantity <= 0:
-            self._reject(reason="below_increment", detail=reason, received_utc_ns=received_ns)
+            self._reject(
+                reason="below_increment",
+                detail=reason,
+                received_utc_ns=received_ns,
+                desired=desired,
+            )
             return
         clipped = False
         if not desired.reduce_only:
             sized = self._clip_entry(quantity, touch_price)
             if sized is None:
-                self._reject(reason="risk_based_size", detail=reason, received_utc_ns=received_ns)
+                self._reject(
+                    reason="risk_based_size",
+                    detail=reason,
+                    received_utc_ns=received_ns,
+                    desired=desired,
+                )
                 return
             quantity, clipped = sized
             projected = self._position.position_quantity + _signed(desired.side, quantity)
             if abs(projected) > self._config.max_position_quantity:
-                self._reject(reason="max_position", detail=reason, received_utc_ns=received_ns)
+                self._reject(
+                    reason="max_position",
+                    detail=reason,
+                    received_utc_ns=received_ns,
+                    desired=desired,
+                )
                 return
             projected_notional = abs(projected) * touch_price
             if projected_notional > self._config.max_notional_usdc:
-                self._reject(reason="max_notional", detail=reason, received_utc_ns=received_ns)
+                self._reject(
+                    reason="max_notional",
+                    detail=reason,
+                    received_utc_ns=received_ns,
+                    desired=desired,
+                )
                 return
             if quantity * touch_price < self._config.min_order_notional_usdc:
-                self._reject(reason="min_notional", detail=reason, received_utc_ns=received_ns)
+                self._reject(
+                    reason="min_notional",
+                    detail=reason,
+                    received_utc_ns=received_ns,
+                    desired=desired,
+                )
                 return
             if not self._paper_risk_allows(
                 side=desired.side,
                 quantity=quantity,
                 price=touch_price,
                 reduce_only=False,
+                received_ns=received_ns,
+                desired=desired,
             ):
                 return
         elif not self._paper_risk_allows(
@@ -539,6 +586,8 @@ class PaperEngine:
             quantity=quantity,
             price=touch_price,
             reduce_only=True,
+            received_ns=received_ns,
+            desired=desired,
         ):
             return
         latency = 0 if kill_latency else self._config.latency_ns
@@ -556,7 +605,8 @@ class PaperEngine:
             clipped=clipped,
         )
         self._missing_flatten = False
-        self._append(
+        self._last_block = None
+        self._store.append(
             {
                 "type": "order_accepted",
                 "mode": "PAPER",
@@ -599,17 +649,29 @@ class PaperEngine:
         quantity: Decimal,
         price: Decimal,
         reduce_only: bool,
+        received_ns: int,
+        desired: _DesiredOrder,
     ) -> bool:
         equity = self._equity()
         if equity is None:
             if not reduce_only:
-                self._reject(reason="missing_price", detail="equity", received_utc_ns=None)
+                self._reject(
+                    reason="missing_price",
+                    detail="equity",
+                    received_utc_ns=received_ns,
+                    desired=desired,
+                )
                 return False
             equity = self._position.cash_usdc + (self._position.position_quantity * price)
         if equity <= 0:
             if reduce_only:
                 return True
-            self._reject(reason="non_positive_equity", detail=None, received_utc_ns=None)
+            self._reject(
+                reason="non_positive_equity",
+                detail=None,
+                received_utc_ns=received_ns,
+                desired=desired,
+            )
             return False
         peak = self._peak if self._peak >= equity else equity
         snapshot = paper_snapshot_for_bounded_book(
@@ -641,7 +703,8 @@ class PaperEngine:
         self._reject(
             reason="paper_risk",
             detail="; ".join(decision.reasons),
-            received_utc_ns=None,
+            received_utc_ns=received_ns,
+            desired=desired,
         )
         return False
 
@@ -733,7 +796,7 @@ class PaperEngine:
             }
             self._fills.append(fill_record)
             self._fill_count += 1
-            self._append({"type": "fill", "mode": "PAPER", **fill_record})
+            self._store.append({"type": "fill", "mode": "PAPER", **fill_record})
         if filled <= 0:
             status = "CANCELED"
         elif filled < working.quantity:
@@ -760,7 +823,7 @@ class PaperEngine:
         }
         self._orders.append(order_record)
         self._order_count += 1
-        self._append({"type": "order_completed", **order_record})
+        self._store.append({"type": "order_completed", **order_record})
         self._working = None
         if working.reduce_only and self._position.position_quantity != 0 and filled <= 0:
             self._missing_flatten = True
@@ -784,64 +847,43 @@ class PaperEngine:
         }
         self._orders.append(order_record)
         self._order_count += 1
-        self._append({"type": "order_canceled", **order_record})
+        self._store.append({"type": "order_canceled", **order_record})
         self._working = None
 
     def _book_complete(self) -> bool:
         return self._bbo is not None and bbo_is_complete(self._bbo)
 
-    def _reject(self, *, reason: str, detail: str | None, received_utc_ns: int | None) -> None:
-        """Record a rejection. Back-to-back identical rejections share one record.
+    def _reject(
+        self,
+        *,
+        reason: str,
+        detail: str | None,
+        received_utc_ns: int | None,
+        desired: _DesiredOrder | None,
+    ) -> None:
+        """Record a rejection when a block starts, not on every re-evaluation.
 
-        A strategy that keeps asking for a blocked target is rejected on every
-        event. Only the first rejection of such a streak is written in full;
-        the repeats are counted and written as one ``risk_rejected_repeats``
-        line when the streak ends, so the ledger stays complete but bounded.
+        A strategy that keeps asking for the same blocked order is re-checked
+        on every event. That is one rejection, recorded when it first happens.
+        A new record is written only when the order, the reason, the detail,
+        or the kill switch changes, or after the block was cleared by an
+        accepted order or a flat target. Nothing is held back in memory, so
+        the ledger is complete as soon as each event is persisted.
         """
 
-        self._rejection_count += 1
-        key = (reason, detail, self._kill.value)
-        if key == self._repeat_key and self._rejections:
-            self._repeat_count += 1
-            self._repeat_last_ns = received_utc_ns
-            latest = self._rejections[-1]
-            latest["repeats"] = self._repeat_count
-            latest["last_received_utc_ns"] = received_utc_ns
+        key = (reason, detail, self._kill.value, desired)
+        if key == self._last_block:
             return
+        self._last_block = key
+        self._rejection_count += 1
         record: dict[str, object] = {
             "reason": reason,
             "detail": detail,
             "received_utc_ns": received_utc_ns,
             "kill_switch": self._kill.value,
         }
-        self._append({"type": "risk_rejected", "mode": "PAPER", **record})
-        self._rejections.append({**record, "repeats": 0, "last_received_utc_ns": received_utc_ns})
-        self._repeat_key = key
-
-    def _append(self, payload: dict[str, object]) -> None:
-        """Write one ledger line after closing any open rejection streak."""
-
-        self._flush_repeated_rejections()
-        self._repeat_key = None
-        self._store.append(payload)
-
-    def _flush_repeated_rejections(self) -> None:
-        if self._repeat_count == 0 or self._repeat_key is None:
-            return
-        reason, detail, kill_switch = self._repeat_key
-        self._store.append(
-            {
-                "type": "risk_rejected_repeats",
-                "mode": "PAPER",
-                "reason": reason,
-                "detail": detail,
-                "kill_switch": kill_switch,
-                "repeats": self._repeat_count,
-                "last_received_utc_ns": self._repeat_last_ns,
-            }
-        )
-        self._repeat_count = 0
-        self._repeat_last_ns = None
+        self._rejections.append(record)
+        self._store.append({"type": "risk_rejected", "mode": "PAPER", **record})
 
     def _halt_new(self, reason: str) -> None:
         if self._kill is KillSwitch.FLATTEN_HALT:
@@ -849,14 +891,14 @@ class PaperEngine:
         if self._kill is KillSwitch.NONE:
             self._kill = KillSwitch.HALT_NEW
             self._kill_reason = reason
-            self._append({"type": "kill_switch", "state": self._kill.value, "reason": reason})
+            self._store.append({"type": "kill_switch", "state": self._kill.value, "reason": reason})
 
     def _flatten_halt(self, reason: str) -> None:
         if self._kill is KillSwitch.FLATTEN_HALT:
             return
         self._kill = KillSwitch.FLATTEN_HALT
         self._kill_reason = reason
-        self._append({"type": "kill_switch", "state": self._kill.value, "reason": reason})
+        self._store.append({"type": "kill_switch", "state": self._kill.value, "reason": reason})
 
     def _view(self) -> StrategyView:
         return StrategyView(
@@ -892,6 +934,7 @@ class PaperEngine:
         }
 
     def _persist(self, observed_at: datetime) -> None:
+        self._store.commit()
         self._store.write_state(self._state())
         self._store.write_health(self._health(observed_at))
 

@@ -1303,38 +1303,36 @@ async def test_receive_or_stop_does_not_swallow_a_cancellation_of_its_caller() -
 @pytest.mark.asyncio
 async def test_cancel_and_wait_reaps_every_child_before_a_caller_cancellation() -> None:
     # The caller is cancelled while the first child unwinds. Every child must
-    # still be cancelled and finished before that cancellation propagates, so
-    # none is left pending or running past its owner.
+    # be cancelled and finished before that cancellation propagates, so none
+    # is left pending or running past its owner.
     caller: asyncio.Task[None] | None = None
-    events: list[str] = []
+    cancelled: list[str] = []
 
     async def slow_to_unwind(name: str) -> None:
         try:
             await asyncio.get_running_loop().create_future()
         except asyncio.CancelledError:
-            events.append(f"{name} cancelled")
+            cancelled.append(name)
             if name == "first":
                 assert caller is not None
                 caller.cancel()
             for _ in range(3):
                 await asyncio.sleep(0)
-            events.append(f"{name} finished")
             raise
 
     first = asyncio.create_task(slow_to_unwind("first"))
     second = asyncio.create_task(slow_to_unwind("second"))
     await asyncio.sleep(0)
     caller = asyncio.create_task(_cancel_and_wait(first, second))
+    children_done_when_caller_ended: list[tuple[bool, bool]] = []
+    caller.add_done_callback(
+        lambda _task: children_done_when_caller_ended.append((first.done(), second.done()))
+    )
     with pytest.raises(asyncio.CancelledError):
         await caller
     assert caller.cancelled()
-    assert first.cancelled() and second.cancelled()
-    assert sorted(events) == [
-        "first cancelled",
-        "first finished",
-        "second cancelled",
-        "second finished",
-    ]
+    assert sorted(cancelled) == ["first", "second"]
+    assert children_done_when_caller_ended == [(True, True)]
 
 
 @pytest.mark.asyncio

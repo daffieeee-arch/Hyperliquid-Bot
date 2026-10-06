@@ -1209,12 +1209,10 @@ class BinancePublicResearchCollector:
                     return_when=asyncio.FIRST_COMPLETED,
                 )
             finally:
-                if get_task not in done:
-                    get_task.cancel()
-                await _cancel_and_wait(stop_task, idle_task)
-                if get_task.cancelled():
-                    with suppress(asyncio.CancelledError):
-                        await get_task
+                # Queue.get is cancellation-safe: a frame it had not returned
+                # stays in the queue and is taken on the next pass.
+                unfinished = [task for task in (get_task, stop_task, idle_task) if task not in done]
+                await _cancel_and_wait(*unfinished)
             if get_task in done and not get_task.cancelled():
                 return get_task.result()
             if not inbound.empty():
@@ -2574,16 +2572,15 @@ async def _receive_or_stop(
         if receive_task in done:
             return receive_task.result()
         await _cancel_and_wait(receive_task)
-        if not receive_task.cancelled():
-            # The read finished with an error just as the timeout fired.
-            error = receive_task.exception()
-            if error is not None:
-                raise error
-        return None
+        if receive_task.cancelled():
+            return None
+        # The read finished just as the timeout fired: keep its frame, or
+        # raise its error, rather than dropping it.
+        return receive_task.result()
     finally:
         # Also reached when our own task is cancelled mid-recv: do not leave
-        # a read running. A no-op for tasks that are already done.
-        await _cancel_and_wait(receive_task, stop_task)
+        # a read running.
+        await _cancel_and_wait(*(task for task in (receive_task, stop_task) if not task.done()))
 
 
 async def _cancel_and_wait(*tasks: asyncio.Task[Any]) -> None:
@@ -2593,28 +2590,18 @@ async def _cancel_and_wait(*tasks: asyncio.Task[Any]) -> None:
     CancelledError from a cancellation of the calling task, so it swallows
     both. A cancelled socket-drain task then keeps reading until the queue is
     full or the capture stops, and its session's failure surfaces only at
-    stop. ``asyncio.wait`` never raises a child's outcome, so a cancellation of
-    the caller is kept. It is re-raised only after every child has finished,
-    so no child outlives its owner (for example a drain still reading a socket
-    the owner is about to close). Child outcomes are retrieved, not raised;
-    callers that need a child's error read it from the task.
+    stop. ``gather(..., return_exceptions=True)`` keeps a cancellation of the
+    caller and re-raises it only after every child has finished, so no child
+    outlives its owner (for example a drain still reading a socket the owner
+    is about to close). Child outcomes are retrieved, not raised; callers that
+    need a child's result read it from the task.
     """
 
+    if not tasks:
+        return
     for task in tasks:
         task.cancel()
-    caller_cancelled: asyncio.CancelledError | None = None
-    pending = set(tasks)
-    while pending:
-        try:
-            _done, pending = await asyncio.wait(pending)
-        except asyncio.CancelledError as error:
-            caller_cancelled = error
-            pending = {task for task in pending if not task.done()}
-    for task in tasks:
-        if not task.cancelled():
-            task.exception()
-    if caller_cancelled is not None:
-        raise caller_cancelled
+    await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def _wait_or_stop(delay_seconds: float, stop_event: asyncio.Event) -> None:

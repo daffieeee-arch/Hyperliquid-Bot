@@ -26,6 +26,38 @@ Each `run_id` is create-only. If the directory exists, opening it raises
 <store>/<run_id>/health.json
 ```
 
+`ledger.jsonl` is the complete, append-only audit trail. Lines produced while
+one event is processed are written together before `state.json` and
+`health.json` are rewritten. With `durable_ledger=True` (the default) that
+write, the run claim, and the new directory entries are fsynced, so every
+completed event survives a crash or power loss. An offline replay that can
+simply be re-run may set `durable_ledger=False` to skip the fsync cost. The
+store root should already exist; when the engine creates it, the root's own
+entry in its parent directory is not fsynced.
+
+If anything raises while an event or clock tick is applied, the run fails
+closed. Fills and orders already applied are written to the ledger,
+`health.json` reports status `FAILED`, and the run refuses further events;
+`close()` keeps that status. Start a new `run_id`. After a failed ledger
+write the store refuses later appends rather than risk writing a partly
+written batch twice, and `health.json` sets `ledger_write_failed: true`. The
+flag means the last batch may be missing from the ledger or may not be
+durable; reconcile the projections against the ledger before trusting either.
+
+A strategy that keeps asking for the same blocked order is re-checked on
+every event, but that is one rejection: a `risk_rejected` line is written
+when the block starts, with its `received_utc_ns`. A new one is written only
+when the order, reason, detail, or kill switch changes, or after an accepted
+order or a flat target cleared the block. `risk_rejection_count` counts these
+records.
+
+`state.json` (`paper-engine-state-v2`) and `health.json` are projections
+rewritten on every event. They are replaced atomically but not fsynced. To
+keep that rewrite constant-size on a long run, `state.json` holds only the
+most recent `recent_record_limit` (100) orders, fills, and rejections, plus
+the full `order_count`, `fill_count`, and `risk_rejection_count`. Rebuild the
+full history from the ledger.
+
 `health.json` (`paper-engine-health-v1`) is the cockpit status file. Machine
 timestamps are UTC. `observed_at_local` and `last_event_at_local` use
 Europe/Amsterdam with a `CEST` or `CET` label. `venue_orders_submitted` is
@@ -51,7 +83,11 @@ A buy fills the ask and a sell fills the bid, worsened by the configured
 slippage fraction, then rounded to that grid. Quantity is capped by the
 displayed size (or the trade size when the book is not complete). The
 unfilled remainder is cancelled (IOC). Latency waits for a later event
-before that touch is eligible. A missing side, a crossed book, or a missing
+before that touch is eligible. While an order waits, the same target from
+the strategy keeps it working, even when the order was rounded or clipped
+to the risk size; only a changed target cancels and replaces it. A kill
+flatten is zero-latency: it replaces a matching strategy order that is still
+waiting out its latency and fills on the same event. A missing side, a crossed book, or a missing
 mark does not become a mid. New risk is rejected. Unrealized PnL stays null
 until a venue mark or a complete two-sided book exists.
 
@@ -60,7 +96,8 @@ until a venue mark or a complete two-sided book exists.
 - Per-trade size is `equity * risk_per_trade / stop_distance`, rounded down
   to the lot. Hard max position and max notional reject instead of clipping.
 - Daily and weekly loss limits halt new entries and still allow a reduce-only
-  flatten.
+  flatten. An entry order that is still waiting out its latency when any kill
+  switch is set is cancelled (`halted`) instead of filled.
 - Drawdown at or beyond `drawdown_kill_fraction` flattens and halts.
 - A gap longer than `stale_after_ns` flattens and halts. The caller can also
   pass an explicit clock (`on_clock`) so a quiet live feed trips the same

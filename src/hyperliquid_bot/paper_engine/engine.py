@@ -195,6 +195,7 @@ class _WorkingOrder:
     decision_received_ns: int
     reason: str
     clipped: bool
+    kill_flatten: bool
 
 
 class PaperEngine:
@@ -307,6 +308,15 @@ class PaperEngine:
 
         self._require_open()
         self._check_event(event)
+        try:
+            self._advance(event)
+        except BaseException:
+            # Fills and orders already applied in memory must still reach the
+            # ledger even when a strategy or later step raises.
+            self._store.commit()
+            raise
+
+    def _advance(self, event: MarketEvent) -> None:
         if self._stale_gap(event.received_utc_ns):
             self._flatten_halt("stale_data")
             self._last_data_ns = event.received_utc_ns
@@ -494,10 +504,10 @@ class PaperEngine:
         if (
             self._working is not None
             and _same_desire(self._working, desired)
-            and not (kill_latency and self._working.eligible_received_ns > received_ns)
+            and not (kill_latency and not self._working.kill_flatten)
         ):
-            # A kill flatten is zero-latency. A matching strategy order that is
-            # still waiting out its latency is replaced, not reused.
+            # A kill flatten is zero-latency. A matching strategy order, which
+            # may still be waiting out its latency, is replaced, not reused.
             return
         if self._working is not None:
             self._cancel_working(received_ns, "replaced")
@@ -603,6 +613,7 @@ class PaperEngine:
             decision_received_ns=received_ns,
             reason=reason,
             clipped=clipped,
+            kill_flatten=kill_latency,
         )
         self._missing_flatten = False
         self._last_block = None
@@ -726,6 +737,9 @@ class PaperEngine:
         working = self._working
         if working is None or event.received_utc_ns < working.eligible_received_ns:
             return
+        if self._entry_halted(working):
+            self._cancel_working(event.received_utc_ns, "halted")
+            return
         if isinstance(event, BboEvent):
             quote = None if not bbo_is_complete(event) else self._quote(working, event=event)
             self._complete_ioc(working, quote, received_utc_ns=event.received_utc_ns)
@@ -738,6 +752,9 @@ class PaperEngine:
         working = self._working
         if working is None or received_ns < working.eligible_received_ns:
             return
+        if self._entry_halted(working):
+            self._cancel_working(received_ns, "halted")
+            return
         if self._bbo is not None and bbo_is_complete(self._bbo):
             quote = self._quote(working, event=self._bbo)
             self._complete_ioc(working, quote, received_utc_ns=received_ns)
@@ -747,6 +764,11 @@ class PaperEngine:
             self._complete_ioc(working, quote, received_utc_ns=received_ns)
             return
         self._missing_flatten = True
+
+    def _entry_halted(self, working: _WorkingOrder) -> bool:
+        """A waiting entry order must not fill once any kill switch is set."""
+
+        return not working.reduce_only and self._kill is not KillSwitch.NONE
 
     def _quote(self, working: _WorkingOrder, *, event: BboEvent | TradeEvent) -> FillQuote | None:
         source: FillSource

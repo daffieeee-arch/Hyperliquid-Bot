@@ -422,6 +422,49 @@ def test_kill_flatten_replaces_strategy_exit_waiting_on_latency(tmp_path: Path) 
     assert read_health(engine.health_path)["flatten_blocked_missing_price"] is False
 
 
+def test_waiting_entry_does_not_fill_once_a_kill_switch_is_set(tmp_path: Path) -> None:
+    # Defense in depth: whatever sets the switch, a waiting entry order is
+    # cancelled at fill time instead of adding new risk.
+    engine = _engine(
+        tmp_path,
+        "haltwait1",
+        strategy=ScriptedStrategy((Decimal("0.1"),)),
+        config=PaperEngineConfig(latency_ns=250_000_000),
+    )
+    engine.on_event(_bbo(ns=0, bid="99999", ask="100000", ordinal=1))
+    engine._halt_new("test-halt")
+    engine.on_event(_bbo(ns=300_000_000, bid="99999", ask="100000", ordinal=2))
+    engine.close()
+    assert engine.position_quantity == Decimal("0")
+    state = _state(engine)
+    assert [(order["status"], order["reason"]) for order in _objects(state["orders"])] == [
+        ("CANCELED", "halted")
+    ]
+    assert [row["reason"] for row in _objects(state["risk_rejections"])] == ["halt_new"]
+
+
+class _RaisingAfterFirstCall(ScriptedStrategy):
+    def on_market(self, event: MarketEvent, view: StrategyView) -> TargetPosition | None:
+        if self._index >= 1:
+            raise RuntimeError("strategy failure")
+        return super().on_market(event, view)
+
+
+def test_ledger_keeps_fills_when_a_later_step_raises(tmp_path: Path) -> None:
+    engine = _engine(
+        tmp_path,
+        "raising01",
+        strategy=_RaisingAfterFirstCall((Decimal("0.1"),)),
+        config=PaperEngineConfig(latency_ns=250_000_000),
+    )
+    engine.on_event(_bbo(ns=0, bid="99999", ask="100000", ordinal=1))
+    with pytest.raises(RuntimeError, match="strategy failure"):
+        engine.on_event(_bbo(ns=300_000_000, bid="99999", ask="100000", ordinal=2))
+    assert engine.position_quantity == Decimal("0.1")
+    types = [row["type"] for row in _ledger(tmp_path / "raising01")]
+    assert types == ["order_accepted", "fill", "order_completed"]
+
+
 @pytest.mark.parametrize(("durable", "expect_fsync"), [(True, True), (False, False)])
 def test_durable_ledger_controls_fsync(
     tmp_path: Path,

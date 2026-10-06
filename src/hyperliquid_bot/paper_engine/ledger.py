@@ -71,6 +71,7 @@ class RunStore:
             # Persist the run directory entry and its claim/ledger entries.
             _fsync_directory(self.run_dir)
             _fsync_directory(self.root)
+            _fsync_directory(self.root.parent)
 
     def append(self, payload: dict[str, object]) -> None:
         """Buffer one ledger line. ``commit()`` writes it."""
@@ -83,9 +84,10 @@ class RunStore:
         if not self._pending:
             return
         text = "".join(self._pending)
-        self._pending.clear()
         with self.ledger_path.open("a", encoding="utf-8") as handle:
             handle.write(text)
+            # Clear only after the write, so a failed write can be retried.
+            self._pending.clear()
             if self.durable:
                 handle.flush()
                 os.fsync(handle.fileno())

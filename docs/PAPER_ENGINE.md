@@ -85,7 +85,8 @@ until a venue mark or a complete two-sided book exists.
 - Per-trade size is `equity * risk_per_trade / stop_distance`, rounded down
   to the lot. Hard max position and max notional reject instead of clipping.
 - Daily and weekly loss limits halt new entries and still allow a reduce-only
-  flatten.
+  flatten. An entry order that is still waiting out its latency when any kill
+  switch is set is cancelled (`halted`) instead of filled.
 - Drawdown at or beyond `drawdown_kill_fraction` flattens and halts.
 - A gap longer than `stale_after_ns` flattens and halts. The caller can also
   pass an explicit clock (`on_clock`) so a quiet live feed trips the same

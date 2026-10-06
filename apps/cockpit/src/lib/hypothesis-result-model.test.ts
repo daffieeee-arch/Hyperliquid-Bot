@@ -4,11 +4,14 @@ import {
   HYPOTHESIS_RESULT_SCHEMA,
   RESULT_UNAVAILABLE,
   configsLabel,
+  hypothesisLabelTone,
   parseHypothesisResultListPayload,
   parseHypothesisResultObject,
   parseReportMarkdown,
+  passesH1Tone,
   presentPromotion,
   promotionSummary,
+  shortWindowLabel,
 } from "./hypothesis-result-model";
 
 const base = {
@@ -43,6 +46,29 @@ describe("hypothesis result object", () => {
     expect(item.dataRange).toContain("2026-01-01 01:00:00 CET");
     expect(item.holdoutWindow).toBe(RESULT_UNAVAILABLE);
     expect(item.promotionDecision).toBe("forbidden");
+    expect(item.runId).toBe(RESULT_UNAVAILABLE);
+    expect(item.product).toBe(RESULT_UNAVAILABLE);
+    expect(item.pathContract).toBe(RESULT_UNAVAILABLE);
+  });
+
+  it("keeps unknown labels and a failed H1 muted, and shortens table dates", () => {
+    expect(hypothesisLabelTone("baseline")).toBe("muted");
+    expect(hypothesisLabelTone(RESULT_UNAVAILABLE)).toBe("muted");
+    expect(hypothesisLabelTone("interesting_but_fragile")).toBe("warn");
+    expect(passesH1Tone("no")).toBe("muted");
+    expect(passesH1Tone("yes")).toBe("ok");
+    const full = "2026-04-01 02:00:00 CEST – 2026-05-01 02:00:00 CEST";
+    expect(shortWindowLabel(full)).toBe("2026-04-01 – 2026-05-01");
+    expect(shortWindowLabel(RESULT_UNAVAILABLE)).toBe(RESULT_UNAVAILABLE);
+    const identified = parseHypothesisResultObject("wp", "wp/result.json", {
+      ...base,
+      run_id: "20260401t000000z-wp1-h1",
+      product: "BTC-PERP",
+      path_contract: "hypothesis-wp1-btc-perp-v1",
+    });
+    expect(identified.runId).toBe("20260401t000000z-wp1-h1");
+    expect(identified.product).toBe("BTC-PERP");
+    expect(identified.pathContract).toBe("hypothesis-wp1-btc-perp-v1");
   });
 
   it("does not treat a string pass, a missing count, or a blank object as numbers", () => {

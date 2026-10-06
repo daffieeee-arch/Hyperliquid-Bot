@@ -176,7 +176,12 @@ Optional `COCKPIT_HYPOTHESIS_RESULTS` points at a directory of
 unset and an artifact root is set, the cockpit reads
 `<artifact-root>/hypothesis-results`. There is no baked VPS path, and the
 in-repo fixture is not loaded unless that variable points at it. Absent
-fields stay **UNAVAILABLE**. `passes_h1` must be a boolean. Per-trade bps use
+fields stay **UNAVAILABLE**. Every row shows `run_id`, `product`, and
+`path_contract`, as **UNAVAILABLE** when the artifact omits them. `passes_h1`
+must be a boolean. The table prints Amsterdam calendar days; the detail and
+the cell tooltip keep the full CEST/CET timestamp. Net bps/trade is shown
+before gross. On a narrow viewport the work-package column stays pinned
+while the nowrap table scrolls. Per-trade bps use
 `best_gross_bps_per_trade` and `best_net_bps_per_trade` (aliases
 `best_gross_bps` / `best_net_bps`). Window bounds are ISO-8601; a UTC
 nanosecond bound is accepted only as a digit string. An unknown

@@ -44,7 +44,19 @@ describe("hypothesis results view", () => {
     expect(html).toContain("2026-10-06 10:15:00 CEST");
     expect(html).toContain("updated 45s ago");
     expect(html).toContain("2026-04-01 02:00:00 CEST");
+    expect(html).toContain("2026-04-01 – 2026-05-01");
     expect(html).toContain("2026-01-01 01:00:00 CET");
+    expect(html).toContain("20260401t000000z-wp1-h1");
+    expect(html).toContain("BTC-PERP");
+    expect(html).toContain("hypothesis-wp1-btc-perp-v1");
+    expect(html).toContain("run_id");
+    expect(html).toContain("path_contract");
+    expect(html).toContain("notice-gate");
+    expect(html).toContain("table-scroll-sticky-first");
+    expect(html).toContain("dt-nowrap");
+    expect(html).toContain("badge-muted");
+    expect(html).not.toContain("badge-down");
+    expect(html).not.toContain("notice-stale");
     expect(html).toContain("taker-flow x vol");
     expect(html).toContain("cost-killed");
     expect(html).toContain("place an order");
@@ -63,6 +75,21 @@ describe("hypothesis results view", () => {
     expect(html).toContain("0.2");
     expect(html).not.toContain(">0 / 4<");
     expect(html).toContain(`UNAVAILABLE / 4`);
+    const partial = renderToStaticMarkup(
+      <HypothesisResultsView
+        list={list}
+        nowIso={undefined}
+        selectedId="wp2-partial"
+        onSelect={() => undefined}
+      />,
+    );
+    expect(partial).toContain("run_id");
+    expect(partial).toContain("product");
+    expect(partial).toContain("path_contract");
+    expect(partial).toContain("Best net bps/trade");
+    expect(partial.indexOf("Best net bps/trade")).toBeLessThan(
+      partial.indexOf("Best gross bps/trade"),
+    );
   });
 
   it("renders a malformed file without throwing and escapes report HTML", () => {

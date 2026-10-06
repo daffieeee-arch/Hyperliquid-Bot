@@ -1,5 +1,6 @@
 "use client";
 
+import { Ban } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { Badge } from "../ui/badge";
@@ -17,6 +18,7 @@ import {
   presentPromotion,
   promotionSummary,
   RESULT_UNAVAILABLE,
+  shortWindowLabel,
   type HypothesisResultItem,
   type HypothesisResultList,
   type ReportBlock,
@@ -29,6 +31,28 @@ const columnHelper = dataTableColumnHelper<HypothesisResultItem>();
 
 function Unavailable({ value }: { value: string }) {
   return value === RESULT_UNAVAILABLE ? <span className="tone-muted">{value}</span> : value;
+}
+
+function WindowCell({ value }: { value: string }) {
+  const short = shortWindowLabel(value);
+  return (
+    <span title={value}>
+      <Unavailable value={short} />
+    </span>
+  );
+}
+
+/** Gate copy uses the PAPER accent, not the clock treatment used for stale age. */
+function GateNotice({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="notice notice-gate" role="status">
+      <Ban className="notice-icon" size={14} aria-hidden="true" />
+      <div className="notice-body">
+        <strong>{title}</strong>
+        <span>{children}</span>
+      </div>
+    </div>
+  );
 }
 
 function InlineRun({ inlines }: { inlines: ReportInline[] }) {
@@ -156,20 +180,21 @@ function ResultDetail({
           </Notice>
         ) : null}
         {promotion.conflict === undefined ? null : (
-          <Notice state="error" title="Promotion stays forbidden">
-            {promotion.conflict}
-          </Notice>
+          <GateNotice title="Promotion stays forbidden">{promotion.conflict}</GateNotice>
         )}
         {promotion.gate === "recorded" ? (
-          <Notice state="stale" title="H1 passed; this view still does not promote">
+          <GateNotice title="H1 passed; this view still does not promote">
             Recorded promotion_decision is {item.promotionDecision}. The cockpit does not promote a
             hypothesis or place an order.
-          </Notice>
+          </GateNotice>
         ) : null}
         <KvList
           rows={[
             { label: "Work package", value: item.workPackage },
             { label: "Hypothesis", value: item.hypothesisId },
+            { label: "run_id", value: <Unavailable value={item.runId} /> },
+            { label: "product", value: <Unavailable value={item.product} /> },
+            { label: "path_contract", value: <Unavailable value={item.pathContract} /> },
             { label: "Title", value: item.title },
             { label: "Label", value: item.label, tone: hypothesisLabelTone(item.label) },
             { label: "passes_h1", value: item.passesH1, tone: passesH1Tone(item.passesH1) },
@@ -177,11 +202,11 @@ function ResultDetail({
               label: "Configs passed / tested",
               value: configsLabel(item.configsPassed, item.configsTested),
             },
-            { label: "Best gross bps/trade", value: item.grossBps },
-            { label: "Best net bps/trade", value: item.netBps },
-            { label: "OOS window", value: item.oosWindow },
-            { label: "Holdout window", value: item.holdoutWindow },
-            { label: "Data range", value: item.dataRange },
+            { label: "Best net bps/trade", value: <Unavailable value={item.netBps} /> },
+            { label: "Best gross bps/trade", value: <Unavailable value={item.grossBps} /> },
+            { label: "OOS window", value: item.oosWindow, title: item.oosWindow },
+            { label: "Holdout window", value: item.holdoutWindow, title: item.holdoutWindow },
+            { label: "Data range", value: item.dataRange, title: item.dataRange },
             {
               label: "promotion_decision",
               value: item.promotionDecision,
@@ -255,6 +280,18 @@ export function HypothesisResultsView({
         );
       },
     }),
+    columnHelper.accessor("runId", {
+      header: "run_id",
+      cell: ({ row }) => <Unavailable value={row.original.runId} />,
+    }),
+    columnHelper.accessor("product", {
+      header: "product",
+      cell: ({ row }) => <Unavailable value={row.original.product} />,
+    }),
+    columnHelper.accessor("pathContract", {
+      header: "path_contract",
+      cell: ({ row }) => <Unavailable value={row.original.pathContract} />,
+    }),
     columnHelper.accessor("label", {
       header: "Label",
       cell: ({ row }) => (
@@ -274,25 +311,25 @@ export function HypothesisResultsView({
         <Unavailable value={configsLabel(row.original.configsPassed, row.original.configsTested)} />
       ),
     }),
-    columnHelper.accessor("grossBps", {
-      header: "Gross bps/trade",
-      cell: ({ row }) => <Unavailable value={row.original.grossBps} />,
-    }),
     columnHelper.accessor("netBps", {
       header: "Net bps/trade",
       cell: ({ row }) => <Unavailable value={row.original.netBps} />,
     }),
+    columnHelper.accessor("grossBps", {
+      header: "Gross bps/trade",
+      cell: ({ row }) => <Unavailable value={row.original.grossBps} />,
+    }),
     columnHelper.accessor("oosWindow", {
       header: "OOS",
-      cell: ({ row }) => <Unavailable value={row.original.oosWindow} />,
+      cell: ({ row }) => <WindowCell value={row.original.oosWindow} />,
     }),
     columnHelper.accessor("holdoutWindow", {
       header: "Holdout",
-      cell: ({ row }) => <Unavailable value={row.original.holdoutWindow} />,
+      cell: ({ row }) => <WindowCell value={row.original.holdoutWindow} />,
     }),
     columnHelper.accessor("dataRange", {
       header: "Data range",
-      cell: ({ row }) => <Unavailable value={row.original.dataRange} />,
+      cell: ({ row }) => <WindowCell value={row.original.dataRange} />,
     }),
     columnHelper.accessor("promotionDecision", {
       header: "promotion_decision",
@@ -346,8 +383,10 @@ export function HypothesisResultsView({
               columns={columns}
               data={list.items}
               caption="Hypothesis and work-package results. Read only."
-              numericColumns={["configs", "grossBps", "netBps"]}
+              numericColumns={["configs", "netBps", "grossBps"]}
+              monoColumns={["runId", "product", "pathContract"]}
               nowrap
+              stickyFirst
               emptyLabel="No hypothesis results. Metrics stay UNAVAILABLE."
               cellClassName={(_columnId, row) =>
                 row.id === selected?.id ? "row-selected" : undefined
@@ -362,10 +401,10 @@ export function HypothesisResultsView({
 
   return (
     <div className="stack">
-      <Notice state="stale" title="Promotion is forbidden unless H1 passes">
+      <GateNotice title="Promotion is forbidden unless H1 passes">
         This view is read-only. It does not promote a hypothesis, place an order, or change trading
         mode. A recorded promotion_decision other than forbidden is ignored when H1 did not pass.
-      </Notice>
+      </GateNotice>
       {body}
     </div>
   );

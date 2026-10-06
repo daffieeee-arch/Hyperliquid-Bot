@@ -55,11 +55,17 @@ describe("hypothesis results directory", () => {
     expect(wp1?.grossBps).toBe("1.4");
     expect(wp1?.netBps).toBe(RESULT_UNAVAILABLE);
     expect(wp1?.promotionDecision).toBe("forbidden");
+    expect(wp1?.runId).toBe("20260401t000000z-wp1-h1");
+    expect(wp1?.product).toBe("BTC-PERP");
+    expect(wp1?.pathContract).toBe("hypothesis-wp1-btc-perp-v1");
     expect(wp1?.reportMarkdown).toMatch(/cost-killed/);
     expect(wp1?.synthetic).toBe(true);
 
     const wp2 = list.items[1];
     expect(wp2?.passesH1).toBe(RESULT_UNAVAILABLE);
+    expect(wp2?.runId).toBe(RESULT_UNAVAILABLE);
+    expect(wp2?.product).toBe(RESULT_UNAVAILABLE);
+    expect(wp2?.pathContract).toBe(RESULT_UNAVAILABLE);
     expect(wp2?.configsPassed).toBe(RESULT_UNAVAILABLE);
     expect(wp2?.netBps).toBe(RESULT_UNAVAILABLE);
     expect(wp2?.holdoutWindow).toBe(RESULT_UNAVAILABLE);

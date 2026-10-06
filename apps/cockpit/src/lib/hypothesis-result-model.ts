@@ -9,10 +9,13 @@
  * ```
  *
  * Canonical fields (camelCase aliases accepted): `work_package`,
- * `hypothesis_id`, `title`, `label`, `passes_h1`, `configs_tested`,
- * `configs_passed`, `best_gross_bps_per_trade` (alias `best_gross_bps`),
+ * `hypothesis_id`, `title`, `label`, `run_id`, `product`, `path_contract`,
+ * `passes_h1`, `configs_tested`, `configs_passed`,
+ * `best_gross_bps_per_trade` (alias `best_gross_bps`),
  * `best_net_bps_per_trade` (alias `best_net_bps`), `oos`, `holdout`,
  * `data_range`, `promotion_decision`, `updated_at`, `notes`, `synthetic`.
+ * `run_id`, `product`, and `path_contract` are always shown; a missing value
+ * is UNAVAILABLE and the field is not dropped.
  *
  * Window bounds are ISO-8601 instants. A UTC nanosecond bound is accepted
  * only as a digit string; a JSON number above 2^53 is not exact, so it stays
@@ -43,6 +46,9 @@ export type HypothesisResultItem = {
   hypothesisId: string;
   title: string;
   label: string;
+  runId: string;
+  product: string;
+  pathContract: string;
   passesH1: HypothesisPassesH1;
   configsTested: string;
   configsPassed: string;
@@ -72,7 +78,7 @@ export type PromotionGate = "forbidden" | "recorded";
 export type PromotionPresentation = {
   gate: PromotionGate;
   badge: string;
-  tone: "warn" | "down";
+  tone: "warn" | "paper";
   conflict: string | undefined;
 };
 
@@ -136,6 +142,9 @@ function unreadableItem(id: string, sourcePath: string, problem: string): Hypoth
     hypothesisId: RESULT_UNAVAILABLE,
     title: RESULT_UNAVAILABLE,
     label: RESULT_UNAVAILABLE,
+    runId: RESULT_UNAVAILABLE,
+    product: RESULT_UNAVAILABLE,
+    pathContract: RESULT_UNAVAILABLE,
     passesH1: RESULT_UNAVAILABLE,
     configsTested: RESULT_UNAVAILABLE,
     configsPassed: RESULT_UNAVAILABLE,
@@ -388,6 +397,9 @@ export function parseHypothesisResultObject(
   const hypothesisId = readText(pick(value, ["hypothesis_id", "hypothesisId"]), 80);
   const title = readText(pick(value, ["title"]), 160);
   const label = readText(pick(value, ["label"]), 80);
+  const runId = readText(pick(value, ["run_id", "runId"]), 80);
+  const product = readText(pick(value, ["product"]), 80);
+  const pathContract = readText(pick(value, ["path_contract", "pathContract"]), 120);
   const passes = readPasses(pick(value, ["passes_h1", "passesH1"]));
   const tested = readCount(pick(value, ["configs_tested", "configsTested"]));
   const passed = readCount(pick(value, ["configs_passed", "configsPassed"]));
@@ -408,6 +420,9 @@ export function parseHypothesisResultObject(
   pushProblem(problems, "hypothesis_id", hypothesisId.problem);
   pushProblem(problems, "title", title.problem);
   pushProblem(problems, "label", label.problem);
+  pushProblem(problems, "run_id", runId.problem);
+  pushProblem(problems, "product", product.problem);
+  pushProblem(problems, "path_contract", pathContract.problem);
   pushProblem(problems, "passes_h1", passes.problem);
   pushProblem(problems, "configs_tested", tested.problem);
   pushProblem(problems, "configs_passed", passed.problem);
@@ -441,6 +456,9 @@ export function parseHypothesisResultObject(
     hypothesisId: hypothesisId.text,
     title: title.text,
     label: label.text,
+    runId: runId.text,
+    product: product.text,
+    pathContract: pathContract.text,
     passesH1: passes.text,
     configsTested: tested.text,
     configsPassed: passed.text,
@@ -492,7 +510,7 @@ export function presentPromotion(
     return {
       gate: "forbidden",
       badge: "forbidden",
-      tone: passesH1 === "no" ? "down" : "warn",
+      tone: "paper",
       conflict,
     };
   }
@@ -512,7 +530,7 @@ export function presentPromotion(
   };
 }
 
-export function hypothesisLabelTone(label: string): "warn" | "muted" | "info" {
+export function hypothesisLabelTone(label: string): "warn" | "muted" {
   if (label === RESULT_UNAVAILABLE) {
     return "muted";
   }
@@ -525,15 +543,16 @@ export function hypothesisLabelTone(label: string): "warn" | "muted" | "info" {
   ) {
     return "warn";
   }
-  return "info";
+  return "muted";
 }
 
-export function passesH1Tone(value: HypothesisPassesH1): "ok" | "down" | "muted" {
+/** `no` is an expected research outcome, so it stays muted rather than a fault red. */
+export function passesH1Tone(value: HypothesisPassesH1): "ok" | "muted" {
   switch (value) {
     case "yes":
       return "ok";
     case "no":
-      return "down";
+      return "muted";
     case RESULT_UNAVAILABLE:
       return "muted";
     default: {
@@ -541,6 +560,24 @@ export function passesH1Tone(value: HypothesisPassesH1): "ok" | "down" | "muted"
       throw new Error(`Unhandled passes_h1: ${String(exhaustive)}`);
     }
   }
+}
+
+const FULL_INSTANT = /^(\d{4}-\d{2}-\d{2}) \d{2}:\d{2}:\d{2} (?:CEST|CET)$/;
+
+/** Table date: Amsterdam calendar day. The full CEST/CET clock stays in the tooltip and detail. */
+export function shortWindowLabel(full: string): string {
+  if (full === RESULT_UNAVAILABLE) {
+    return full;
+  }
+  return full
+    .split(" – ")
+    .map((side) => {
+      if (side === RESULT_UNAVAILABLE) {
+        return side;
+      }
+      return FULL_INSTANT.exec(side)?.[1] ?? side;
+    })
+    .join(" – ");
 }
 
 export function promotionSummary(items: readonly HypothesisResultItem[]): {
@@ -697,6 +734,9 @@ function coerceItem(value: unknown, index: number): HypothesisResultItem {
     hypothesisId: coerceText(value.hypothesisId),
     title: coerceText(value.title),
     label: coerceText(value.label),
+    runId: coerceText(value.runId),
+    product: coerceText(value.product),
+    pathContract: coerceText(value.pathContract),
     passesH1: coercePasses(value.passesH1),
     configsTested: coerceText(value.configsTested),
     configsPassed: coerceText(value.configsPassed),

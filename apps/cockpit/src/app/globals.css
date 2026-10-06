@@ -944,6 +944,34 @@ body {
   overflow-x: auto;
 }
 
+/* Phone-width hypothesis table: keep the work-package column readable while
+   the rest of the nowrap row scrolls, and show the scrollbar (overlay
+   scrollbars otherwise hide the overflow). */
+.table-scroll-sticky-first {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+
+.table-scroll-sticky-first th:first-child,
+.table-scroll-sticky-first td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--panel);
+  box-shadow: 1px 0 0 var(--line);
+}
+
+.table-scroll-sticky-first th:first-child {
+  z-index: 3;
+  background: var(--panel-2);
+}
+
+/* paper-soft is translucent, so a selected sticky cell would show the
+   scrolled column underneath. Mix onto the opaque panel instead. */
+.table-scroll-sticky-first td.row-selected:first-child {
+  background: color-mix(in srgb, var(--paper) 18%, var(--panel));
+}
+
 table.dt {
   width: 100%;
   border-collapse: collapse;
@@ -1244,6 +1272,13 @@ table.dt tbody tr:last-child td {
 }
 .notice-ok strong {
   color: var(--ok);
+}
+.notice-gate {
+  border-left-color: var(--paper);
+  background: var(--paper-soft);
+}
+.notice-gate strong {
+  color: var(--paper);
 }
 
 .empty {

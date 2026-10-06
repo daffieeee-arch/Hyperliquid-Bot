@@ -91,3 +91,24 @@ def adverse_price(price: Decimal, *, side: str, max_decimals: int) -> Decimal:
     if result_quantum == quantum:
         return rounded
     return adverse_price(rounded, side=side, max_decimals=max_decimals)
+
+
+def protective_price(price: Decimal, *, side: str, max_decimals: int) -> Decimal:
+    """Move a limit ``price`` to a valid grid point that does not widen its band.
+
+    A BUY limit rounds down and a SELL limit rounds up, so the rounded limit
+    never admits a fill worse than the unrounded band allowed.
+    """
+
+    if side not in {"BUY", "SELL"}:
+        raise ValueError("side must be exactly BUY or SELL.")
+    quantum = price_quantum(price, max_decimals=max_decimals)
+    steps = price / quantum
+    rounding = ROUND_FLOOR if side == "BUY" else ROUND_CEILING
+    rounded = steps.to_integral_value(rounding=rounding) * quantum
+    if rounded <= 0:
+        raise ValueError("protective price rounded to a non-positive value.")
+    result_quantum = price_quantum(rounded, max_decimals=max_decimals)
+    if result_quantum == quantum:
+        return rounded
+    return protective_price(rounded, side=side, max_decimals=max_decimals)

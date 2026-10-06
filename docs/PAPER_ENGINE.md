@@ -78,26 +78,61 @@ Defaults, checked against official docs on 2026-10-06:
 | BTC `szDecimals` | 5 (`0.00001` lot, size rounded down) | [Perpetuals meta](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint/perpetuals) |
 | Price grid | at most 5 significant figures, at most `6 - szDecimals` decimal places; integers always allowed. Fills round adversely. | [Tick and lot size](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/tick-and-lot-size) |
 | Minimum order notional | $10, except a reduce-only close | [Error responses](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/error-responses) |
+| Market orders | an IOC limit at mid +/- slippage (SDK default 5%) | [Python SDK `market_open`](https://github.com/hyperliquid-dex/hyperliquid-python-sdk/blob/master/hyperliquid/exchange.py) |
+| TP/SL trigger and slippage | triggered by the mark price; market TP/SL have a 10% slippage tolerance | [TP/SL orders](https://hyperliquid.gitbook.io/hyperliquid-docs/trading/take-profit-and-stop-loss-orders-tp-sl) |
+
+PAPER defaults that are assumptions, not venue facts:
+
+| Input | Default | Why |
+| --- | --- | --- |
+| `latency_ns` | 250 ms | Placeholder for the decision-to-venue delay. Measure the VPS round trip and override. `0` requires `allow_zero_latency=True`. |
+| `entry_price_band_fraction` | 1% | Tight IOC limit for new risk, so hard limits hold at the worst admissible price. |
+| `exit_price_band_fraction` | 10% | The venue's TP/SL slippage tolerance; exits still close in a fast market. |
 
 A buy fills the ask and a sell fills the bid, worsened by the configured
 slippage fraction, then rounded to that grid. Quantity is capped by the
 displayed size (or the trade size when the book is not complete). The
 unfilled remainder is cancelled (IOC). Latency waits for a later event
-before that touch is eligible. While an order waits, the same target from
+before that touch is eligible. Every order is an IOC limit around the touch
+at decision time: entries use `entry_price_band_fraction`, exits
+`exit_price_band_fraction`, and the limit is rounded so it never widens the
+band. A fill beyond the limit does not happen; the order completes as
+`CANCELED` with `unfilled_reason: price_band` (other reasons: `no_touch`,
+`touch_size`). While an order waits, the same target from
 the strategy keeps it working, even when the order was rounded or clipped
 to the risk size; only a changed target cancels and replaces it. A kill
-flatten is zero-latency: it replaces a matching strategy order that is still
-waiting out its latency and fills on the same event. A missing side, a crossed book, or a missing
+flatten and a stop exit are zero-latency: they replace a matching strategy
+order that is still waiting out its latency and fill on the same event. A missing side, a crossed book, or a missing
 mark does not become a mid. New risk is rejected. Unrealized PnL stays null
 until a venue mark or a complete two-sided book exists.
 
 ## Risk
 
 - Per-trade size is `equity * risk_per_trade / stop_distance`, rounded down
-  to the lot. Hard max position and max notional reject instead of clipping.
+  to the lot, at the entry's limit price. Max notional, the `paper_risk`
+  hard limits and the risk-based size are all checked at that limit price,
+  the worst price the IOC can fill at, so they still hold after slippage.
+  Hard max position and max notional reject instead of clipping.
+- Every open position carries a stop at the effective stop distance
+  (`stop_distance_fraction * volatility_multiple`) from its average entry,
+  the same distance the size assumed. A `stop_set` line records it. When
+  the engine mark (the venue mark when fresher, else the BBO mid; the venue
+  triggers TP/SL on its mark price) crosses the stop, a `stop_triggered`
+  line is written and a zero-latency reduce-only IOC (`stop-exit`) closes the
+  position at the touch, retried on later events until flat. A gap fills at
+  the touch, beyond the stop: the loss is then larger than the risk budget.
+- After a stop-out the strategy cannot re-open the same direction
+  (`stop_lockout`, recorded once) until its target goes flat or reverses
+  (`stop_lockout_cleared`). A stop-out does not halt the engine.
 - Daily and weekly loss limits halt new entries and still allow a reduce-only
   flatten. An entry order that is still waiting out its latency when any kill
-  switch is set is cancelled (`halted`) instead of filled.
+  switch is set is cancelled (`halted`) instead of filled. A daily-loss halt
+  lifts at the next UTC day and a weekly-loss halt at the next ISO week
+  (`kill_switch` state `NONE`, reason `daily_loss_window_reset` /
+  `weekly_loss_window_reset`); the guard re-checks against the new baseline
+  at once. A late event stamped in an earlier window never rolls a window
+  back. Drawdown, stale-data and missing-price halts do not lift by
+  themselves.
 - Drawdown at or beyond `drawdown_kill_fraction` flattens and halts.
 - A gap longer than `stale_after_ns` flattens and halts. The caller can also
   pass an explicit clock (`on_clock`) so a quiet live feed trips the same
@@ -115,5 +150,10 @@ same strategy, risk, and fill path.
 
 - No queue position, no partial-book walk beyond the touch, no funding
   settlement, no venue reconciliation.
+- The stop is simulated by the engine, not resting on the venue: PAPER
+  triggers on its own mark and only when an event arrives.
+- An immediate exit (stop or kill flatten) takes a displayed size at most
+  once per event and retries on the next one. Other orders that fill on the
+  same quote within one event are not depleted against each other.
 - A create-only run does not recover an open position after a process restart.
 - Paper fills are not evidence of edge, capacity, or LIVE readiness.

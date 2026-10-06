@@ -7,6 +7,8 @@ does not submit venue orders. ``trading_mode`` must be PAPER.
 Risk sizing and portfolio gates come from ``hyperliquid_bot.paper_risk``.
 This module adds the max-position, max-notional, stale-data, and missing-price
 checks around that gate, and it turns a drawdown breach into a flatten halt.
+Every open position carries a stop at the same distance the sizing assumed,
+so the per-trade risk budget is an enforced bound rather than a nominal one.
 """
 
 from __future__ import annotations
@@ -53,6 +55,7 @@ from hyperliquid_bot.paper_engine.precision import (
     HYPERLIQUID_MIN_ORDER_NOTIONAL_USDC,
     floor_size,
     perp_max_price_decimals,
+    protective_price,
     size_increment,
 )
 from hyperliquid_bot.paper_engine.replay import load_hyperliquid_parquet_tape
@@ -74,17 +77,31 @@ from hyperliquid_bot.paper_risk import (
     PAPER_DEFAULT_STOP_DISTANCE_FRACTION,
     PaperOrderIntent,
     PaperRiskLimits,
+    effective_stop_distance_fraction,
     evaluate_paper_hard_limits,
     paper_snapshot_for_bounded_book,
     size_paper_notional_usdc,
     size_paper_quantity,
 )
 
+# A placeholder for the decision-to-venue delay, not a measurement. Measure
+# the VPS-to-Hyperliquid round trip and override it; zero needs an opt-in.
+DEFAULT_PAPER_LATENCY_NS: Final = 250_000_000
+# Orders are IOC limits around the decision touch, as on the venue: the
+# official Python SDK sends a market order as an IOC limit at mid +/- slippage.
+# Entries use a tight band so hard limits hold at the worst admissible price.
+DEFAULT_ENTRY_PRICE_BAND_FRACTION: Final = Decimal("0.01")
+# Exits use the venue's TP/SL market-order slippage tolerance (10%), so a
+# stop or flatten still closes in a fast market but not at any price.
+# https://hyperliquid.gitbook.io/hyperliquid-docs/trading/take-profit-and-stop-loss-orders-tp-sl
+DEFAULT_EXIT_PRICE_BAND_FRACTION: Final = Decimal("0.10")
+
 LIMITATIONS: Final = (
     "PAPER simulation only. No venue order was submitted.",
     "The shipped reference strategy is non-production and has no researched edge.",
     "Funding is not settled. PnL is simulated, not venue-reconciled.",
     "Fills are an IOC touch or trade-print model, not a queue-position model.",
+    "Stops trigger on the engine mark (venue mark when fresher, else BBO mid).",
     "run_id is create-only. This directory is not a resume checkpoint.",
     "D22-B, TESTNET, SHADOW, and LIVE are out of scope.",
 )
@@ -120,7 +137,11 @@ class PaperEngineConfig:
     starting_cash_usdc: Decimal = Decimal("100000")
     taker_fee_rate: Decimal = HYPERLIQUID_PERP_BASE_TAKER_FEE_RATE
     slippage_fraction: Decimal = Decimal("0")
-    latency_ns: int = 0
+    latency_ns: int = DEFAULT_PAPER_LATENCY_NS
+    # A decision and its fill on the same quote is optimistic; say so explicitly.
+    allow_zero_latency: bool = False
+    entry_price_band_fraction: Decimal = DEFAULT_ENTRY_PRICE_BAND_FRACTION
+    exit_price_band_fraction: Decimal = DEFAULT_EXIT_PRICE_BAND_FRACTION
     stale_after_ns: int = 15_000_000_000
     max_position_quantity: Decimal = Decimal("1")
     max_notional_usdc: Decimal = Decimal("100000")
@@ -147,6 +168,24 @@ class PaperEngineConfig:
         _require_non_negative(self.slippage_fraction, field_name="slippage_fraction")
         if type(self.latency_ns) is not int or self.latency_ns < 0:
             raise PaperEngineError("latency_ns must be a non-negative integer.")
+        if type(self.allow_zero_latency) is not bool:
+            raise PaperEngineError("allow_zero_latency must be a bool.")
+        if self.latency_ns == 0 and not self.allow_zero_latency:
+            raise PaperEngineError(
+                "latency_ns 0 fills a decision on its own quote; set allow_zero_latency=True "
+                "to accept that optimistic assumption."
+            )
+        for band_name, band in (
+            ("entry_price_band_fraction", self.entry_price_band_fraction),
+            ("exit_price_band_fraction", self.exit_price_band_fraction),
+        ):
+            _require_positive(band, field_name=band_name)
+            if band >= 1:
+                raise PaperEngineError(f"{band_name} must be a fraction below 1.")
+            if self.slippage_fraction >= band:
+                raise PaperEngineError(
+                    f"slippage_fraction must be below {band_name}, or no order could fill."
+                )
         if type(self.stale_after_ns) is not int or self.stale_after_ns <= 0:
             raise PaperEngineError("stale_after_ns must be a positive integer.")
         _require_positive(self.max_position_quantity, field_name="max_position_quantity")
@@ -156,6 +195,8 @@ class PaperEngineConfig:
         _require_positive(self.volatility_multiple, field_name="volatility_multiple")
         if self.volatility_multiple < 1:
             raise PaperEngineError("volatility_multiple must be >= 1.")
+        if self.stop_distance_fraction * self.volatility_multiple >= 1:
+            raise PaperEngineError("the effective stop distance must be a fraction below 1.")
         if type(self.sz_decimals) is not int:
             raise PaperEngineError("sz_decimals must be an integer.")
         perp_max_price_decimals(self.sz_decimals)
@@ -192,11 +233,14 @@ class _WorkingOrder:
     quantity: Decimal
     desired_quantity: Decimal
     reduce_only: bool
+    # IOC limit: a BUY never fills above it, a SELL never below it.
+    limit_price: Decimal
     eligible_received_ns: int
     decision_received_ns: int
     reason: str
     clipped: bool
-    kill_flatten: bool
+    # A kill flatten or stop exit: zero latency, never replaced by itself.
+    immediate_exit: bool
 
 
 class PaperEngine:
@@ -253,6 +297,15 @@ class PaperEngine:
         self._last_event_time: datetime | None = None
         self._working: _WorkingOrder | None = None
         self._next_order_number = 1
+        # Stop for the open position, set from its average entry when it opens.
+        self._stop_price: Decimal | None = None
+        self._stop_exit_pending = False
+        # +1 after a long was stopped, -1 after a short: blocks re-entering the
+        # same direction until the strategy's target goes flat or reverses.
+        self._stop_lockout = 0
+        # One immediate exit attempt per event: a partial fill must not take
+        # the same displayed size twice on the same quote.
+        self._exit_attempt_ns: int | None = None
         # state.json is rewritten on every event, so it keeps only the most
         # recent records. ledger.jsonl stays the complete audit trail.
         self._orders: deque[dict[str, object]] = deque(maxlen=STATE_RECENT_RECORD_LIMIT)
@@ -327,11 +380,13 @@ class PaperEngine:
         self._last_event_time = event.event_time_utc
         self._update_market(event)
         self._try_fill(event)
+        self._check_stop(event.received_utc_ns)
         self._mark_limits(event.event_time_utc)
         self._enforce_flat(event.received_utc_ns, event.event_time_utc)
         if self._kill is not KillSwitch.FLATTEN_HALT:
             self._apply_strategy(event)
             self._try_fill(event)
+            self._check_stop(event.received_utc_ns)
         self._mark_limits(event.event_time_utc)
         self._enforce_flat(event.received_utc_ns, event.event_time_utc)
         self._persist(event.event_time_utc)
@@ -474,14 +529,29 @@ class PaperEngine:
             self._halt_new("weekly_loss")
 
     def _roll_windows(self, event_time: datetime, equity: Decimal) -> None:
+        """Start a new UTC day / ISO week. A late, older event never rolls back."""
+
         day = event_time.date()
         week = event_time.isocalendar()[:2]
-        if day != self._day:
+        if day > self._day:
             self._day = day
             self._day_start = equity
-        if week != self._week:
+            self._release_halt("daily_loss")
+        if week > self._week:
             self._week = week
             self._week_start = equity
+            self._release_halt("weekly_loss")
+
+    def _release_halt(self, reason: str) -> None:
+        """Lift a loss-limit entry halt when its window ends; other halts stay."""
+
+        if self._kill is not KillSwitch.HALT_NEW or self._kill_reason != reason:
+            return
+        self._kill = KillSwitch.NONE
+        self._kill_reason = None
+        self._store.append(
+            {"type": "kill_switch", "state": self._kill.value, "reason": f"{reason}_window_reset"}
+        )
 
     def _apply_strategy(self, event: MarketEvent) -> None:
         target = self._strategy.on_market(event, self._view())
@@ -497,13 +567,81 @@ class PaperEngine:
                 desired=None,
             )
             return
+        if self._stop_exit_pending:
+            # The stop exit owns the position until it is flat.
+            return
         desired = _desired_order(self._position.position_quantity, target.target_quantity)
+        if self._stop_lockout != 0:
+            if _sign(target.target_quantity) == self._stop_lockout:
+                self._reject(
+                    reason="stop_lockout",
+                    detail=target.reason,
+                    received_utc_ns=event.received_utc_ns,
+                    desired=desired,
+                )
+                return
+            self._stop_lockout = 0
+            self._store.append(
+                {
+                    "type": "stop_lockout_cleared",
+                    "mode": "PAPER",
+                    "target_quantity": decimal_text(target.target_quantity),
+                    "received_utc_ns": event.received_utc_ns,
+                }
+            )
         self._submit_desired(
             desired,
             received_ns=event.received_utc_ns,
             reason=target.reason,
-            kill_latency=False,
+            immediate=False,
         )
+
+    def _check_stop(self, received_ns: int) -> None:
+        """Exit the open position once the mark crosses its stop.
+
+        Hyperliquid triggers TP/SL orders on the mark price; the engine uses
+        its own mark (the venue mark when fresher, else the BBO mid). The exit
+        is a zero-latency reduce-only IOC because a venue trigger does not
+        wait on our round trip. It is retried on later events until flat.
+        """
+
+        position = self._position.position_quantity
+        if position == 0 or self._stop_price is None:
+            return
+        if not self._stop_exit_pending:
+            marked = self._display_mark()
+            if marked is None:
+                return
+            mark, source = marked
+            crossed = mark <= self._stop_price if position > 0 else mark >= self._stop_price
+            if not crossed:
+                return
+            self._stop_exit_pending = True
+            self._stop_lockout = _sign(position)
+            self._store.append(
+                {
+                    "type": "stop_triggered",
+                    "mode": "PAPER",
+                    "stop_price": decimal_text(self._stop_price),
+                    "mark_price": decimal_text(mark),
+                    "mark_source": source,
+                    "position_quantity": decimal_text(position),
+                    "received_utc_ns": received_ns,
+                }
+            )
+        if self._kill is KillSwitch.FLATTEN_HALT:
+            # The kill flatten already closes the position.
+            return
+        self._attempt_immediate_exit(_flatten_desired(position), received_ns, "stop-exit")
+
+    def _attempt_immediate_exit(
+        self, desired: _DesiredOrder | None, received_ns: int, reason: str
+    ) -> None:
+        if self._exit_attempt_ns == received_ns:
+            return
+        self._exit_attempt_ns = received_ns
+        self._submit_desired(desired, received_ns=received_ns, reason=reason, immediate=True)
+        self._fill_working_from_book(received_ns)
 
     def _enforce_flat(self, received_ns: int, event_time: datetime) -> None:
         """Apply the kill switch. Runs after every limit check and stale-data halt."""
@@ -522,13 +660,7 @@ class PaperEngine:
                 self._cancel_working(received_ns, "flatten-already-flat")
             self._missing_flatten = False
             return
-        self._submit_desired(
-            desired,
-            received_ns=received_ns,
-            reason="kill-flatten",
-            kill_latency=True,
-        )
-        self._fill_working_from_book(received_ns)
+        self._attempt_immediate_exit(desired, received_ns, "kill-flatten")
 
     def _submit_desired(
         self,
@@ -536,7 +668,7 @@ class PaperEngine:
         *,
         received_ns: int,
         reason: str,
-        kill_latency: bool,
+        immediate: bool,
     ) -> None:
         if desired is None:
             self._last_block = None
@@ -547,13 +679,13 @@ class PaperEngine:
             self._working is not None
             and _same_desire(self._working, desired)
             and not (
-                kill_latency
-                and not self._working.kill_flatten
+                immediate
+                and not self._working.immediate_exit
                 and self._working.eligible_received_ns > received_ns
             )
         ):
-            # A kill flatten is zero-latency. A matching strategy order that is
-            # still waiting out its latency is replaced, not reused.
+            # A kill flatten or stop exit is zero-latency. A matching strategy
+            # order still waiting out its latency is replaced, not reused.
             return
         if self._working is not None:
             self._cancel_working(received_ns, "replaced")
@@ -581,6 +713,7 @@ class PaperEngine:
             )
             return
         touch_price, _touch_size = priced
+        limit_price = self._limit_price(desired, touch_price)
         quantity = floor_size(desired.quantity, self._size_increment)
         if quantity <= 0:
             self._reject(
@@ -592,7 +725,9 @@ class PaperEngine:
             return
         clipped = False
         if not desired.reduce_only:
-            sized = self._clip_entry(quantity, touch_price)
+            # Size and check hard limits at the limit price, the worst price
+            # this IOC can fill at, so they still hold after slippage.
+            sized = self._clip_entry(quantity, limit_price)
             if sized is None:
                 self._reject(
                     reason="risk_based_size",
@@ -611,7 +746,7 @@ class PaperEngine:
                     desired=desired,
                 )
                 return
-            projected_notional = abs(projected) * touch_price
+            projected_notional = abs(projected) * limit_price
             if projected_notional > self._config.max_notional_usdc:
                 self._reject(
                     reason="max_notional",
@@ -620,7 +755,9 @@ class PaperEngine:
                     desired=desired,
                 )
                 return
-            if quantity * touch_price < self._config.min_order_notional_usdc:
+            # The venue values an order at its limit price; a SELL limit is
+            # below the touch, so use whichever of the two is lower.
+            if quantity * min(touch_price, limit_price) < self._config.min_order_notional_usdc:
                 self._reject(
                     reason="min_notional",
                     detail=reason,
@@ -631,7 +768,7 @@ class PaperEngine:
             if not self._paper_risk_allows(
                 side=desired.side,
                 quantity=quantity,
-                price=touch_price,
+                price=limit_price,
                 reduce_only=False,
                 received_ns=received_ns,
                 desired=desired,
@@ -646,7 +783,7 @@ class PaperEngine:
             desired=desired,
         ):
             return
-        latency = 0 if kill_latency else self._config.latency_ns
+        latency = 0 if immediate else self._config.latency_ns
         client_order_id = f"{self._store.run_id}-{self._next_order_number:06d}"
         self._next_order_number += 1
         self._working = _WorkingOrder(
@@ -655,11 +792,12 @@ class PaperEngine:
             quantity=quantity,
             desired_quantity=desired.quantity,
             reduce_only=desired.reduce_only,
+            limit_price=limit_price,
             eligible_received_ns=received_ns + latency,
             decision_received_ns=received_ns,
             reason=reason,
             clipped=clipped,
-            kill_flatten=kill_latency,
+            immediate_exit=immediate,
         )
         self._missing_flatten = False
         self._last_block = None
@@ -671,12 +809,27 @@ class PaperEngine:
                 "side": desired.side,
                 "quantity": decimal_text(quantity),
                 "reduce_only": desired.reduce_only,
+                "limit_price": decimal_text(limit_price),
+                "touch_price": decimal_text(touch_price),
                 "reason": reason,
                 "clipped_to_risk_size": clipped,
                 "received_utc_ns": received_ns,
                 "venue_orders_submitted": False,
             }
         )
+
+    def _limit_price(self, desired: _DesiredOrder, touch_price: Decimal) -> Decimal:
+        band = (
+            self._config.exit_price_band_fraction
+            if desired.reduce_only
+            else self._config.entry_price_band_fraction
+        )
+        raw = (
+            touch_price * (Decimal(1) + band)
+            if desired.side == "BUY"
+            else touch_price * (Decimal(1) - band)
+        )
+        return protective_price(raw, side=desired.side, max_decimals=self._max_price_decimals)
 
     def _clip_entry(self, quantity: Decimal, price: Decimal) -> tuple[Decimal, bool] | None:
         equity = self._equity()
@@ -784,28 +937,42 @@ class PaperEngine:
         if working is None or event.received_utc_ns < working.eligible_received_ns:
             return
         if isinstance(event, BboEvent):
-            quote = None if not bbo_is_complete(event) else self._quote(working, event=event)
-            self._complete_ioc(working, quote, received_utc_ns=event.received_utc_ns)
+            quote, unfilled = (
+                self._quote(working, event=event) if bbo_is_complete(event) else (None, "no_touch")
+            )
+            self._complete_ioc(
+                working, quote, received_utc_ns=event.received_utc_ns, unfilled_reason=unfilled
+            )
             return
         if isinstance(event, TradeEvent) and not self._book_complete():
-            quote = self._quote(working, event=event)
-            self._complete_ioc(working, quote, received_utc_ns=event.received_utc_ns)
+            quote, unfilled = self._quote(working, event=event)
+            self._complete_ioc(
+                working, quote, received_utc_ns=event.received_utc_ns, unfilled_reason=unfilled
+            )
 
     def _fill_working_from_book(self, received_ns: int) -> None:
         working = self._working
         if working is None or received_ns < working.eligible_received_ns:
             return
         if self._bbo is not None and bbo_is_complete(self._bbo):
-            quote = self._quote(working, event=self._bbo)
-            self._complete_ioc(working, quote, received_utc_ns=received_ns)
+            quote, unfilled = self._quote(working, event=self._bbo)
+            self._complete_ioc(
+                working, quote, received_utc_ns=received_ns, unfilled_reason=unfilled
+            )
             return
         if self._trade is not None and not self._book_complete():
-            quote = self._quote(working, event=self._trade)
-            self._complete_ioc(working, quote, received_utc_ns=received_ns)
+            quote, unfilled = self._quote(working, event=self._trade)
+            self._complete_ioc(
+                working, quote, received_utc_ns=received_ns, unfilled_reason=unfilled
+            )
             return
         self._missing_flatten = True
 
-    def _quote(self, working: _WorkingOrder, *, event: BboEvent | TradeEvent) -> FillQuote | None:
+    def _quote(
+        self, working: _WorkingOrder, *, event: BboEvent | TradeEvent
+    ) -> tuple[FillQuote | None, str | None]:
+        """Price a fill, or say why the IOC does not fill: ``no_touch`` or ``price_band``."""
+
         source: FillSource
         if isinstance(event, BboEvent):
             if working.side == "BUY":
@@ -816,7 +983,7 @@ class PaperEngine:
         else:
             touch_price, touch_size = event.price, event.quantity
             source = "trade"
-        return quote_taker_fill(
+        quote = quote_taker_fill(
             side=working.side,
             quantity=working.quantity,
             touch_price=touch_price,
@@ -827,6 +994,16 @@ class PaperEngine:
             max_price_decimals=self._max_price_decimals,
             source=source,
         )
+        if quote is None:
+            return None, "no_touch"
+        beyond_limit = (
+            quote.price > working.limit_price
+            if working.side == "BUY"
+            else quote.price < working.limit_price
+        )
+        if beyond_limit:
+            return None, "price_band"
+        return quote, None
 
     def _complete_ioc(
         self,
@@ -834,10 +1011,12 @@ class PaperEngine:
         quote: FillQuote | None,
         *,
         received_utc_ns: int,
+        unfilled_reason: str | None,
     ) -> None:
         if self._working is not working:
             return
         filled = Decimal("0")
+        before = self._position.position_quantity
         if quote is not None:
             self._position = apply_fill(self._position, quote)
             filled = quote.quantity
@@ -858,15 +1037,19 @@ class PaperEngine:
             status = "CANCELED"
         elif filled < working.quantity:
             status = "PARTIALLY_FILLED"
+            unfilled_reason = "touch_size"
         else:
             status = "FILLED"
+            unfilled_reason = None
         order_record: dict[str, object] = {
             "client_order_id": working.client_order_id,
             "side": working.side,
             "quantity": decimal_text(working.quantity),
             "filled_quantity": decimal_text(filled),
             "reduce_only": working.reduce_only,
+            "limit_price": decimal_text(working.limit_price),
             "status": status,
+            "unfilled_reason": unfilled_reason,
             "reason": working.reason,
             "clipped_to_risk_size": working.clipped,
             "environment": "PAPER",
@@ -882,10 +1065,44 @@ class PaperEngine:
         self._order_count += 1
         self._store.append({"type": "order_completed", **order_record})
         self._working = None
+        if filled > 0:
+            self._update_stop_after_fill(before, received_utc_ns)
         if working.reduce_only and self._position.position_quantity != 0 and filled <= 0:
             self._missing_flatten = True
         else:
             self._missing_flatten = False
+
+    def _update_stop_after_fill(self, before: Decimal, received_ns: int) -> None:
+        """Place the stop when a position opens or grows; clear it when flat."""
+
+        after = self._position.position_quantity
+        if after == 0:
+            self._stop_price = None
+            self._stop_exit_pending = False
+            return
+        if abs(after) <= abs(before) and _sign(after) == _sign(before):
+            return
+        # The same distance the risk-based size assumed, so a stop-out loses
+        # about the per-trade risk budget (plus fees and gap slippage).
+        distance = effective_stop_distance_fraction(
+            stop_distance_fraction=self._config.stop_distance_fraction,
+            volatility_multiple=self._config.volatility_multiple,
+        )
+        average = self._position.average_entry_price
+        self._stop_price = (
+            average * (Decimal(1) - distance) if after > 0 else average * (Decimal(1) + distance)
+        )
+        self._store.append(
+            {
+                "type": "stop_set",
+                "mode": "PAPER",
+                "stop_price": decimal_text(self._stop_price),
+                "average_entry_price": decimal_text(average),
+                "position_quantity": decimal_text(after),
+                "stop_distance_fraction": decimal_text(distance),
+                "received_utc_ns": received_ns,
+            }
+        )
 
     def _cancel_working(self, received_ns: int, why: str) -> None:
         working = self._working
@@ -897,6 +1114,7 @@ class PaperEngine:
             "quantity": decimal_text(working.quantity),
             "filled_quantity": "0",
             "reduce_only": working.reduce_only,
+            "limit_price": decimal_text(working.limit_price),
             "status": "CANCELED",
             "reason": why,
             "received_utc_ns": received_ns,
@@ -984,6 +1202,15 @@ class PaperEngine:
             "production_eligible": self._strategy.production_eligible,
             "source_commit": self._config.source_commit,
             "image_digest": self._config.image_digest,
+            "latency_ns": self._config.latency_ns,
+            "entry_price_band_fraction": decimal_text(self._config.entry_price_band_fraction),
+            "exit_price_band_fraction": decimal_text(self._config.exit_price_band_fraction),
+            "stop_distance_fraction": decimal_text(
+                effective_stop_distance_fraction(
+                    stop_distance_fraction=self._config.stop_distance_fraction,
+                    volatility_multiple=self._config.volatility_multiple,
+                )
+            ),
             "created_at_utc": format_utc(self._created_at, field_name="created_at_utc"),
             "created_at_local": format_amsterdam(self._created_at, field_name="created_at_utc"),
             "timezone": TIMEZONE_NAME,
@@ -1021,6 +1248,7 @@ class PaperEngine:
             "fees_usdc": decimal_text(self._position.fees_usdc),
             "kill_switch": self._kill.value,
             "kill_reason": self._kill_reason,
+            **self._stop_projection(),
             "orders": list(self._orders),
             "fills": list(self._fills),
             "risk_rejections": list(self._rejections),
@@ -1031,6 +1259,14 @@ class PaperEngine:
             "open_order": None if self._working is None else self._working.client_order_id,
             "venue_orders_submitted": False,
             "resume": False,
+        }
+
+    def _stop_projection(self) -> dict[str, object]:
+        lockout = {1: "long", -1: "short"}.get(self._stop_lockout)
+        return {
+            "stop_price": None if self._stop_price is None else decimal_text(self._stop_price),
+            "stop_exit_pending": self._stop_exit_pending,
+            "stop_lockout": lockout,
         }
 
     def _health(self, observed_at: datetime) -> dict[str, object]:
@@ -1068,6 +1304,7 @@ class PaperEngine:
             "mark_price": None if marked is None else decimal_text(marked[0]),
             "mark_source": None if marked is None else marked[1],
             "stale": self._kill_reason == "stale_data",
+            **self._stop_projection(),
             "flatten_blocked_missing_price": self._missing_flatten,
             "ledger_write_failed": self._store.write_failed,
             "last_event_at_utc": (
@@ -1126,6 +1363,14 @@ def _same_desire(working: _WorkingOrder, desired: _DesiredOrder) -> bool:
         and working.desired_quantity == desired.quantity
         and working.reduce_only == desired.reduce_only
     )
+
+
+def _sign(value: Decimal) -> int:
+    if value > 0:
+        return 1
+    if value < 0:
+        return -1
+    return 0
 
 
 def _signed(side: str, quantity: Decimal) -> Decimal:

@@ -95,6 +95,10 @@ DEFAULT_ENTRY_PRICE_BAND_FRACTION: Final = Decimal("0.01")
 # stop or flatten still closes in a fast market but not at any price.
 # https://hyperliquid.gitbook.io/hyperliquid-docs/trading/take-profit-and-stop-loss-orders-tp-sl
 DEFAULT_EXIT_PRICE_BAND_FRACTION: Final = Decimal("0.10")
+# The venue book never sees a PAPER fill, so the size PAPER took at a price is
+# held back from that price for this long, then the level counts as refilled.
+# An assumption, not a measurement: makers usually re-quote within a few blocks.
+DEFAULT_TOUCH_REFILL_NS: Final = 1_000_000_000
 
 LIMITATIONS: Final = (
     "PAPER simulation only. No venue order was submitted.",
@@ -142,6 +146,7 @@ class PaperEngineConfig:
     allow_zero_latency: bool = False
     entry_price_band_fraction: Decimal = DEFAULT_ENTRY_PRICE_BAND_FRACTION
     exit_price_band_fraction: Decimal = DEFAULT_EXIT_PRICE_BAND_FRACTION
+    touch_refill_ns: int = DEFAULT_TOUCH_REFILL_NS
     stale_after_ns: int = 15_000_000_000
     max_position_quantity: Decimal = Decimal("1")
     max_notional_usdc: Decimal = Decimal("100000")
@@ -186,6 +191,9 @@ class PaperEngineConfig:
                 raise PaperEngineError(
                     f"slippage_fraction must be below {band_name}, or no order could fill."
                 )
+        if type(self.touch_refill_ns) is not int or self.touch_refill_ns <= 0:
+            # Zero would let two fills on one quote both take its full size.
+            raise PaperEngineError("touch_refill_ns must be a positive integer.")
         if type(self.stale_after_ns) is not int or self.stale_after_ns <= 0:
             raise PaperEngineError("stale_after_ns must be a positive integer.")
         _require_positive(self.max_position_quantity, field_name="max_position_quantity")
@@ -247,6 +255,14 @@ class _WorkingOrder:
     clipped: bool
     # A kill flatten or stop exit: zero latency, never replaced by itself.
     immediate_exit: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _Taken:
+    """Size PAPER took at one book price, held back until ``until_ns``."""
+
+    quantity: Decimal
+    until_ns: int
 
 
 class PaperEngine:
@@ -311,16 +327,18 @@ class PaperEngine:
         # only uses a trade that arrived after the stop was set.
         self._trade_count = 0
         self._stop_set_trade_count: int | None = None
-        self._stop_set_event_time: datetime | None = None
+        # Venue time of the last trade before the stop was set. A print older
+        # than that is a re-delivered one; comparing within the trade feed
+        # avoids clock skew between feeds.
+        self._stop_trade_floor: datetime | None = None
         self._stop_exit_pending = False
         # +1 after a long was stopped, -1 after a short: blocks re-entering the
         # same direction until the strategy's target goes flat or reverses.
         self._stop_lockout = 0
-        # Size PAPER already took at the touch. The size left there is the
-        # displayed size minus this. A BBO side resets when its price changes,
-        # a trade print on the next trade.
-        self._bid_taken = Decimal("0")
-        self._ask_taken = Decimal("0")
+        # Size PAPER took per (order side, book price), held back from the
+        # displayed size there for touch_refill_ns. A trade print is used up
+        # until the next print.
+        self._book_taken: dict[tuple[str, Decimal], _Taken] = {}
         self._trade_taken = Decimal("0")
         # state.json is rewritten on every event, so it keeps only the most
         # recent records. ledger.jsonl stays the complete audit trail.
@@ -486,14 +504,6 @@ class PaperEngine:
 
     def _update_market(self, event: MarketEvent) -> None:
         if isinstance(event, BboEvent):
-            # PAPER fills never move the real book. Had the fill been real, the
-            # level would still be short what PAPER took while its price stays
-            # at the touch, so only a new price on a side counts as fresh.
-            previous = self._bbo
-            if previous is None or previous.bid_price != event.bid_price:
-                self._bid_taken = Decimal("0")
-            if previous is None or previous.ask_price != event.ask_price:
-                self._ask_taken = Decimal("0")
             self._bbo = event
             if bbo_is_complete(event):
                 mid = bbo_mid(event)
@@ -648,11 +658,12 @@ class PaperEngine:
                 marked is None
                 and trade is not None
                 and self._stop_set_trade_count is not None
-                and self._stop_set_event_time is not None
                 and self._trade_count > self._stop_set_trade_count
                 # A print re-delivered after a reconnect carries its old venue
-                # time; only a print no older than the stop counts.
-                and trade.event_time_utc >= self._stop_set_event_time
+                # time; it is older than the last print before the stop.
+                and (
+                    self._stop_trade_floor is None or trade.event_time_utc >= self._stop_trade_floor
+                )
             ):
                 # No mark at all (one-sided book, no venue mark): a trade printed
                 # since the stop was set still protects the position. This is an
@@ -685,9 +696,9 @@ class PaperEngine:
     def _attempt_immediate_exit(
         self, desired: _DesiredOrder | None, received_ns: int, reason: str
     ) -> None:
-        if desired is not None and self._touch_used_up(desired.side):
+        if desired is not None and self._touch_used_up(desired.side, received_ns):
             # Our own earlier fill took what this quote shows (for example a
-            # partial exit): wait for new size or a new price rather than take
+            # partial exit): wait for a refill or a new price rather than take
             # it twice. A strategy order must not fill meanwhile: cancel it.
             self._exit_waiting_for_quote = True
             if self._working is not None and not self._working.immediate_exit:
@@ -704,23 +715,34 @@ class PaperEngine:
             return self._bbo
         return self._trade
 
-    def _touch(
-        self, event: BboEvent | TradeEvent, side: str
-    ) -> tuple[Decimal | None, Decimal | None, Decimal]:
-        """Price, displayed size, and size already taken on ``side`` of a quote."""
+    def _available(
+        self, event: BboEvent | TradeEvent, side: str, received_ns: int
+    ) -> tuple[Decimal | None, Decimal | None, bool]:
+        """Touch price, the size PAPER may still take, and whether its own fills used it up.
 
+        A displayed size of zero is not "used up": that is a missing touch.
+        """
+
+        price, size = _displayed(event, side)
+        if price is None or size is None:
+            return price, size, False
         if isinstance(event, TradeEvent):
-            return event.price, event.quantity, self._trade_taken
-        if side == "BUY":
-            return event.ask_price, event.ask_size, self._ask_taken
-        return event.bid_price, event.bid_size, self._bid_taken
+            taken = self._trade_taken
+        else:
+            held = self._book_taken.get((side, price))
+            taken = Decimal("0") if held is None or held.until_ns <= received_ns else held.quantity
+        if taken <= 0:
+            return price, size, False
+        left = size - taken
+        if left <= 0:
+            return price, Decimal("0"), True
+        return price, left, False
 
-    def _touch_used_up(self, side: str) -> bool:
+    def _touch_used_up(self, side: str, received_ns: int) -> bool:
         event = self._current_touch_event()
         if event is None:
             return False
-        _price, size, taken = self._touch(event, side)
-        return size is not None and taken > 0 and size - taken <= 0
+        return self._available(event, side, received_ns)[2]
 
     def _enforce_flat(self, received_ns: int, event_time: datetime) -> None:
         """Apply the kill switch. Runs after every limit check and stale-data halt."""
@@ -792,15 +814,6 @@ class PaperEngine:
             )
             return
         touch_price, _touch_size = priced
-        if not immediate and self._touch_used_up(desired.side):
-            # PAPER already took what this quote shows; wait for new size.
-            self._reject(
-                reason="touch_consumed",
-                detail=reason,
-                received_utc_ns=received_ns,
-                desired=desired,
-            )
-            return
         limit_price = self._limit_price(desired, touch_price)
         # The notional a fill can reach. A BUY limit caps it; a SELL limit only
         # floors the price, so a short gets the same cushion above the touch
@@ -1016,7 +1029,7 @@ class PaperEngine:
         event = self._current_touch_event()
         if event is None:
             return None
-        price, size, _taken = self._touch(event, side)
+        price, size = _displayed(event, side)
         if price is None or size is None:
             return None
         return price, size
@@ -1036,7 +1049,8 @@ class PaperEngine:
             return
         event = self._current_touch_event()
         if event is None:
-            self._missing_flatten = working.reduce_only
+            # Only a kill flatten or stop exit fills from the book here.
+            self._missing_flatten = True
             return
         self._fill_against(working, event, received_ns=received_ns)
 
@@ -1048,25 +1062,26 @@ class PaperEngine:
         if isinstance(event, BboEvent) and not bbo_is_complete(event):
             quote, unfilled = None, "no_touch"
         else:
-            quote, unfilled = self._quote(working, event=event)
-        self._complete_ioc(working, quote, received_utc_ns=received_ns, unfilled_reason=unfilled)
+            quote, unfilled = self._quote(working, event=event, received_ns=received_ns)
+        self._complete_ioc(
+            working, quote, event=event, received_utc_ns=received_ns, unfilled_reason=unfilled
+        )
 
     def _quote(
-        self, working: _WorkingOrder, *, event: BboEvent | TradeEvent
+        self, working: _WorkingOrder, *, event: BboEvent | TradeEvent, received_ns: int
     ) -> tuple[FillQuote | None, str | None]:
         """Price a fill, or say why the IOC does not fill.
 
-        ``no_touch``: no price on that side. ``touch_consumed``: an earlier fill
-        already took the displayed size of this quote. ``price_band``: the
-        fill would be beyond the order's limit.
+        ``no_touch``: no price on that side. ``touch_consumed``: PAPER's own
+        fills already took the displayed size at that price (see
+        ``touch_refill_ns``). ``price_band``: the fill would be beyond the
+        order's limit.
         """
 
         source: FillSource = "bbo" if isinstance(event, BboEvent) else "trade"
-        touch_price, touch_size, taken = self._touch(event, working.side)
-        if touch_size is not None and taken > 0:
-            touch_size = touch_size - taken
-            if touch_size <= 0:
-                return None, "touch_consumed"
+        touch_price, touch_size, used_up = self._available(event, working.side, received_ns)
+        if used_up:
+            return None, "touch_consumed"
         quote = quote_taker_fill(
             side=working.side,
             quantity=working.quantity,
@@ -1094,6 +1109,7 @@ class PaperEngine:
         working: _WorkingOrder,
         quote: FillQuote | None,
         *,
+        event: BboEvent | TradeEvent,
         received_utc_ns: int,
         unfilled_reason: str | None,
     ) -> None:
@@ -1104,7 +1120,7 @@ class PaperEngine:
         if quote is not None:
             self._position = apply_fill(self._position, quote)
             filled = quote.quantity
-            self._take_touch(quote)
+            self._take_touch(event, quote, received_utc_ns)
             fill_record: dict[str, object] = {
                 "client_order_id": working.client_order_id,
                 "side": quote.side,
@@ -1161,13 +1177,27 @@ class PaperEngine:
             and unfilled_reason == "no_touch"
         )
 
-    def _take_touch(self, quote: FillQuote) -> None:
-        if quote.source == "trade":
+    def _take_touch(self, event: BboEvent | TradeEvent, quote: FillQuote, received_ns: int) -> None:
+        if isinstance(event, TradeEvent):
             self._trade_taken += quote.quantity
-        elif quote.side == "BUY":
-            self._ask_taken += quote.quantity
-        else:
-            self._bid_taken += quote.quantity
+            return
+        price, _size = _displayed(event, quote.side)
+        if price is None:
+            raise PaperEngineError("a book fill must have a touch price.")
+        key = (quote.side, price)
+        held = self._book_taken.get(key)
+        taken = quote.quantity
+        if held is not None and held.until_ns > received_ns:
+            taken += held.quantity
+        # Keep only what is still held back, so the map stays small.
+        self._book_taken = {
+            other: entry
+            for other, entry in self._book_taken.items()
+            if entry.until_ns > received_ns
+        }
+        self._book_taken[key] = _Taken(
+            quantity=taken, until_ns=received_ns + self._config.touch_refill_ns
+        )
 
     def _update_stop_after_fill(self, before: Decimal, received_ns: int) -> None:
         """Place the stop when a position opens or grows; clear it when flat."""
@@ -1176,7 +1206,7 @@ class PaperEngine:
         if after == 0:
             self._stop_price = None
             self._stop_set_trade_count = None
-            self._stop_set_event_time = None
+            self._stop_trade_floor = None
             self._stop_exit_pending = False
             self._exit_waiting_for_quote = False
             return
@@ -1193,7 +1223,7 @@ class PaperEngine:
             average * (Decimal(1) - distance) if after > 0 else average * (Decimal(1) + distance)
         )
         self._stop_set_trade_count = self._trade_count
-        self._stop_set_event_time = self._last_event_time
+        self._stop_trade_floor = None if self._trade is None else self._trade.event_time_utc
         self._store.append(
             {
                 "type": "stop_set",
@@ -1307,6 +1337,7 @@ class PaperEngine:
             "latency_ns": self._config.latency_ns,
             "entry_price_band_fraction": decimal_text(self._config.entry_price_band_fraction),
             "exit_price_band_fraction": decimal_text(self._config.exit_price_band_fraction),
+            "touch_refill_ns": self._config.touch_refill_ns,
             "stop_distance_fraction": decimal_text(
                 effective_stop_distance_fraction(
                     stop_distance_fraction=self._config.stop_distance_fraction,
@@ -1458,6 +1489,16 @@ def _flatten_desired(position: Decimal) -> _DesiredOrder | None:
     if position < 0:
         return _DesiredOrder("BUY", abs(position), True)
     return None
+
+
+def _displayed(event: BboEvent | TradeEvent, side: str) -> tuple[Decimal | None, Decimal | None]:
+    """Price and displayed size a ``side`` order takes: the ask, the bid, or a print."""
+
+    if isinstance(event, TradeEvent):
+        return event.price, event.quantity
+    if side == "BUY":
+        return event.ask_price, event.ask_size
+    return event.bid_price, event.bid_size
 
 
 def _same_desire(working: _WorkingOrder, desired: _DesiredOrder) -> bool:

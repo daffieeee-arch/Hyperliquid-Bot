@@ -88,6 +88,7 @@ PAPER defaults that are assumptions, not venue facts:
 | `latency_ns` | 250 ms | Placeholder for the decision-to-venue delay. Measure the VPS round trip and override. `0` requires `allow_zero_latency=True`. |
 | `entry_price_band_fraction` | 1% | Tight IOC limit for new risk, so hard limits hold at the worst admissible price. |
 | `exit_price_band_fraction` | 10% | The venue's TP/SL slippage tolerance; exits still close in a fast market. |
+| `touch_refill_ns` | 1 s | How long size PAPER took at a price stays missing from that price before the level counts as refilled. Must be positive. |
 
 A buy fills the ask and a sell fills the bid, worsened by the configured
 slippage fraction, then rounded to that grid. Quantity is capped by the
@@ -100,15 +101,18 @@ band. A fill beyond the limit does not happen; the order completes as
 `CANCELED` with `unfilled_reason: price_band` (other reasons: `no_touch`,
 `touch_size`, `touch_consumed`).
 
-Displayed size is used up per price level at the touch. PAPER fills do not
-move the real book, so had a fill been real, that level would still be short
-what PAPER took: while a BBO side keeps its price, the size left there is the
-displayed size minus what PAPER already took. A new price on that side is a
-new level with its full displayed size. A trade print stays used up until
-the next print. A strategy order on a used-up quote is rejected with
-`touch_consumed` (recorded once while the block lasts). A stop exit or kill
-flatten on a used-up quote waits for new size or a new price, cancels a
-strategy order meanwhile, and `health.json` shows
+PAPER fills do not move the real book, so the feed keeps showing size PAPER
+already took. For `touch_refill_ns` after a fill, the size PAPER took at a
+price on one side is held back from the displayed size at that price; more
+fills there add to it and restart the timer. A level that leaves the touch
+and comes back in that time is still short. After it, the level counts as
+refilled by other makers. A price PAPER has not taken from offers its full
+displayed size. A trade print stays used up until the next print. An IOC
+that meets a used-up level completes as `CANCELED` with
+`unfilled_reason: touch_consumed`; a strategy order is checked against the
+quote it would fill on, after its latency, not the one it was decided on. A
+stop exit or kill flatten on a used-up level waits for new size, a new price,
+or the refill, cancels a strategy order meanwhile, and `health.json` shows
 `exit_waiting_for_quote: true`.
 
 While an order waits, the same target from the strategy keeps it working,
@@ -136,9 +140,12 @@ PnL stays null until a venue mark or a complete two-sided book exists.
   triggers TP/SL on its mark price) crosses the stop, a `stop_triggered`
   line is written and a zero-latency reduce-only IOC (`stop-exit`) closes the
   position at the touch, retried on later quotes until flat. With no mark at
-  all (one-sided book, no venue mark) a trade printed since the stop was set
-  triggers it; that is an exit trigger only, and equity still treats the
-  price as missing. The config refuses a stop distance not wider than
+  all (one-sided book, no venue mark) a trade processed after the stop was
+  set triggers it, unless its venue time is older than the last print before
+  the stop (a print re-delivered after a reconnect). Prints are compared
+  with prints, so clock skew between feeds does not hide a real one. That is
+  an exit trigger only, and equity still treats the price as missing. The
+  config refuses a stop distance not wider than
   `slippage_fraction`, which would stop out every fill at once. Choose it
   wider than half the spread plus slippage as well; the spread cannot be
   checked up front, and a narrower stop fires on the first mark after a
@@ -176,8 +183,8 @@ same strategy, risk, and fill path.
   settlement, no venue reconciliation.
 - The stop is simulated by the engine, not resting on the venue: PAPER
   triggers on its own mark and only when an event arrives.
-- Depletion is tracked at the touch only; the book behind it is not
-  modelled. A level that leaves the touch and comes back (a flickering
-  quote) is treated as new, so its full displayed size is available again.
+- Depletion is a fixed refill time at the touch only. The book behind the
+  touch is not modelled: an exit on a used-up level waits instead of walking
+  to the next level, and a refill is assumed, not observed.
 - A create-only run does not recover an open position after a process restart.
 - Paper fills are not evidence of edge, capacity, or LIVE readiness.

@@ -34,7 +34,10 @@ from hyperliquid_bot.paper_engine import (
     quote_taker_fill,
     read_health,
 )
-from hyperliquid_bot.paper_engine.engine import DEFAULT_PAPER_LATENCY_NS
+from hyperliquid_bot.paper_engine.engine import (
+    DEFAULT_PAPER_LATENCY_NS,
+    DEFAULT_TOUCH_REFILL_NS,
+)
 from hyperliquid_bot.paper_engine.errors import PaperEngineError
 from hyperliquid_bot.paper_engine.execution import FillQuote, PositionState, apply_fill
 from hyperliquid_bot.paper_engine.precision import adverse_price, protective_price
@@ -701,6 +704,13 @@ def test_latency_defaults_above_zero_and_zero_needs_an_opt_in() -> None:
     assert _instant().latency_ns == 0
 
 
+def test_touch_refill_must_be_positive() -> None:
+    assert PaperEngineConfig().touch_refill_ns == DEFAULT_TOUCH_REFILL_NS
+    for value in (0, -1):
+        with pytest.raises(PaperEngineError, match="touch_refill_ns"):
+            _instant(touch_refill_ns=value)
+
+
 def test_config_keeps_slippage_inside_the_bands_and_the_stop_below_one() -> None:
     with pytest.raises(PaperEngineError, match="entry_price_band_fraction"):
         _instant(slippage_fraction=Decimal("0.01"))
@@ -946,14 +956,58 @@ def test_stop_fallback_follows_processing_order_not_receive_stamps(tmp_path: Pat
 
 
 def test_stop_ignores_an_old_print_redelivered_after_the_stop(tmp_path: Path) -> None:
-    engine = _engine(tmp_path, "redeliver", strategy=ScriptedStrategy((Decimal("0.1"),)))
-    engine.on_event(_bbo(ns=2_000_000, bid="100000", ask="100001", ordinal=1))
-    engine.on_event(_bbo(ns=3_000_000, bid="99990", ask=None, ask_size=None, ordinal=2))
-    # A reconnect snapshot re-sends a print from before the position opened.
-    engine.on_event(_trade(ns=4_000_000, price="97000", size="0.5", ordinal=3, event_time=CREATED))
-    engine.close()
+    engine = _engine(
+        tmp_path, "redeliver", strategy=ScriptedStrategy((Decimal("0"), Decimal("0.1")))
+    )
+    one_ms = CREATED + timedelta(milliseconds=1)
+    engine.on_event(_trade(ns=1_000_000, price="100000", size="0.5", ordinal=1, event_time=one_ms))
+    engine.on_event(_bbo(ns=2_000_000, bid="100000", ask="100001", ordinal=2))
+    engine.on_event(_bbo(ns=3_000_000, bid="99990", ask=None, ask_size=None, ordinal=3))
+    # A reconnect snapshot re-sends a print older than the last one before the stop.
+    engine.on_event(_trade(ns=4_000_000, price="97000", size="0.5", ordinal=4, event_time=CREATED))
     assert engine.position_quantity == Decimal("0.1")
     assert not [row for row in _ledger(tmp_path / "redeliver") if row["type"] == "stop_triggered"]
+    # A print no older than that one is new and still triggers the stop.
+    engine.on_event(_trade(ns=5_000_000, price="97000", size="0.5", ordinal=5, event_time=one_ms))
+    engine.close()
+    assert engine.position_quantity == Decimal("0")
+
+
+def test_stop_fallback_is_not_blocked_by_clock_skew_between_feeds(tmp_path: Path) -> None:
+    # The entry fills on a BBO stamped 10 s ahead of the trade feed. The
+    # fallback compares prints with prints, so a real later print still counts.
+    engine = _engine(
+        tmp_path, "skewfeed", strategy=ScriptedStrategy((Decimal("0"), Decimal("0.1")))
+    )
+    engine.on_event(_trade(ns=1_000_000, price="100000", size="0.5", ordinal=1, event_time=CREATED))
+    ahead = BboEvent(
+        venue=VENUE,
+        instrument_id=INSTRUMENT,
+        event_time_utc=CREATED + timedelta(seconds=10),
+        received_utc_ns=2_000_000,
+        source_event_id="bbo-2",
+        bid_price=Decimal("100000"),
+        bid_size=Decimal("1"),
+        ask_price=Decimal("100001"),
+        ask_size=Decimal("1"),
+        message_ordinal=2,
+    )
+    engine.on_event(ahead)
+    assert engine.position_quantity == Decimal("0.1")
+    engine.on_event(_bbo(ns=3_000_000, bid="99990", ask=None, ask_size=None, ordinal=3))
+    engine.on_event(
+        _trade(
+            ns=4_000_000,
+            price="97000",
+            size="0.5",
+            ordinal=4,
+            event_time=CREATED + timedelta(seconds=5),
+        )
+    )
+    engine.close()
+    assert engine.position_quantity == Decimal("0")
+    triggered = [row for row in _ledger(tmp_path / "skewfeed") if row["type"] == "stop_triggered"]
+    assert triggered[0]["mark_source"] == "last_trade"
 
 
 def test_unchanged_side_stays_used_up_and_the_wait_is_visible(tmp_path: Path) -> None:
@@ -995,20 +1049,71 @@ def test_new_size_at_the_same_price_offers_only_the_untaken_part(tmp_path: Path)
     assert [row["filled_quantity"] for row in exits] == ["0.04", "0.01", "0.03"]
 
 
-def test_strategy_order_on_a_used_up_quote_is_one_recorded_block(tmp_path: Path) -> None:
+def test_taken_size_is_held_back_until_the_level_refills(tmp_path: Path) -> None:
+    # Within touch_refill_ns the unchanged 0.05 BTC ask PAPER already bought
+    # is not offered again; after it, the level counts as refilled.
     targets = tuple(Decimal(text) for text in ("0.05", "0", "0.05", "0.05", "0.05"))
-    engine = _engine(tmp_path, "usedquote", strategy=ScriptedStrategy(targets))
-    for index in range(len(targets)):
-        engine.on_event(
-            _bbo(ns=index * 1_000_000, bid="99999", ask="100000", ask_size="0.05", ordinal=index)
-        )
+    engine = _engine(tmp_path, "refill01", strategy=ScriptedStrategy(targets))
+    for index, ns in enumerate((0, 1_000_000, 2_000_000, 999_999_999, 1_000_000_000)):
+        engine.on_event(_bbo(ns=ns, bid="99999", ask="100000", ask_size="0.05", ordinal=index))
     engine.close()
-    state = _state(engine)
+    assert engine.position_quantity == Decimal("0.05")
+    orders = _objects(_state(engine)["orders"])
+    assert [(row["side"], row["status"], row["unfilled_reason"]) for row in orders] == [
+        ("BUY", "FILLED", None),
+        ("SELL", "FILLED", None),
+        ("BUY", "CANCELED", "touch_consumed"),
+        ("BUY", "CANCELED", "touch_consumed"),
+        ("BUY", "FILLED", None),
+    ]
+
+
+def test_a_flickering_level_stays_short_until_it_refills(tmp_path: Path) -> None:
+    # The bid leaves the touch and comes back at once: still the same level.
+    engine = _engine(tmp_path, "flicker01", strategy=ScriptedStrategy((Decimal("0.1"),)))
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001", ordinal=1))
+    engine.on_event(_bbo(ns=1_000_000, bid="97990", ask="97991", bid_size="0.04", ordinal=2))
+    assert engine.position_quantity == Decimal("0.06")
+    engine.on_event(_bbo(ns=2_000_000, bid="97985", ask="97991", bid_size="0.01", ordinal=3))
+    assert engine.position_quantity == Decimal("0.05")
+    engine.on_event(_bbo(ns=3_000_000, bid="97990", ask="97991", bid_size="0.04", ordinal=4))
+    assert engine.position_quantity == Decimal("0.05")
+    assert read_health(engine.health_path)["exit_waiting_for_quote"] is True
+    # Once touch_refill_ns has passed, the level counts as refilled.
+    engine.on_event(_bbo(ns=1_001_000_000, bid="97990", ask="97991", bid_size="0.05", ordinal=5))
+    engine.close()
     assert engine.position_quantity == Decimal("0")
-    assert [row["side"] for row in _objects(state["orders"])] == ["BUY", "SELL"]
-    rejections = _objects(state["risk_rejections"])
-    assert [(row["reason"], row["received_utc_ns"]) for row in rejections] == [
-        ("touch_consumed", 2_000_000)
+    assert read_health(engine.health_path)["exit_waiting_for_quote"] is False
+
+
+def test_order_decided_on_a_used_up_quote_fills_on_a_later_fresh_one(tmp_path: Path) -> None:
+    # With latency the order fills against a later quote, so a used-up quote
+    # at decision time does not block it.
+    targets = tuple(Decimal(text) for text in ("0.05", "0.05", "0", "0", "0.05"))
+    engine = _engine(
+        tmp_path,
+        "laterfill",
+        strategy=_SilentAfterTargets(targets),
+        config=PaperEngineConfig(latency_ns=250_000_000),
+    )
+    for index, (ns, ask) in enumerate(
+        (
+            (0, "100000"),
+            (300_000_000, "100000"),
+            (310_000_000, "100000"),
+            (600_000_000, "100000"),
+            (610_000_000, "100000"),
+            (900_000_000, "100002"),
+        )
+    ):
+        engine.on_event(_bbo(ns=ns, bid="99999", ask=ask, ask_size="0.05", ordinal=index))
+    engine.close()
+    assert engine.position_quantity == Decimal("0.05")
+    orders = _objects(_state(engine)["orders"])
+    assert [(row["side"], row["status"]) for row in orders] == [
+        ("BUY", "FILLED"),
+        ("SELL", "FILLED"),
+        ("BUY", "FILLED"),
     ]
 
 

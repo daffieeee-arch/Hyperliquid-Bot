@@ -54,6 +54,7 @@ from hyperliquid_bot.binance_public_research import (
     BinanceTransportError,
     WebSocketConnection,
     _argument_parser,
+    _cancel_and_wait,
     _combined_stream,
     _config_for_duration,
     _connection_factory,
@@ -1297,6 +1298,43 @@ async def test_receive_or_stop_does_not_swallow_a_cancellation_of_its_caller() -
     with pytest.raises(asyncio.CancelledError):
         await caller
     assert caller.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_cancel_and_wait_reaps_every_child_before_a_caller_cancellation() -> None:
+    # The caller is cancelled while the first child unwinds. Every child must
+    # still be cancelled and finished before that cancellation propagates, so
+    # none is left pending or running past its owner.
+    caller: asyncio.Task[None] | None = None
+    events: list[str] = []
+
+    async def slow_to_unwind(name: str) -> None:
+        try:
+            await asyncio.get_running_loop().create_future()
+        except asyncio.CancelledError:
+            events.append(f"{name} cancelled")
+            if name == "first":
+                assert caller is not None
+                caller.cancel()
+            for _ in range(3):
+                await asyncio.sleep(0)
+            events.append(f"{name} finished")
+            raise
+
+    first = asyncio.create_task(slow_to_unwind("first"))
+    second = asyncio.create_task(slow_to_unwind("second"))
+    await asyncio.sleep(0)
+    caller = asyncio.create_task(_cancel_and_wait(first, second))
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+    assert caller.cancelled()
+    assert first.cancelled() and second.cancelled()
+    assert sorted(events) == [
+        "first cancelled",
+        "first finished",
+        "second cancelled",
+        "second finished",
+    ]
 
 
 @pytest.mark.asyncio

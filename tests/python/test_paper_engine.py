@@ -578,7 +578,19 @@ def test_state_keeps_recent_records_and_full_counts(tmp_path: Path) -> None:
     targets = tuple(Decimal("0.01") if index % 2 == 0 else Decimal("0") for index in range(240))
     engine = _engine(tmp_path, "bounded01", strategy=ScriptedStrategy(targets))
     for index in range(240):
-        engine.on_event(_bbo(ns=index * 1_000_000, bid="99999", ask="100000", ordinal=index + 1))
+        # A fresh displayed size on every quote, as on a live book; an
+        # unchanged quote would stay used up by the earlier PAPER fills.
+        size = str(index + 1)
+        engine.on_event(
+            _bbo(
+                ns=index * 1_000_000,
+                bid="99999",
+                ask="100000",
+                bid_size=size,
+                ask_size=size,
+                ordinal=index + 1,
+            )
+        )
     engine.close()
     state = _state(engine)
     assert state["schema"] == "paper-engine-state-v2"
@@ -880,9 +892,54 @@ def test_short_entry_is_sized_at_the_same_risk_price_as_a_long(tmp_path: Path) -
     assert engine.position_quantity == Decimal("-0.12376")
 
 
-def test_config_rejects_a_stop_inside_the_entry_band() -> None:
-    with pytest.raises(PaperEngineError, match="exceed the entry band"):
-        _instant(stop_distance_fraction=Decimal("0.01"))
+def test_config_rejects_a_stop_not_wider_than_slippage() -> None:
+    with pytest.raises(PaperEngineError, match="exceed slippage_fraction"):
+        _instant(stop_distance_fraction=Decimal("0.005"), slippage_fraction=Decimal("0.005"))
+    # A tight stop with a wide entry band is a valid choice.
+    _instant(stop_distance_fraction=Decimal("0.015"), entry_price_band_fraction=Decimal("0.02"))
+
+
+def test_stop_ignores_a_trade_printed_before_the_position_opened(tmp_path: Path) -> None:
+    engine = _engine(
+        tmp_path,
+        "oldtrade1",
+        strategy=ScriptedStrategy((Decimal("0"), Decimal("0.1"))),
+    )
+    engine.on_event(_trade(ns=0, price="97000", size="0.5", ordinal=1))
+    engine.on_event(_bbo(ns=1_000_000, bid="100000", ask="100001", ordinal=2))
+    assert engine.position_quantity == Decimal("0.1")
+    # One-sided book and no venue mark: the only trade is older than the stop.
+    engine.on_event(_bbo(ns=2_000_000, bid="99990", ask=None, ask_size=None, ordinal=3))
+    engine.close()
+    assert engine.position_quantity == Decimal("0.1")
+    assert not [row for row in _ledger(tmp_path / "oldtrade1") if row["type"] == "stop_triggered"]
+
+
+def test_unchanged_bid_stays_used_up_when_only_the_ask_moves(tmp_path: Path) -> None:
+    engine = _engine(tmp_path, "sameside1", strategy=ScriptedStrategy((Decimal("0.1"),)))
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001", ordinal=1))
+    engine.on_event(_bbo(ns=1_000_000, bid="97990", ask="97991", bid_size="0.04", ordinal=2))
+    assert engine.position_quantity == Decimal("0.06")
+    engine.on_event(_bbo(ns=2_000_000, bid="97990", ask="97995", bid_size="0.04", ordinal=3))
+    assert engine.position_quantity == Decimal("0.06")
+    engine.on_event(_bbo(ns=3_000_000, bid="97980", ask="97995", bid_size="1", ordinal=4))
+    engine.close()
+    assert engine.position_quantity == Decimal("0")
+
+
+def test_zero_displayed_size_blocks_a_flatten_as_missing_price(tmp_path: Path) -> None:
+    engine = _engine(
+        tmp_path,
+        "zerosize1",
+        strategy=ScriptedStrategy((Decimal("0.1"),)),
+        config=_instant(risk_limits=_loose_loss_limits(drawdown="0.001", daily="0.50")),
+    )
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001", ordinal=1))
+    engine.on_event(_bbo(ns=1_000_000, bid="99000", ask="99001", bid_size="0", ordinal=2))
+    assert engine.kill_switch == "FLATTEN_HALT"
+    assert engine.position_quantity == Decimal("0.1")
+    assert read_health(engine.health_path)["flatten_blocked_missing_price"] is True
+    engine.close()
 
 
 def test_used_up_quote_is_not_filled_twice(tmp_path: Path) -> None:

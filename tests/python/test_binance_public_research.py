@@ -12,7 +12,7 @@ from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 import duckdb
 import pytest
@@ -1268,6 +1268,35 @@ async def test_receive_boundary_clocks_immediately_and_does_not_drop_completed_f
     assert captured is not None
     assert captured.payload_bytes == b"exact-frame"
     assert observations == ["recv_return", "utc_clock", "monotonic_clock"]
+
+
+@pytest.mark.asyncio
+async def test_receive_or_stop_does_not_swallow_a_cancellation_of_its_caller() -> None:
+    # The socket-drain task is cancelled when its session fails. If that
+    # cancellation lands while _receive_or_stop waits for its own stop helper
+    # to unwind, it must still cancel the caller. Swallowing it kept the drain
+    # reading until the capture stopped, so the session failure surfaced late.
+    caller: asyncio.Task[CapturedApplicationPayload | None] | None = None
+
+    class CancelCallerWhenStopHelperUnwinds(asyncio.Event):
+        async def wait(self) -> Literal[True]:
+            try:
+                await asyncio.get_running_loop().create_future()
+            except asyncio.CancelledError:
+                assert caller is not None
+                caller.cancel()
+                raise
+            return True
+
+    caller = asyncio.create_task(
+        _receive_or_stop(
+            ImmediateConnection("frame", []),
+            CancelCallerWhenStopHelperUnwinds(),
+        )
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+    assert caller.cancelled()
 
 
 @pytest.mark.asyncio

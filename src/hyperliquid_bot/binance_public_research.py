@@ -1211,12 +1211,8 @@ class BinancePublicResearchCollector:
             finally:
                 if get_task not in done:
                     get_task.cancel()
-                stop_task.cancel()
-                idle_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await stop_task
-                with suppress(asyncio.CancelledError):
-                    await idle_task
+                await _cancel_and_wait(stop_task)
+                await _cancel_and_wait(idle_task)
                 if get_task.cancelled():
                     with suppress(asyncio.CancelledError):
                         await get_task
@@ -1289,9 +1285,7 @@ class BinancePublicResearchCollector:
                     observed,
                 )
         finally:
-            drain_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await drain_task
+            await _cancel_and_wait(drain_task)
 
         # Idle reconnect + operator/duration stop is allowed only when this
         # profile already observed every required stream earlier in the run
@@ -2580,14 +2574,33 @@ async def _receive_or_stop(
         )
         if receive_task in done:
             return await receive_task
-        receive_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await receive_task
+        await _cancel_and_wait(receive_task)
         return None
     finally:
-        stop_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await stop_task
+        if not receive_task.done():
+            # Our own task was cancelled mid-recv: do not leave a read running.
+            receive_task.cancel()
+        await _cancel_and_wait(stop_task)
+
+
+async def _cancel_and_wait[T](task: asyncio.Task[T]) -> None:
+    """Cancel a child task and wait until it has finished.
+
+    ``with suppress(CancelledError): await task`` cannot tell the child's
+    CancelledError from a cancellation of the calling task, so it swallows
+    both. A cancelled socket-drain task then keeps reading until the queue is
+    full or the capture stops, and its session's failure surfaces only at
+    stop. ``asyncio.wait`` never raises the child's outcome, so a cancellation
+    of the caller still propagates. A non-cancellation error the child
+    finished with is re-raised, as the plain await did.
+    """
+
+    task.cancel()
+    await asyncio.wait({task})
+    if not task.cancelled():
+        error = task.exception()
+        if error is not None:
+            raise error
 
 
 async def _wait_or_stop(delay_seconds: float, stop_event: asyncio.Event) -> None:

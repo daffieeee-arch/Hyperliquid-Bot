@@ -25,6 +25,7 @@ import {
   type ResearchRegistryRow,
 } from "../../lib/research-p0-view";
 import { useResearchP0 } from "../../lib/use-research-p0";
+import { ResearchSectionNav } from "./research-section-nav";
 
 const registryHelper = dataTableColumnHelper<ResearchRegistryRow>();
 const healthHelper = dataTableColumnHelper<ResearchHealthRow>();
@@ -138,6 +139,7 @@ export function ResearchScreen({
           </p>
         </div>
         <div className="page-head-actions">
+          <ResearchSectionNav current="capture" />
           <ReadStatus
             state={researchPoll}
             sourceLabel="registry read"
@@ -363,9 +365,9 @@ export function ResearchScreen({
         <Card>
           <CardHeader title="Hypothesis / OOS" description={stub.reason} />
           <CardBody>
-            <Notice state="missing" title="Designed, not yet produced">
-              These fields exist so the shape of a future experiment is explicit. Nothing is
-              generated until a real hypothesis document is written.
+            <Notice state="missing" title="Not on this capture screen">
+              Work-package results — H1 pass, configs, gross versus net bps, and promotion — are on
+              Hypothesis results. This capture screen does not invent them.
             </Notice>
             <KvList
               rows={[

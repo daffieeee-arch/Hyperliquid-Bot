@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import io
 import json
-import re
 import zipfile
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
@@ -13,8 +12,9 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import duckdb
-from pytest import MonkeyPatch, raises
+from pytest import CaptureFixture, MonkeyPatch, raises
 
+from research.hist_etl.catalog import refresh_catalog
 from research.hist_etl.checksums import parse_checksum
 from research.hist_etl.cli import main
 from research.hist_etl.errors import HistEtlError
@@ -24,11 +24,6 @@ from research.hist_etl.models import BINANCE_VISION_BASE, ArchivePlan
 from research.hist_etl.pipeline import run_sync
 from research.hist_etl.planning import plan_binance, sources_for_month
 
-_VIEW_PATTERN = re.compile(
-    r"CREATE\s+OR\s+REPLACE\s+VIEW\s+([A-Za-z_][A-Za-z0-9_]*)\s+AS\s+"
-    r"SELECT\s+\*\s+FROM\s+read_parquet\(\s*'([^']+)'",
-    re.IGNORECASE | re.DOTALL,
-)
 TODAY = date(2026, 10, 6)
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -42,6 +37,19 @@ class BytesResponse:
     def iter_bytes(self) -> Iterator[bytes]:
         if self.body:
             yield self.body
+
+
+class DroppingResponse(BytesResponse):
+    """Yield a prefix, then raise the error a dropped socket produces."""
+
+    def __init__(self, body: bytes, fail_after: int) -> None:
+        super().__init__(200, {"content-length": str(len(body))}, body)
+        self.fail_after = fail_after
+
+    def iter_bytes(self) -> Iterator[bytes]:
+        if self.fail_after > 0:
+            yield self.body[: self.fail_after]
+        raise ConnectionResetError("connection dropped")
 
 
 class MapTransport:
@@ -78,7 +86,7 @@ class MapTransport:
         if isinstance(item, Exception):
             raise item
         range_header = received.get("Range")
-        if range_header and item.status == 200 and item.body:
+        if range_header and type(item) is BytesResponse and item.status == 200 and item.body:
             start = int(range_header.removeprefix("bytes=").split("-", 1)[0])
             sliced = item.body[start:]
             yield BytesResponse(
@@ -176,6 +184,10 @@ def test_sync_header_microseconds_and_headerless_milliseconds(tmp_path: Path) ->
     )
     us_stamp = _one_open_time(us_root, "spot", "klines_1h")
     assert us_stamp == datetime(2025, 9, 1, 0, 0)
+    opened, closed, decision = _open_close_ts(us_root, "spot", "klines_1h")
+    assert opened == us_stamp
+    assert decision == closed
+    assert decision > opened
 
     ms_root = tmp_path / "ms"
     ms_day = datetime(2024, 12, 1, tzinfo=UTC)
@@ -439,6 +451,8 @@ def test_funding_metrics_and_aggtrades(tmp_path: Path) -> None:
         )
         == 0
     )
+    funding_fields = _field_names(next((funding_root / "parquet" / "hist_etl").rglob("*.parquet")))
+    assert {"ts", "calc_time"} <= funding_fields
 
     hole_root = tmp_path / "funding-hole"
     sparse = [rows[0], rows[2]]
@@ -490,6 +504,32 @@ def test_funding_metrics_and_aggtrades(tmp_path: Path) -> None:
         )
         == 0
     )
+    metric_fields = _field_names(next((metrics_root / "parquet" / "hist_etl").rglob("*.parquet")))
+    assert {"ts", "create_time"} <= metric_fields
+
+    agg_root = tmp_path / "agg"
+    traded = int(datetime(2025, 9, 1, tzinfo=UTC).timestamp() * 1_000_000)
+    transport = MapTransport()
+    _serve_named(
+        transport,
+        f"{BINANCE_VISION_BASE}data/spot/monthly/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2025-09.zip",
+        "BTCUSDT-aggTrades-2025-09.csv",
+        f"1,100,0.1,1,1,{traded},true,true\n",
+    )
+    assert (
+        _run(
+            agg_root,
+            transport,
+            market="spot",
+            dataset="aggTrades",
+            interval=None,
+            end="2025-09-01",
+            granularity="monthly",
+        )
+        == 0
+    )
+    agg_fields = _field_names(next((agg_root / "parquet" / "hist_etl").rglob("*.parquet")))
+    assert {"ts", "transact_time"} <= agg_fields
 
 
 def test_kraken_pair_filter_sparse_ok_and_conflict(tmp_path: Path) -> None:
@@ -517,14 +557,14 @@ def test_kraken_pair_filter_sparse_ok_and_conflict(tmp_path: Path) -> None:
         transport=MapTransport(),
     )
     assert code == 0
-    parquet = root / "parquet" / "kraken" / "ohlcvt" / "XBTUSD" / "1d"
+    parquet = root / "parquet" / "hist_etl" / "kraken" / "ohlcvt" / "XBTUSD" / "1d"
     assert list(parquet.glob("*.parquet"))
-    assert not (root / "parquet" / "kraken" / "ohlcvt" / "ETHUSD").exists()
+    assert not (root / "parquet" / "hist_etl" / "kraken" / "ohlcvt" / "ETHUSD").exists()
     catalog = (root / "catalog.sql").read_text(encoding="utf-8")
-    assert "hist_kr_xbtusd_1d" in catalog
+    assert "hist_kr_ohlcvt_xbtusd_1d" in catalog
     connection = duckdb.connect(str(root / "research.duckdb"))
     try:
-        count = connection.execute("SELECT count(*) FROM hist_kr_xbtusd_1d").fetchone()
+        count = connection.execute("SELECT count(*) FROM hist_kr_ohlcvt_xbtusd_1d").fetchone()
     finally:
         connection.close()
     assert count == (2,)
@@ -581,9 +621,9 @@ def test_catalog_is_idempotent_and_preserves_live_views(tmp_path: Path) -> None:
     text = catalog.read_text(encoding="utf-8")
     assert text.count("-- BEGIN research.hist_etl") == 1
     assert "live_bn_parts" in text
-    assert "old/*.parquet" not in text
-    names = _VIEW_PATTERN.findall(text.replace("__HIST__", str(root)))
-    assert "hist_bn_um_klines_1h" in {name for name, _path in names}
+    assert "old/*.parquet" in text
+    assert "hist_bn_um_btcusdt_klines_1h" in text
+    assert text.count("hist_bn_um_klines_1h") == 1
     third = catalog.read_text(encoding="utf-8")
     main(
         [
@@ -604,6 +644,297 @@ def test_catalog_is_idempotent_and_preserves_live_views(tmp_path: Path) -> None:
         ]
     )
     assert catalog.read_text(encoding="utf-8") == third
+
+
+def test_legacy_catalog_and_parquet_stay_in_place(tmp_path: Path) -> None:
+    root = tmp_path / "legacy"
+    day = datetime(2025, 9, 1, tzinfo=UTC)
+    body = "\n".join(_kline(day + timedelta(hours=hour), "us") for hour in range(24)) + "\n"
+    transport = MapTransport()
+    _serve_month(transport, "spot", "klines", "1h", "2025-09", body, header=False)
+    assert (
+        _run(root, transport, market="spot", dataset="klines", interval="1h", end="2025-09-01") == 0
+    )
+    legacy_dir = root / "parquet" / "binance" / "spot" / "klines_1h"
+    legacy_dir.mkdir(parents=True)
+    legacy = legacy_dir / "BTCUSDT-1h-2024-01.parquet"
+    connection = duckdb.connect()
+    try:
+        connection.execute(
+            "COPY (SELECT TIMESTAMP '2024-01-01 00:00:00' AS ts) TO ? (FORMAT PARQUET)",
+            [str(legacy)],
+        )
+    finally:
+        connection.close()
+    legacy_bytes = legacy.read_bytes()
+    new_dir = root / "parquet" / "hist_etl" / "binance" / "spot" / "klines_1h"
+    stray_named = new_dir / "BTCUSDT-1h-2024-01.parquet"
+    stray_month = new_dir / "BTCUSDT-2024-01.parquet"
+    stray_named.write_bytes(legacy_bytes)
+    stray_month.write_bytes(legacy_bytes)
+    catalog = root / "catalog.sql"
+    catalog.write_text(
+        "CREATE OR REPLACE VIEW hist_bn_spot_klines_1h AS\n"
+        "SELECT * FROM read_parquet('__HIST__/parquet/binance/spot/klines_1h/*.parquet');\n\n"
+        "CREATE VIEW hist_bn_spot_aggtrades AS\n"
+        "SELECT * FROM read_parquet('__HIST__/parquet/binance/spot/aggtrades/*.parquet');\n\n"
+        + catalog.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    database = duckdb.connect(str(root / "research.duckdb"))
+    try:
+        database.execute(
+            "CREATE OR REPLACE VIEW hist_bn_spot_klines_1h AS "
+            f"SELECT * FROM read_parquet('{legacy.as_posix()}')"
+        )
+    finally:
+        database.close()
+    code = main(
+        [
+            "catalog",
+            "--root",
+            str(root),
+            "--manifest",
+            str(
+                _manifest(
+                    tmp_path,
+                    market="spot",
+                    dataset="klines",
+                    interval="1h",
+                    end="2025-09-01",
+                    filename="legacy.toml",
+                )
+            ),
+        ]
+    )
+    assert code == 0
+    text = catalog.read_text(encoding="utf-8")
+    assert "CREATE OR REPLACE VIEW hist_bn_spot_klines_1h AS" in text
+    assert "CREATE VIEW hist_bn_spot_aggtrades AS" in text
+    assert "BTCUSDT-1h-2024-01.parquet" not in text
+    assert "BTCUSDT-2024-01.parquet" not in text
+    assert "BTCUSDT-2025-09.parquet" in text
+    assert legacy.read_bytes() == legacy_bytes
+    assert stray_month.read_bytes() == legacy_bytes
+    connection = duckdb.connect(str(root / "research.duckdb"))
+    try:
+        connection.execute("SET TimeZone='UTC'")
+        legacy_row = connection.execute("SELECT min(ts) FROM hist_bn_spot_klines_1h").fetchone()
+        columns = connection.execute(
+            "DESCRIBE SELECT * FROM hist_bn_spot_btcusdt_klines_1h"
+        ).fetchall()
+        count = connection.execute("SELECT count(*) FROM hist_bn_spot_btcusdt_klines_1h").fetchone()
+    finally:
+        connection.close()
+    assert legacy_row is not None and legacy_row[0] == datetime(2024, 1, 1)
+    names = {str(row[0]) for row in columns}
+    assert {"ts", "open_time", "close_time"} <= names
+    assert count == (24,)
+
+
+def test_replace_legacy_views_backs_up_and_prints_a_diff(
+    tmp_path: Path, capsys: CaptureFixture[str]
+) -> None:
+    root = tmp_path / "replace"
+    day = datetime(2025, 9, 1, tzinfo=UTC)
+    body = "\n".join(_kline(day + timedelta(hours=hour), "us") for hour in range(24)) + "\n"
+    transport = MapTransport()
+    _serve_month(transport, "um", "klines", "1h", "2025-09", body, header=False)
+    assert (
+        _run(root, transport, market="um", dataset="klines", interval="1h", end="2025-09-01") == 0
+    )
+    catalog = root / "catalog.sql"
+    legacy = (
+        "CREATE OR REPLACE VIEW hist_bn_um_klines_1h AS\n"
+        "SELECT * FROM read_parquet('__HIST__/old/*.parquet');\n\n"
+    )
+    previous = legacy + catalog.read_text(encoding="utf-8")
+    catalog.write_text(previous, encoding="utf-8")
+    code = main(
+        [
+            "catalog",
+            "--root",
+            str(root),
+            "--manifest",
+            str(
+                _manifest(
+                    tmp_path,
+                    market="um",
+                    dataset="klines",
+                    interval="1h",
+                    end="2025-09-01",
+                    filename="replace.toml",
+                )
+            ),
+            "--replace-legacy-views",
+        ]
+    )
+    assert code == 0
+    captured = capsys.readouterr()
+    assert "--- catalog.sql" in captured.out
+    assert "old/*.parquet" in captured.out
+    backups = list(root.glob("catalog.sql.bak.*"))
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == previous
+    text = catalog.read_text(encoding="utf-8")
+    assert "old/*.parquet" not in text
+    assert "CREATE OR REPLACE VIEW hist_bn_um_klines_1h AS" in text
+    assert "parquet/hist_etl/binance/um/klines_1h/BTCUSDT-2025-09.parquet" in text
+
+
+def test_untracked_parquet_is_kept_unless_rebuild(tmp_path: Path) -> None:
+    root = tmp_path / "keep"
+    day = datetime(2025, 9, 1, tzinfo=UTC)
+    body = "\n".join(_kline(day + timedelta(hours=hour), "us") for hour in range(24)) + "\n"
+    transport = MapTransport()
+    _serve_month(transport, "spot", "klines", "1h", "2025-09", body, header=False)
+    assert (
+        _run(root, transport, market="spot", dataset="klines", interval="1h", end="2025-09-01") == 0
+    )
+    path = next((root / "parquet" / "hist_etl").rglob("*.parquet"))
+    original = path.read_bytes()
+    sidecar = path.with_name(path.name + ".sources.json")
+    payload = json.loads(sidecar.read_text(encoding="utf-8"))
+    sources = payload["sources"]
+    assert isinstance(sources, list)
+    sources[0]["sha256"] = "0" * 64
+    sidecar.write_text(json.dumps(payload), encoding="utf-8")
+    assert (
+        _run(root, transport, market="spot", dataset="klines", interval="1h", end="2025-09-01") == 2
+    )
+    assert path.read_bytes() == original
+    report = json.loads((root / "logs" / "gap_report.json").read_text(encoding="utf-8"))
+    assert any(gap["kind"] == "refused_overwrite" for gap in report["gaps"])
+    sidecar.unlink()
+    assert (
+        _run(root, transport, market="spot", dataset="klines", interval="1h", end="2025-09-01") == 2
+    )
+    assert path.read_bytes() == original
+    code = run_sync(
+        root=root,
+        manifest_path=_manifest(
+            tmp_path,
+            market="spot",
+            dataset="klines",
+            interval="1h",
+            end="2025-09-01",
+            filename="rebuild.toml",
+        ),
+        today=TODAY,
+        dataset_ids=None,
+        env={},
+        dry_run=False,
+        transport=transport,
+        rebuild=True,
+    )
+    assert code == 0
+    assert sidecar.is_file()
+
+
+def test_mid_stream_drop_resumes_and_final_failure_is_a_gap(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    monkeypatch.setattr("research.hist_etl.pipeline.default_sleeper", lambda _seconds: None)
+    day = datetime(2025, 9, 1, tzinfo=UTC)
+    body = "\n".join(_kline(day + timedelta(hours=hour), "us") for hour in range(24)) + "\n"
+    url = f"{BINANCE_VISION_BASE}data/spot/monthly/klines/BTCUSDT/1h/BTCUSDT-1h-2025-09.zip"
+    zip_bytes = _zip_bytes("BTCUSDT-1h-2025-09.csv", body)
+    digest = hashlib.sha256(zip_bytes).hexdigest()
+    checksum = f"{digest}  BTCUSDT-1h-2025-09.zip\n".encode()
+
+    resumed = tmp_path / "resumed"
+    transport = MapTransport()
+    transport.add("GET", url, DroppingResponse(zip_bytes, 8))
+    transport.add(
+        "GET", url, BytesResponse(200, {"content-length": str(len(zip_bytes))}, zip_bytes)
+    )
+    transport.add(
+        "GET",
+        url + ".CHECKSUM",
+        BytesResponse(200, {"content-length": str(len(checksum))}, checksum),
+    )
+    assert (
+        _run(resumed, transport, market="spot", dataset="klines", interval="1h", end="2025-09-01")
+        == 0
+    )
+    stored = (
+        resumed
+        / "binance-vision"
+        / "data"
+        / "spot"
+        / "monthly"
+        / "klines"
+        / "BTCUSDT"
+        / "1h"
+        / "BTCUSDT-1h-2025-09.zip"
+    )
+    assert stored.read_bytes() == zip_bytes
+
+    failed = tmp_path / "failed"
+    dropping = MapTransport()
+    dropping.add("GET", url, DroppingResponse(zip_bytes, 8))
+    dropping.add(
+        "GET",
+        url + ".CHECKSUM",
+        BytesResponse(200, {"content-length": str(len(checksum))}, checksum),
+    )
+    assert (
+        _run(failed, dropping, market="spot", dataset="klines", interval="1h", end="2025-09-01")
+        == 2
+    )
+    assert not (
+        failed
+        / "binance-vision"
+        / "data"
+        / "spot"
+        / "monthly"
+        / "klines"
+        / "BTCUSDT"
+        / "1h"
+        / "BTCUSDT-1h-2025-09.zip"
+    ).exists()
+    report = json.loads((failed / "logs" / "gap_report.json").read_text(encoding="utf-8"))
+    assert any(gap["kind"] == "download_failed" for gap in report["gaps"])
+
+
+def test_futures_um_layout_is_reused(tmp_path: Path) -> None:
+    root = tmp_path / "futures-um"
+    day = datetime(2025, 9, 1, tzinfo=UTC)
+    body = "\n".join(_kline(day + timedelta(hours=hour), "us") for hour in range(24)) + "\n"
+    payload = _zip_bytes("BTCUSDT-1h-2025-09.csv", body)
+    digest = hashlib.sha256(payload).hexdigest()
+    directory = root / "binance-vision" / "futures-um" / "monthly" / "klines" / "BTCUSDT" / "1h"
+    directory.mkdir(parents=True)
+    zip_path = directory / "BTCUSDT-1h-2025-09.zip"
+    zip_path.write_bytes(payload)
+    (directory / "BTCUSDT-1h-2025-09.zip.CHECKSUM").write_text(
+        f"{digest}  BTCUSDT-1h-2025-09.zip\n",
+        encoding="utf-8",
+    )
+    assert (
+        _run(root, MapTransport(), market="um", dataset="klines", interval="1h", end="2025-09-01")
+        == 0
+    )
+    assert zip_path.read_bytes() == payload
+    assert not (root / "binance-vision" / "data").exists()
+
+
+def test_locked_duckdb_keeps_catalog_sql(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    root = tmp_path / "locked"
+    root.mkdir()
+    original = "CREATE VIEW hist_bn_um_klines_1h AS SELECT 1 AS ts;\n"
+    (root / "catalog.sql").write_text(original, encoding="utf-8")
+    monkeypatch.setattr("research.hist_etl.catalog.time.sleep", lambda _seconds: None)
+
+    def locked(_path: str) -> duckdb.DuckDBPyConnection:
+        raise duckdb.IOException("IO Error: Could not set lock on file")
+
+    monkeypatch.setattr("research.hist_etl.catalog.duckdb.connect", locked)
+    with raises(HistEtlError) as caught:
+        refresh_catalog(root)
+    assert caught.value.exit_code == 2
+    assert "locked" in str(caught.value)
+    assert (root / "catalog.sql").read_text(encoding="utf-8") == original
 
 
 def test_source_has_no_hardcoded_vps_path() -> None:
@@ -789,7 +1120,7 @@ def _kline(moment: datetime, unit: str, price: str = "100", interval_s: int = 36
 
 
 def _one_open_time(root: Path, market: str, slug: str) -> datetime:
-    path = next((root / "parquet" / "binance" / market / slug).glob("*.parquet"))
+    path = next((root / "parquet" / "hist_etl" / "binance" / market / slug).glob("*.parquet"))
     connection = duckdb.connect()
     try:
         connection.execute("SET TimeZone='UTC'")
@@ -804,8 +1135,36 @@ def _one_open_time(root: Path, market: str, slug: str) -> datetime:
     return stamp
 
 
+def _open_close_ts(root: Path, market: str, slug: str) -> tuple[datetime, datetime, datetime]:
+    path = next((root / "parquet" / "hist_etl" / "binance" / market / slug).glob("*.parquet"))
+    connection = duckdb.connect()
+    try:
+        connection.execute("SET TimeZone='UTC'")
+        row = connection.execute(
+            "SELECT min(open_time), min(close_time), min(ts) FROM read_parquet(?)",
+            [str(path)],
+        ).fetchone()
+    finally:
+        connection.close()
+    assert row is not None
+    opened, closed, decision = row
+    assert isinstance(opened, datetime)
+    assert isinstance(closed, datetime)
+    assert isinstance(decision, datetime)
+    return opened, closed, decision
+
+
+def _field_names(path: Path) -> set[str]:
+    connection = duckdb.connect()
+    try:
+        rows = connection.execute("DESCRIBE SELECT * FROM read_parquet(?)", [str(path)]).fetchall()
+    finally:
+        connection.close()
+    return {str(row[0]) for row in rows}
+
+
 def _column(root: Path, market: str, slug: str, column: str) -> list[float]:
-    path = next((root / "parquet" / "binance" / market / slug).glob("*.parquet"))
+    path = next((root / "parquet" / "hist_etl" / "binance" / market / slug).glob("*.parquet"))
     connection = duckdb.connect()
     try:
         rows = connection.execute(

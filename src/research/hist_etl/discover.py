@@ -54,6 +54,12 @@ def resolve_local(plan: ArchivePlan, index: Mapping[str, list[Path]]) -> Archive
 
 
 def _matches(path: Path, plan: ArchivePlan) -> bool:
+    """Reuse a zip whose directories name the market, dataset, and interval.
+
+    USD-M is a path part ``um`` or ``futures-um``. Spot requires ``spot`` and
+    neither of those markers. A matching filename alone is not reused.
+    """
+
     if path.name != plan.filename:
         return False
     parts = set(path.parts)
@@ -61,6 +67,7 @@ def _matches(path: Path, plan: ArchivePlan) -> bool:
         return False
     if plan.interval is not None and plan.interval not in parts:
         return False
+    um = "um" in parts or "futures-um" in parts
     if plan.market == "spot":
-        return "spot" in parts and "um" not in parts
-    return "um" in parts
+        return "spot" in parts and not um
+    return um

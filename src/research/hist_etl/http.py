@@ -6,6 +6,7 @@ not embed credentials.
 
 from __future__ import annotations
 
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -127,22 +128,36 @@ def open_with_retries(
     max_retries: int,
     sleeper: Sleeper,
 ) -> Iterator[HttpBody]:
+    """Retry opening the response. Body reads are the caller's job.
+
+    An ``OSError`` raised while the caller reads ``iter_bytes()`` must propagate.
+    Catching it here and yielding again raises ``RuntimeError: generator didn't
+    stop after throw()`` and aborts the sync.
+    """
+
     delay = 0.5
     last_status = 0
     for attempt in range(1, max_retries + 1):
         limiter.wait()
+        opened = transport.open(method, url, headers)
         try:
-            with transport.open(method, url, headers) as response:
-                if response.status in RETRYABLE_STATUS and attempt < max_retries:
-                    last_status = response.status
-                    sleeper(delay)
-                    delay *= 2
-                    continue
-                yield response
-                return
+            response = opened.__enter__()
         except OSError as exc:
             if attempt >= max_retries:
-                raise HistEtlError(f"request failed for {url}: {exc}") from exc
+                raise HistEtlError(f"download failed for {url}: {exc}") from exc
             sleeper(delay)
             delay *= 2
-    raise HistEtlError(f"request failed for {url} after HTTP {last_status}")
+            continue
+        if response.status in RETRYABLE_STATUS and attempt < max_retries:
+            last_status = response.status
+            opened.__exit__(None, None, None)
+            sleeper(delay)
+            delay *= 2
+            continue
+        try:
+            yield response
+        finally:
+            exc_type, raised, traceback = sys.exc_info()
+            opened.__exit__(exc_type, raised, traceback)
+        return
+    raise HistEtlError(f"download failed for {url} after HTTP {last_status}")

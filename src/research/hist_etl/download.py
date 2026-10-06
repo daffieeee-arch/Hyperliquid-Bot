@@ -215,40 +215,77 @@ def _download_body(
     sleeper: Sleeper,
     resume: bool,
 ) -> int:
-    have = partial.stat().st_size if resume and partial.is_file() else 0
-    headers: dict[str, str] = {}
-    if have > 0:
-        headers["Range"] = f"bytes={have}-"
-    with open_with_retries(
-        transport,
-        "GET",
-        url,
-        headers or None,
-        limiter=limiter,
-        max_retries=max_retries,
-        sleeper=sleeper,
-    ) as response:
-        if response.status == 404:
-            return 404
-        if response.status == 416 and have > 0:
-            return 416
-        if response.status not in {200, 206}:
-            return response.status
-        incoming = _content_length(response)
-        extra = incoming if incoming is not None else 0
-        free = assert_free(root, min_free_bytes)
-        if incoming is not None and free < min_free_bytes + extra:
-            raise HistEtlError(
-                f"free space {free} bytes cannot hold {url} ({extra} bytes) "
-                f"above the {min_free_bytes} byte floor",
-                exit_code=3,
-            )
-        mode = "ab" if response.status == 206 and have > 0 else "wb"
-        partial.parent.mkdir(parents=True, exist_ok=True)
-        with partial.open(mode) as handle:
-            for chunk in response.iter_bytes():
-                handle.write(chunk)
+    """Download into ``partial``, retrying a dropped body with backoff.
+
+    A resume keeps bytes already written and asks for the remainder. A non-resume
+    download deletes the scratch file and starts over. The final failure is a
+    ``HistEtlError`` so the sync can record a gap and continue.
+    """
+
+    delay = 0.5
+    last_error: BaseException | None = None
+    for attempt in range(1, max_retries + 1):
+        if not resume and partial.is_file():
+            _discard_partial(partial)
+        have = partial.stat().st_size if resume and partial.is_file() else 0
+        headers = {"Range": f"bytes={have}-"} if have > 0 else None
+        try:
+            with open_with_retries(
+                transport,
+                "GET",
+                url,
+                headers,
+                limiter=limiter,
+                max_retries=max_retries,
+                sleeper=sleeper,
+            ) as response:
+                return _write_response(
+                    response,
+                    partial,
+                    have=have,
+                    url=url,
+                    root=root,
+                    min_free_bytes=min_free_bytes,
+                )
+        except OSError as exc:
+            last_error = exc
+            if attempt >= max_retries:
+                break
+            sleeper(delay)
+            delay *= 2
+    raise HistEtlError(f"download failed for {url}: {last_error}") from last_error
+
+
+def _write_response(
+    response: HttpBody,
+    partial: Path,
+    *,
+    have: int,
+    url: str,
+    root: Path,
+    min_free_bytes: int,
+) -> int:
+    if response.status == 404:
+        return 404
+    if response.status == 416 and have > 0:
+        return 416
+    if response.status not in {200, 206}:
         return response.status
+    incoming = _content_length(response)
+    extra = incoming if incoming is not None else 0
+    free = assert_free(root, min_free_bytes)
+    if incoming is not None and free < min_free_bytes + extra:
+        raise HistEtlError(
+            f"free space {free} bytes cannot hold {url} ({extra} bytes) "
+            f"above the {min_free_bytes} byte floor",
+            exit_code=3,
+        )
+    mode = "ab" if response.status == 206 and have > 0 else "wb"
+    partial.parent.mkdir(parents=True, exist_ok=True)
+    with partial.open(mode) as handle:
+        for chunk in response.iter_bytes():
+            handle.write(chunk)
+    return response.status
 
 
 def _content_length(response: HttpBody) -> int | None:

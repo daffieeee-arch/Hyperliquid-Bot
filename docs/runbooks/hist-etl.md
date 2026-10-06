@@ -65,11 +65,23 @@ CSV quirks the loader accepts, and tests:
   uniformly microseconds is still accepted.
 
 Monthly zips supersede daily zips for that month. Rows are deduped on the
-series key. Conflicting duplicates fail. Parquet is one file per month:
+series key. Conflicting duplicates fail. Parquet is one file per month, under
+a tree the legacy converter does not use:
 
 ```text
-parquet/binance/{spot|um}/{klines_1m|klines_1h|aggtrades|funding|mark_klines_1m|index_klines_1m|premium_klines_1m|metrics}/SYMBOL-YYYY-MM.parquet
+parquet/hist_etl/binance/{spot|um}/{klines_1m|klines_1h|aggtrades|funding|mark_klines_1m|index_klines_1m|premium_klines_1m|metrics}/SYMBOL-YYYY-MM.parquet
 ```
+
+A month file that already exists without a `.sources.json` sidecar, or whose
+sidecar lists different archives, is left in place. `sync --rebuild` replaces
+it. Views list only `SYMBOL-YYYY-MM.parquet` files that have a sidecar, so a
+legacy file in the same directory is not read.
+
+Every Binance file has `ts` plus the native time column. `ts` is UTC and naive
+in DuckDB (`SET TimeZone='UTC'`). For klines, mark, index, and premium, `ts`
+is `close_time` (the bar is closed and usable for a decision). For aggTrades,
+`ts` is `transact_time`. For funding, `ts` is `calc_time`. For metrics, `ts`
+is `create_time`.
 
 The core manifest is the warehouse already described in
 [hist-archives-research-warehouse.md](hist-archives-research-warehouse.md)
@@ -94,8 +106,11 @@ with no header and Unix seconds. Only selected pairs are read (default
 `XBTUSD`). Other pairs in the zip are ignored. Output:
 
 ```text
-parquet/kraken/ohlcvt/XBTUSD/{1m|5m|15m|30m|1h|4h|12h|1d}/YYYY-MM.parquet
+parquet/hist_etl/kraken/ohlcvt/XBTUSD/{1m|5m|15m|30m|1h|4h|12h|1d}/YYYY-MM.parquet
 ```
+
+`ts` is the OHLCVT candle-open timestamp. The bar's close is `ts` plus the
+interval. Sparse minutes are kept as published.
 
 Put zips under `kraken-ohlcvt/Kraken_OHLCVT*.zip`. An optional `url` in the
 manifest downloads one https zip when that file is absent. Kraken does not
@@ -103,13 +118,29 @@ publish a SHA256 sidecar; the zip must open and contain the selected CSV.
 
 ## Catalog
 
-`catalog` rewrites only the marked block in `catalog.sql` and runs
-`CREATE OR REPLACE VIEW` for `hist_bn_*` / `hist_kr_*`. SQL outside the block,
-including `live_*` views, is kept. Placeholder `__HIST__` is the archive root.
-Views are not created for empty datasets.
+`catalog` rewrites only the marked block in `catalog.sql`. Default view names
+do not collide with the warehouse views Quant already uses:
 
-Applying the catalog points `hist_kr_xbtusd_*` at the monthly `ohlcvt` tree.
-A pre-existing single-file `parquet/kraken/xbtusd_1d.parquet` is not deleted.
+- `hist_bn_{market}_{symbol}_{slug}`, for example `hist_bn_um_btcusdt_klines_1h`
+- `hist_kr_ohlcvt_{pair}_{interval}`, for example `hist_kr_ohlcvt_xbtusd_1d`
+
+`hist_bn_um_klines_1h`, `hist_bn_spot_aggtrades`, `hist_bn_um_funding`, and
+`hist_kr_xbtusd_1d` stay where they are. `sync --replace-legacy-views` or
+`catalog --replace-legacy-views` writes `catalog.sql.bak.<UTC timestamp>`,
+prints a unified diff, and then lets the pipeline also publish those short
+names. SQL outside the block, including `live_*` views, is otherwise kept.
+Placeholder `__HIST__` is the archive root. Views are not created for empty
+datasets. Each view is an explicit file list, not a directory glob.
+
+`catalog.sql` is replaced only after DuckDB accepts the new block. If
+`research.duckdb` is locked, the command retries and then exits with a message
+that names the lock. Close the other DuckDB session and run `catalog` again.
+A legacy `parquet/kraken/xbtusd_1d.parquet` is not deleted.
+
+Existing zips are reused when their path contains the dataset, the interval,
+and either `spot` or `um` / `futures-um`. A bare filename match is not reused,
+so a zip outside that layout is downloaded into `binance-vision/data/...`
+instead of replacing the original.
 
 ## Example timer
 

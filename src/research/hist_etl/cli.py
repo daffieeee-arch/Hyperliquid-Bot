@@ -49,6 +49,8 @@ def _dispatch(args: argparse.Namespace, env: Mapping[str, str]) -> int:
             dataset_ids=dataset_ids,
             env=env,
             dry_run=bool(args.dry_run),
+            rebuild=bool(args.rebuild),
+            replace_legacy_views=bool(args.replace_legacy_views),
         )
     if command == "verify":
         return run_verify(
@@ -64,6 +66,7 @@ def _dispatch(args: argparse.Namespace, env: Mapping[str, str]) -> int:
             manifest_path=manifest_path,
             dataset_ids=dataset_ids,
             env=env,
+            replace_legacy_views=bool(args.replace_legacy_views),
         )
     raise HistEtlError(f"unknown command {command}")
 
@@ -93,6 +96,21 @@ def _parser() -> argparse.ArgumentParser:
         "sync", parents=[common], help="Download missing files and refresh Parquet."
     )
     sync.add_argument("--dry-run", action="store_true", help="Same as plan; write nothing.")
+    sync.add_argument(
+        "--rebuild",
+        action="store_true",
+        help="Replace a month file whose sidecar is missing or does not match.",
+    )
+    sync.add_argument(
+        "--replace-legacy-views",
+        action="store_true",
+        help="Back up catalog.sql, print a diff, and replace legacy hist_* views.",
+    )
     sub.add_parser("verify", parents=[common], help="Re-check checksums, schemas, and gaps.")
-    sub.add_parser("catalog", parents=[common], help="Regenerate hist_* DuckDB views.")
+    catalog = sub.add_parser("catalog", parents=[common], help="Regenerate pipeline DuckDB views.")
+    catalog.add_argument(
+        "--replace-legacy-views",
+        action="store_true",
+        help="Back up catalog.sql, print a diff, and replace legacy hist_* views.",
+    )
     return parser

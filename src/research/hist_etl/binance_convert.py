@@ -5,13 +5,16 @@ headerless numeric rows are the documented sample; some archives add a header.
 Spot timestamps switch from milliseconds to microseconds on 2025-01-01.
 USD-M examples stay milliseconds, but a microsecond stamp is still accepted
 when every row in the file agrees.
+
+``ts`` is the decision time: kline ``close_time``, and the native event time
+for aggTrades (``transact_time``), funding (``calc_time``), and metrics
+(``create_time``). Those native columns stay in the file.
 """
 
 from __future__ import annotations
 
 import csv
 import io
-import json
 import os
 import re
 import zipfile
@@ -22,6 +25,7 @@ from pathlib import Path
 import duckdb
 
 from research.hist_etl.errors import HistEtlError
+from research.hist_etl.files import atomic_write_json, decide_output, warn
 from research.hist_etl.models import (
     INTERVAL_SECONDS,
     MICROSECOND_THRESHOLD,
@@ -71,7 +75,15 @@ _METRICS_FIELDS = (
 
 def binance_parquet_path(root: Path, spec: BinanceSpec, month: str) -> Path:
     slug = parquet_slug(spec.dataset, spec.interval)
-    return root / "parquet" / "binance" / spec.market / slug / f"{spec.symbol}-{month}.parquet"
+    return (
+        root
+        / "parquet"
+        / "hist_etl"
+        / "binance"
+        / spec.market
+        / slug
+        / f"{spec.symbol}-{month}.parquet"
+    )
 
 
 def materialize_binance_month(
@@ -82,6 +94,7 @@ def materialize_binance_month(
     root: Path,
     today: date,
     staging: Path,
+    rebuild: bool = False,
 ) -> tuple[Path | None, tuple[Gap, ...]]:
     """Write one month of Parquet, or return gaps and leave prior output alone."""
 
@@ -94,9 +107,12 @@ def materialize_binance_month(
                 f"no local archive for {spec.symbol} {spec.dataset} {month:%Y-%m}",
             ),
         )
-    if _sources_match(destination, sources):
+    action = decide_output(destination, sources, rebuild=rebuild)
+    if action == "audit":
         gaps = _audit_existing(destination, spec, month, today)
         return destination, gaps
+    if action != "write":
+        return destination, (_refuse_overwrite(destination, spec.id, action),)
     staging.mkdir(parents=True, exist_ok=True)
     csv_paths: list[Path] = []
     try:
@@ -528,6 +544,7 @@ def _build_final(
                     close_px AS close,
                     volume_n AS volume,
                     CAST(to_timestamp(close_i / {divisor}) AS TIMESTAMP) AS close_time,
+                    CAST(to_timestamp(close_i / {divisor}) AS TIMESTAMP) AS ts,
                     quote_n AS quote_volume,
                     trades AS trade_count,
                     taker_base_n AS taker_buy_base_volume,
@@ -557,6 +574,7 @@ def _build_final(
                     first_n AS first_trade_id,
                     last_n AS last_trade_id,
                     CAST(to_timestamp(time_i / {divisor}) AS TIMESTAMP) AS transact_time,
+                    CAST(to_timestamp(time_i / {divisor}) AS TIMESTAMP) AS ts,
                     buyer = 'true' AS is_buyer_maker,
                     CASE WHEN best = '' THEN NULL ELSE best = 'true' END AS is_best_match,
                     ? AS symbol,
@@ -578,6 +596,7 @@ def _build_final(
             FROM (
                 SELECT
                     CAST(to_timestamp(time_i / {divisor}) AS TIMESTAMP) AS calc_time,
+                    CAST(to_timestamp(time_i / {divisor}) AS TIMESTAMP) AS ts,
                     interval_n AS funding_interval_hours,
                     rate_n AS last_funding_rate,
                     ? AS symbol,
@@ -598,6 +617,7 @@ def _build_final(
         FROM (
             SELECT
                 create_time,
+                create_time AS ts,
                 oi AS sum_open_interest,
                 oi_value AS sum_open_interest_value,
                 count_top AS count_toptrader_long_short_ratio,
@@ -750,16 +770,13 @@ def _count_problems(row: tuple[object, ...] | None, labels: tuple[str, ...]) -> 
     return problems
 
 
-def _sources_match(destination: Path, sources: Sequence[SourceDigest]) -> bool:
-    sidecar = destination.with_name(destination.name + ".sources.json")
-    if not destination.is_file() or not sidecar.is_file():
-        return False
-    payload = json.loads(sidecar.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
-        return False
-    recorded = payload.get("sources")
-    expected = [{"name": source.name, "sha256": source.sha256} for source in sources]
-    return recorded == expected
+def _refuse_overwrite(destination: Path, dataset_id: str, action: str) -> Gap:
+    reason = (
+        "no .sources.json sidecar" if action == "untracked" else "sources differ from .sources.json"
+    )
+    detail = f"refusing to overwrite {destination.name}: {reason}; pass --rebuild to replace it"
+    warn(detail)
+    return Gap("refused_overwrite", dataset_id, detail)
 
 
 def _write_sidecar(
@@ -771,7 +788,7 @@ def _write_sidecar(
         "rows": rows,
         "timestamp_unit": unit,
     }
-    sidecar.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    atomic_write_json(sidecar, payload)
 
 
 def _naive(value: object) -> datetime:

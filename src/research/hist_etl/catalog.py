@@ -1,85 +1,146 @@
-"""Regenerate ``hist_*`` DuckDB views without touching other catalog SQL."""
+"""Regenerate pipeline DuckDB views without replacing an existing catalog."""
 
 from __future__ import annotations
 
+import difflib
 import re
+import time
+from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 
 import duckdb
 
 from research.hist_etl.errors import HistEtlError
+from research.hist_etl.files import atomic_write_text, warn
 
 _BLOCK = re.compile(
     r"-- BEGIN research\.hist_etl\n.*?-- END research\.hist_etl\n?",
     re.DOTALL,
 )
+_VIEW_DECL = re.compile(
+    r"CREATE\s+(?:OR\s+REPLACE\s+)?VIEW\s+([A-Za-z_][A-Za-z0-9_]*)",
+    re.IGNORECASE,
+)
 _VIEW_STMT = re.compile(
-    r"CREATE\s+OR\s+REPLACE\s+VIEW\s+([A-Za-z_][A-Za-z0-9_]*)\s+AS\s+.*?;\s*",
+    r"CREATE\s+(?:OR\s+REPLACE\s+)?VIEW\s+([A-Za-z_][A-Za-z0-9_]*)\s+AS\s+.*?;\s*",
     re.IGNORECASE | re.DOTALL,
 )
 _VIEW_NAME = re.compile(r"[a-z][a-z0-9_]*")
-_FILE_NAME = re.compile(r"^([A-Z0-9]+)-\d{4}-\d{2}\.parquet$")
+_BINANCE_FILE = re.compile(r"^([A-Z0-9]+)-\d{4}-\d{2}\.parquet$")
+_KRAKEN_FILE = re.compile(r"^\d{4}-\d{2}\.parquet$")
 _BEGIN = "-- BEGIN research.hist_etl"
 _END = "-- END research.hist_etl"
+_LOCK_ATTEMPTS = 5
 
 
-def refresh_catalog(root: Path) -> tuple[str, ...]:
-    """Write ``catalog.sql`` and create or replace the generated views."""
+def refresh_catalog(root: Path, *, replace_legacy_views: bool = False) -> tuple[str, ...]:
+    """Write ``catalog.sql`` and create the generated views.
 
-    statements, names = render_statements(root)
-    existing = ""
+    Existing ``hist_bn_*`` / ``hist_kr_*`` statements outside the generated block
+    stay in place. ``replace_legacy_views`` copies ``catalog.sql`` to a backup,
+    prints a diff, and then lets the generated names replace those statements.
+    The SQL file is replaced only after DuckDB accepts the new block.
+    """
+
+    views = render_statements(root, replace_legacy_views=replace_legacy_views)
     catalog_path = root / "catalog.sql"
-    if catalog_path.is_file():
-        existing = catalog_path.read_text(encoding="utf-8")
-    merged = merge_catalog(existing, statements, names)
-    catalog_path.write_text(merged, encoding="utf-8")
+    existing = catalog_path.read_text(encoding="utf-8") if catalog_path.is_file() else ""
+    merged, names, skipped = merge_catalog(
+        existing,
+        views,
+        replace_legacy=replace_legacy_views,
+    )
+    for name in skipped:
+        warn(
+            f"skipping view {name}: an existing catalog definition is outside the "
+            "hist_etl block; pass --replace-legacy-views to replace it"
+        )
+    if replace_legacy_views and existing:
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        backup = catalog_path.with_name(f"catalog.sql.bak.{stamp}")
+        atomic_write_text(backup, existing)
+        diff = "".join(
+            difflib.unified_diff(
+                existing.splitlines(keepends=True),
+                merged.splitlines(keepends=True),
+                fromfile="catalog.sql",
+                tofile="catalog.sql",
+            )
+        )
+        print(diff if diff else "catalog\tno changes\n")
+        print(f"catalog\tbackup\t{backup}")
     apply_catalog(root, merged)
+    atomic_write_text(catalog_path, merged)
     return names
 
 
-def render_statements(root: Path) -> tuple[str, tuple[str, ...]]:
-    chunks: list[str] = []
-    names: list[str] = []
-    binance = root / "parquet" / "binance"
+def render_statements(
+    root: Path, *, replace_legacy_views: bool = False
+) -> tuple[tuple[str, str], ...]:
+    """Pipeline views. Each one reads only files this pipeline wrote."""
+
+    views: list[tuple[str, str]] = []
+    binance = root / "parquet" / "hist_etl" / "binance"
     if binance.is_dir():
         for market_dir in sorted(path for path in binance.iterdir() if path.is_dir()):
             for slug_dir in sorted(path for path in market_dir.iterdir() if path.is_dir()):
-                for symbol in _symbols(slug_dir):
-                    relative = (
-                        f"parquet/binance/{market_dir.name}/{slug_dir.name}/{symbol}-*.parquet"
-                    )
-                    view_names = [f"hist_bn_{market_dir.name}_{symbol.lower()}_{slug_dir.name}"]
-                    if symbol == "BTCUSDT":
-                        view_names.append(f"hist_bn_{market_dir.name}_{slug_dir.name}")
-                    for name in view_names:
-                        chunks.append(_view(name, relative))
-                        names.append(name)
-    kraken = root / "parquet" / "kraken" / "ohlcvt"
+                for symbol, files in _binance_files(slug_dir).items():
+                    relative = tuple(_relative(root, path) for path in files)
+                    for name in _binance_names(
+                        market_dir.name,
+                        symbol,
+                        slug_dir.name,
+                        replace_legacy=replace_legacy_views,
+                    ):
+                        views.append((name, _view(name, relative)))
+    kraken = root / "parquet" / "hist_etl" / "kraken" / "ohlcvt"
     if kraken.is_dir():
         for pair_dir in sorted(path for path in kraken.iterdir() if path.is_dir()):
             for interval_dir in sorted(path for path in pair_dir.iterdir() if path.is_dir()):
-                if not any(interval_dir.glob("*.parquet")):
+                month_files = _kraken_files(interval_dir)
+                if not month_files:
                     continue
-                relative = f"parquet/kraken/ohlcvt/{pair_dir.name}/{interval_dir.name}/*.parquet"
-                name = f"hist_kr_{pair_dir.name.lower()}_{interval_dir.name}"
-                chunks.append(_view(name, relative))
-                names.append(name)
-    return "".join(chunks), tuple(names)
+                relative = tuple(_relative(root, path) for path in month_files)
+                for name in _kraken_names(
+                    pair_dir.name,
+                    interval_dir.name,
+                    replace_legacy=replace_legacy_views,
+                ):
+                    views.append((name, _view(name, relative)))
+    return tuple(views)
 
 
-def merge_catalog(existing: str, statements: str, names: tuple[str, ...]) -> str:
+def merge_catalog(
+    existing: str,
+    views: Sequence[tuple[str, str]],
+    *,
+    replace_legacy: bool,
+) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
+    """Return merged SQL, emitted view names, and names left untouched."""
+
     without_block = _BLOCK.sub("", existing)
-    stripped_views = _strip_views(without_block, set(names))
+    outside = {match.group(1) for match in _VIEW_DECL.finditer(without_block)}
+    kept: list[tuple[str, str]] = []
+    skipped: list[str] = []
+    for name, statement in views:
+        if name in outside and not replace_legacy:
+            skipped.append(name)
+            continue
+        kept.append((name, statement))
+    if replace_legacy:
+        without_block = _strip_views(without_block, {name for name, _statement in kept})
+    statements = "".join(statement for _name, statement in kept)
     body = (
         f"{_BEGIN}\n"
         "-- Generated by python -m research.hist_etl. Do not edit inside this block.\n"
-        f"{statements if statements else '-- No parquet files yet.\n'}"
+        f"{statements if statements else '-- No pipeline parquet files yet.\n'}"
         f"{_END}\n"
     )
-    prefix = stripped_views.rstrip()
-    if prefix:
-        return prefix + "\n\n" + body
-    return body
+    prefix = without_block.rstrip()
+    merged = prefix + "\n\n" + body if prefix else body
+    names = tuple(name for name, _statement in kept)
+    return merged, names, tuple(skipped)
 
 
 def apply_catalog(root: Path, catalog_sql: str) -> None:
@@ -88,7 +149,7 @@ def apply_catalog(root: Path, catalog_sql: str) -> None:
         raise HistEtlError("catalog.sql is missing the hist_etl block", exit_code=2)
     rendered = match.group(0).replace("__HIST__", _sql_root(root))
     database = root / "research.duckdb"
-    connection = duckdb.connect(str(database))
+    connection = _connect(database)
     try:
         connection.execute("SET TimeZone='UTC'")
         for statement in _statements(rendered):
@@ -97,24 +158,81 @@ def apply_catalog(root: Path, catalog_sql: str) -> None:
         connection.close()
 
 
-def _symbols(directory: Path) -> tuple[str, ...]:
-    found: set[str] = set()
-    for path in directory.glob("*.parquet"):
-        match = _FILE_NAME.fullmatch(path.name)
-        if match is not None:
-            found.add(match.group(1))
-    return tuple(sorted(found))
+def _connect(database: Path) -> duckdb.DuckDBPyConnection:
+    delay = 0.2
+    last: BaseException | None = None
+    for attempt in range(1, _LOCK_ATTEMPTS + 1):
+        try:
+            return duckdb.connect(str(database))
+        except duckdb.Error as exc:
+            if "lock" not in str(exc).lower():
+                raise
+            last = exc
+            if attempt == _LOCK_ATTEMPTS:
+                break
+            time.sleep(delay)
+            delay *= 2
+    raise HistEtlError(
+        "research.duckdb is locked by another process. Close that DuckDB session and retry. "
+        f"Last error: {last}",
+        exit_code=2,
+    ) from last
 
 
-def _view(name: str, relative_glob: str) -> str:
+def _binance_files(directory: Path) -> dict[str, list[Path]]:
+    found: dict[str, list[Path]] = {}
+    for path in sorted(directory.glob("*.parquet")):
+        match = _BINANCE_FILE.fullmatch(path.name)
+        sidecar = path.with_name(path.name + ".sources.json")
+        if match is None or not sidecar.is_file():
+            continue
+        found.setdefault(match.group(1), []).append(path)
+    return found
+
+
+def _kraken_files(directory: Path) -> tuple[Path, ...]:
+    files: list[Path] = []
+    for path in sorted(directory.glob("*.parquet")):
+        sidecar = path.with_name(path.name + ".sources.json")
+        if _KRAKEN_FILE.fullmatch(path.name) is None or not sidecar.is_file():
+            continue
+        files.append(path)
+    return tuple(files)
+
+
+def _binance_names(market: str, symbol: str, slug: str, *, replace_legacy: bool) -> tuple[str, ...]:
+    primary = f"hist_bn_{market}_{symbol.lower()}_{slug}"
+    if replace_legacy and symbol == "BTCUSDT":
+        return (primary, f"hist_bn_{market}_{slug}")
+    return (primary,)
+
+
+def _kraken_names(pair: str, interval: str, *, replace_legacy: bool) -> tuple[str, ...]:
+    primary = f"hist_kr_ohlcvt_{pair.lower()}_{interval}"
+    if replace_legacy:
+        return (primary, f"hist_kr_{pair.lower()}_{interval}")
+    return (primary,)
+
+
+def _relative(root: Path, path: Path) -> str:
+    try:
+        relative = path.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError as exc:
+        raise HistEtlError(
+            f"parquet path is outside the archive root: {path}", exit_code=2
+        ) from exc
+    if "'" in relative or ".." in relative.split("/"):
+        raise HistEtlError(f"unsafe parquet path {relative}", exit_code=2)
+    return relative
+
+
+def _view(name: str, relative_paths: tuple[str, ...]) -> str:
     if not _VIEW_NAME.fullmatch(name):
         raise HistEtlError(f"unsafe view name {name}", exit_code=2)
-    if "'" in relative_glob or ".." in relative_glob.split("/"):
-        raise HistEtlError(f"unsafe parquet glob {relative_glob}", exit_code=2)
-    return (
-        f"CREATE OR REPLACE VIEW {name} AS\n"
-        f"SELECT * FROM read_parquet('__HIST__/{relative_glob}');\n"
-    )
+    if not relative_paths:
+        raise HistEtlError(f"{name} has no parquet files", exit_code=2)
+    listed = ",\n".join(f"    '__HIST__/{path}'" for path in relative_paths)
+    return f"CREATE OR REPLACE VIEW {name} AS\nSELECT * FROM read_parquet([\n{listed}\n]);\n"
 
 
 def _strip_views(sql: str, names: set[str]) -> str:

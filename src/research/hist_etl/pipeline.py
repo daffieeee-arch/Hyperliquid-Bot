@@ -94,6 +94,8 @@ def run_sync(
     env: Mapping[str, str],
     dry_run: bool,
     transport: Transport | None = None,
+    rebuild: bool = False,
+    replace_legacy_views: bool = False,
 ) -> int:
     if dry_run:
         return run_plan(
@@ -119,9 +121,17 @@ def run_sync(
         limiter,
         gaps,
     )
-    _materialize_binance(binance, acquired, safe_root, today, manifest.min_free_bytes, gaps)
-    _sync_kraken(manifest, kraken, safe_root, client, limiter, gaps)
-    refresh_catalog(safe_root)
+    _materialize_binance(
+        binance,
+        acquired,
+        safe_root,
+        today,
+        manifest.min_free_bytes,
+        gaps,
+        rebuild=rebuild,
+    )
+    _sync_kraken(manifest, kraken, safe_root, client, limiter, gaps, rebuild=rebuild)
+    refresh_catalog(safe_root, replace_legacy_views=replace_legacy_views)
     _write_report(safe_root, gaps, command="sync")
     for gap in gaps:
         print(f"gap\t{gap.kind}\t{gap.dataset_id}\t{gap.detail}")
@@ -175,11 +185,12 @@ def run_catalog(
     manifest_path: Path,
     dataset_ids: tuple[str, ...] | None,
     env: Mapping[str, str],
+    replace_legacy_views: bool = False,
 ) -> int:
     _manifest, _binance, _kraken, safe_root = _context(root, manifest_path, dataset_ids, env)
     if not safe_root.is_dir():
         raise HistEtlError(f"archive root does not exist: {safe_root}", exit_code=2)
-    names = refresh_catalog(safe_root)
+    names = refresh_catalog(safe_root, replace_legacy_views=replace_legacy_views)
     print(f"catalog\tviews={len(names)}")
     for name in names:
         print(f"catalog\tview\t{name}")
@@ -298,8 +309,14 @@ def _acquire_binance(
         except HistEtlError as exc:
             if exc.exit_code == 3:
                 raise
-            kind = "missing_archive" if "not found" in str(exc) else "checksum_mismatch"
-            gaps.append(Gap(kind, plan.dataset_id, str(exc)))
+            text = str(exc)
+            if "not found" in text:
+                kind = "missing_archive"
+            elif "download failed" in text:
+                kind = "download_failed"
+            else:
+                kind = "checksum_mismatch"
+            gaps.append(Gap(kind, plan.dataset_id, text))
             continue
         if local is None:
             gaps.append(Gap("missing_archive", plan.dataset_id, plan.filename))
@@ -358,6 +375,8 @@ def _materialize_binance(
     today: date,
     min_free_bytes: int,
     gaps: list[Gap],
+    *,
+    rebuild: bool,
 ) -> None:
     by_id = {spec.id: spec for spec in specs}
     have = {(item.dataset_id, item.period): item for item in acquired}
@@ -396,6 +415,7 @@ def _materialize_binance(
             root=root,
             today=today,
             staging=root / "staging" / "hist_etl" / "binance",
+            rebuild=rebuild,
         )
         gaps.extend(month_gaps)
 
@@ -429,6 +449,8 @@ def _sync_kraken(
     transport: Transport,
     limiter: RateLimiter,
     gaps: list[Gap],
+    *,
+    rebuild: bool,
 ) -> None:
     for spec in specs:
         if spec.url is not None:
@@ -458,7 +480,7 @@ def _sync_kraken(
             SourceDigest(name=path.name, sha256=cached_sha256(root, path), path=path)
             for path in zips
         )
-        gaps.extend(ingest_kraken(spec, zips, root=root, sources=digests))
+        gaps.extend(ingest_kraken(spec, zips, root=root, sources=digests, rebuild=rebuild))
 
 
 def _kraken_zips(root: Path, spec: KrakenSpec) -> tuple[Path, ...]:

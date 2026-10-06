@@ -2,6 +2,7 @@
 
 The support article defines headerless rows
 ``timestamp,open,high,low,close,volume,trades`` with Unix seconds.
+``ts`` is that candle-open timestamp. The bar closes at ``ts`` plus the interval.
 Intervals with no trades are omitted, so a missing minute is not a gap.
 """
 
@@ -9,7 +10,6 @@ from __future__ import annotations
 
 import csv
 import io
-import json
 import os
 import re
 import zipfile
@@ -19,6 +19,7 @@ from pathlib import Path
 import duckdb
 
 from research.hist_etl.errors import HistEtlError
+from research.hist_etl.files import atomic_write_json, decide_output, warn
 from research.hist_etl.models import KRAKEN_MINUTES_TO_SLUG, Gap, KrakenSpec, SourceDigest
 
 _MEMBER = re.compile(r"(?i)(?:^|/)([A-Z0-9]+)_(\d+)\.csv$")
@@ -26,7 +27,9 @@ _COLUMNS = ("source", "ts_raw", "open", "high", "low", "close", "volume", "trade
 
 
 def kraken_parquet_path(root: Path, pair: str, interval: str, month: str) -> Path:
-    return root / "parquet" / "kraken" / "ohlcvt" / pair / interval / f"{month}.parquet"
+    return (
+        root / "parquet" / "hist_etl" / "kraken" / "ohlcvt" / pair / interval / f"{month}.parquet"
+    )
 
 
 def ingest_kraken(
@@ -35,6 +38,7 @@ def ingest_kraken(
     *,
     root: Path,
     sources: tuple[SourceDigest, ...],
+    rebuild: bool = False,
 ) -> tuple[Gap, ...]:
     if not zips:
         return (Gap("missing_kraken_zip", spec.id, f"no zip matched {spec.zip_glob}"),)
@@ -54,7 +58,9 @@ def ingest_kraken(
         for interval in missing:
             gaps.append(Gap("missing_kraken_zip", spec.id, f"{pair} {interval} CSV is absent"))
     for (pair, interval), files in sorted(grouped.items()):
-        gaps.extend(_materialize_series(spec, pair, interval, files, root, sources))
+        gaps.extend(
+            _materialize_series(spec, pair, interval, files, root, sources, rebuild=rebuild)
+        )
     return tuple(gaps)
 
 
@@ -79,6 +85,7 @@ def _materialize_series(
     files: list[tuple[Path, str]],
     root: Path,
     sources: tuple[SourceDigest, ...],
+    rebuild: bool = False,
 ) -> tuple[Gap, ...]:
     connection = duckdb.connect()
     try:
@@ -120,11 +127,16 @@ def _materialize_series(
             months = connection.execute(
                 "SELECT DISTINCT strftime(ts, '%Y-%m') FROM published ORDER BY 1"
             ).fetchall()
+            refused: list[Gap] = []
             for (month,) in months:
                 if not isinstance(month, str):
                     continue
                 destination = kraken_parquet_path(root, pair, interval, month)
-                if _month_is_current(destination, sources):
+                action = decide_output(destination, sources, rebuild=rebuild)
+                if action == "audit":
+                    continue
+                if action != "write":
+                    refused.append(_refuse_overwrite(destination, spec.id, action))
                     continue
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 partial = destination.with_name(destination.name + ".partial")
@@ -148,7 +160,7 @@ def _materialize_series(
             for path in frames:
                 if path.is_file():
                     path.unlink()
-        return ()
+        return tuple(refused)
     finally:
         connection.close()
 
@@ -305,15 +317,13 @@ def _validate(connection: duckdb.DuckDBPyConnection) -> list[str]:
     return problems
 
 
-def _month_is_current(destination: Path, sources: tuple[SourceDigest, ...]) -> bool:
-    sidecar = destination.with_name(destination.name + ".sources.json")
-    if not destination.is_file() or not sidecar.is_file():
-        return False
-    payload = json.loads(sidecar.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
-        return False
-    expected = [{"name": source.name, "sha256": source.sha256} for source in sources]
-    return payload.get("sources") == expected
+def _refuse_overwrite(destination: Path, dataset_id: str, action: str) -> Gap:
+    reason = (
+        "no .sources.json sidecar" if action == "untracked" else "sources differ from .sources.json"
+    )
+    detail = f"refusing to overwrite {destination.name}: {reason}; pass --rebuild to replace it"
+    warn(detail)
+    return Gap("refused_overwrite", dataset_id, detail)
 
 
 def _write_sidecar(destination: Path, sources: tuple[SourceDigest, ...]) -> None:
@@ -322,7 +332,7 @@ def _write_sidecar(destination: Path, sources: tuple[SourceDigest, ...]) -> None
         "sources": [{"name": source.name, "sha256": source.sha256} for source in sources],
         "sparse_intervals": True,
     }
-    sidecar.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    atomic_write_json(sidecar, payload)
 
 
 def _is_int(value: str) -> bool:

@@ -50,7 +50,7 @@ from .capture_observability import (
     elapsed_from_report,
     transport_exception_fields,
 )
-from .capture_operator_alert import emit_capture_operator_alert
+from .capture_operator_alert import write_health_then_alert
 from .parquet_research import ParquetResearchWriter, ParquetRotation, create_research_catalog
 from .raw_research import (
     RAW_RESEARCH_SCHEMA_VERSION,
@@ -2389,8 +2389,9 @@ async def run_reconstructable_capture(
             report.get("gaps"),
             report.get("parquet_files"),
         )
-        if not paths.capture_health_path.exists():
-            _write_create_only_json(
+        write_health_then_alert(
+            should_write_health=not paths.capture_health_path.exists(),
+            write_health=lambda: _write_create_only_json(
                 paths.capture_health_path,
                 data1e_capture_health(
                     run_id=run_id,
@@ -2399,14 +2400,13 @@ async def run_reconstructable_capture(
                     report=report,
                     include_ticker=include_ticker,
                 ),
-            )
-        if status == "FAILED":
-            emit_capture_operator_alert(
-                venue=BITVAVO_MDPRO_VENUE,
-                run_id=run_id,
-                status=status,
-                error=terminal_error,
-            )
+            ),
+            status=status,
+            venue=BITVAVO_MDPRO_VENUE,
+            run_id=run_id,
+            error=terminal_error,
+            raw_dir=paths.raw_dir,
+        )
     return {
         **report,
         "run_id": run_id,

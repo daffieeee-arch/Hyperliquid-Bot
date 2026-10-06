@@ -1,4 +1,4 @@
-"""Event-driven capture_operator_alert — no polling watchdogs."""
+"""Capture-failure webhook: in-process hook plus the external checker."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from email.message import Message
 from typing import cast
 
@@ -19,9 +20,11 @@ from hyperliquid_bot.capture_operator_alert import (
     CaptureAlertLane,
     WebhookDeliveryError,
     _default_webhook_post,
+    capture_alert_idempotency_key,
     capture_alert_webhook_headers,
     capture_operator_alert_payload,
     emit_capture_operator_alert,
+    format_alert_timestamps,
     sanitize_alert_error_message,
 )
 
@@ -34,22 +37,41 @@ def test_sanitize_alert_error_message_redacts_secret_shaped_tokens() -> None:
 
 
 def test_payload_is_secret_free_and_stable() -> None:
+    last_write = datetime(2026, 9, 20, 8, 59, tzinfo=UTC)
+    last_write_utc, last_write_amsterdam = format_alert_timestamps(last_write)
+    reason = "Binance required public stream was starved."
     payload = capture_operator_alert_payload(
         venue="binance",
         run_id="run-1",
         status="FAILED",
-        error=RuntimeError("Binance required public stream was starved."),
+        error=RuntimeError(reason),
         host="chupa",
         ts_utc="2026-09-20T09:00:00Z",
+        last_write=last_write,
+        code_version="abc1234",
     )
+    assert last_write_utc == "2026-09-20T08:59:00Z"
+    assert last_write_amsterdam == "2026-09-20T10:59:00+02:00"
     assert payload == {
         "venue": "binance",
         "run_id": "run-1",
+        "state": "FAILED",
         "status": "FAILED",
+        "reason": reason,
         "error_class": "RuntimeError",
-        "error_message": "Binance required public stream was starved.",
+        "error_message": reason,
+        "last_write_utc": last_write_utc,
+        "last_write_amsterdam": last_write_amsterdam,
         "host": "chupa",
+        "code_version": "abc1234",
         "ts_utc": "2026-09-20T09:00:00Z",
+        "idempotency_key": capture_alert_idempotency_key(
+            venue="binance",
+            run_id="run-1",
+            state="FAILED",
+            reason=reason,
+        ),
+        "alert_kind": "failure",
     }
 
 
@@ -104,11 +126,15 @@ def test_emit_logs_and_posts_webhook_once(caplog: pytest.LogCaptureFixture) -> N
     assert posted[0][0] == "https://example.test/hook"
     assert posted[0][2] == 1.5
     assert posted[0][3]["Authorization"] == token
+    assert posted[0][3]["Idempotency-Key"] == payload["idempotency_key"]
     body = cast(dict[str, str], json.loads(posted[0][1].decode("utf-8")))
     assert body["venue"] == "bitvavo"
     assert body["run_id"] == "run-2"
+    assert body["state"] == "FAILED"
     assert body["status"] == "FAILED"
     assert body["error_class"] == "RuntimeError"
+    assert "webhook_delivered" not in body
+    assert token not in body["reason"]
 
 
 def test_webhook_failure_is_swallowed(caplog: pytest.LogCaptureFixture) -> None:

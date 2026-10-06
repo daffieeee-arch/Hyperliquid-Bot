@@ -1,0 +1,17 @@
+---
+description: Claude Code code review is standard in the Hyperliquid-Bot ship workflow
+alwaysApply: true
+---
+
+# Claude Code code review (standard)
+
+For this repository, **Claude Code's built-in `/code-review` is part of the normal development workflow**, not an optional extra. Bugbot is no longer used.
+
+When opening or updating a feature PR:
+
+1. After the PR exists (and after material follow-up commits), the branch changes get a Claude Code `/code-review` (for example `/code-review high <branch>`). A Cursor agent cannot run it: ask the operator to run it in a Claude Code session.
+2. Verify each finding; fix the real ones on the same branch; push; re-run the review when the diff changed materially. Report findings judged not to be bugs, with the reason.
+3. Skip the review only for trivial docs/chore PRs unless the user asks for it anyway.
+4. Do not treat CI green alone as sufficient review for feature PRs — the code review runs before Ready/CoS merge.
+
+Canonical workflow text: `AGENTS.md` → Development workflow (code review step).

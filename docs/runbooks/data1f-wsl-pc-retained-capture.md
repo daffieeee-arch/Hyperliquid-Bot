@@ -311,7 +311,8 @@ When the assigned goal is a 72-hour reconstructable tape (`DURATION_SECONDS=2592
   `OPERATOR_STOP`. Terminal `FAILED` emits one event-driven
   `capture_operator_alert` (optional `CAPTURE_ALERT_WEBHOOK_URL` and
   `CAPTURE_ALERT_WEBHOOK_AUTHORIZATION`, bounded retries, HTTP status logged,
-  no secret text); no polling cron.
+  no secret text). A dead process is covered by the external checker in
+  `docs/runbooks/capture-failure-alert.md`.
 - **Apply path:** BN process restart is required before this reconnect policy
   and the socket drain are live. CoS / VPS ops only. Do not restart
   `bn-capture` from this note. Do not stop `hl-capture` / `bv-capture` /

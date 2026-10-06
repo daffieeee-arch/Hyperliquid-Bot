@@ -112,6 +112,12 @@ parquet/hist_etl/kraken/ohlcvt/XBTUSD/{1m|5m|15m|30m|1h|4h|12h|1d}/YYYY-MM.parqu
 `ts` is the OHLCVT candle-open timestamp. The bar's close is `ts` plus the
 interval. Sparse minutes are kept as published.
 
+Look-ahead: Kraken `ts` is the candle open and Binance kline `ts` is
+`close_time`. Joining those columns compares an open Kraken bar with a closed
+Binance bar. Add the Kraken interval (`ts + INTERVAL 1 DAY` for `1d`, and the
+matching interval for the other bars) when the join should use the Kraken
+decision time.
+
 Put zips under `kraken-ohlcvt/Kraken_OHLCVT*.zip`. An optional `url` in the
 manifest downloads one https zip when that file is absent. Kraken does not
 publish a SHA256 sidecar; the zip must open and contain the selected CSV.
@@ -131,6 +137,12 @@ prints a unified diff, and then lets the pipeline also publish those short
 names. SQL outside the block, including `live_*` views, is otherwise kept.
 Placeholder `__HIST__` is the archive root. Views are not created for empty
 datasets. Each view is an explicit file list, not a directory glob.
+
+Before it applies a view, `catalog` reads live relations from `duckdb_views()`
+and `duckdb_tables()`. A name that exists in `research.duckdb` and is not in
+the previous hist_etl block is foreign. The command skips that `CREATE OR
+REPLACE`, prints a warning, and exits 2. `--replace-legacy-views` is the
+explicit opt-in that replaces it, after the catalog backup and diff.
 
 `catalog.sql` is replaced only after DuckDB accepts the new block. If
 `research.duckdb` is locked, the command retries and then exits with a message

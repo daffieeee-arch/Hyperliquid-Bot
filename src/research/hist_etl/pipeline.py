@@ -131,7 +131,15 @@ def run_sync(
         rebuild=rebuild,
     )
     _sync_kraken(manifest, kraken, safe_root, client, limiter, gaps, rebuild=rebuild)
-    refresh_catalog(safe_root, replace_legacy_views=replace_legacy_views)
+    _applied, foreign = refresh_catalog(safe_root, replace_legacy_views=replace_legacy_views)
+    for name in foreign:
+        gaps.append(
+            Gap(
+                "foreign_relation",
+                "catalog",
+                f"refusing to replace live relation {name}; pass --replace-legacy-views",
+            )
+        )
     _write_report(safe_root, gaps, command="sync")
     for gap in gaps:
         print(f"gap\t{gap.kind}\t{gap.dataset_id}\t{gap.detail}")
@@ -190,11 +198,11 @@ def run_catalog(
     _manifest, _binance, _kraken, safe_root = _context(root, manifest_path, dataset_ids, env)
     if not safe_root.is_dir():
         raise HistEtlError(f"archive root does not exist: {safe_root}", exit_code=2)
-    names = refresh_catalog(safe_root, replace_legacy_views=replace_legacy_views)
+    names, foreign = refresh_catalog(safe_root, replace_legacy_views=replace_legacy_views)
     print(f"catalog\tviews={len(names)}")
     for name in names:
         print(f"catalog\tview\t{name}")
-    return 0
+    return 2 if foreign else 0
 
 
 def _context(

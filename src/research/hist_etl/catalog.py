@@ -34,18 +34,40 @@ _END = "-- END research.hist_etl"
 _LOCK_ATTEMPTS = 5
 
 
-def refresh_catalog(root: Path, *, replace_legacy_views: bool = False) -> tuple[str, ...]:
+def refresh_catalog(
+    root: Path, *, replace_legacy_views: bool = False
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Write ``catalog.sql`` and create the generated views.
 
     Existing ``hist_bn_*`` / ``hist_kr_*`` statements outside the generated block
-    stay in place. ``replace_legacy_views`` copies ``catalog.sql`` to a backup,
-    prints a diff, and then lets the generated names replace those statements.
+    stay in place. A view or table that already exists in ``research.duckdb`` and
+    is not named in the previous hist_etl block is foreign: it is not replaced,
+    and the second tuple lists those names so the caller can exit 2.
+    ``replace_legacy_views`` copies ``catalog.sql`` to a backup, prints a diff,
+    and then lets the generated names replace those statements and relations.
     The SQL file is replaced only after DuckDB accepts the new block.
     """
 
     views = render_statements(root, replace_legacy_views=replace_legacy_views)
     catalog_path = root / "catalog.sql"
     existing = catalog_path.read_text(encoding="utf-8") if catalog_path.is_file() else ""
+    owned = _managed_names(existing)
+    live = _live_relations(root)
+    # A relation that already exists in DuckDB, and was not emitted by the previous
+    # hist_etl block, belongs to the operator. CREATE OR REPLACE would destroy it.
+    foreign = tuple(
+        name
+        for name, _statement in views
+        if name in live and name not in owned and not replace_legacy_views
+    )
+    if foreign:
+        blocked = set(foreign)
+        views = tuple((name, statement) for name, statement in views if name not in blocked)
+        for name in foreign:
+            warn(
+                f"refusing to replace live relation {name}: it is not in the previous "
+                "hist_etl catalog block; pass --replace-legacy-views to replace it"
+            )
     merged, names, skipped = merge_catalog(
         existing,
         views,
@@ -56,6 +78,9 @@ def refresh_catalog(root: Path, *, replace_legacy_views: bool = False) -> tuple[
             f"skipping view {name}: an existing catalog definition is outside the "
             "hist_etl block; pass --replace-legacy-views to replace it"
         )
+    preserved = _preserved_statements(existing, set(names), live)
+    if preserved:
+        merged = merged.replace(f"{_END}\n", preserved + f"{_END}\n", 1)
     if replace_legacy_views and existing:
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         backup = catalog_path.with_name(f"catalog.sql.bak.{stamp}")
@@ -72,7 +97,7 @@ def refresh_catalog(root: Path, *, replace_legacy_views: bool = False) -> tuple[
         print(f"catalog\tbackup\t{backup}")
     apply_catalog(root, merged)
     atomic_write_text(catalog_path, merged)
-    return names
+    return names, foreign
 
 
 def render_statements(
@@ -141,6 +166,57 @@ def merge_catalog(
     merged = prefix + "\n\n" + body if prefix else body
     names = tuple(name for name, _statement in kept)
     return merged, names, tuple(skipped)
+
+
+def _preserved_statements(existing: str, emitted: set[str], live: set[str]) -> str:
+    """Keep prior pipeline views that this run is not replacing.
+
+    A missing sidecar must not drop the view from the block. If it did, the next
+    run would treat the live relation as foreign and refuse to refresh it.
+    """
+
+    match = _BLOCK.search(existing)
+    if match is None:
+        return ""
+    chunks: list[str] = []
+    for statement in _statements(match.group(0)):
+        found = _VIEW_DECL.search(statement)
+        if found is None:
+            continue
+        name = found.group(1)
+        if name in emitted or name not in live:
+            continue
+        text = statement.strip()
+        if not text.endswith(";"):
+            text += ";"
+        chunks.append(text + "\n")
+    return "".join(chunks)
+
+
+def _managed_names(existing: str) -> set[str]:
+    match = _BLOCK.search(existing)
+    if match is None:
+        return set()
+    return {found.group(1) for found in _VIEW_DECL.finditer(match.group(0))}
+
+
+def _live_relations(root: Path) -> set[str]:
+    """User view and table names in the main schema. System objects are omitted."""
+
+    connection = _connect(root / "research.duckdb")
+    try:
+        rows = connection.execute(
+            """
+            SELECT view_name FROM duckdb_views()
+            WHERE schema_name = 'main' AND NOT internal
+            UNION ALL
+            SELECT table_name FROM duckdb_tables()
+            WHERE schema_name = 'main' AND NOT internal
+            """
+        ).fetchall()
+    finally:
+        connection.close()
+    return {str(row[0]) for row in rows if row[0] is not None}
 
 
 def apply_catalog(root: Path, catalog_sql: str) -> None:

@@ -45,6 +45,7 @@ export function DataTable<TRow extends RowData>({
   cellClassName,
   emptyLabel = "No rows.",
   nowrap = false,
+  stickyFirst = false,
 }: {
   columns: DataTableColumns<TRow>;
   data: TRow[];
@@ -55,6 +56,8 @@ export function DataTable<TRow extends RowData>({
   emptyLabel?: string;
   /** Keep cells on one line and let `.table-scroll` scroll horizontally instead. */
   nowrap?: boolean;
+  /** Pin the first column while the rest of a nowrap table scrolls. */
+  stickyFirst?: boolean;
 }) {
   const table = useTable({
     features: dataTableFeatures,
@@ -68,7 +71,7 @@ export function DataTable<TRow extends RowData>({
   }
 
   return (
-    <div className="table-scroll">
+    <div className={cn("table-scroll", stickyFirst && "table-scroll-sticky-first")}>
       <table className={nowrap ? "dt dt-nowrap" : "dt"}>
         {caption === undefined ? null : <caption>{caption}</caption>}
         <thead>

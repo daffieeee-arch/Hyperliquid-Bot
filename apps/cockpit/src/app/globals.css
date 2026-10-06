@@ -867,7 +867,8 @@ body {
   background: var(--panel-2);
 }
 
-.seg button {
+.seg button,
+.seg a {
   appearance: none;
   border: 0;
   background: transparent;
@@ -878,18 +879,27 @@ body {
   font-size: 0.75rem;
   font-weight: 600;
   cursor: pointer;
+  text-decoration: none;
   transition:
     background 0.12s ease,
     color 0.12s ease;
 }
 
-.seg button:hover {
+.seg button:hover,
+.seg a:hover {
   color: var(--text);
 }
 
-.seg button[aria-pressed="true"] {
+.seg button[aria-pressed="true"],
+.seg a[aria-current="page"] {
   background: var(--paper);
   color: var(--paper-ink);
+}
+
+.seg button:focus-visible,
+.seg a:focus-visible {
+  outline: 2px solid var(--paper);
+  outline-offset: 1px;
 }
 
 .field {
@@ -932,6 +942,34 @@ body {
 .table-scroll {
   width: 100%;
   overflow-x: auto;
+}
+
+/* Phone-width hypothesis table: keep the work-package column readable while
+   the rest of the nowrap row scrolls, and show the scrollbar (overlay
+   scrollbars otherwise hide the overflow). */
+.table-scroll-sticky-first {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+
+.table-scroll-sticky-first th:first-child,
+.table-scroll-sticky-first td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--panel);
+  box-shadow: 1px 0 0 var(--line);
+}
+
+.table-scroll-sticky-first th:first-child {
+  z-index: 3;
+  background: var(--panel-2);
+}
+
+/* paper-soft is translucent, so a selected sticky cell would show the
+   scrolled column underneath. Mix onto the opaque panel instead. */
+.table-scroll-sticky-first td.row-selected:first-child {
+  background: color-mix(in srgb, var(--paper) 18%, var(--panel));
 }
 
 table.dt {
@@ -986,6 +1024,73 @@ table.dt th button {
 
 table.dt th button:hover {
   color: var(--text);
+}
+
+table.dt td button.row-select {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  padding: 0;
+}
+
+table.dt td button.row-select[aria-pressed="true"] {
+  color: var(--text-strong);
+  font-weight: 600;
+}
+
+table.dt td button.row-select:focus-visible {
+  outline: 2px solid var(--paper);
+  outline-offset: 2px;
+}
+
+table.dt td.row-selected {
+  background: var(--paper-soft);
+}
+
+.report {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+.report h3,
+.report h4 {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
+.report p,
+.report ul,
+.report ol {
+  margin: 0;
+}
+
+.report ul,
+.report ol {
+  padding-left: 1.15rem;
+}
+
+.report pre {
+  margin: 0;
+  overflow: auto;
+  padding: 0.6rem 0.7rem;
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+
+.report code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
 }
 
 table.dt td {
@@ -1167,6 +1272,13 @@ table.dt tbody tr:last-child td {
 }
 .notice-ok strong {
   color: var(--ok);
+}
+.notice-gate {
+  border-left-color: var(--paper);
+  background: var(--paper-soft);
+}
+.notice-gate strong {
+  color: var(--paper);
 }
 
 .empty {

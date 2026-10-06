@@ -49,6 +49,7 @@ describe("cockpit navigation", () => {
     expect(activeRouteId("/")).toBe("overview");
     expect(activeRouteId("/markets")).toBe("markets");
     expect(activeRouteId("/research?data1a_run_id=x")).toBe("research");
+    expect(activeRouteId("/research/results")).toBe("research");
     expect(activeRouteId("/system/anything")).toBe("system");
   });
 });

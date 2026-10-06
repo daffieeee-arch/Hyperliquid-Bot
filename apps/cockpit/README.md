@@ -241,7 +241,12 @@ never auto-bound as RUNNING.
 The DATA-1A panel polls `/api/data1a-capture` every 5 seconds. The venue strip
 polls `/api/venue-capture-health` on the same interval. RESEARCH reads
 `GET /api/research-summaries` for `panel-summary.json` under
-`COCKPIT_RESEARCH_OUT` or `ARTIFACT_ROOT/research-out`. Leave the tab open; do
+`COCKPIT_RESEARCH_OUT` or `ARTIFACT_ROOT/research-out`. Hypothesis results
+(`/research/results`, `GET /api/hypothesis-results`) read `result.json` files
+from `COCKPIT_HYPOTHESIS_RESULTS`, or from `ARTIFACT_ROOT/hypothesis-results`
+when only an artifact root is set. Missing fields stay UNAVAILABLE. The
+sample under `tests/fixtures/hypothesis_results` is not loaded unless you
+point the variable at it. Leave the tab open; do
 not stop any collector to "refresh" numbers. Routes send
 `Cache-Control: no-store`. Optional: `COCKPIT_CAPTURE_FRESH_MAX_S=180` (seconds;
 tunable). Host clock must be sane.

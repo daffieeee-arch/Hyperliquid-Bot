@@ -9,3 +9,7 @@ That folder is the CoS canonical path for the #66 restyle (`docs/design-previews
 **PR #102:** [`pr-102/`](pr-102/)
 
 Design reviews the PAPER polish shots from `docs/design-previews/pr-102/`.
+
+**PR #111:** [`pr-111/`](pr-111/)
+
+Hypothesis results list and detail, desktop and phone width.

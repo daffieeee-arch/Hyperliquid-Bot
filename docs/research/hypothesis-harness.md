@@ -165,17 +165,19 @@ done outside the harness is not deflated.
   and Zhu, 2017), by combinatorially symmetric cross-validation. It compares
   the configs with at least `sample.min_trades_validation` validation
   trades, the configs validation selection can pick (`configs` counts them),
-  so it needs at least two of them. The most recent walk-forward test folds
-  are grouped into equal contiguous blocks: the even count from 4 to 16 that
-  leaves out the fewest (oldest) folds, so at least 4 folds are needed. For
-  every way to pick half of the blocks, the config with the best mean net
-  per trade at 1.0x on that half (the statistic validation selection ranks
-  by; a config without trades in that half earns 0) is ranked on the other
-  half. PBO is the share of splits where it ranks at or below the median. A
-  split where every config ties in-sample selects nothing and is skipped.
-  The other selection gates (significance, stress) are not re-run per split.
-  Near 0 is good; 0.5 means picking the in-sample best is no better than
-  chance.
+  so it needs at least two of them. Like selection, the floor counts trades
+  over all validation folds, so the candidate set knows how often a config
+  trades out of sample, though not how it performs. The most recent
+  walk-forward test folds are grouped into equal contiguous blocks: the even
+  count from 4 to 16 that leaves out the fewest (oldest) folds, so at least
+  4 folds are needed. For every way to pick half of the blocks, the config
+  with the best mean net per trade at 1.0x on that half (the statistic
+  validation selection ranks by; a config without trades in that half earns
+  0) is ranked on the other half. PBO is the share of splits where it ranks
+  at or below the median. A split where every config ties in-sample selects
+  nothing and is skipped. The other selection gates (significance, stress)
+  are not re-run per split. Near 0 is good; 0.5 means picking the in-sample
+  best is no better than chance.
 
 ## Point-in-time checks
 

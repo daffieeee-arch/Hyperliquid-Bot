@@ -268,8 +268,12 @@ def _overfitting_lines(document: dict[str, Json]) -> list[str]:
         return ["- overfitting block missing"]
     lines = ["Diagnostics only; they never change the label.", ""]
     dsr = block.get("deflated_sharpe")
+    which = (
+        "selected"
+        if isinstance(dsr, dict) and dsr.get("selected") is True
+        else "best validation mean, none selected"
+    )
     if isinstance(dsr, dict) and dsr.get("dsr") is not None:
-        which = "selected" if dsr.get("selected") is True else "best validation mean, none selected"
         lines.append(
             (
                 "- deflated Sharpe ratio: `{dsr}` for `{config}` ({which}; Sharpe per trade "
@@ -288,7 +292,8 @@ def _overfitting_lines(document: dict[str, Json]) -> list[str]:
         note = dsr.get("note") if isinstance(dsr, dict) else None
         config = dsr.get("config_id") if isinstance(dsr, dict) else None
         tested = "" if config is None else f" for `{config}`"
-        lines.append(f"- deflated Sharpe ratio: not computed{tested} ({note})")
+        detail = note if config is None else f"{which}; {note}"
+        lines.append(f"- deflated Sharpe ratio: not computed{tested} ({detail})")
     pbo = block.get("pbo")
     if isinstance(pbo, dict) and pbo.get("value") is not None:
         lines.append(

@@ -784,7 +784,8 @@ def test_dsr_tests_the_selection_else_the_best_floored_mean() -> None:
         {"overfitting": _overfitting_json(Overfitting(flat_dsr, no_pbo("not run")))}
     )
     assert any(
-        line.startswith("- deflated Sharpe ratio: not computed for `flat` (") for line in lines
+        line.startswith("- deflated Sharpe ratio: not computed for `flat` (selected; The tested")
+        for line in lines
     )
 
 
@@ -798,7 +799,8 @@ def test_overfitting_notes_explain_a_missing_value(tmp_path: Path) -> None:
     (tmp_path / "short").mkdir()
     short = _run_rows(tmp_path / "short", _regime_rows(420), configs=_two_configs(), test_bars=100)
     pbo = _mapping(_mapping(short["overfitting"])["pbo"])
-    assert pbo["value"] is None
+    # configs still counts the candidates that meet the trade floor.
+    assert (pbo["value"], pbo["configs"]) == (None, 1)
     assert "4 walk-forward test folds" in str(pbo["note"])
     markdown = (tmp_path / "short" / "out" / "result.md").read_text(encoding="utf-8")
     assert "probability of backtest overfitting: not computed" in markdown

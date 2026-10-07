@@ -694,7 +694,10 @@ def _overfitting(
     )
     groups = cscv_blocks(len(folds))
     if groups is None:
-        pbo = no_pbo(f"PBO needs at least 4 walk-forward test folds; this run has {len(folds)}.")
+        pbo = no_pbo(
+            f"PBO needs at least 4 walk-forward test folds; this run has {len(folds)}.",
+            configs=len(floored),
+        )
     elif len(floored) < 2:
         pbo = no_pbo(
             "PBO needs at least two configs that meet the trade floor; "

@@ -64,7 +64,7 @@ class BlockStats:
 
 @dataclass(frozen=True, slots=True)
 class Pbo:
-    """PBO with the number of configs compared and the CSCV split it used."""
+    """PBO with the number of candidate configs and the CSCV split it used."""
 
     value: float | None
     configs: int | None

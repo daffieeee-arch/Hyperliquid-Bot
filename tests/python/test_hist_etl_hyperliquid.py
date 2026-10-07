@@ -522,25 +522,27 @@ def test_view_reads_only_the_files_the_manifest_selects(tmp_path: Path) -> None:
     assert not _has_view(tmp_path)
 
 
-def test_a_stale_view_the_operator_declares_is_left_to_the_operator(tmp_path: Path) -> None:
+def test_an_operator_declaration_does_not_keep_a_stale_view(tmp_path: Path) -> None:
     start = datetime(2026, 9, 1, tzinfo=UTC)
-    manifest = _manifest(tmp_path, start="2026-09-01", end="2026-09-01")
-    assert _sync(tmp_path, manifest, FakeFundingPoster(_hourly(start, 24)), date(2026, 10, 1)) == 0
+    poster = FakeFundingPoster(_hourly(start, 24))
+    btc = _manifest(tmp_path, start="2026-09-01", end="2026-09-01")
+    assert _sync(tmp_path, btc, poster, date(2026, 10, 1)) == 0
     catalog = tmp_path / "catalog.sql"
     operator = "CREATE OR REPLACE VIEW hist_hl_funding_btc AS SELECT 1 AS x;"
     catalog.write_text(catalog.read_text(encoding="utf-8") + operator + "\n", encoding="utf-8")
-    other = _manifest(tmp_path, start="2026-09-01", end="2026-09-01", coin="ETH")
-    assert run_catalog(root=tmp_path, manifest_path=other, dataset_ids=None, env={}) == 0
-    # The generated statement leaves the block, so it no longer re-creates a
-    # view over deselected files; the relation and the operator's statement
-    # are not touched, as for any view declared outside the block.
+    eth = _manifest(tmp_path, start="2026-09-01", end="2026-09-01", coin="ETH")
+    assert run_catalog(root=tmp_path, manifest_path=eth, dataset_ids=None, env={}) == 0
+    # The generated view would go on reading files the manifest no longer
+    # selects: it is dropped, and the operator's statement stays in the file.
+    assert not _has_view(tmp_path)
     assert "hist_hl_funding_btc" not in _block(tmp_path)
-    assert _has_view(tmp_path)
     assert operator in catalog.read_text(encoding="utf-8")
-    # Selected again, the name stays the operator's.
-    assert run_catalog(root=tmp_path, manifest_path=manifest, dataset_ids=None, env={}) == 0
+    # Selected again, the name follows the rule for any view declared outside
+    # the block: it is not generated until --replace-legacy-views.
+    btc = _manifest(tmp_path, start="2026-09-01", end="2026-09-01")
+    assert run_catalog(root=tmp_path, manifest_path=btc, dataset_ids=None, env={}) == 0
+    assert not _has_view(tmp_path)
     assert "hist_hl_funding_btc" not in _block(tmp_path)
-    assert _has_view(tmp_path)
 
 
 def test_a_moved_start_is_not_mistaken_for_an_earlier_today(tmp_path: Path) -> None:

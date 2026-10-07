@@ -219,8 +219,8 @@ cannot charge a bar twice. When no file of a coin qualifies, or the coin's
 datasets were removed from the manifest, its view is dropped, so a query
 fails instead of reading stale rows; the next sync that selects a month file
 creates it again. A name the operator also declares outside the generated
-block is left to that declaration, as for any view: it leaves the block but
-is neither dropped nor created again. A month that is not selected is missing
+block follows the rule for any such view: once dropped, it is not generated
+again until `--replace-legacy-views`. A month that is not selected is missing
 from a view that still has other months, like a hole: `sync` and `verify`
 report it.
 

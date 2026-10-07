@@ -91,12 +91,6 @@ def refresh_catalog(
             f"skipping view {name}: an existing catalog definition is outside the "
             "hist_etl block; pass --replace-legacy-views to replace it"
         )
-    # A stale name the operator also declares outside the block is left to
-    # that declaration, as merge_catalog does for any view: it leaves the
-    # block but is not dropped.
-    yielded = _declared_outside(existing) & set(stale)
-    for name in sorted(yielded):
-        warn(f"leaving {name} to its declaration outside the hist_etl block")
     preserved = _preserved_statements(existing, set(names) | set(stale), live)
     if preserved:
         merged = merged.replace(f"{_END}\n", preserved + f"{_END}\n", 1)
@@ -114,7 +108,7 @@ def refresh_catalog(
         )
         print(diff if diff else "catalog\tno changes\n")
         print(f"catalog\tbackup\t{backup}")
-    apply_catalog(root, merged, drop=tuple(name for name in stale if name not in yielded))
+    apply_catalog(root, merged, drop=stale)
     atomic_write_text(catalog_path, merged)
     return names, foreign
 
@@ -191,7 +185,7 @@ def merge_catalog(
     """Return merged SQL, emitted view names, and names left untouched."""
 
     without_block = _BLOCK.sub("", existing)
-    outside = _declared_outside(existing)
+    outside = {match.group(1) for match in _VIEW_DECL.finditer(without_block)}
     kept: list[tuple[str, str]] = []
     skipped: list[str] = []
     for name, statement in views:
@@ -212,12 +206,6 @@ def merge_catalog(
     merged = prefix + "\n\n" + body if prefix else body
     names = tuple(name for name, _statement in kept)
     return merged, names, tuple(skipped)
-
-
-def _declared_outside(existing: str) -> set[str]:
-    """View names that catalog.sql declares outside the generated block."""
-
-    return {match.group(1) for match in _VIEW_DECL.finditer(_BLOCK.sub("", existing))}
 
 
 def _preserved_statements(existing: str, emitted: set[str], live: set[str]) -> str:

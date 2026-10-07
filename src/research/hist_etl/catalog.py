@@ -91,6 +91,12 @@ def refresh_catalog(
             f"skipping view {name}: an existing catalog definition is outside the "
             "hist_etl block; pass --replace-legacy-views to replace it"
         )
+    # A stale name the operator also declares outside the block is left to
+    # that declaration, as merge_catalog does for any view: it leaves the
+    # block but is not dropped.
+    yielded = _declared_outside(existing) & set(stale)
+    for name in sorted(yielded):
+        warn(f"leaving {name} to its declaration outside the hist_etl block")
     preserved = _preserved_statements(existing, set(names) | set(stale), live)
     if preserved:
         merged = merged.replace(f"{_END}\n", preserved + f"{_END}\n", 1)
@@ -108,7 +114,7 @@ def refresh_catalog(
         )
         print(diff if diff else "catalog\tno changes\n")
         print(f"catalog\tbackup\t{backup}")
-    apply_catalog(root, merged, drop=stale)
+    apply_catalog(root, merged, drop=tuple(name for name in stale if name not in yielded))
     atomic_write_text(catalog_path, merged)
     return names, foreign
 
@@ -185,7 +191,7 @@ def merge_catalog(
     """Return merged SQL, emitted view names, and names left untouched."""
 
     without_block = _BLOCK.sub("", existing)
-    outside = {match.group(1) for match in _VIEW_DECL.finditer(without_block)}
+    outside = _declared_outside(existing)
     kept: list[tuple[str, str]] = []
     skipped: list[str] = []
     for name, statement in views:
@@ -206,6 +212,12 @@ def merge_catalog(
     merged = prefix + "\n\n" + body if prefix else body
     names = tuple(name for name, _statement in kept)
     return merged, names, tuple(skipped)
+
+
+def _declared_outside(existing: str) -> set[str]:
+    """View names that catalog.sql declares outside the generated block."""
+
+    return {match.group(1) for match in _VIEW_DECL.finditer(_BLOCK.sub("", existing))}
 
 
 def _preserved_statements(existing: str, emitted: set[str], live: set[str]) -> str:
@@ -262,6 +274,10 @@ def _live_relations(root: Path) -> set[str]:
 def apply_catalog(root: Path, catalog_sql: str, *, drop: Sequence[str] = ()) -> None:
     """Run the block, then drop the generated views in ``drop``, on one connection."""
 
+    for name in drop:
+        # Checked before any statement runs, so a refusal leaves DuckDB as it was.
+        if not _VIEW_NAME.fullmatch(name):
+            raise HistEtlError(f"unsafe view name {name}", exit_code=2)
     match = _BLOCK.search(catalog_sql)
     if match is None:
         raise HistEtlError("catalog.sql is missing the hist_etl block", exit_code=2)
@@ -285,8 +301,6 @@ def _drop_views(connection: duckdb.DuckDBPyConnection, names: Sequence[str]) -> 
     ).fetchall()
     live_views = {str(row[0]) for row in rows}
     for name in names:
-        if not _VIEW_NAME.fullmatch(name):
-            raise HistEtlError(f"unsafe view name {name}", exit_code=2)
         if name in live_views:
             warn(f"dropping view {name}: no funding month file of the manifest selects it")
             connection.execute(f"DROP VIEW {name}")

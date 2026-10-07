@@ -332,13 +332,7 @@ def _raw_window(raw_path: Path) -> tuple[int, int] | None:
         payload = json.loads(raw_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    if not isinstance(payload, dict):
-        return None
-    start_ms = payload.get("start_ms")
-    end_ms = payload.get("end_ms")
-    if type(start_ms) is not int or type(end_ms) is not int:
-        return None
-    return start_ms, end_ms
+    return _recorded_window(payload) if isinstance(payload, dict) else None
 
 
 def ready_to_settle(
@@ -567,7 +561,7 @@ def _decide(
 
 
 def _recorded_window(payload: dict[str, object] | None) -> tuple[int, int] | None:
-    """The ``start_ms`` / ``end_ms`` a month file's sidecar says it covers."""
+    """The ``start_ms`` / ``end_ms`` a raw file or a sidecar says it covers."""
 
     if payload is None:
         return None

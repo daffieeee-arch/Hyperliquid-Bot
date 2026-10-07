@@ -522,7 +522,7 @@ def test_view_reads_only_the_files_the_manifest_selects(tmp_path: Path) -> None:
     assert not _has_view(tmp_path)
 
 
-def test_an_operator_declaration_does_not_keep_a_stale_view(tmp_path: Path) -> None:
+def test_a_stale_view_the_operator_declares_is_left_to_the_operator(tmp_path: Path) -> None:
     start = datetime(2026, 9, 1, tzinfo=UTC)
     manifest = _manifest(tmp_path, start="2026-09-01", end="2026-09-01")
     assert _sync(tmp_path, manifest, FakeFundingPoster(_hourly(start, 24)), date(2026, 10, 1)) == 0
@@ -531,10 +531,16 @@ def test_an_operator_declaration_does_not_keep_a_stale_view(tmp_path: Path) -> N
     catalog.write_text(catalog.read_text(encoding="utf-8") + operator + "\n", encoding="utf-8")
     other = _manifest(tmp_path, start="2026-09-01", end="2026-09-01", coin="ETH")
     assert run_catalog(root=tmp_path, manifest_path=other, dataset_ids=None, env={}) == 0
-    # The generated view would go on reading files the manifest no longer
-    # selects: it is dropped, and the operator's statement stays in the file.
-    assert not _has_view(tmp_path)
+    # The generated statement leaves the block, so it no longer re-creates a
+    # view over deselected files; the relation and the operator's statement
+    # are not touched, as for any view declared outside the block.
+    assert "hist_hl_funding_btc" not in _block(tmp_path)
+    assert _has_view(tmp_path)
     assert operator in catalog.read_text(encoding="utf-8")
+    # Selected again, the name stays the operator's.
+    assert run_catalog(root=tmp_path, manifest_path=manifest, dataset_ids=None, env={}) == 0
+    assert "hist_hl_funding_btc" not in _block(tmp_path)
+    assert _has_view(tmp_path)
 
 
 def test_a_moved_start_is_not_mistaken_for_an_earlier_today(tmp_path: Path) -> None:
@@ -711,6 +717,11 @@ def _view_count(root: Path) -> int:
     (count,) = _query(root, "SELECT count(*) FROM hist_hl_funding_btc")[0]
     assert isinstance(count, int)
     return count
+
+
+def _block(root: Path) -> str:
+    text = (root / "catalog.sql").read_text(encoding="utf-8")
+    return text[text.index("-- BEGIN research.hist_etl") : text.index("-- END research.hist_etl")]
 
 
 def _has_view(root: Path) -> bool:

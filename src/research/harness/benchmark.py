@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import math
-from itertools import pairwise
 from dataclasses import asdict, dataclass
+from itertools import pairwise
 from typing import Final
 
 from research.harness.costs import STRESS_MULTIPLIERS, stress_key

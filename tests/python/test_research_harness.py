@@ -12,12 +12,13 @@ import random
 import subprocess
 import sys
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 
 import duckdb
 import pytest
 
-from research.harness.benchmark import benchmark, buy_and_hold
+from research.harness.benchmark import Window, benchmark, buy_and_hold
 from research.harness.data import BarTable
 from research.harness.errors import HarnessError, IntegrityError, SpecError
 from research.harness.evaluate import (
@@ -1129,6 +1130,24 @@ def test_a_run_without_folds_says_so_in_the_benchmark(tmp_path: Path) -> None:
     assert block["holdout"] == {"status": "sealed"}
     markdown = (tmp_path / "out" / "result.md").read_text(encoding="utf-8")
     assert "- validation: no validation fold" in markdown
+
+
+def test_a_benchmark_error_is_recorded_on_the_window_not_raised() -> None:
+    spec = validate_spec(_json(_spec_body(parquet=True)))
+    table = _bar_table(_regime_rows(420))
+    decision = decide(spec, table)
+    broken = replace(decision, holdout_config_id="real", holdout_end=len(table.prices) + 5)
+    result = benchmark(spec.costs, table, broken)
+    assert result.validation.status == "evaluated"
+    assert (result.holdout.status, result.holdout.result) == ("error", None)
+
+
+def test_a_window_result_exists_exactly_when_evaluated() -> None:
+    assert Window("sealed").result is None
+    with pytest.raises(HarnessError, match="invalid"):
+        Window("evaluated")
+    with pytest.raises(HarnessError, match="invalid"):
+        Window("unknown")
 
 
 def _bar_table(rows: Sequence[tuple[int, float, float, int]]) -> BarTable:

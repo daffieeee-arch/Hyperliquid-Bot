@@ -354,6 +354,7 @@ _WINDOW_STATES: Final = {
     "sealed": "sealed (not evaluated)",
     "no_folds": "no validation fold",
     "too_short": "window too short to hold after the fill",
+    "error": "not computed (benchmark error; the label stands)",
 }
 
 
@@ -442,7 +443,7 @@ def _holdout_json(decision: Decision) -> dict[str, Json] | None:
 
 
 def _window_json(window: Window) -> dict[str, Json]:
-    """``status`` is evaluated, sealed, no_folds or too_short; values only when evaluated."""
+    """``status`` is evaluated, sealed, no_folds, too_short or error; values only when evaluated."""
 
     result = window.result
     if result is None:

@@ -197,8 +197,9 @@ buy-and-hold, one unit long, priced like a strategy trade at unit weight.
   holdout, but only when validation selected a config; while the holdout is
   sealed, the benchmark does not read it either.
 - **Status**: each window has a `status`: `evaluated` (with the values
-  below), `sealed`, `no_folds`, or `too_short` (no close left to exit at
-  after the fill).
+  below), `sealed`, `no_folds`, `too_short` (no close left to exit at after
+  the fill), or `error`. A benchmark error is recorded on the window and
+  never fails the run or changes its label.
 - **Trade**: decided at the window's first close and filled `latency_bars`
   later, like a strategy trade, then held to the window's last close.
   `bars_held` counts the bars from the fill to the exit. `gross_return` is
@@ -226,8 +227,10 @@ several configs on the same data is not an out-of-sample comparison.
 The harness reads the provenance once, before the spec. `source_environment`
 comes from `RESEARCH_ENV` (`DEV` by default, or `CI` or `VPS_RESEARCH`).
 `source_commit` is `git rev-parse HEAD`, or `null` outside a checkout. A run
-that fails closed later still records all three; one refused by the
-provenance check itself records them as `null`.
+that fails closed later still records all three. A run refused before or
+by the provenance check (unsafe mode, a malformed `RESEARCH_ENV` or
+`RESEARCH_IMAGE_DIGEST`) records all three as `null`; its `reasons` name the
+refusal.
 
 `image_digest` comes from `RESEARCH_IMAGE_DIGEST` and is `null` when that is
 unset. Once set, it must be `sha256:` followed by 64 lowercase hex digits;

@@ -9,7 +9,7 @@ from typing import Final
 from research.harness.costs import STRESS_MULTIPLIERS, stress_key
 from research.harness.data import BarTable
 from research.harness.errors import HarnessError
-from research.harness.evaluate import Decision, Trade, summarize, trade_series
+from research.harness.evaluate import Decision, Trade, trade_series
 from research.harness.spec import UNIT_SIZING, CostSpec
 
 
@@ -44,14 +44,20 @@ EVALUATED: Final = "evaluated"
 SEALED: Final = "sealed"
 NO_FOLDS: Final = "no_folds"
 TOO_SHORT: Final = "too_short"
+ERROR: Final = "error"
+_STATUSES: Final = frozenset({EVALUATED, SEALED, NO_FOLDS, TOO_SHORT, ERROR})
 
 
 @dataclass(frozen=True, slots=True)
 class Window:
-    """One benchmark window: ``result`` is set only when ``status`` is evaluated."""
+    """One benchmark window: ``result`` is set exactly when ``status`` is evaluated."""
 
     status: str
     result: BuyAndHold | None = None
+
+    def __post_init__(self) -> None:
+        if self.status not in _STATUSES or (self.status == EVALUATED) != (self.result is not None):
+            raise HarnessError("invariant", f"Benchmark window status {self.status!r} is invalid.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,7 +86,12 @@ def benchmark(costs: CostSpec, table: BarTable, decision: Decision) -> Benchmark
 
 
 def _window(costs: CostSpec, table: BarTable, start: int, end: int) -> Window:
-    result = buy_and_hold(costs, table, start, end)
+    # Context must never cost the run its label: a failure here is recorded
+    # on the window, not raised.
+    try:
+        result = buy_and_hold(costs, table, start, end)
+    except HarnessError:
+        return Window(ERROR)
     return Window(TOO_SHORT) if result is None else Window(EVALUATED, result)
 
 
@@ -98,9 +109,9 @@ def buy_and_hold(costs: CostSpec, table: BarTable, start: int, end: int) -> BuyA
         return None
     trade = Trade(decision=start, entry=entry, exit=end - 1, side=1)
     series = trade_series((trade,), prices, funding=table.funding, sizing=UNIT_SIZING, vol=None)
-    per_bar = summarize(
-        [math.log(prices[index] / prices[index - 1]) for index in range(entry + 1, end)]
-    )
+    per_bar = [math.log(prices[index] / prices[index - 1]) for index in range(entry + 1, end)]
+    mean = math.fsum(per_bar) / len(per_bar)
+    stdev = _sample_stdev(per_bar, mean)
     constant_notional = (
         None if table.funding is None else -math.fsum(table.funding[entry + 1 : end])
     )
@@ -109,17 +120,19 @@ def buy_and_hold(costs: CostSpec, table: BarTable, start: int, end: int) -> BuyA
         end=end,
         bars_held=end - 1 - entry,
         gross_return=series.gross[0],
-        log_return=math.log(prices[end - 1] / prices[entry]),
+        log_return=math.fsum(per_bar),
         funding=None if table.funding is None else series.funding[0],
         funding_constant_notional=constant_notional,
         net={stress_key(stress): series.net(costs, stress)[0] for stress in STRESS_MULTIPLIERS},
-        mean_log_return_per_bar=_number(per_bar.mean_return),
-        stdev_log_return_per_bar=per_bar.stdev,
-        sharpe_per_bar=per_bar.sharpe_per_trade,
+        mean_log_return_per_bar=mean,
+        stdev_log_return_per_bar=stdev,
+        sharpe_per_bar=None if stdev is None or stdev == 0.0 else mean / stdev,
     )
 
 
-def _number(value: float | None) -> float:
-    if value is None:
-        raise HarnessError("invariant", "A held benchmark window has at least one bar.")
-    return value
+def _sample_stdev(values: list[float], mean: float) -> float | None:
+    # Linear in the bar count: summarize() would also run the HAC test,
+    # which is costly on long minute-bar windows and discarded here.
+    if len(values) < 2:
+        return None
+    return math.sqrt(math.fsum((value - mean) ** 2 for value in values) / (len(values) - 1))

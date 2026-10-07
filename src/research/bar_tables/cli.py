@@ -72,8 +72,9 @@ def write_trend_parquet(rows: Sequence[TrendRow], lookbacks: Sequence[int], out:
         f"'{name}': '{'BIGINT' if name in {'ts', 'available_ts'} else 'DOUBLE'}'" for name in names
     )
     out.parent.mkdir(parents=True, exist_ok=True)
-    # Unique scratch names, so two builds to one output cannot share a file.
-    descriptor, name = tempfile.mkstemp(dir=out.parent, prefix=f".{out.name}.", suffix=".csv")
+    # Unique scratch names, so two builds to one output cannot share a file. They
+    # are not hidden, so files a killed build leaves behind are easy to spot.
+    descriptor, name = tempfile.mkstemp(dir=out.parent, prefix=f"{out.name}.", suffix=".csv")
     os.close(descriptor)
     staged = Path(name)
     partial = staged.with_suffix(".parquet")

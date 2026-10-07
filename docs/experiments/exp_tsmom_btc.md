@@ -46,14 +46,24 @@ separate pre-registration after this one.
 - **Datasets** (hist_etl): `bn-um-btcusdt-klines-1h-2020` (new, opt-in) with
   `bn-um-btcusdt-klines-1h`, and `bn-um-btcusdt-funding-2020` (opt-in) with
   `bn-um-btcusdt-funding`.
-- **Table**: `research.bar_tables trend` with `--start 2020-01-01 --end
-  2026-10-01 --lookbacks 168,672,2016 --vol-window 168`, from the builder
-  merged in #126 (commit `71b0043`). The spec hash does not cover the
-  builder's code, so the Run section refuses a checkout whose
-  `src/research/bar_tables` differs from that commit. The results record the
-  commit used and the lock file's data fingerprint.
+- **Table**: `research.bar_tables trend` (#126) with `--start 2020-01-01
+  --end 2026-10-01 --lookbacks 168,672,2016 --vol-window 168`.
 - **Shape**: 57,144 contiguous hourly bars, from 2020-03-25 00:59:59.999 to
   2026-09-30 23:59:59.999 UTC, with one funding settlement every 8 hours.
+- **Pre-registered table**: the spec hash does not cover the data or the
+  code that builds it, so the table itself is pinned by the harness data
+  fingerprint that `lock` writes.
+  - The data fingerprint is
+    `0553f54a851deae6759cc2a23619670000b07976d677e5fcf604ee9902a7eb09`.
+  - It covers the row count, the first and last `ts`
+    (1585097999999 and 1790812799999), and the Parquet's sha256,
+    `fcdbbd9f3d168aaaa8918b942a5371a4badef668db28b9fe448993d2d8007ae7`.
+  - Two independent builds gave identical bytes. A hash says nothing about
+    returns.
+  - The run refuses any other table, whether a different builder, a broken
+    sync or another DuckDB version produced it. The Parquet bytes depend on
+    the DuckDB version that `uv.lock` pins, so run from the commit that
+    merged this pre-registration.
 - **Signal**: `trend_score` is the mean sign of the 1-, 4- and 12-week log
   returns (168, 672 and 2016 bars).
   - The lookbacks are fixed in advance and combined, not chosen, as Hurst,
@@ -184,52 +194,53 @@ holdout.
 
 ## Run (after this document is merged)
 
-Export three paths first. `hist_etl` and `bar_tables` read
-`HIST_ARCHIVES_ROOT` from the environment.
+Run from the commit that merged this pre-registration (#127), with three
+exported paths:
 
 ```bash
-export REPO_ROOT=...            # the repository checkout
+export REPO_ROOT=...            # the repository checkout, at the #127 merge commit
 export HIST_ARCHIVES_ROOT=...   # the hist_etl archive root
 export STUDY_DIR=...            # a new directory OUTSIDE the repository
-```
-
-First, sync the data:
-
-```bash
 cd "$REPO_ROOT"
 PYTHONPATH=src uv run --frozen python -m research.hist_etl sync \
   --dataset bn-um-btcusdt-klines-1h-2020 --dataset bn-um-btcusdt-klines-1h \
   --dataset bn-um-btcusdt-funding-2020 --dataset bn-um-btcusdt-funding
 ```
 
-`sync` exits 2 whenever it reports a `gap`. While the current month is still
-open it always reports one, so check every `gap` line it prints. Continue
-only if each one names a period on or after 2026-10-01, which is outside the
-study's range. Any other gap means a missing or broken archive inside the
-range: stop and fix it first.
-
-Then build and run. Stop at the first command that fails:
+`sync` exits 2 whenever it reports a gap. It always reports one while the
+current month is open, so this step is not chained to the next. The
+fingerprint check below catches anything in the range that is missing or
+different.
 
 ```bash
+set -euo pipefail
 cd "$REPO_ROOT"
 git rev-parse HEAD
-git diff --exit-code 71b0043 -- src/research/bar_tables   # the pre-registered builder
 mkdir -p "$STUDY_DIR"
 cp docs/experiments/exp_tsmom_btc.spec.yaml "$STUDY_DIR/spec.yaml"
 PYTHONPATH=src uv run --frozen python -m research.bar_tables trend \
   --symbol BTCUSDT --start 2020-01-01 --end 2026-10-01 \
   --lookbacks 168,672,2016 --vol-window 168 --out "$STUDY_DIR/bars.parquet"
-PYTHONPATH=src uv run --frozen python -m research.harness hash "$STUDY_DIR/spec.yaml"
 PYTHONPATH=src uv run --frozen python -m research.harness lock "$STUDY_DIR/spec.yaml"
+python3 -c '
+import json, sys
+lock = json.load(open(sys.argv[1]))
+expected = (
+    "2c8def878612ce08cea11171209a26b65034cda84bc4df92039b150dc96c3e31",
+    "0553f54a851deae6759cc2a23619670000b07976d677e5fcf604ee9902a7eb09",
+)
+found = (lock["spec_sha256"], lock["data_fingerprint"]["fingerprint_sha256"])
+sys.exit(0 if found == expected else f"not the pre-registered spec and table: {found}")
+' "$STUDY_DIR/spec.yaml.lock.json"
 PYTHONPATH=src uv run --frozen python -m research.harness run "$STUDY_DIR/spec.yaml" \
   --output-dir "$STUDY_DIR/out"
 ```
 
-`hash` must print the digest above.
+The study runs only after the check passes.
 
 The results go into `exp_tsmom_btc.results.md` in a separate PR. That PR
 records:
 
 - the git commit;
-- the lock file's spec and data digests;
+- the lock file;
 - the benchmarks.

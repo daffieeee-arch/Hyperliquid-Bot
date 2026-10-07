@@ -662,7 +662,7 @@ def test_any_non_positive_volatility_fails_the_run_closed(tmp_path: Path) -> Non
 
 def test_spec_without_funding_or_sizing_reports_unit_weight(tmp_path: Path) -> None:
     document = _run_rows(tmp_path, _regime_rows(420), configs=_two_configs())
-    assert document["harness_version"] == "3"
+    assert document["harness_version"] == "4"
     assert document["label"] == "passes_h1"
     assert _mapping(document["costs"])["funding_column"] is None
     assert _mapping(document["sizing"])["method"] == "unit"
@@ -674,6 +674,56 @@ def test_spec_without_funding_or_sizing_reports_unit_weight(tmp_path: Path) -> N
     holdout = _mapping(document["holdout"])
     assert holdout["funding"] is None
     assert holdout["mean_weight"] == 1.0
+
+
+def test_report_carries_overfitting_diagnostics(tmp_path: Path) -> None:
+    document = _run_rows(tmp_path, _regime_rows(420), configs=_two_configs())
+    block = _mapping(document["overfitting"])
+    dsr = _mapping(block["deflated_sharpe"])
+    # The dead config never trades, so the planted one is the only trial.
+    assert dsr["config_id"] == "real"
+    assert dsr["trials"] == 1
+    assert dsr["expected_max_sharpe"] == 0.0
+    assert dsr["dsr"] is None or 0.0 <= _as_float(dsr["dsr"]) <= 1.0
+    pbo = _mapping(block["pbo"])
+    # Eight test folds; the planted config is best in and out of sample.
+    assert (pbo["blocks"], pbo["combinations"]) == (8, 70)
+    assert pbo["value"] == 0.0
+    assert document["label"] == "passes_h1"
+    markdown = (tmp_path / "out" / "result.md").read_text(encoding="utf-8")
+    assert "## Overfitting diagnostics" in markdown
+    assert "probability of backtest overfitting: `0.0`" in markdown
+
+
+def test_every_config_with_a_sharpe_is_a_trial(tmp_path: Path) -> None:
+    configs = [
+        {"id": "h2", "threshold": 0.0, "horizon_bars": 2},
+        {"id": "h4", "threshold": 0.0, "horizon_bars": 4},
+        {"id": "h8", "threshold": 0.0, "horizon_bars": 8},
+    ]
+    document = _run_rows(tmp_path, _random_walk_rows(420, seed=7), configs=configs)
+    block = _mapping(document["overfitting"])
+    dsr = _mapping(block["deflated_sharpe"])
+    assert dsr["trials"] == 3
+    assert dsr["trial_sharpe_variance"] is not None
+    pbo = _mapping(block["pbo"])
+    assert 0.0 <= _as_float(pbo["value"]) <= 1.0
+    # Diagnostics never touch the decision.
+    assert document["label"] in {"no_edge", "interesting_but_fragile", "not_enough_data"}
+
+
+def test_overfitting_notes_explain_a_missing_value(tmp_path: Path) -> None:
+    document = _run_rows(tmp_path, _regime_rows(420))
+    pbo = _mapping(_mapping(document["overfitting"])["pbo"])
+    assert pbo["value"] is None
+    assert "two configs" in str(pbo["note"])
+    (tmp_path / "short").mkdir()
+    short = _run_rows(tmp_path / "short", _regime_rows(420), configs=_two_configs(), test_bars=100)
+    pbo = _mapping(_mapping(short["overfitting"])["pbo"])
+    assert pbo["value"] is None
+    assert "4 walk-forward test folds" in str(pbo["note"])
+    markdown = (tmp_path / "short" / "out" / "result.md").read_text(encoding="utf-8")
+    assert "probability of backtest overfitting: not computed" in markdown
 
 
 def test_funding_paid_on_the_position_wipes_a_planted_edge(tmp_path: Path) -> None:

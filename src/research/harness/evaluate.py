@@ -10,6 +10,15 @@ from typing import Final
 from research.harness.costs import STRESS_MULTIPLIERS, round_trip_cost, stress_key
 from research.harness.data import BarTable
 from research.harness.errors import HarnessError, IntegrityError
+from research.harness.overfit import (
+    BlockStats,
+    Overfitting,
+    Pbo,
+    SharpeTrial,
+    cscv_blocks,
+    deflated_sharpe,
+    probability_of_backtest_overfitting,
+)
 from research.harness.spec import ConfigSpec, CostSpec, HypothesisSpec, SizingSpec
 from research.harness.splits import Fold, walk_forward
 from research.harness.stats import (
@@ -139,6 +148,8 @@ class Decision:
     holdout_net: dict[str, MetricBlock] | None
     holdout_funding: MetricBlock | None = None
     holdout_mean_weight: float | None = None
+    # Diagnostics only: they never change the label.
+    overfitting: Overfitting | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,12 +172,13 @@ def decide(spec: HypothesisSpec, table: BarTable) -> Decision:
     vol = _vol_series(spec, table)
     folds, (holdout_start, holdout_end) = walk_forward(len(table.timestamps), spec.split)
     feature = table.features[_feature_column(spec, spec.signal_feature)]
-    series_by_config = [
-        (
-            config,
-            _pooled_series(spec, feature, table, vol, config=config, folds=folds),
-        )
+    fold_series_by_config = [
+        _fold_series(spec, feature, table, vol, config=config, folds=folds)
         for config in spec.configs
+    ]
+    series_by_config = [
+        (config, _concat_series(fold_series))
+        for config, fold_series in zip(spec.configs, fold_series_by_config, strict=True)
     ]
     nets_by_config = [_net_blocks(spec, series) for _, series in series_by_config]
     family_p = [_family_p_value(spec, nets["1.0"]) for nets in nets_by_config]
@@ -213,6 +225,9 @@ def decide(spec: HypothesisSpec, table: BarTable) -> Decision:
         holdout_net=None if holdout is None else holdout.net,
         holdout_funding=None if holdout is None else holdout.funding,
         holdout_mean_weight=None if holdout is None else holdout.mean_weight,
+        overfitting=_overfitting(
+            spec, series_by_config, nets_by_config, fold_series_by_config, folds
+        ),
     )
     _assert_promotion_invariant(decision)
     return decision
@@ -628,7 +643,7 @@ def _window_trades(
     )
 
 
-def _pooled_series(
+def _fold_series(
     spec: HypothesisSpec,
     feature: Sequence[float],
     table: BarTable,
@@ -636,13 +651,86 @@ def _pooled_series(
     *,
     config: ConfigSpec,
     folds: tuple[Fold, ...],
-) -> TradeSeries:
-    trades: list[Trade] = []
-    for fold in folds:
-        trades.extend(
-            _window_trades(spec, feature, config=config, start=fold.test_start, end=fold.test_end)
+) -> tuple[TradeSeries, ...]:
+    """One config's trades per walk-forward test fold, in fold order."""
+
+    return tuple(
+        _window_series(
+            spec, feature, table, vol, config=config, start=fold.test_start, end=fold.test_end
         )
-    return trade_series(trades, table.prices, funding=table.funding, sizing=spec.sizing, vol=vol)
+        for fold in folds
+    )
+
+
+def _concat_series(parts: Sequence[TradeSeries]) -> TradeSeries:
+    """The folds' trades pooled in order, as one validation series."""
+
+    return TradeSeries(
+        gross=tuple(value for part in parts for value in part.gross),
+        funding_paid=tuple(value for part in parts for value in part.funding_paid),
+        funding_received=tuple(value for part in parts for value in part.funding_received),
+        weights=tuple(value for part in parts for value in part.weights),
+    )
+
+
+def _overfitting(
+    spec: HypothesisSpec,
+    series_by_config: Sequence[tuple[ConfigSpec, TradeSeries]],
+    nets_by_config: Sequence[dict[str, MetricBlock]],
+    fold_series_by_config: Sequence[tuple[TradeSeries, ...]],
+    folds: tuple[Fold, ...],
+) -> Overfitting:
+    """Deflated Sharpe over the configs' validation Sharpes; PBO over test-fold blocks.
+
+    Both use net returns at 1.0x. They are reported, not gated on.
+    """
+
+    trials: list[SharpeTrial] = []
+    for (config, series), nets in zip(series_by_config, nets_by_config, strict=True):
+        base = nets["1.0"]
+        if base.sharpe_per_trade is None:
+            continue
+        trials.append(
+            SharpeTrial(
+                config_id=config.id,
+                sharpe=base.sharpe_per_trade,
+                returns=series.net(spec.costs, 1.0),
+                meets_trade_floor=base.trade_count >= spec.sample.min_trades_validation,
+            )
+        )
+    groups = cscv_blocks(len(folds))
+    if groups is None:
+        pbo = Pbo(
+            None,
+            None,
+            None,
+            None,
+            f"PBO needs at least 4 walk-forward test folds; this run has {len(folds)}.",
+        )
+    else:
+        pbo = probability_of_backtest_overfitting(
+            [
+                [_block_stats(spec, fold_series, folds, group) for group in groups]
+                for fold_series in fold_series_by_config
+            ]
+        )
+    return Overfitting(deflated_sharpe=deflated_sharpe(trials), pbo=pbo)
+
+
+def _block_stats(
+    spec: HypothesisSpec,
+    fold_series: Sequence[TradeSeries],
+    folds: tuple[Fold, ...],
+    group: Sequence[int],
+) -> BlockStats:
+    """Per-bar net P&L over a block of folds: each trade on its exit bar, 0 elsewhere."""
+
+    nets = [value for index in group for value in fold_series[index].net(spec.costs, 1.0)]
+    return BlockStats(
+        bars=sum(folds[index].test_end - folds[index].test_start for index in group),
+        total=math.fsum(nets),
+        total_squares=math.fsum(value * value for value in nets),
+    )
 
 
 def _unit_return(prices: Sequence[float], trade: Trade) -> float:

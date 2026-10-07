@@ -193,6 +193,36 @@ prices, and an availability clock after the bar. `max_rows` caps the pull
 (hard ceiling 2,000,000). A raw aggTrades scan must be aggregated to bars
 first. Empty intervals are not zero-filled.
 
+## Bar tables
+
+`research.bar_tables` builds the Parquet table a spec reads from hist_etl
+output, so its features are point-in-time by construction:
+
+```bash
+PYTHONPATH=src uv run --frozen python -m research.bar_tables trend \
+  --root "$HIST_ARCHIVES_ROOT" --market um --symbol BTCUSDT --interval 1h \
+  --start 2020-01-01 --end 2026-10-01 \
+  --lookbacks 168,672,2016 --vol-window 168 --out path/to/bars.parquet
+```
+
+`trend` writes one row per bar. `ts` is the kline close time in milliseconds.
+
+- `close`.
+- `ret_<L>`: the log return over the last `L` bars, one column per lookback.
+- `trend_score`: the mean sign of those returns, in [-1, 1].
+- `realized_vol`: the sample stdev of the last `--vol-window` one-bar log
+  returns, per bar.
+- `funding_rate`: the Binance settlements in `(previous close, close]`,
+  summed, which is the harness funding convention.
+- `available_ts`, equal to `ts`. Every value uses closes at or before its bar,
+  so a spec reading it needs `latency_bars >= 1`.
+
+Bars with a close in `[start, end)` are read. The first `max(longest
+lookback, vol window)` bars are warm-up and are not written. A missing bar, a
+non-positive close, or more than `--max-funding-gap-hours` (default 9) without
+a funding settlement fails closed and writes nothing. Set `--end` to fix the
+table's range, since the open month changes with every sync.
+
 ## Port a work package
 
 Build a bar table in the warehouse, then point the spec at that view. The

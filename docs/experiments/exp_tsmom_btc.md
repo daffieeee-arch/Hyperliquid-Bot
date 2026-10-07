@@ -70,8 +70,11 @@ separate pre-registration after this one.
   dependencies and the interpreter.
   - The run refuses a checkout where any of these differ from that commit,
     including untracked and ignored files.
-  - `__pycache__` folders are the one exception: Python never imports a
-    cached file there without its source.
+  - `__pycache__` folders are the one exception. The run reads and writes
+    bytecode only in a fresh folder inside `STUDY_DIR`, so no cached file
+    from the checkout runs.
+  - The rest of the working tree must be clean too, so the recorded commit
+    describes what ran.
   - The check happens before anything is synced.
 - **Signal**: `trend_score` is the mean sign of the 1-, 4- and 12-week log
   returns (168, 672 and 2016 bars).
@@ -221,8 +224,13 @@ export STUDY_DIR=...            # must not exist yet; outside the repository
   changed="$(git status --porcelain --ignored --untracked-files=all -- "${pinned[@]}")"
   stray="$(printf '%s\n' "$changed" | grep -v -e '^$' -e '/__pycache__/' || true)"
   test -z "$stray"
+  # The whole working tree is clean, so commit.txt describes what runs.
+  dirty="$(git status --porcelain --untracked-files=all)"
+  test -z "$dirty"
   mkdir "$STUDY_DIR"
   git rev-parse HEAD > "$STUDY_DIR/commit.txt"
+  # Bytecode only from a fresh folder: no cached .pyc from the checkout runs.
+  export PYTHONPYCACHEPREFIX="$STUDY_DIR/pycache"
   # Exit 2 is normal while the current month is open. Any missing or broken
   # archive inside the range fails the fingerprint check below.
   PYTHONPATH=src uv run --frozen python -m research.hist_etl sync \

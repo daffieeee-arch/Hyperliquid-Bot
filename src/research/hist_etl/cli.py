@@ -87,7 +87,8 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="research.hist_etl",
         description=(
-            "Download, verify, and catalog offline Binance Vision and Kraken OHLCVT history."
+            "Download, verify, and catalog offline Binance Vision, Kraken OHLCVT, and "
+            "Hyperliquid funding history."
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)

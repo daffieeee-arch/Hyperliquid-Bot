@@ -159,3 +159,25 @@ pairs = ["XBTUSD"]
 intervals = ["1m", "5m", "15m", "30m", "1h", "4h", "12h", "1d"]
 zip_glob = "kraken-ohlcvt/Kraken_OHLCVT*.zip"
 enabled = true
+
+# Hyperliquid perp funding from the public info endpoint (fundingHistory, no
+# key). The venue settled every 8 hours until 2023-06-07 and hourly from
+# 2023-06-08. known_holes are hourly settlements the venue never published,
+# checked against fundingHistory on 2026-10-07; any other missing slot is a gap.
+[[hyperliquid]]
+id = "hl-perp-btc-funding"
+dataset = "funding"
+coin = "BTC"
+start = "2023-06-08"
+end = "today"
+funding_interval_hours = 1
+known_holes = ["2023-07-02T20:00:00Z", "2023-08-23T20:00:00Z", "2024-08-15T13:00:00Z"]
+
+[[hyperliquid]]
+id = "hl-perp-btc-funding-8h"
+dataset = "funding"
+coin = "BTC"
+start = "2023-05-12"
+end = "2023-06-07"
+funding_interval_hours = 8
+enabled = false

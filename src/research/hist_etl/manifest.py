@@ -5,7 +5,8 @@ from __future__ import annotations
 import os
 import re
 import tomllib
-from datetime import date
+from datetime import UTC, date, datetime
+from itertools import pairwise
 from pathlib import Path
 
 from research.hist_etl.errors import HistEtlError
@@ -18,11 +19,25 @@ from research.hist_etl.models import (
     MONTHLY_ONLY_DATASETS,
     BinanceSpec,
     HistManifest,
+    HyperliquidFundingSpec,
     KrakenSpec,
 )
 
 _ID = re.compile(r"[a-z0-9][a-z0-9-]*")
 _SYMBOL = re.compile(r"[A-Z0-9]{2,20}")
+_COIN = re.compile(r"[A-Z0-9]{1,20}")
+_HYPERLIQUID_KEYS = frozenset(
+    {
+        "id",
+        "dataset",
+        "coin",
+        "start",
+        "end",
+        "funding_interval_hours",
+        "known_holes",
+        "enabled",
+    }
+)
 _GRANULARITY = frozenset({"monthly", "daily", "monthly_with_daily_tail"})
 
 
@@ -59,13 +74,24 @@ def load_manifest(path: Path) -> HistManifest:
         raise HistEtlError("manifest has a non-positive limit")
     binance_raw = payload.get("binance", [])
     kraken_raw = payload.get("kraken", [])
-    if not isinstance(binance_raw, list) or not isinstance(kraken_raw, list):
-        raise HistEtlError("binance and kraken must be arrays of tables")
+    hyperliquid_raw = payload.get("hyperliquid", [])
+    if (
+        not isinstance(binance_raw, list)
+        or not isinstance(kraken_raw, list)
+        or not isinstance(hyperliquid_raw, list)
+    ):
+        raise HistEtlError("binance, kraken and hyperliquid must be arrays of tables")
     binance = tuple(_binance_spec(item) for item in binance_raw)
     kraken = tuple(_kraken_spec(item) for item in kraken_raw)
-    ids = [spec.id for spec in binance] + [spec.id for spec in kraken]
+    hyperliquid = tuple(_hyperliquid_spec(item) for item in hyperliquid_raw)
+    ids = (
+        [spec.id for spec in binance]
+        + [spec.id for spec in kraken]
+        + [spec.id for spec in hyperliquid]
+    )
     if len(ids) != len(set(ids)):
         raise HistEtlError("dataset ids must be unique")
+    _require_disjoint_funding(hyperliquid)
     return HistManifest(
         min_free_bytes=min_free,
         requests_per_second=per_second,
@@ -73,6 +99,7 @@ def load_manifest(path: Path) -> HistManifest:
         timeout_seconds=timeout,
         binance=binance,
         kraken=kraken,
+        hyperliquid=hyperliquid,
     )
 
 
@@ -148,6 +175,66 @@ def _kraken_spec(item: object) -> KrakenSpec:
     )
 
 
+def _hyperliquid_spec(item: object) -> HyperliquidFundingSpec:
+    table = _table(item, "hyperliquid")
+    extra = sorted(set(table) - _HYPERLIQUID_KEYS)
+    if extra:
+        raise HistEtlError(f"hyperliquid entry has unknown keys: {', '.join(extra)}")
+    dataset_id = _ident(table, "id")
+    _choice(table, "dataset", frozenset({"funding"}))
+    coin = _required_str(table, "coin")
+    if not _COIN.fullmatch(coin):
+        raise HistEtlError(f"invalid coin {coin}")
+    start = _date_field(table, "start")
+    end, end_token = _end_field(table)
+    if end is not None and start > end:
+        raise HistEtlError(f"{dataset_id} start is after end")
+    hours = _int_field(table, "funding_interval_hours", 1)
+    if hours < 1 or 24 % hours != 0:
+        raise HistEtlError(f"{dataset_id} funding_interval_hours must divide 24")
+    holes_raw = table.get("known_holes", [])
+    if not isinstance(holes_raw, list):
+        raise HistEtlError(f"{dataset_id} known_holes must be a list")
+    holes = tuple(_hole(dataset_id, raw, hours) for raw in holes_raw)
+    return HyperliquidFundingSpec(
+        id=dataset_id,
+        coin=coin,
+        start=start,
+        end=end,
+        end_token=end_token,
+        funding_interval_hours=hours,
+        known_holes=holes,
+        enabled=_bool_field(table, "enabled", True),
+    )
+
+
+def _hole(dataset_id: str, raw: object, hours: int) -> datetime:
+    """One acknowledged missing settlement slot, as a UTC ISO timestamp."""
+
+    if not isinstance(raw, str) or not raw.endswith("Z"):
+        raise HistEtlError(f"{dataset_id} known_holes entries must be UTC times ending in Z")
+    try:
+        moment = datetime.fromisoformat(raw.removesuffix("Z")).replace(tzinfo=UTC)
+    except ValueError as exc:
+        raise HistEtlError(f"{dataset_id} has an invalid known_holes entry {raw}") from exc
+    if moment.minute or moment.second or moment.microsecond or moment.hour % hours:
+        raise HistEtlError(f"{dataset_id} known_holes entry {raw} is not a settlement slot")
+    return moment
+
+
+def _require_disjoint_funding(specs: tuple[HyperliquidFundingSpec, ...]) -> None:
+    """Two datasets for one coin must not cover the same day, or rows would repeat."""
+
+    by_coin: dict[str, list[HyperliquidFundingSpec]] = {}
+    for spec in specs:
+        by_coin.setdefault(spec.coin, []).append(spec)
+    for coin, group in by_coin.items():
+        ordered = sorted(group, key=lambda spec: spec.start)
+        for earlier, later in pairwise(ordered):
+            if earlier.end is None or earlier.end >= later.start:
+                raise HistEtlError(f"hyperliquid {coin} datasets overlap: {earlier.id}, {later.id}")
+
+
 def select_binance(
     manifest: HistManifest, dataset_ids: tuple[str, ...] | None
 ) -> tuple[BinanceSpec, ...]:
@@ -160,7 +247,13 @@ def select_kraken(
     return tuple(_select(manifest.kraken, dataset_ids))
 
 
-def _select[T: BinanceSpec | KrakenSpec](
+def select_hyperliquid(
+    manifest: HistManifest, dataset_ids: tuple[str, ...] | None
+) -> tuple[HyperliquidFundingSpec, ...]:
+    return tuple(_select(manifest.hyperliquid, dataset_ids))
+
+
+def _select[T: BinanceSpec | KrakenSpec | HyperliquidFundingSpec](
     specs: tuple[T, ...], dataset_ids: tuple[str, ...] | None
 ) -> list[T]:
     if dataset_ids:
@@ -177,7 +270,11 @@ def _select[T: BinanceSpec | KrakenSpec](
 def assert_known_ids(manifest: HistManifest, dataset_ids: tuple[str, ...] | None) -> None:
     if not dataset_ids:
         return
-    known = {spec.id for spec in manifest.binance} | {spec.id for spec in manifest.kraken}
+    known = (
+        {spec.id for spec in manifest.binance}
+        | {spec.id for spec in manifest.kraken}
+        | {spec.id for spec in manifest.hyperliquid}
+    )
     missing = [dataset_id for dataset_id in dataset_ids if dataset_id not in known]
     if missing:
         raise HistEtlError(f"unknown dataset id: {', '.join(missing)}")

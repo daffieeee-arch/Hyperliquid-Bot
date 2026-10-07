@@ -5,7 +5,7 @@ from __future__ import annotations
 import difflib
 import re
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -29,13 +29,17 @@ _VIEW_STMT = re.compile(
 _VIEW_NAME = re.compile(r"[a-z][a-z0-9_]*")
 _BINANCE_FILE = re.compile(r"^([A-Z0-9]+)-\d{4}-\d{2}\.parquet$")
 _KRAKEN_FILE = re.compile(r"^\d{4}-\d{2}\.parquet$")
+_FUNDING_VIEW = re.compile(r"hist_hl_funding_[a-z0-9]+")
 _BEGIN = "-- BEGIN research.hist_etl"
 _END = "-- END research.hist_etl"
 _LOCK_ATTEMPTS = 5
 
 
 def refresh_catalog(
-    root: Path, *, replace_legacy_views: bool = False
+    root: Path,
+    *,
+    hyperliquid_files: Mapping[str, Sequence[Path]],
+    replace_legacy_views: bool = False,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Write ``catalog.sql`` and create the generated views.
 
@@ -46,12 +50,21 @@ def refresh_catalog(
     ``replace_legacy_views`` copies ``catalog.sql`` to a backup, prints a diff,
     and then lets the generated names replace those statements and relations.
     The SQL file is replaced only after DuckDB accepts the new block.
+    ``hyperliquid_files`` maps each manifest coin to the funding month files
+    the manifest selects (see ``hyperliquid.funding_view_files``); it has no
+    default, so no caller drops or keeps funding views by omission. A
+    funding view of the previous block with no selected file is dropped.
     """
 
-    views = render_statements(root, replace_legacy_views=replace_legacy_views)
+    views = render_statements(
+        root,
+        hyperliquid_files=hyperliquid_files,
+        replace_legacy_views=replace_legacy_views,
+    )
     catalog_path = root / "catalog.sql"
     existing = catalog_path.read_text(encoding="utf-8") if catalog_path.is_file() else ""
     owned = _managed_names(existing)
+    stale = _stale_funding_views(views, owned)
     live = _live_relations(root)
     # A relation that already exists in DuckDB, and was not emitted by the previous
     # hist_etl block, belongs to the operator. CREATE OR REPLACE would destroy it.
@@ -78,7 +91,7 @@ def refresh_catalog(
             f"skipping view {name}: an existing catalog definition is outside the "
             "hist_etl block; pass --replace-legacy-views to replace it"
         )
-    preserved = _preserved_statements(existing, set(names), live)
+    preserved = _preserved_statements(existing, set(names) | set(stale), live)
     if preserved:
         merged = merged.replace(f"{_END}\n", preserved + f"{_END}\n", 1)
     if replace_legacy_views and existing:
@@ -95,15 +108,23 @@ def refresh_catalog(
         )
         print(diff if diff else "catalog\tno changes\n")
         print(f"catalog\tbackup\t{backup}")
-    apply_catalog(root, merged)
+    apply_catalog(root, merged, drop=stale)
     atomic_write_text(catalog_path, merged)
     return names, foreign
 
 
 def render_statements(
-    root: Path, *, replace_legacy_views: bool = False
+    root: Path,
+    *,
+    hyperliquid_files: Mapping[str, Sequence[Path]],
+    replace_legacy_views: bool = False,
 ) -> tuple[tuple[str, str], ...]:
-    """Pipeline views. Each one reads only files this pipeline wrote."""
+    """Pipeline views. Each one reads only files this pipeline wrote.
+
+    Hyperliquid funding files come from the manifest, not a directory scan:
+    a file left behind by a renamed or re-ranged dataset would otherwise be
+    unioned with the current one and charge a bar's funding twice.
+    """
 
     views: list[tuple[str, str]] = []
     binance = root / "parquet" / "hist_etl" / "binance"
@@ -133,7 +154,26 @@ def render_statements(
                     replace_legacy=replace_legacy_views,
                 ):
                     views.append((name, _view(name, relative)))
+    for coin, funding_files in sorted(hyperliquid_files.items()):
+        if not funding_files:
+            continue
+        relative = tuple(_relative(root, path) for path in funding_files)
+        name = f"hist_hl_funding_{coin.lower()}"
+        views.append((name, _view(name, relative)))
     return tuple(views)
+
+
+def _stale_funding_views(views: Sequence[tuple[str, str]], owned: set[str]) -> tuple[str, ...]:
+    """Funding views of the previous block that have no selected file now.
+
+    Kept, they would go on reading month files the manifest no longer selects:
+    a month whose window changed, or a coin whose datasets were removed. They
+    are dropped instead, so a query fails loudly rather than reading stale
+    rows. The next run that selects a file creates the view again.
+    """
+
+    emitted = {name for name, _statement in views}
+    return tuple(name for name in sorted(owned - emitted) if _FUNDING_VIEW.fullmatch(name))
 
 
 def merge_catalog(
@@ -219,7 +259,13 @@ def _live_relations(root: Path) -> set[str]:
     return {str(row[0]) for row in rows if row[0] is not None}
 
 
-def apply_catalog(root: Path, catalog_sql: str) -> None:
+def apply_catalog(root: Path, catalog_sql: str, *, drop: Sequence[str] = ()) -> None:
+    """Run the block, then drop the generated views in ``drop``, on one connection."""
+
+    for name in drop:
+        # Checked before any statement runs, so a refusal leaves DuckDB as it was.
+        if not _VIEW_NAME.fullmatch(name):
+            raise HistEtlError(f"unsafe view name {name}", exit_code=2)
     match = _BLOCK.search(catalog_sql)
     if match is None:
         raise HistEtlError("catalog.sql is missing the hist_etl block", exit_code=2)
@@ -230,8 +276,22 @@ def apply_catalog(root: Path, catalog_sql: str) -> None:
         connection.execute("SET TimeZone='UTC'")
         for statement in _statements(rendered):
             connection.execute(statement)
+        _drop_views(connection, drop)
     finally:
         connection.close()
+
+
+def _drop_views(connection: duckdb.DuckDBPyConnection, names: Sequence[str]) -> None:
+    if not names:
+        return
+    rows = connection.execute(
+        "SELECT view_name FROM duckdb_views() WHERE schema_name = 'main' AND NOT internal"
+    ).fetchall()
+    live_views = {str(row[0]) for row in rows}
+    for name in names:
+        if name in live_views:
+            warn(f"dropping view {name}: no funding month file of the manifest selects it")
+            connection.execute(f"DROP VIEW {name}")
 
 
 def _connect(database: Path) -> duckdb.DuckDBPyConnection:

@@ -1,7 +1,8 @@
 # Historical archive ETL
 
 PAPER / free public data only. This pipeline does not place orders, read
-exchange keys, or attach to capture tmux sessions.
+exchange keys, or attach to capture tmux sessions. Hyperliquid funding comes
+from the public info endpoint, which needs no key.
 
 Command:
 
@@ -122,6 +123,130 @@ Put zips under `kraken-ohlcvt/Kraken_OHLCVT*.zip`. An optional `url` in the
 manifest downloads one https zip when that file is absent. Kraken does not
 publish a SHA256 sidecar; the zip must open and contain the selected CSV.
 
+## Hyperliquid funding
+
+Source: the public info endpoint `fundingHistory`
+([docs](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint/perpetuals)),
+a JSON POST to `https://api.hyperliquid.xyz/info` with no key or account. It
+returns `{coin, fundingRate, premium, time}` rows, oldest first, at most 500
+per response; `startTime` and `endTime` are inclusive milliseconds. The ETL
+pages from the last returned time, one UTC month at a time, and reads complete
+UTC days only (a day is fetched after it ends).
+
+REST requests share 1200 weight per minute per IP. An info request weighs 20
+and `fundingHistory` adds 1 per 20 rows, so a full page is 45. The manifest
+`requests_per_second` is capped at 0.3 for this endpoint (810 weight a
+minute, leaving room for anything else on the IP), and a rate of 0 does not
+lift the cap. After a 429 the client waits a full minute before it retries
+([rate limits](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/rate-limits-and-user-limits)).
+The first backfill of BTC (about 29,000 rows from 2023) takes roughly 60
+requests, a few minutes; a daily sync after that takes one or two.
+
+Layout:
+
+```text
+hyperliquid-api/funding/{dataset_id}/{COIN}-funding-YYYY-MM.json       # settled month, written once
+hyperliquid-api/funding/{dataset_id}/{COIN}-funding-YYYY-MM.open.json  # current month, rewritten each sync
+parquet/hist_etl/hyperliquid/funding/{COIN}/YYYY-MM.{dataset_id}.parquet
+```
+
+A month settles only once it has ended and its fetch has a print in every
+settlement slot apart from `known_holes`. A month with a hole the manifest
+does not list, or with a conflict, never settles: a lagging node can return
+the same truncated answer twice. A settled raw file is canonical JSON of the
+rows as published, and it is reused, not fetched again (move it aside to
+refetch a month). Every other month, the current one or an ended month that
+has not settled, is fetched again on every sync and written to `.open.json`,
+so a truncated answer is never frozen. A real venue hole therefore costs one
+or two requests per sync until it is added to `known_holes`. The Parquet
+sidecar of such a month says `"provisional": true`, and that file is
+replaced on each sync until the month settles. Settled month files follow
+the same `.sources.json` rule as the other venues (`sync --rebuild` to
+replace). `.open.json` files are not deleted.
+
+Each raw file and Parquet sidecar records the window it covers (`start_ms`,
+`end_ms`). A month file whose sidecar does not record it is rewritten from the
+same raw file by the next sync; `verify` reports it as `hyperliquid_sidecar`
+until then. When the dataset's `start` or `end` changes, a settled month whose
+window no longer matches is not overwritten: `sync` and `verify` report
+`hyperliquid_window_changed` and `plan` lists it as `window_changed`, until
+the raw file is moved aside. The next `sync --dataset <id> --rebuild` then
+fetches the month and replaces its Parquet file. `--today` can move the
+cutoff back for a test, never past the real UTC date. A month on disk that
+already reaches past an earlier `--today` (a later sync fetched it) is left
+as it is, never shrunk: `sync` and `verify` report it as
+`hyperliquid_ahead_of_today` and `plan` lists it as `ahead`. Test an earlier
+cutoff with a scratch `--root`; without `--today`, check the system clock.
+`verify` judges an ended month over all its slots, whatever its file covers.
+
+Columns: `ts` (the settlement time, UTC; the rate is known and charged then),
+`slot_start` (the start of the settlement slot the print belongs to),
+`funding_time_ms`, `coin`, `funding_rate`, `funding_rate_text` (the published
+decimal), `premium`, `premium_text`, `funding_interval_hours`, `dataset_id`,
+`source_name`. `funding_rate` is the rate for one settlement: per hour from
+2023-06-08, per 8 hours before.
+
+Gaps are judged per settlement slot, not by timestamp spacing: settlement
+times jitter by about a second, and a late settlement can land minutes into
+its slot. A print belongs to the slot that starts at most 60 seconds after
+it, so one stamped just before the hour still counts for that hour, and a
+month covers the slots that start inside it. A slot with no print is a
+`funding_hole` (exit 2, the month is still written, provisionally). Two prints
+in one slot, or two different prints at one time, is a `funding_conflict`,
+and that month is not written. `known_holes` in the
+manifest lists slots the venue never published, so they are not reported on
+every run. For BTC these are 2023-07-02 20:00, 2023-08-23 20:00, and
+2024-08-15 13:00 UTC, checked against `fundingHistory` on 2026-10-07. Any
+other missing slot is a gap.
+
+The venue settled every 8 hours until 2023-06-07 and hourly from 2023-06-08,
+so the manifest has two datasets for BTC. `hl-perp-btc-funding` (hourly) is
+enabled; `hl-perp-btc-funding-8h` is opt-in:
+
+```bash
+PYTHONPATH=src uv run --frozen python -m research.hist_etl sync --dataset hl-perp-btc-funding-8h
+```
+
+Datasets for one coin may not cover the same day. Both write to the same coin
+directory and to the one view `hist_hl_funding_{coin}`. The view reads only
+the month files the manifest selects: the coin's datasets, and only a file
+whose sidecar covers its month's window as the manifest defines it (a
+settled file exactly; a provisional one from the start of that window, the
+first of the month or the dataset's `start`, up to the day it was fetched).
+No date is read, so `--today` does not change the views. Files of a renamed,
+removed, or re-ranged dataset stay on disk but out of the view, so they
+cannot charge a bar twice. When no file of a coin qualifies, or the coin's
+datasets were removed from the manifest, its view is dropped, so a query
+fails instead of reading stale rows; the next sync that selects a month file
+creates it again. The exception is a name the operator also declares outside
+the generated block. Like any such view, it is then not generated again until
+`--replace-legacy-views`, and the drop also removes a view the operator ran
+under that name; its statement stays in `catalog.sql`. Do not declare
+`hist_hl_funding_*` names by hand. A month that is not selected is missing
+from a view that still has other months, like a hole: `sync` and `verify`
+report it.
+
+For a harness `role: funding` column on hourly bars stamped at their close,
+the settlement printed at the bar's close belongs to that bar:
+
+```sql
+SELECT bar.ts, bar.close, coalesce(funding.funding_rate, 0.0) AS funding_rate
+FROM hourly_bars AS bar
+LEFT JOIN hist_hl_funding_btc AS funding ON funding.slot_start = bar.ts
+```
+
+Bars stamped at their open (like Kraken OHLCVT) add the interval first.
+Coarser bars sum the settlements inside each bar. `coalesce` charges no
+funding to a bar without a settlement, so check the study range first; apart
+from `known_holes`, this should return no rows:
+
+```sql
+SELECT bar.ts
+FROM hourly_bars AS bar
+LEFT JOIN hist_hl_funding_btc AS funding ON funding.slot_start = bar.ts
+WHERE funding.slot_start IS NULL
+```
+
 ## Catalog
 
 `catalog` rewrites only the marked block in `catalog.sql`. Default view names
@@ -129,6 +254,7 @@ do not collide with the warehouse views Quant already uses:
 
 - `hist_bn_{market}_{symbol}_{slug}`, for example `hist_bn_um_btcusdt_klines_1h`
 - `hist_kr_ohlcvt_{pair}_{interval}`, for example `hist_kr_ohlcvt_xbtusd_1d`
+- `hist_hl_funding_{coin}`, for example `hist_hl_funding_btc`
 
 `hist_bn_um_klines_1h`, `hist_bn_spot_aggtrades`, `hist_bn_um_funding`, and
 `hist_kr_xbtusd_1d` stay where they are. `sync --replace-legacy-views` or

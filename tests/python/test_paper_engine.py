@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import dataclasses
 import importlib
 import json
 import pkgutil
@@ -14,6 +15,7 @@ from typing import Any
 import duckdb
 import pytest
 
+from hyperliquid_bot.hyperliquid_ws_client import HyperliquidTradesCollectorConfig
 from hyperliquid_bot.local_mode import UnsafeTradingModeError
 from hyperliquid_bot.paper_engine import (
     HYPERLIQUID_PERP_BASE_TAKER_FEE_RATE,
@@ -34,10 +36,14 @@ from hyperliquid_bot.paper_engine import (
     quote_taker_fill,
     read_health,
 )
-from hyperliquid_bot.paper_engine.engine import DEFAULT_PAPER_LATENCY_NS
-from hyperliquid_bot.paper_engine.errors import PaperEngineError
+from hyperliquid_bot.paper_engine.engine import (
+    DEFAULT_PAPER_LATENCY_NS,
+    DEFAULT_TOUCH_REFILL_NS,
+)
+from hyperliquid_bot.paper_engine.errors import PaperEngineError, PaperTapeError
 from hyperliquid_bot.paper_engine.execution import FillQuote, PositionState, apply_fill
 from hyperliquid_bot.paper_engine.precision import adverse_price, protective_price
+from hyperliquid_bot.paper_engine.replay import TRADE_DEDUP_CAPACITY
 from hyperliquid_bot.paper_risk import PaperRiskLimits
 
 CREATED = datetime(2026, 7, 15, 12, 0, tzinfo=UTC)
@@ -107,11 +113,21 @@ def _bbo(
     )
 
 
-def _trade(*, ns: int, price: str, size: str, side: str = "SELL", ordinal: int = 1) -> TradeEvent:
+def _trade(
+    *,
+    ns: int,
+    price: str,
+    size: str,
+    side: str = "SELL",
+    ordinal: int = 1,
+    event_time: datetime | None = None,
+) -> TradeEvent:
     return TradeEvent(
         venue=VENUE,
         instrument_id=INSTRUMENT,
-        event_time_utc=CREATED + timedelta(microseconds=ns // 1000),
+        event_time_utc=(
+            CREATED + timedelta(microseconds=ns // 1000) if event_time is None else event_time
+        ),
         received_utc_ns=ns,
         source_event_id=f"trade-{ordinal}",
         price=Decimal(price),
@@ -128,6 +144,7 @@ def _bbo_at(
     bid: str,
     ask: str,
     ordinal: int,
+    bid_size: str = "1",
 ) -> BboEvent:
     return BboEvent(
         venue=VENUE,
@@ -136,7 +153,7 @@ def _bbo_at(
         received_utc_ns=ns,
         source_event_id=f"bbo-{ordinal}",
         bid_price=Decimal(bid),
-        bid_size=Decimal("1"),
+        bid_size=Decimal(bid_size),
         ask_price=Decimal(ask),
         ask_size=Decimal("1"),
         message_ordinal=ordinal,
@@ -578,7 +595,19 @@ def test_state_keeps_recent_records_and_full_counts(tmp_path: Path) -> None:
     targets = tuple(Decimal("0.01") if index % 2 == 0 else Decimal("0") for index in range(240))
     engine = _engine(tmp_path, "bounded01", strategy=ScriptedStrategy(targets))
     for index in range(240):
-        engine.on_event(_bbo(ns=index * 1_000_000, bid="99999", ask="100000", ordinal=index + 1))
+        # The displayed size grows faster than PAPER takes it, so its own
+        # earlier fills at the unchanged prices never use the touch up.
+        size = str(index + 1)
+        engine.on_event(
+            _bbo(
+                ns=index * 1_000_000,
+                bid="99999",
+                ask="100000",
+                bid_size=size,
+                ask_size=size,
+                ordinal=index + 1,
+            )
+        )
     engine.close()
     state = _state(engine)
     assert state["schema"] == "paper-engine-state-v2"
@@ -677,6 +706,13 @@ def test_latency_defaults_above_zero_and_zero_needs_an_opt_in() -> None:
     with pytest.raises(PaperEngineError, match="allow_zero_latency"):
         PaperEngineConfig(latency_ns=0)
     assert _instant().latency_ns == 0
+
+
+def test_touch_refill_must_be_positive() -> None:
+    assert PaperEngineConfig().touch_refill_ns == DEFAULT_TOUCH_REFILL_NS
+    for value in (0, -1):
+        with pytest.raises(PaperEngineError, match="touch_refill_ns"):
+            _instant(touch_refill_ns=value)
 
 
 def test_config_keeps_slippage_inside_the_bands_and_the_stop_below_one() -> None:
@@ -871,6 +907,488 @@ def test_hard_limits_hold_at_the_worst_admissible_price(tmp_path: Path) -> None:
     assert _objects(_state(engine)["risk_rejections"])[0]["reason"] == "max_notional"
 
 
+def test_short_entry_is_sized_at_the_same_risk_price_as_a_long(tmp_path: Path) -> None:
+    # A SELL limit only floors the fill price, so a short is sized at the bid
+    # plus the band, like a long at the ask plus the band: 12500 / 101000.
+    engine = _engine(tmp_path, "shortsize", strategy=ScriptedStrategy((Decimal("-1"),)))
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001"))
+    engine.close()
+    assert engine.position_quantity == Decimal("-0.12376")
+
+
+def test_config_rejects_a_stop_not_wider_than_slippage() -> None:
+    with pytest.raises(PaperEngineError, match="exceed slippage_fraction"):
+        _instant(stop_distance_fraction=Decimal("0.005"), slippage_fraction=Decimal("0.005"))
+    # A tight stop with a wide entry band is a valid choice.
+    _instant(stop_distance_fraction=Decimal("0.015"), entry_price_band_fraction=Decimal("0.02"))
+
+
+def test_stop_ignores_a_trade_printed_before_the_position_opened(tmp_path: Path) -> None:
+    engine = _engine(
+        tmp_path,
+        "oldtrade1",
+        strategy=ScriptedStrategy((Decimal("0"), Decimal("0.1"))),
+    )
+    engine.on_event(_trade(ns=0, price="97000", size="0.5", ordinal=1))
+    engine.on_event(_bbo(ns=1_000_000, bid="100000", ask="100001", ordinal=2))
+    assert engine.position_quantity == Decimal("0.1")
+    # One-sided book and no venue mark: the only trade is older than the stop.
+    engine.on_event(_bbo(ns=2_000_000, bid="99990", ask=None, ask_size=None, ordinal=3))
+    engine.close()
+    assert engine.position_quantity == Decimal("0.1")
+    assert not [row for row in _ledger(tmp_path / "oldtrade1") if row["type"] == "stop_triggered"]
+
+
+def test_stop_fallback_follows_processing_order_not_receive_stamps(tmp_path: Path) -> None:
+    engine = _engine(tmp_path, "tradeorder", strategy=ScriptedStrategy((Decimal("0.1"),)))
+    engine.on_event(_bbo(ns=2_000_000, bid="100000", ask="100001", ordinal=1))
+    engine.on_event(_bbo(ns=3_000_000, bid="99990", ask=None, ask_size=None, ordinal=2))
+    # A new print processed after the stop, though its receive stamp is earlier.
+    engine.on_event(
+        _trade(
+            ns=1_000_000,
+            price="97000",
+            size="0.5",
+            ordinal=3,
+            event_time=CREATED + timedelta(milliseconds=4),
+        )
+    )
+    engine.close()
+    assert engine.position_quantity == Decimal("0")
+    triggered = [row for row in _ledger(tmp_path / "tradeorder") if row["type"] == "stop_triggered"]
+    assert triggered[0]["mark_source"] == "last_trade"
+
+
+def test_stop_fallback_fails_safe_on_an_old_stamped_print(tmp_path: Path) -> None:
+    # Venue times are not compared: a print processed after the stop counts
+    # even when stamped before it (a re-delivered one exits early, which is
+    # safer than a skewed stamp hiding a real stop).
+    engine = _engine(
+        tmp_path, "failsafe", strategy=ScriptedStrategy((Decimal("0"), Decimal("0.1")))
+    )
+    one_ms = CREATED + timedelta(milliseconds=1)
+    engine.on_event(_trade(ns=1_000_000, price="100000", size="0.5", ordinal=1, event_time=one_ms))
+    engine.on_event(_bbo(ns=2_000_000, bid="100000", ask="100001", ordinal=2))
+    engine.on_event(_bbo(ns=3_000_000, bid="99990", ask=None, ask_size=None, ordinal=3))
+    engine.on_event(_trade(ns=4_000_000, price="97000", size="0.5", ordinal=4, event_time=CREATED))
+    engine.close()
+    assert engine.position_quantity == Decimal("0")
+    triggered = [row for row in _ledger(tmp_path / "failsafe") if row["type"] == "stop_triggered"]
+    assert triggered[0]["mark_source"] == "last_trade"
+
+
+def test_stop_fallback_is_not_blocked_by_clock_skew_between_feeds(tmp_path: Path) -> None:
+    # The entry fills on a BBO stamped 10 s ahead of the trade feed. The
+    # fallback does not compare venue times, so a real later print still counts.
+    engine = _engine(
+        tmp_path, "skewfeed", strategy=ScriptedStrategy((Decimal("0"), Decimal("0.1")))
+    )
+    engine.on_event(_trade(ns=1_000_000, price="100000", size="0.5", ordinal=1, event_time=CREATED))
+    ahead = BboEvent(
+        venue=VENUE,
+        instrument_id=INSTRUMENT,
+        event_time_utc=CREATED + timedelta(seconds=10),
+        received_utc_ns=2_000_000,
+        source_event_id="bbo-2",
+        bid_price=Decimal("100000"),
+        bid_size=Decimal("1"),
+        ask_price=Decimal("100001"),
+        ask_size=Decimal("1"),
+        message_ordinal=2,
+    )
+    engine.on_event(ahead)
+    assert engine.position_quantity == Decimal("0.1")
+    engine.on_event(_bbo(ns=3_000_000, bid="99990", ask=None, ask_size=None, ordinal=3))
+    engine.on_event(
+        _trade(
+            ns=4_000_000,
+            price="97000",
+            size="0.5",
+            ordinal=4,
+            event_time=CREATED + timedelta(seconds=5),
+        )
+    )
+    engine.close()
+    assert engine.position_quantity == Decimal("0")
+    triggered = [row for row in _ledger(tmp_path / "skewfeed") if row["type"] == "stop_triggered"]
+    assert triggered[0]["mark_source"] == "last_trade"
+
+
+def test_unchanged_side_stays_used_up_and_the_wait_is_visible(tmp_path: Path) -> None:
+    # PAPER fills never move the real book: a bid the feed repeats unchanged
+    # (or a mark-only event) does not offer the taken size again.
+    engine = _engine(tmp_path, "sameside1", strategy=ScriptedStrategy((Decimal("0.1"),)))
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001", ordinal=1))
+    engine.on_event(_bbo(ns=1_000_000, bid="97990", ask="97991", bid_size="0.04", ordinal=2))
+    assert engine.position_quantity == Decimal("0.06")
+    engine.on_event(_mark(ns=2_000_000, price="97990", ordinal=3))
+    engine.on_event(_bbo(ns=3_000_000, bid="97990", ask="97995", bid_size="0.04", ordinal=4))
+    assert engine.position_quantity == Decimal("0.06")
+    health = read_health(engine.health_path)
+    assert health["exit_waiting_for_quote"] is True
+    assert health["flatten_blocked_missing_price"] is False
+    engine.on_event(_bbo(ns=4_000_000, bid="97980", ask="97995", bid_size="1", ordinal=5))
+    engine.close()
+    assert engine.position_quantity == Decimal("0")
+    assert read_health(engine.health_path)["exit_waiting_for_quote"] is False
+
+
+def test_new_size_at_the_same_price_offers_only_the_untaken_part(tmp_path: Path) -> None:
+    # Had the 0.04 BTC fill been real, the 97990 bid would still be short that
+    # size: a different size at the same price offers only what is left.
+    engine = _engine(tmp_path, "sameprice", strategy=ScriptedStrategy((Decimal("0.1"),)))
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001", ordinal=1))
+    engine.on_event(_bbo(ns=1_000_000, bid="97990", ask="97991", bid_size="0.04", ordinal=2))
+    assert engine.position_quantity == Decimal("0.06")
+    engine.on_event(_bbo(ns=2_000_000, bid="97990", ask="97991", bid_size="0.05", ordinal=3))
+    assert engine.position_quantity == Decimal("0.05")
+    engine.on_event(_bbo(ns=3_000_000, bid="97990", ask="97991", bid_size="0.03", ordinal=4))
+    assert engine.position_quantity == Decimal("0.05")
+    assert read_health(engine.health_path)["exit_waiting_for_quote"] is True
+    # A new price on the bid is a new level: its displayed size is available.
+    engine.on_event(_bbo(ns=4_000_000, bid="97985", ask="97991", bid_size="0.03", ordinal=5))
+    engine.close()
+    assert engine.position_quantity == Decimal("0.02")
+    exits = [row for row in _objects(_state(engine)["orders"]) if row["reason"] == "stop-exit"]
+    assert [row["filled_quantity"] for row in exits] == ["0.04", "0.01", "0.03"]
+
+
+def test_taken_size_is_held_back_until_the_level_refills(tmp_path: Path) -> None:
+    # Within touch_refill_ns the unchanged 0.05 BTC ask PAPER already bought
+    # is not offered again; after it, the level counts as refilled. A
+    # zero-latency order would fill on that quote: one recorded block.
+    targets = tuple(Decimal(text) for text in ("0.05", "0", "0.05", "0.05", "0.05"))
+    engine = _engine(tmp_path, "refill01", strategy=ScriptedStrategy(targets))
+    for index, ns in enumerate((0, 1_000_000, 2_000_000, 999_999_999, 1_000_000_000)):
+        engine.on_event(_bbo(ns=ns, bid="99999", ask="100000", ask_size="0.05", ordinal=index))
+    engine.close()
+    assert engine.position_quantity == Decimal("0.05")
+    state = _state(engine)
+    orders = _objects(state["orders"])
+    assert [(row["side"], row["status"]) for row in orders] == [
+        ("BUY", "FILLED"),
+        ("SELL", "FILLED"),
+        ("BUY", "FILLED"),
+    ]
+    rejections = _objects(state["risk_rejections"])
+    assert [(row["reason"], row["received_utc_ns"]) for row in rejections] == [
+        ("touch_consumed", 2_000_000)
+    ]
+
+
+def test_order_with_latency_meeting_a_used_up_level_is_cancelled(tmp_path: Path) -> None:
+    engine = _engine(
+        tmp_path,
+        "refill02",
+        strategy=_SilentAfterTargets(tuple(Decimal(text) for text in ("0.05", "0", "0.05"))),
+        config=PaperEngineConfig(latency_ns=250_000_000),
+    )
+    for index, ns in enumerate((0, 300_000_000, 600_000_000, 900_000_000)):
+        engine.on_event(_bbo(ns=ns, bid="99999", ask="100000", ask_size="0.05", ordinal=index))
+    engine.close()
+    assert engine.position_quantity == Decimal("0")
+    orders = _objects(_state(engine)["orders"])
+    assert [(row["side"], row["status"], row["unfilled_reason"]) for row in orders] == [
+        ("BUY", "FILLED", None),
+        ("SELL", "FILLED", None),
+        ("BUY", "CANCELED", "touch_consumed"),
+    ]
+
+
+def test_waiting_stop_exit_retries_on_the_clock_after_the_refill(tmp_path: Path) -> None:
+    # The BBO feed pushes only changes: a quiet, unchanged book must not hold
+    # the stop exit until the stale-data halt.
+    engine = _engine(tmp_path, "clockexit", strategy=ScriptedStrategy((Decimal("0.1"),)))
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001", ordinal=1))
+    engine.on_event(_bbo(ns=1_000_000, bid="97990", ask="97991", bid_size="0.04", ordinal=2))
+    assert engine.position_quantity == Decimal("0.06")
+    engine.on_clock(now_utc_ns=500_000_000, now_utc=CREATED + timedelta(milliseconds=500))
+    assert engine.position_quantity == Decimal("0.06")
+    assert read_health(engine.health_path)["exit_waiting_for_quote"] is True
+    engine.on_clock(now_utc_ns=1_001_000_000, now_utc=CREATED + timedelta(milliseconds=1001))
+    assert engine.position_quantity == Decimal("0.02")
+    assert engine.kill_switch == "NONE"
+    engine.close()
+
+
+def test_clock_retries_only_an_exit_waiting_for_a_refill(tmp_path: Path) -> None:
+    # A missing touch needs a new quote, not more time: the clock adds nothing.
+    engine = _engine(tmp_path, "clockonly", strategy=ScriptedStrategy((Decimal("0.1"),)))
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001", ordinal=1))
+    engine.on_event(_bbo(ns=1_000_000, bid="97990", ask="97991", bid_size="0", ordinal=2))
+    assert read_health(engine.health_path)["flatten_blocked_missing_price"] is True
+    orders_before = _state(engine)["order_count"]
+    engine.on_clock(now_utc_ns=2_000_000_000, now_utc=CREATED + timedelta(seconds=2))
+    engine.close()
+    assert _state(engine)["order_count"] == orders_before
+    assert engine.position_quantity == Decimal("0.1")
+
+
+def test_clock_exit_fill_applies_the_loss_limits(tmp_path: Path) -> None:
+    # The second partial exit, filled on the clock, realizes the loss that
+    # breaches the daily limit; the halt is applied at once.
+    engine = _engine(
+        tmp_path,
+        "clocklimit",
+        strategy=ScriptedStrategy((Decimal("0.1"),)),
+        config=_instant(risk_limits=_loose_loss_limits(drawdown="0.5", daily="0.0029")),
+    )
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001", ordinal=1))
+    engine.on_event(_bbo(ns=1_000_000, bid="97000", ask="98000", bid_size="0.04", ordinal=2))
+    assert engine.position_quantity == Decimal("0.06")
+    assert engine.kill_switch == "NONE"
+    engine.on_clock(now_utc_ns=1_001_000_000, now_utc=CREATED + timedelta(milliseconds=1001))
+    assert engine.position_quantity == Decimal("0.02")
+    assert engine.kill_switch == "HALT_NEW"
+    assert read_health(engine.health_path)["kill_reason"] == "daily_loss"
+    engine.close()
+
+
+def test_clock_never_rolls_the_loss_windows(tmp_path: Path) -> None:
+    # Windows roll on venue event time only. A clock past midnight fills the
+    # waiting exit but does not lift the old day's halt; the next venue event
+    # of the new day does.
+    engine = _engine(
+        tmp_path,
+        "midnight1",
+        strategy=ScriptedStrategy((Decimal("0.1"),)),
+        config=_instant(risk_limits=_loose_loss_limits(drawdown="0.5", daily="0.0002")),
+    )
+    late = datetime(2026, 7, 15, 23, 59, 59, tzinfo=UTC)
+    engine.on_event(_bbo_at(ns=0, event_time=late, bid="100000", ask="100001", ordinal=1))
+    engine.on_event(
+        _bbo_at(
+            ns=1_000_000,
+            event_time=late + timedelta(milliseconds=900),
+            bid="97000",
+            ask="98000",
+            bid_size="0.04",
+            ordinal=2,
+        )
+    )
+    assert engine.position_quantity == Decimal("0.06")
+    assert engine.kill_switch == "HALT_NEW"
+    engine.on_clock(
+        now_utc_ns=1_001_000_000, now_utc=datetime(2026, 7, 16, 0, 0, 0, 500_000, tzinfo=UTC)
+    )
+    assert engine.position_quantity == Decimal("0.02")
+    assert engine.kill_switch == "HALT_NEW"
+    next_day = datetime(2026, 7, 16, 0, 0, 1, tzinfo=UTC)
+    engine.on_event(_bbo_at(ns=2_000_000, event_time=next_day, bid="96990", ask="98000", ordinal=3))
+    engine.close()
+    switches = [row for row in _ledger(tmp_path / "midnight1") if row["type"] == "kill_switch"]
+    assert [(row["state"], row["reason"]) for row in switches] == [
+        ("HALT_NEW", "daily_loss"),
+        ("NONE", "daily_loss_window_reset"),
+    ]
+
+
+def test_decision_on_a_one_sided_book_is_not_checked_against_the_last_print(
+    tmp_path: Path,
+) -> None:
+    # A one-sided BBO is not the touch the order is priced on (the last print
+    # is), so the used-up last print does not reject it as consumed; the IOC
+    # meets the one-sided book and completes no_touch, as before this check.
+    engine = _engine(
+        tmp_path,
+        "onesided1",
+        strategy=_SilentAfterTargets((Decimal("0.05"), Decimal("0"))),
+    )
+    engine.on_event(_trade(ns=0, price="100000", size="0.05", ordinal=1))
+    assert engine.position_quantity == Decimal("0.05")
+    engine.on_event(_bbo(ns=1_000_000, bid="99999", ask=None, ask_size=None, ordinal=2))
+    engine.close()
+    state = _state(engine)
+    assert [
+        (row["side"], row["status"], row["unfilled_reason"]) for row in _objects(state["orders"])
+    ] == [("BUY", "FILLED", None), ("SELL", "CANCELED", "no_touch")]
+    assert "touch_consumed" not in {row["reason"] for row in _objects(state["risk_rejections"])}
+
+
+def test_zero_latency_order_decided_on_a_trade_waits_for_the_next_quote(
+    tmp_path: Path,
+) -> None:
+    # With a complete book a trade print is not a fill quote, so a used-up ask
+    # at decision time does not block the order: it fills on the next BBO.
+    engine = _engine(
+        tmp_path,
+        "tradewait",
+        strategy=_SilentAfterTargets(tuple(Decimal(text) for text in ("0.05", "0", "0.05"))),
+    )
+    engine.on_event(_bbo(ns=0, bid="99999", ask="100000", ask_size="0.05", ordinal=1))
+    engine.on_event(_bbo(ns=1_000_000, bid="99999", ask="100000", ask_size="0.05", ordinal=2))
+    engine.on_event(_trade(ns=2_000_000, price="100000", size="0.01", ordinal=3))
+    engine.on_event(_bbo(ns=3_000_000, bid="99999", ask="100001", ordinal=4))
+    engine.close()
+    state = _state(engine)
+    assert engine.position_quantity == Decimal("0.05")
+    assert [(row["side"], row["status"]) for row in _objects(state["orders"])] == [
+        ("BUY", "FILLED"),
+        ("SELL", "FILLED"),
+        ("BUY", "FILLED"),
+    ]
+    assert state["risk_rejection_count"] == 0
+
+
+def test_zero_size_at_a_taken_price_is_a_missing_touch(tmp_path: Path) -> None:
+    engine = _engine(tmp_path, "zerotaken", strategy=ScriptedStrategy((Decimal("0.1"),)))
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001", ordinal=1))
+    engine.on_event(_bbo(ns=1_000_000, bid="97990", ask="97991", bid_size="0.04", ordinal=2))
+    engine.on_event(_bbo(ns=2_000_000, bid="97990", ask="97991", bid_size="0", ordinal=3))
+    health = read_health(engine.health_path)
+    assert health["exit_waiting_for_quote"] is False
+    assert health["flatten_blocked_missing_price"] is True
+    engine.close()
+
+
+def test_a_flickering_level_stays_short_until_it_refills(tmp_path: Path) -> None:
+    # The bid leaves the touch and comes back at once: still the same level.
+    engine = _engine(tmp_path, "flicker01", strategy=ScriptedStrategy((Decimal("0.1"),)))
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001", ordinal=1))
+    engine.on_event(_bbo(ns=1_000_000, bid="97990", ask="97991", bid_size="0.04", ordinal=2))
+    assert engine.position_quantity == Decimal("0.06")
+    engine.on_event(_bbo(ns=2_000_000, bid="97985", ask="97991", bid_size="0.01", ordinal=3))
+    assert engine.position_quantity == Decimal("0.05")
+    engine.on_event(_bbo(ns=3_000_000, bid="97990", ask="97991", bid_size="0.04", ordinal=4))
+    assert engine.position_quantity == Decimal("0.05")
+    assert read_health(engine.health_path)["exit_waiting_for_quote"] is True
+    # Once touch_refill_ns has passed, the level counts as refilled.
+    engine.on_event(_bbo(ns=1_001_000_000, bid="97990", ask="97991", bid_size="0.05", ordinal=5))
+    engine.close()
+    assert engine.position_quantity == Decimal("0")
+    assert read_health(engine.health_path)["exit_waiting_for_quote"] is False
+
+
+def test_order_decided_on_a_used_up_quote_fills_on_a_later_fresh_one(tmp_path: Path) -> None:
+    # With latency the order fills against a later quote, so a used-up quote
+    # at decision time does not block it.
+    targets = tuple(Decimal(text) for text in ("0.05", "0.05", "0", "0", "0.05"))
+    engine = _engine(
+        tmp_path,
+        "laterfill",
+        strategy=_SilentAfterTargets(targets),
+        config=PaperEngineConfig(latency_ns=250_000_000),
+    )
+    for index, (ns, ask) in enumerate(
+        (
+            (0, "100000"),
+            (300_000_000, "100000"),
+            (310_000_000, "100000"),
+            (600_000_000, "100000"),
+            (610_000_000, "100000"),
+            (900_000_000, "100002"),
+        )
+    ):
+        engine.on_event(_bbo(ns=ns, bid="99999", ask=ask, ask_size="0.05", ordinal=index))
+    engine.close()
+    assert engine.position_quantity == Decimal("0.05")
+    orders = _objects(_state(engine)["orders"])
+    assert [(row["side"], row["status"]) for row in orders] == [
+        ("BUY", "FILLED"),
+        ("SELL", "FILLED"),
+        ("BUY", "FILLED"),
+    ]
+
+
+def test_zero_displayed_size_blocks_a_flatten_as_missing_price(tmp_path: Path) -> None:
+    engine = _engine(
+        tmp_path,
+        "zerosize1",
+        strategy=ScriptedStrategy((Decimal("0.1"),)),
+        config=_instant(risk_limits=_loose_loss_limits(drawdown="0.001", daily="0.50")),
+    )
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001", ordinal=1))
+    engine.on_event(_bbo(ns=1_000_000, bid="99000", ask="99001", bid_size="0", ordinal=2))
+    assert engine.kill_switch == "FLATTEN_HALT"
+    assert engine.position_quantity == Decimal("0.1")
+    assert read_health(engine.health_path)["flatten_blocked_missing_price"] is True
+    engine.close()
+
+
+def test_used_up_quote_is_not_filled_twice(tmp_path: Path) -> None:
+    # The strategy exit takes the 0.04 BTC bid; the stop that fires on the
+    # same quote must not take that bid again, nor on a mark-only event.
+    engine = _engine(
+        tmp_path,
+        "depleted1",
+        strategy=ScriptedStrategy((Decimal("0.1"), Decimal("0"))),
+        config=PaperEngineConfig(latency_ns=250_000_000),
+    )
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001", ordinal=1))
+    engine.on_event(_bbo(ns=300_000_000, bid="100000", ask="100001", ordinal=2))
+    assert engine.position_quantity == Decimal("0.1")
+    engine.on_event(_bbo(ns=600_000_000, bid="97990", ask="97991", bid_size="0.04", ordinal=3))
+    assert engine.position_quantity == Decimal("0.06")
+    assert read_health(engine.health_path)["stop_exit_pending"] is True
+    engine.on_event(_mark(ns=700_000_000, price="97990", ordinal=4))
+    assert engine.position_quantity == Decimal("0.06")
+    engine.on_event(_bbo(ns=800_000_000, bid="97980", ask="97981", ordinal=5))
+    engine.close()
+    assert engine.position_quantity == Decimal("0")
+
+
+class _SilentAfterTargets(ScriptedStrategy):
+    """Returns no target once its script is used up, so nothing is resubmitted."""
+
+    def on_market(self, event: MarketEvent, view: StrategyView) -> TargetPosition | None:
+        if self._index >= len(self._targets):
+            return None
+        return super().on_market(event, view)
+
+
+def test_band_blocked_exit_is_not_reported_as_a_missing_price(tmp_path: Path) -> None:
+    engine = _engine(
+        tmp_path,
+        "bandflag1",
+        strategy=_SilentAfterTargets((Decimal("0.1"), Decimal("0"))),
+        config=PaperEngineConfig(latency_ns=250_000_000, exit_price_band_fraction=Decimal("0.005")),
+    )
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001", ordinal=1))
+    engine.on_event(_bbo(ns=300_000_000, bid="100000", ask="100001", ordinal=2))
+    # The exit's limit is 99500; a 1% drop is beyond it but above the stop.
+    engine.on_event(_bbo(ns=600_000_000, bid="99000", ask="99001", ordinal=3))
+    assert engine.position_quantity == Decimal("0.1")
+    orders = _objects(_state(engine)["orders"])
+    assert orders[-1]["unfilled_reason"] == "price_band"
+    assert read_health(engine.health_path)["flatten_blocked_missing_price"] is False
+    engine.close()
+
+
+def test_stop_falls_back_to_the_last_trade_without_any_mark(tmp_path: Path) -> None:
+    engine = _engine(tmp_path, "stoptrade", strategy=ScriptedStrategy((Decimal("0.1"),)))
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001", ordinal=1))
+    # One-sided book: no BBO mid and no venue mark, so only trades are left.
+    engine.on_event(_bbo(ns=1_000_000, bid="98500", ask=None, ask_size=None, ordinal=2))
+    engine.on_event(_trade(ns=2_000_000, price="97000", size="0.5", ordinal=3))
+    engine.close()
+    assert engine.position_quantity == Decimal("0")
+    triggered = [row for row in _ledger(tmp_path / "stoptrade") if row["type"] == "stop_triggered"]
+    assert triggered[0]["mark_source"] == "last_trade"
+    assert triggered[0]["mark_price"] == "97000"
+
+
+def test_loss_windows_follow_event_time_when_created_after_the_tape(tmp_path: Path) -> None:
+    # A replay is created after the tape it plays; the windows must still
+    # roll on the tape's own days.
+    engine = PaperEngine(
+        store_root=tmp_path,
+        run_id="replayday",
+        created_at_utc=CREATED + timedelta(days=30),
+        config=_instant(
+            stale_after_ns=2 * 86_400_000_000_000,
+            risk_limits=_loose_loss_limits(drawdown="0.50", daily="0.001"),
+        ),
+        strategy=ScriptedStrategy(tuple(Decimal(text) for text in ("0.1", "0", "0.1"))),
+    )
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001", ordinal=1))
+    engine.on_event(_bbo(ns=1_000_000_000, bid="99000", ask="99001", ordinal=2))
+    assert engine.kill_switch == "HALT_NEW"
+    engine.on_event(_bbo(ns=13 * 3_600_000_000_000, bid="99000", ask="99001", ordinal=3))
+    assert engine.kill_switch == "NONE"
+    assert engine.position_quantity == Decimal("0.1")
+    engine.close()
+
+
 def test_daily_loss_halt_lifts_at_the_next_utc_day_and_never_rolls_back(tmp_path: Path) -> None:
     engine = _engine(
         tmp_path,
@@ -1051,6 +1569,77 @@ def test_parquet_replay_matches_the_in_memory_tape(tmp_path: Path) -> None:
     assert _normalize(_state(memory), "memreplay1") == _normalize(_state(parquet), "pqreplay01")
 
 
+def test_parquet_replay_keeps_a_redelivered_print_once(tmp_path: Path) -> None:
+    parquet_dir = tmp_path / "tape"
+    _write_hyperliquid_parquet(parquet_dir, extra_rows=(_trade_row(4, 1_600_000_000, tid=9),))
+    loaded = load_hyperliquid_parquet_tape((parquet_dir,))
+    assert [type(event) for event in loaded] == [BboEvent, BboEvent, TradeEvent]
+
+
+def test_parquet_replay_keys_prints_like_the_live_collector(tmp_path: Path) -> None:
+    # The live source identity is (time, coin, tid): the same tid at another
+    # time is a different print, and the dedup window is the collector's.
+    parquet_dir = tmp_path / "tape"
+    _write_hyperliquid_parquet(
+        parquet_dir, extra_rows=(_trade_row(4, 1_600_000_000, tid=9, time_ms=1_784_000_001_600),)
+    )
+    loaded = load_hyperliquid_parquet_tape((parquet_dir,))
+    assert [type(event) for event in loaded] == [BboEvent, BboEvent, TradeEvent, TradeEvent]
+    collector_default = {
+        item.name: item.default for item in dataclasses.fields(HyperliquidTradesCollectorConfig)
+    }["dedup_capacity"]
+    assert TRADE_DEDUP_CAPACITY == collector_default
+
+
+def test_parquet_replay_dedup_window_is_an_lru_like_the_collector(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A re-send refreshes its id, and an id pushed out of the window is a new
+    # print again, exactly as in the live collector's LRU cache.
+    monkeypatch.setattr("hyperliquid_bot.paper_engine.replay.TRADE_DEDUP_CAPACITY", 2)
+    parquet_dir = tmp_path / "tape"
+    later = 1_784_000_001_600
+    _write_hyperliquid_parquet(
+        parquet_dir,
+        extra_rows=(
+            _trade_row(4, 1_600_000_000, tid=10, time_ms=later),
+            _trade_row(5, 1_700_000_000, tid=9),
+            _trade_row(6, 1_800_000_000, tid=11, time_ms=later),
+            _trade_row(7, 1_900_000_000, tid=9),
+            _trade_row(8, 2_000_000_000, tid=10, time_ms=later),
+        ),
+    )
+    trades = [
+        event
+        for event in load_hyperliquid_parquet_tape((parquet_dir,))
+        if isinstance(event, TradeEvent)
+    ]
+    assert [event.source_event_id for event in trades] == [
+        "trade-9",
+        "trade-10",
+        "trade-11",
+        "trade-10",
+    ]
+
+
+def test_parquet_replay_refuses_a_print_without_a_coin(tmp_path: Path) -> None:
+    parquet_dir = tmp_path / "tape"
+    _write_hyperliquid_parquet(
+        parquet_dir, extra_rows=(_trade_row(4, 1_600_000_000, tid=12, coin=None),)
+    )
+    with pytest.raises(PaperTapeError, match="coin"):
+        load_hyperliquid_parquet_tape((parquet_dir,))
+
+
+def test_parquet_replay_refuses_one_trade_id_with_two_prints(tmp_path: Path) -> None:
+    parquet_dir = tmp_path / "tape"
+    _write_hyperliquid_parquet(
+        parquet_dir, extra_rows=(_trade_row(4, 1_600_000_000, tid=9, price="99999"),)
+    )
+    with pytest.raises(PaperTapeError, match="different prints"):
+        load_hyperliquid_parquet_tape((parquet_dir,))
+
+
 def test_package_does_not_import_an_exchange_order_client() -> None:
     import hyperliquid_bot.paper_engine as package
 
@@ -1138,7 +1727,9 @@ def _normalize(state: dict[str, object], run_id: str) -> str:
     return json.dumps(state, sort_keys=True).replace(run_id, "RUN")
 
 
-def _write_hyperliquid_parquet(directory: Path) -> None:
+def _write_hyperliquid_parquet(
+    directory: Path, *, extra_rows: tuple[tuple[object, ...], ...] = ()
+) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     rows = (
         _raw_row(
@@ -1173,24 +1764,8 @@ def _write_hyperliquid_parquet(directory: Path) -> None:
                 },
             },
         ),
-        _raw_row(
-            3,
-            1_500_000_000,
-            "trades",
-            {
-                "channel": "trades",
-                "data": [
-                    {
-                        "coin": "BTC",
-                        "side": "A",
-                        "px": "100000",
-                        "sz": "0.01",
-                        "time": 1_784_000_001_500,
-                        "tid": 9,
-                    }
-                ],
-            },
-        ),
+        _trade_row(3, 1_500_000_000, tid=9),
+        *extra_rows,
     )
     connection = duckdb.connect(":memory:")
     try:
@@ -1223,6 +1798,29 @@ def _write_hyperliquid_parquet(directory: Path) -> None:
         )
     finally:
         connection.close()
+
+
+def _trade_row(
+    ordinal: int,
+    received_utc_ns: int,
+    *,
+    tid: int,
+    price: str = "100000",
+    time_ms: int = 1_784_000_001_500,
+    coin: str | None = "BTC",
+) -> tuple[object, ...]:
+    """A ``trades`` message with one print, stamped as in the base tape."""
+
+    trade: dict[str, object] = {
+        "side": "A",
+        "px": price,
+        "sz": "0.01",
+        "time": time_ms,
+        "tid": tid,
+    }
+    if coin is not None:
+        trade["coin"] = coin
+    return _raw_row(ordinal, received_utc_ns, "trades", {"channel": "trades", "data": [trade]})
 
 
 def _raw_row(

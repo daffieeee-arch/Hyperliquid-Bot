@@ -88,39 +88,81 @@ PAPER defaults that are assumptions, not venue facts:
 | `latency_ns` | 250 ms | Placeholder for the decision-to-venue delay. Measure the VPS round trip and override. `0` requires `allow_zero_latency=True`. |
 | `entry_price_band_fraction` | 1% | Tight IOC limit for new risk, so hard limits hold at the worst admissible price. |
 | `exit_price_band_fraction` | 10% | The venue's TP/SL slippage tolerance; exits still close in a fast market. |
+| `touch_refill_ns` | 1 s | How long size PAPER took at a price stays missing from that price before the level counts as refilled. Must be positive. |
 
 A buy fills the ask and a sell fills the bid, worsened by the configured
 slippage fraction, then rounded to that grid. Quantity is capped by the
 displayed size (or the trade size when the book is not complete). The
 unfilled remainder is cancelled (IOC). Latency waits for a later event
-before that touch is eligible. Every order is an IOC limit around the touch
-at decision time: entries use `entry_price_band_fraction`, exits
+before the order may fill. An eligible order that meets a one-sided or
+crossed BBO completes `CANCELED` with `unfilled_reason: no_touch`; with no
+complete book, a trade print fills it. Every order is an IOC limit around
+the touch at decision time: entries use `entry_price_band_fraction`, exits
 `exit_price_band_fraction`, and the limit is rounded so it never widens the
 band. A fill beyond the limit does not happen; the order completes as
 `CANCELED` with `unfilled_reason: price_band` (other reasons: `no_touch`,
-`touch_size`). While an order waits, the same target from
-the strategy keeps it working, even when the order was rounded or clipped
-to the risk size; only a changed target cancels and replaces it. A kill
-flatten and a stop exit are zero-latency: they replace a matching strategy
-order that is still waiting out its latency and fill on the same event. A missing side, a crossed book, or a missing
-mark does not become a mid. New risk is rejected. Unrealized PnL stays null
-until a venue mark or a complete two-sided book exists.
+`touch_size`, `touch_consumed`).
+
+PAPER fills do not move the real book, so the feed keeps showing size PAPER
+already took. For `touch_refill_ns` after a fill, the size PAPER took at a
+price on one side is held back from the displayed size at that price; more
+fills there add to it and restart the timer. A level that leaves the touch
+and comes back in that time is still short. After it, the level counts as
+refilled by other makers. A price PAPER has not taken from offers its full
+displayed size, and a displayed size of zero is a missing touch, not a
+used-up one. A trade print stays used up until the next print. An IOC that
+meets a used-up level completes as `CANCELED` with
+`unfilled_reason: touch_consumed`; a strategy order is checked against the
+quote it would fill on, after its latency, not the one it was decided on.
+Only with zero latency, and only when the decision event is itself the
+touch (a complete BBO, or a print while the book is not complete), is the
+decision quote also the fill quote; then such an order is rejected with
+`touch_consumed` instead, recorded once while the block lasts. A stop exit or
+kill flatten on a used-up level waits for new size, a new price, or the
+refill, cancels a strategy order meanwhile, and `health.json` shows
+`exit_waiting_for_quote: true`. The BBO feed only pushes changes, so
+`on_clock` retries such a waiting exit, and after a fill applies the loss
+limits at once in the last event's window: loss windows roll on venue event
+time only, never on the caller's clock. A band or a missing touch is not
+retried on the clock; it needs a new quote.
+
+While an order waits, the same target from the strategy keeps it working,
+even when the order was rounded or clipped to the risk size; only a changed
+target cancels and replaces it. A kill flatten and a stop exit are
+zero-latency: they replace a matching strategy order that is still waiting
+out its latency and fill on the same event. A missing side, a crossed book,
+or a missing mark does not become a mid. New risk is rejected. Unrealized
+PnL stays null until a venue mark or a complete two-sided book exists.
 
 ## Risk
 
 - Per-trade size is `equity * risk_per_trade / stop_distance`, rounded down
-  to the lot, at the entry's limit price. Max notional, the `paper_risk`
-  hard limits and the risk-based size are all checked at that limit price,
-  the worst price the IOC can fill at, so they still hold after slippage.
-  Hard max position and max notional reject instead of clipping.
+  to the lot, at the risk price `touch * (1 + entry_price_band_fraction)`.
+  Max notional, the `paper_risk` hard limits and the risk-based size are all
+  checked at that price, so they hold wherever the IOC fills inside its band.
+  For a BUY the limit caps the fill; a SELL limit only floors it, so a short
+  gets the same cushion above the bid, but a bid rise beyond the band while
+  the order waits is not bounded. Hard max position and max notional reject
+  instead of clipping.
 - Every open position carries a stop at the effective stop distance
   (`stop_distance_fraction * volatility_multiple`) from its average entry,
   the same distance the size assumed. A `stop_set` line records it. When
   the engine mark (the venue mark when fresher, else the BBO mid; the venue
   triggers TP/SL on its mark price) crosses the stop, a `stop_triggered`
   line is written and a zero-latency reduce-only IOC (`stop-exit`) closes the
-  position at the touch, retried on later events until flat. A gap fills at
-  the touch, beyond the stop: the loss is then larger than the risk budget.
+  position at the touch, retried on later quotes until flat. With no mark at
+  all (one-sided book, no venue mark) a trade processed after the stop was
+  set triggers it. Venue times are not compared on purpose: any time filter
+  either lets a re-delivered print through or lets one skewed or mis-stamped
+  print hide a real stop. Failing safe, a re-delivered old print may exit
+  early but never hides the stop. The WS client and the Parquet replay drop
+  a re-sent print by trade id before it reaches the engine. That is an exit
+  trigger only, and equity still treats the price as missing. The config
+  refuses a stop distance not wider than `slippage_fraction`, which would
+  stop out every fill at once. Choose it wider than half the spread plus
+  slippage as well; the spread cannot be checked up front, and a narrower
+  stop fires on the first mark after a fill. A gap fills at the touch,
+  beyond the stop: the loss is then larger than the risk budget.
 - After a stop-out the strategy cannot re-open the same direction
   (`stop_lockout`, recorded once) until its target goes flat or reverses
   (`stop_lockout_cleared`). A stop-out does not halt the engine.
@@ -130,7 +172,8 @@ until a venue mark or a complete two-sided book exists.
   lifts at the next UTC day and a weekly-loss halt at the next ISO week
   (`kill_switch` state `NONE`, reason `daily_loss_window_reset` /
   `weekly_loss_window_reset`); the guard re-checks against the new baseline
-  at once. A late event stamped in an earlier window never rolls a window
+  at once. Windows start at the first event (a replay is created after its
+  tape), and a late event stamped in an earlier window never rolls one
   back. Drawdown, stale-data and missing-price halts do not lift by
   themselves.
 - Drawdown at or beyond `drawdown_kill_fraction` flattens and halts.
@@ -144,7 +187,13 @@ until a venue mark or a complete two-sided book exists.
 `load_hyperliquid_parquet_tape` reads completed DATA-1A raw Parquet parts
 with the same JSON paths as the `trades`, `bbo`, and `activeAssetCtx`
 research views. `PaperEngine.run_parquet` and `PaperEngine.on_event` are the
-same strategy, risk, and fill path.
+same strategy, risk, and fill path. A trade print re-sent after a reconnect
+is kept once, like the live trades collector's dedup: same source identity
+(time, coin, trade id) within a 10,000-id LRU window. This approximates the
+live path rather than copying it: the live cache is per collector process
+(empty after a restart) and shared by all its instruments, while the replay
+keeps one window per tape and product. The same identity with a different
+print raises `PaperTapeError`; a corrupt tape stops the replay.
 
 ## Residual limits
 
@@ -152,8 +201,11 @@ same strategy, risk, and fill path.
   settlement, no venue reconciliation.
 - The stop is simulated by the engine, not resting on the venue: PAPER
   triggers on its own mark and only when an event arrives.
-- An immediate exit (stop or kill flatten) takes a displayed size at most
-  once per event and retries on the next one. Other orders that fill on the
-  same quote within one event are not depleted against each other.
+- Depletion is a fixed refill time at the touch only. The book behind the
+  touch is not modelled: an exit on a used-up level waits instead of walking
+  to the next level, and a refill is assumed, not observed.
+- The engine itself does not deduplicate trade prints. The WS client and
+  the Parquet replay drop a print re-sent after a reconnect by trade id;
+  any other feed must do the same.
 - A create-only run does not recover an open position after a process restart.
 - Paper fills are not evidence of edge, capacity, or LIVE readiness.

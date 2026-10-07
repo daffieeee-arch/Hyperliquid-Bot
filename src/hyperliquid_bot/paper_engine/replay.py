@@ -4,15 +4,21 @@ The SQL paths match the DATA-1A research views in
 ``hyperliquid_bot.parquet_research`` (trades, bbo, activeAssetCtx mark).
 Partial files are ignored. Rows are ordered by receipt time, then message
 ordinal, then event index. The same ``PaperEngine.on_event`` path consumes
-this tape and a live public feed.
+this tape and a live public feed. A trade print re-sent after a reconnect
+(same time, coin and trade id) is kept once, like the live collector's
+dedup. That is an approximation of the live path, not a copy: the live
+cache is per collector process (empty after a restart) and shared by all of
+its instruments, while the replay keeps one window per tape and product.
 """
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from typing import Final
 
 import duckdb
 
@@ -25,6 +31,12 @@ from hyperliquid_bot.paper_engine.events import (
     event_sort_key,
     utc_from_epoch_ms,
 )
+
+# The live trades collector's default dedup window
+# (HyperliquidTradesCollectorConfig.dedup_capacity, not overridden in this
+# repository). The replay uses the same size; see load_hyperliquid_parquet_tape
+# for where the two windows can still differ.
+TRADE_DEDUP_CAPACITY: Final = 10_000
 
 _HYPERLIQUID_BUY: str = "B"
 _HYPERLIQUID_SELL: str = "A"
@@ -130,7 +142,10 @@ def _load_trades(
             json_extract_string(trade.value, '$.px') AS price,
             json_extract_string(trade.value, '$.sz') AS size,
             json_extract_string(trade.value, '$.time') AS event_time_ms,
-            json_extract_string(trade.value, '$.tid') AS trade_id
+            json_extract_string(trade.value, '$.tid') AS trade_id,
+            json_extract_string(trade.value, '$.coin') AS coin,
+            json_extract_string(trade.value, '$.hash') AS trade_hash,
+            CAST(json_extract(trade.value, '$.users') AS VARCHAR) AS users
         FROM {relation} AS raw,
              LATERAL json_each(decode(raw.payload_bytes), '$.data') AS trade
         WHERE raw.venue = 'hyperliquid'
@@ -142,6 +157,10 @@ def _load_trades(
         [product],
     ).fetchall()
     events: list[TradeEvent] = []
+    # A reconnect re-sends recent prints. Like the live collector, keep one
+    # copy per source identity (time, coin, tid) within the same LRU window.
+    # The same identity with a different print is a corrupt tape.
+    seen: OrderedDict[tuple[int, str, str], tuple[object, ...]] = OrderedDict()
     for row in rows:
         message_ordinal = _require_int(row[0], field_name="message_ordinal")
         received_utc_ns = _require_int(row[1], field_name="received_utc_ns")
@@ -149,8 +168,21 @@ def _load_trades(
         side = _aggressor_side(_require_text(row[3], field_name="side"))
         price = _require_decimal(_require_text(row[4], field_name="price"), field_name="price")
         quantity = _require_decimal(_require_text(row[5], field_name="size"), field_name="size")
-        event_time = utc_from_epoch_ms(_require_int(row[6], field_name="event_time_ms"))
+        event_time_ms = _require_int(row[6], field_name="event_time_ms")
         trade_id = _require_text(row[7], field_name="trade_id")
+        coin = _require_text(row[8], field_name="coin")
+        identity = (event_time_ms, coin, trade_id)
+        fingerprint = (side, price, quantity, row[9], row[10])
+        known = seen.get(identity)
+        if known is not None:
+            if known != fingerprint:
+                raise PaperTapeError(f"trade id {trade_id} appears with different prints.")
+            seen.move_to_end(identity)
+            continue
+        seen[identity] = fingerprint
+        while len(seen) > TRADE_DEDUP_CAPACITY:
+            seen.popitem(last=False)
+        event_time = utc_from_epoch_ms(event_time_ms)
         events.append(
             TradeEvent(
                 venue=venue,

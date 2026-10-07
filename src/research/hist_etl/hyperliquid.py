@@ -5,10 +5,10 @@ milliseconds and returns ``{coin, fundingRate, premium, time}`` rows, oldest
 first, at most 500 per response. No key or account is involved.
 https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint/perpetuals
 
-The ETL reads one UTC month at a time. A month that has ended, and whose
-fetch has a print in every settlement slot (or only acknowledged holes), is
-kept as an immutable raw JSON file, so a re-run reads the same bytes. Any
-other month (the current one, or a settled one with a missing slot) is
+The ETL reads one UTC month at a time. A month that has ended settles into
+an immutable raw JSON file once its fetch has a print in every settlement
+slot (or only acknowledged holes), or once two syncs got the same answer, so
+a re-run reads the same bytes. Until then, and for the current month, it is
 fetched again on every sync and written as provisional output, so a
 truncated response is never frozen. One Parquet file per month follows the
 ``.sources.json`` sidecar contract of the other venues.
@@ -257,8 +257,12 @@ def fetch_funding(
     return tuple(rows)
 
 
-def write_raw(path: Path, window: FundingWindow, rows: Sequence[FundingRow]) -> None:
-    """Canonical JSON, so two fetches of a settled month give the same bytes."""
+def write_raw(path: Path, text: str) -> None:
+    atomic_write_text(path, text)
+
+
+def render_raw(window: FundingWindow, rows: Sequence[FundingRow]) -> str:
+    """Canonical JSON, so two fetches of the same month give the same bytes."""
 
     payload = {
         "source": _SOURCE,
@@ -275,21 +279,40 @@ def write_raw(path: Path, window: FundingWindow, rows: Sequence[FundingRow]) -> 
             for row in rows
         ],
     }
-    atomic_write_text(path, json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n")
+    return json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
+
+
+def raw_end_ms(raw_path: Path) -> int | None:
+    """The ``end_ms`` a raw file was written for, or None when it cannot be read."""
+
+    try:
+        payload = json.loads(raw_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    end_ms = payload.get("end_ms") if isinstance(payload, dict) else None
+    return end_ms if type(end_ms) is int else None
 
 
 def ready_to_settle(
-    spec: HyperliquidFundingSpec, window: FundingWindow, rows: Sequence[FundingRow]
+    spec: HyperliquidFundingSpec,
+    window: FundingWindow,
+    rows: Sequence[FundingRow],
+    *,
+    same_as_last_fetch: bool,
 ) -> bool:
-    """A month is frozen only when it has ended and every slot is accounted for.
+    """A month is frozen once it has ended and its answer can be trusted.
 
-    A truncated or failing response then stays provisional and is fetched
-    again, instead of being kept forever as an immutable file.
+    Every slot accounted for is trusted at once. A month with a hole the
+    manifest does not acknowledge is trusted when the previous sync got the
+    same bytes: a truncated response from a lagging node is unlikely to repeat
+    exactly, and a real venue hole should not be fetched again forever. The
+    hole stays in the gap report until it is acknowledged. A conflict never
+    settles.
     """
 
-    return (
-        window.complete and not slot_conflicts(spec, rows) and not funding_holes(spec, window, rows)
-    )
+    if not window.complete or slot_conflicts(spec, rows):
+        return False
+    return same_as_last_fetch or not funding_holes(spec, window, rows)
 
 
 def materialize_funding_month(
@@ -308,13 +331,13 @@ def materialize_funding_month(
     """
 
     try:
-        rows, covered = load_raw(raw_path, window)
+        rows, covered = load_raw(raw_path, window, settled=not provisional)
     except HistEtlError as exc:
         return (Gap("hyperliquid_schema", spec.id, str(exc)),)
     conflicts = slot_conflicts(spec, rows)
     if conflicts:
         return conflicts
-    holes = funding_holes(spec, covered, rows)
+    holes = funding_holes(spec, _hole_window(window, covered), rows)
     source = SourceDigest(name=raw_path.name, sha256=cached_sha256(root, raw_path), path=raw_path)
     destination = hyperliquid_parquet_path(root, window)
     action = _decide(destination, source, rebuild=rebuild)
@@ -343,18 +366,15 @@ def audit_funding_month(
     """
 
     settled = raw_funding_path(root, window, settled=True)
-    raw_path = (
-        settled
-        if window.complete and settled.is_file()
-        else raw_funding_path(root, window, settled=False)
-    )
+    use_settled = window.complete and settled.is_file()
+    raw_path = settled if use_settled else raw_funding_path(root, window, settled=False)
     if not raw_path.is_file():
         return (Gap("missing_hyperliquid_raw", spec.id, raw_path.name),)
     destination = hyperliquid_parquet_path(root, window)
     if not destination.is_file():
         return (Gap("missing_parquet", spec.id, destination.name),)
     try:
-        rows, covered = load_raw(raw_path, window)
+        rows, covered = load_raw(raw_path, window, settled=use_settled)
     except HistEtlError as exc:
         return (Gap("hyperliquid_schema", spec.id, str(exc)),)
     # A fresh hash, not the size/mtime cache: verify must see any edit.
@@ -367,14 +387,20 @@ def audit_funding_month(
                 f"{destination.name} was not built from {raw_path.name}",
             ),
         )
-    return (*slot_conflicts(spec, rows), *funding_holes(spec, covered, rows))
+    return (
+        *slot_conflicts(spec, rows),
+        *funding_holes(spec, _hole_window(window, covered), rows),
+    )
 
 
-def load_raw(raw_path: Path, window: FundingWindow) -> tuple[tuple[FundingRow, ...], FundingWindow]:
+def load_raw(
+    raw_path: Path, window: FundingWindow, *, settled: bool
+) -> tuple[tuple[FundingRow, ...], FundingWindow]:
     """Typed, deduplicated rows and the window the file covers.
 
-    A provisional file covers the slots up to the day it was fetched, which
-    may end before today's window does. Disagreeing duplicates fail closed.
+    A settled file must cover exactly this window. A provisional file covers
+    the slots up to the day it was fetched, which may end before today's
+    window does. Disagreeing duplicates fail closed.
     """
 
     try:
@@ -392,6 +418,11 @@ def load_raw(raw_path: Path, window: FundingWindow) -> tuple[tuple[FundingRow, .
     end_ms = payload.get("end_ms")
     if type(end_ms) is not int or not window.start_ms < end_ms <= window.end_ms:
         raise HistEtlError(f"{raw_path.name} covers slots outside this window", exit_code=2)
+    if settled and end_ms != window.end_ms:
+        raise HistEtlError(
+            f"{raw_path.name} was settled for a different window; move it aside to refetch",
+            exit_code=2,
+        )
     covered = replace(window, end_ms=end_ms)
     by_time: dict[int, FundingRow] = {}
     for item in payload["rows"]:
@@ -435,7 +466,7 @@ def funding_holes(
 
     interval = spec.funding_interval_hours * _MS_PER_HOUR
     present = {slot_of(row.time_ms, interval) for row in rows}
-    acknowledged = {_ms(moment) // interval for moment in spec.known_holes}
+    acknowledged = {slot_of(_ms(moment), interval) for moment in spec.known_holes}
     first = -(-window.start_ms // interval)
     last = (window.end_ms - 1) // interval
     missing = [
@@ -451,6 +482,15 @@ def funding_holes(
             tuple(_iso(slot * interval) for slot in missing[:_GAP_SAMPLES]),
         ),
     )
+
+
+def _hole_window(window: FundingWindow, covered: FundingWindow) -> FundingWindow:
+    """An ended month is judged over all its slots, whatever its file covered.
+
+    The current month is judged only up to the day it was last fetched.
+    """
+
+    return window if window.complete else covered
 
 
 def _print_bounds(window: FundingWindow) -> tuple[int, int]:

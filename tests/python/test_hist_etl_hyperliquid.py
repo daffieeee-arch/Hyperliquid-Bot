@@ -352,6 +352,62 @@ def test_a_print_just_before_its_slot_belongs_to_that_slot(tmp_path: Path) -> No
     assert _view_count(tmp_path) == 24
 
 
+def test_a_settled_file_for_a_changed_window_is_reported(tmp_path: Path) -> None:
+    start = datetime(2026, 9, 1, tzinfo=UTC)
+    poster = FakeFundingPoster(_hourly(start, 24 * 30), page_size=1000)
+    first = _manifest(tmp_path, start="2026-09-01", end="2026-09-15")
+    assert _sync(tmp_path, first, poster, date(2026, 10, 1)) == 0
+    # The operator extends the range; the settled half month is not trusted.
+    extended = _manifest(tmp_path, start="2026-09-01", end="2026-09-30")
+    assert _sync(tmp_path, extended, poster, date(2026, 10, 1)) == 2
+    report = json.loads((tmp_path / "logs" / "gap_report.json").read_text())
+    assert [gap["kind"] for gap in report["gaps"]] == ["hyperliquid_window_changed"]
+    today = date(2026, 10, 1)
+    assert (
+        run_verify(root=tmp_path, manifest_path=extended, today=today, dataset_ids=None, env={})
+        == 2
+    )
+    report = json.loads((tmp_path / "logs" / "gap_report.json").read_text())
+    assert [gap["kind"] for gap in report["gaps"]] == ["hyperliquid_schema"]
+
+
+def test_verify_judges_an_ended_month_over_all_its_slots(tmp_path: Path) -> None:
+    start = datetime(2026, 9, 1, tzinfo=UTC)
+    manifest = _manifest(tmp_path, start="2026-09-01")
+    poster = FakeFundingPoster(_hourly(start, 24 * 30), page_size=1000)
+    # Synced mid-month, then never again: verify after the month ended must
+    # not accept a file that covers only the first half.
+    assert _sync(tmp_path, manifest, poster, date(2026, 9, 15)) == 0
+    today = date(2026, 10, 5)
+    assert (
+        run_verify(root=tmp_path, manifest_path=manifest, today=today, dataset_ids=None, env={})
+        == 2
+    )
+    report = json.loads((tmp_path / "logs" / "gap_report.json").read_text())
+    september = [gap for gap in report["gaps"] if "2026-09" in gap["detail"]]
+    assert [gap["kind"] for gap in september] == ["funding_hole"]
+    assert september[0]["detail"].startswith("384 settlement slots")
+
+
+def test_a_repeated_answer_with_a_venue_hole_settles(tmp_path: Path) -> None:
+    start = datetime(2026, 9, 1, tzinfo=UTC)
+    times = _hourly(start, 24)
+    del times[7]
+    manifest = _manifest(tmp_path, start="2026-09-01", end="2026-09-01")
+    window = _window_for(tmp_path, manifest, "2026-09", date(2026, 10, 1))
+    poster = FakeFundingPoster(times, page_size=100)
+    assert _sync(tmp_path, manifest, poster, date(2026, 10, 1)) == 2
+    assert not raw_funding_path(tmp_path, window, settled=True).exists()
+    # The same answer again: the hole is the venue's, so the month settles,
+    # and the hole stays in the gap report until it is acknowledged.
+    assert _sync(tmp_path, manifest, poster, date(2026, 10, 1)) == 2
+    assert raw_funding_path(tmp_path, window, settled=True).is_file()
+    assert _sidecar(hyperliquid_parquet_path(tmp_path, window))["provisional"] is False
+    poster.requests.clear()
+    assert _sync(tmp_path, manifest, poster, date(2026, 10, 1)) == 2
+    assert poster.requests == []
+
+
 def test_view_keeps_one_row_per_settlement(tmp_path: Path) -> None:
     start = datetime(2026, 9, 1, tzinfo=UTC)
     manifest = _manifest(tmp_path, start="2026-09-01", end="2026-09-01")

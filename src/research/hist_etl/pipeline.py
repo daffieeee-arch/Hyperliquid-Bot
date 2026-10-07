@@ -30,8 +30,10 @@ from research.hist_etl.hyperliquid import (
     funding_windows,
     hyperliquid_rate,
     materialize_funding_month,
+    raw_end_ms,
     raw_funding_path,
     ready_to_settle,
+    render_raw,
     write_raw,
 )
 from research.hist_etl.kraken import audit_kraken_tree, ingest_kraken, manifest_present
@@ -286,6 +288,18 @@ def _sync_hyperliquid(
         for window in funding_windows(spec, _settled_today(today)):
             settled = raw_funding_path(root, window, settled=True)
             if window.complete and settled.is_file():
+                if raw_end_ms(settled) != window.end_ms:
+                    # The dataset's range changed after this month settled.
+                    # A settled file is never overwritten; the operator moves it.
+                    gaps.append(
+                        Gap(
+                            "hyperliquid_window_changed",
+                            spec.id,
+                            f"{settled.name} was settled for a different window; "
+                            "move it aside to refetch the month",
+                        )
+                    )
+                    continue
                 raw, provisional = settled, False
             else:
                 # Any month that is not settled yet is fetched again: the open
@@ -305,11 +319,14 @@ def _sync_hyperliquid(
                         raise
                     gaps.append(Gap("hyperliquid_fetch_failed", spec.id, str(exc)))
                     continue
-                if ready_to_settle(spec, window, rows):
+                text = render_raw(window, rows)
+                open_raw = raw_funding_path(root, window, settled=False)
+                repeated = open_raw.is_file() and open_raw.read_text(encoding="utf-8") == text
+                if ready_to_settle(spec, window, rows, same_as_last_fetch=repeated):
                     raw, provisional = settled, False
                 else:
-                    raw, provisional = raw_funding_path(root, window, settled=False), True
-                write_raw(raw, window, rows)
+                    raw, provisional = open_raw, True
+                write_raw(raw, text)
             gaps.extend(
                 materialize_funding_month(
                     spec, window, raw, root=root, rebuild=rebuild, provisional=provisional

@@ -150,18 +150,23 @@ hyperliquid-api/funding/{dataset_id}/{COIN}-funding-YYYY-MM.open.json  # current
 parquet/hist_etl/hyperliquid/funding/{COIN}/YYYY-MM.{dataset_id}.parquet
 ```
 
-A month settles only when it has ended and its fetch has a print in every
-settlement slot, apart from `known_holes`, with no conflict. Its raw file is
-then canonical JSON of the rows as published, so two fetches of the same
-month have the same bytes, and it is reused, not fetched again (delete it by
-hand to refetch a month). Every other month, the current one or an ended
-month with a missing slot, is fetched again on every sync and written to
-`.open.json`, so a truncated answer from a lagging node is never frozen. Its
-Parquet sidecar says `"provisional": true`, and that file is replaced on each
-sync until the month settles. Settled month files follow the same
+A month settles once it has ended and its fetch has a print in every
+settlement slot apart from `known_holes`, or once two syncs got the same
+bytes for it (the hole is then the venue's, and it stays in the gap report
+until it is acknowledged). A month with a conflict never settles. A settled
+raw file is canonical JSON of the rows as published, so two fetches of the
+same month have the same bytes, and it is reused, not fetched again (delete
+or move it to refetch a month). Every other month, the current one or an
+ended month that has not settled, is fetched again on every sync and written
+to `.open.json`, so a truncated answer from a lagging node is never frozen.
+Its Parquet sidecar says `"provisional": true`, and that file is replaced on
+each sync until the month settles. Settled month files follow the same
 `.sources.json` rule as the other venues (`sync --rebuild` to replace).
-`.open.json` files are not deleted. `--today` can move the cutoff back for a
-test, never past the real UTC date.
+`.open.json` files are not deleted. A settled file whose window no longer
+matches the manifest (the dataset's range changed) is not overwritten: it is
+reported as `hyperliquid_window_changed` until it is moved aside. `--today`
+can move the cutoff back for a test, never past the real UTC date. `verify`
+judges an ended month over all its slots, whatever its file covers.
 
 Columns: `ts` (the settlement time, UTC; the rate is known and charged then),
 `slot_start` (the start of the settlement slot the print belongs to),
@@ -193,8 +198,9 @@ PYTHONPATH=src uv run --frozen python -m research.hist_etl sync --dataset hl-per
 
 Datasets for one coin may not cover the same day. Both write to the same coin
 directory and to the one view `hist_hl_funding_{coin}`. The view keeps one row
-per settlement time, so month files left behind by a renamed or re-ranged
-dataset cannot count a settlement twice.
+per settlement slot, preferring a settled file over a provisional one, so
+month files left behind by a renamed or re-ranged dataset cannot charge a bar
+twice.
 
 For a harness `role: funding` column on hourly bars stamped at their close,
 the settlement printed at the bar's close belongs to that bar:

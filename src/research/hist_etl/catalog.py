@@ -328,31 +328,39 @@ def _relative(root: Path, path: Path) -> str:
 
 
 def _view(name: str, relative_paths: tuple[str, ...]) -> str:
+    _require_view_inputs(name, relative_paths)
+    return f"CREATE OR REPLACE VIEW {name} AS\nSELECT * FROM {_parquet_list(relative_paths)};\n"
+
+
+def _require_view_inputs(name: str, relative_paths: tuple[str, ...]) -> None:
     if not _VIEW_NAME.fullmatch(name):
         raise HistEtlError(f"unsafe view name {name}", exit_code=2)
     if not relative_paths:
         raise HistEtlError(f"{name} has no parquet files", exit_code=2)
+
+
+def _parquet_list(relative_paths: tuple[str, ...]) -> str:
     listed = ",\n".join(f"    '__HIST__/{path}'" for path in relative_paths)
-    return f"CREATE OR REPLACE VIEW {name} AS\nSELECT * FROM read_parquet([\n{listed}\n]);\n"
+    return f"read_parquet([\n{listed}\n])"
 
 
 def _one_row_per_settlement(name: str, relative_paths: tuple[str, ...]) -> str:
-    """A funding view that cannot count one settlement twice.
+    """A funding view with one row per settlement slot.
 
     Files left behind by a renamed or re-ranged dataset stay on disk with their
-    sidecars; keeping one row per settlement time stops a harness join from
-    charging the same funding twice.
+    sidecars; one row per slot, preferring a settled source over a provisional
+    one, stops a harness join on ``slot_start`` from charging a bar twice.
     """
 
-    plain = _view(name, relative_paths)
-    source = plain.split(" AS\n", 1)[1].rstrip().removesuffix(";")
+    _require_view_inputs(name, relative_paths)
     return (
         f"CREATE OR REPLACE VIEW {name} AS\n"
         "SELECT * EXCLUDE (settlement_rank) FROM (\n"
         "  SELECT *, row_number() OVER (\n"
-        "    PARTITION BY funding_time_ms ORDER BY dataset_id, source_name\n"
+        "    PARTITION BY slot_start\n"
+        "    ORDER BY source_name LIKE '%.open.json', dataset_id, source_name\n"
         "  ) AS settlement_rank\n"
-        f"  FROM ({source})\n"
+        f"  FROM {_parquet_list(relative_paths)}\n"
         ")\n"
         "WHERE settlement_rank = 1;\n"
     )

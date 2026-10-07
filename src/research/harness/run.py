@@ -7,15 +7,17 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from hyperliquid_bot.local_mode import UnsafeTradingModeError, require_local_paper_mode
+from research.harness.benchmark import benchmark
 from research.harness.data import fingerprint_inputs, load_bars
 from research.harness.errors import HarnessError, LockError, SpecError
 from research.harness.evaluate import decide
 from research.harness.report import (
+    Provenance,
     completed_document,
     dump_json,
     failure_document,
+    provenance,
     render_markdown,
-    source_environment,
 )
 from research.harness.spec import (
     Json,
@@ -52,10 +54,11 @@ def execute(spec_path: Path, output_dir: Path) -> RunOutcome:
     output_dir.mkdir(parents=True, exist_ok=True)
     try:
         _require_paper()
-        source_environment()
+        origin = provenance()
     except HarnessError as error:
         mode = _mode_token() if error.failure_kind == "unsafe_mode" else "PAPER"
-        return _emit(output_dir, _failure(error.failure_kind, (str(error),), None, None, mode))
+        failure = _failure(error.failure_kind, (str(error),), None, None, mode, None)
+        return _emit(output_dir, failure)
 
     digest: str | None = None
     hypothesis_id: str | None = None
@@ -70,9 +73,11 @@ def execute(spec_path: Path, output_dir: Path) -> RunOutcome:
             raise LockError("Data fingerprint differs from the lock. Re-lock the spec before run.")
         table = load_bars(spec, spec_path.parent)
         decision = decide(spec, table)
-        payload = completed_document(spec, digest, table, decision, fingerprint)
+        context = benchmark(spec.costs, table, decision)
+        payload = completed_document(spec, digest, table, decision, fingerprint, context, origin)
     except (SpecError, LockError, HarnessError) as error:
-        payload = _failure(error.failure_kind, (str(error),), digest, hypothesis_id, "PAPER")
+        reasons = (str(error),)
+        payload = _failure(error.failure_kind, reasons, digest, hypothesis_id, "PAPER", origin)
     _write_pair(output_dir, payload)
     exit_code = _EXIT_OK if payload.get("status") == "completed" else _EXIT_FAILED
     return RunOutcome(exit_code=exit_code, document=payload)
@@ -91,6 +96,7 @@ def _failure(
     digest: str | None,
     hypothesis_id: str | None,
     trading_mode: str,
+    origin: Provenance | None,
 ) -> dict[str, Json]:
     return failure_document(
         failure_kind=failure_kind,
@@ -98,6 +104,7 @@ def _failure(
         spec_sha256=digest,
         hypothesis_id=hypothesis_id,
         trading_mode=trading_mode,
+        origin=origin,
     )
 
 

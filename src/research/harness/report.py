@@ -4,10 +4,21 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Final
 
+from research.harness.benchmark import (
+    ERROR,
+    EVALUATED,
+    NO_FOLDS,
+    SEALED,
+    TOO_SHORT,
+    Benchmark,
+    Window,
+)
 from research.harness.costs import STRESS_MULTIPLIERS, round_trip_cost, stress_key
 from research.harness.data import BarTable
 from research.harness.errors import HarnessError
@@ -16,8 +27,9 @@ from research.harness.overfit import Overfitting
 from research.harness.spec import HypothesisSpec, Json
 from research.harness.splits import Fold
 
-HARNESS_VERSION: Final = "4"
+HARNESS_VERSION: Final = "5"
 _ENVIRONMENTS: Final = frozenset({"DEV", "CI", "VPS_RESEARCH"})
+_IMAGE_DIGEST: Final = re.compile(r"sha256:[0-9a-f]{64}")
 LIMITATIONS: Final[tuple[str, ...]] = (
     "The gate uses the larger of the iid t p-value and a Newey-West HAC t p-value.",
     "Sharpe is per trade, not annualized. Drawdown sums simple returns.",
@@ -34,6 +46,9 @@ LIMITATIONS: Final[tuple[str, ...]] = (
     "pre-registered configs as trials. In each split PBO picks the best positive mean net "
     "per trade among the configs that meet the trade floor pro-rated to the in-sample "
     "folds, and does not re-run the significance and stress gates.",
+    "The buy-and-hold benchmark is one unit long over the validation test folds, and over the "
+    "holdout only when a config was selected. It fills after latency_bars like a trade, is "
+    "context, and never changes the label.",
     "Look-ahead control uses the declared clock. A falsely stamped future value is invisible.",
     "paper_candidate is not LIVE, SHADOW, TESTNET, or an order authorization.",
     "Spot Vision timestamps from 2025-01-01 are microseconds; USD-M examples are milliseconds.",
@@ -41,10 +56,44 @@ LIMITATIONS: Final[tuple[str, ...]] = (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class Provenance:
+    source_environment: str
+    source_commit: str | None
+    image_digest: str | None
+
+
+def provenance() -> Provenance:
+    """Read the run's provenance once; a malformed environment or digest fails closed."""
+
+    return Provenance(
+        source_environment=source_environment(),
+        source_commit=source_commit(),
+        image_digest=image_digest(),
+    )
+
+
 def source_environment() -> str:
     raw = os.environ.get("RESEARCH_ENV", "DEV")
     if raw not in _ENVIRONMENTS:
         raise HarnessError("data_config", "RESEARCH_ENV must be DEV, CI, or VPS_RESEARCH.")
+    return raw
+
+
+def image_digest() -> str | None:
+    """The container image digest from RESEARCH_IMAGE_DIGEST; None when it is unset.
+
+    A value that is set must be a full ``sha256:`` digest, so a broken image
+    template fails the run instead of recording a wrong provenance.
+    """
+
+    raw = os.environ.get("RESEARCH_IMAGE_DIGEST")
+    if raw is None:
+        return None
+    if _IMAGE_DIGEST.fullmatch(raw) is None:
+        raise HarnessError(
+            "data_config", "RESEARCH_IMAGE_DIGEST must be sha256: and 64 lowercase hex digits."
+        )
     return raw
 
 
@@ -72,7 +121,10 @@ def failure_document(
     spec_sha256: str | None,
     hypothesis_id: str | None,
     trading_mode: str,
+    origin: Provenance | None,
 ) -> dict[str, Json]:
+    """A fail-closed record. ``origin`` is None when provenance itself was refused."""
+
     return {
         "harness_version": HARNESS_VERSION,
         "status": "failed_closed",
@@ -82,6 +134,7 @@ def failure_document(
         "trading_mode": trading_mode,
         "spec_sha256": spec_sha256,
         "hypothesis_id": hypothesis_id,
+        **_provenance_json(origin),
         "reasons": list(reasons),
         "limitations": list(LIMITATIONS),
         "generated_at_utc": _now(),
@@ -94,6 +147,8 @@ def completed_document(
     table: BarTable,
     decision: Decision,
     data_fingerprint: dict[str, Json],
+    benchmark: Benchmark,
+    origin: Provenance,
 ) -> dict[str, Json]:
     timestamps = table.timestamps
     return {
@@ -111,9 +166,7 @@ def completed_document(
         "h1": spec.h1,
         "alpha": spec.alpha,
         "selection_method": spec.selection_method,
-        "source_environment": source_environment(),
-        "source_commit": source_commit(),
-        "image_digest": None,
+        **_provenance_json(origin),
         "bar_count": len(timestamps),
         "timestamp_min": timestamps[0] if timestamps else None,
         "timestamp_max": timestamps[-1] if timestamps else None,
@@ -152,6 +205,11 @@ def completed_document(
         "selected_config_id": decision.selected_config_id,
         "primary_config_id": decision.primary_config_id,
         "holdout": _holdout_json(decision),
+        "benchmark": {
+            "method": "buy_and_hold",
+            "validation": _window_json(benchmark.validation),
+            "holdout": _window_json(benchmark.holdout),
+        },
         "overfitting": _overfitting_json(decision.overfitting),
         "reasons": list(decision.reasons),
         "limitations": list(LIMITATIONS),
@@ -198,6 +256,8 @@ def render_markdown(document: dict[str, Json]) -> str:
     if status == "completed":
         lines.extend(["", "## Validation", ""])
         lines.extend(_validation_lines(document))
+        lines.extend(["", "## Benchmark", ""])
+        lines.extend(_benchmark_lines(document))
         lines.extend(["", "## Overfitting diagnostics", ""])
         lines.extend(_overfitting_lines(document))
         lines.extend(["", "## Holdout", ""])
@@ -261,6 +321,55 @@ def _validation_lines(document: dict[str, Json]) -> list[str]:
     lines.append("")
     lines.append("p is the more conservative of the iid t and the Newey-West HAC t.")
     return lines
+
+
+def _benchmark_lines(document: dict[str, Json]) -> list[str]:
+    block = document.get("benchmark")
+    if not isinstance(block, dict):
+        return ["- benchmark block missing"]
+    lines = [
+        "Buy-and-hold: one unit long, filled after latency_bars, held to the window's "
+        "last close. Funding is positive when received. Context only; it never changes "
+        "the label.",
+        "",
+    ]
+    for window in ("validation", "holdout"):
+        values = block.get(window)
+        if not isinstance(values, dict):
+            lines.append(f"- {window}: block missing")
+            continue
+        status = values.get("status")
+        if status != EVALUATED:
+            state = _WINDOW_STATES.get(str(status), str(status))
+            note = values.get("note")
+            lines.append(f"- {window}: {state}" + ("" if note is None else f" ({note})"))
+            continue
+        lines.append(
+            (
+                "- {window}: {bars} bars held, gross `{gross}`, funding `{funding}`, "
+                "net 1.0 `{net}`, Sharpe per bar `{sharpe}`"
+            ).format(
+                window=window,
+                bars=values.get("bars_held"),
+                gross=_shown(values.get("gross_return")),
+                funding=_shown(values.get("funding")),
+                net=_shown(_mapping_field(values.get("net"), "1.0")),
+                sharpe=_shown(values.get("sharpe_per_bar")),
+            )
+        )
+    return lines
+
+
+_WINDOW_STATES: Final = {
+    SEALED: "sealed (not evaluated)",
+    NO_FOLDS: "no validation fold",
+    TOO_SHORT: "window too short to hold after the fill",
+    ERROR: "not computed (benchmark error; the label stands)",
+}
+
+
+def _shown(value: object) -> object:
+    return "null" if value is None else value
 
 
 def _overfitting_lines(document: dict[str, Json]) -> list[str]:
@@ -340,6 +449,27 @@ def _holdout_json(decision: Decision) -> dict[str, Json] | None:
         "net": {key: _metric_json(block) for key, block in decision.holdout_net.items()},
         "funding": _optional_metric_json(decision.holdout_funding),
         "mean_weight": decision.holdout_mean_weight,
+    }
+
+
+def _window_json(window: Window) -> dict[str, Json]:
+    """``status`` is evaluated, sealed, no_folds, too_short or error; values only when evaluated."""
+
+    result = window.result
+    if result is None:
+        if window.note is not None:
+            return {"status": window.status, "note": window.note}
+        return {"status": window.status}
+    values: dict[str, Json] = {"status": window.status}
+    values.update(asdict(result))
+    return values
+
+
+def _provenance_json(origin: Provenance | None) -> dict[str, Json]:
+    return {
+        "source_environment": None if origin is None else origin.source_environment,
+        "source_commit": None if origin is None else origin.source_commit,
+        "image_digest": None if origin is None else origin.image_digest,
     }
 
 

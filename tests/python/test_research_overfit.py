@@ -102,7 +102,7 @@ def test_pbo_is_zero_when_one_config_dominates_every_block() -> None:
     loser = [BlockStats(5, -5.0)] * 4
     result = probability_of_backtest_overfitting([loser, winner])
     assert result.value == 0.0
-    assert (result.blocks, result.splits, result.skipped_splits) == (4, 6, 0)
+    assert (result.configs, result.blocks, result.splits, result.skipped_splits) == (2, 4, 6, 0)
     assert result.median_logit is not None and result.median_logit > 0.0
 
 
@@ -131,10 +131,10 @@ def test_pbo_reports_why_it_has_no_value() -> None:
     idle = [BlockStats(0, 0.0)] * 4
     nothing = probability_of_backtest_overfitting([idle, idle])
     assert nothing.value is None
-    assert nothing.splits == 0
+    assert (nothing.configs, nothing.splits, nothing.skipped_splits) == (2, 0, 6)
     assert nothing.note is not None and "separates" in nothing.note
     one = probability_of_backtest_overfitting([idle])
-    assert one.value is None
+    assert (one.value, one.configs) == (None, 1)
     assert one.note is not None and "two configs" in one.note
     odd = probability_of_backtest_overfitting([[BlockStats(1, 1.0)] * 5] * 2)
     assert odd.value is None

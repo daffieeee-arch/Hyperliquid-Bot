@@ -158,20 +158,24 @@ done outside the harness is not deflated.
   that noise maximum, corrected for the skewness and kurtosis of its trade
   returns. Near 1 is good. Around 0.5 or lower, the config cannot be told
   apart from the best of noise. With one config the noise maximum is 0, and
-  `dsr` is the probabilistic Sharpe ratio. When there is no config to test,
-  or its trade returns are all equal, `dsr` is null and `note` says why.
+  `dsr` is the probabilistic Sharpe ratio. When `dsr` cannot be computed,
+  for example because there is no config to test or its trade returns are
+  all equal, it is null and `note` says why.
 - **Probability of backtest overfitting** (Bailey, Borwein, López de Prado
-  and Zhu, 2017), by combinatorially symmetric cross-validation. The most
-  recent walk-forward test folds are grouped into equal contiguous blocks:
-  the even count from 4 to 16 that leaves out the fewest (oldest) folds, so
-  at least 4 folds are needed. For every way to pick half of the blocks, the
-  config with the best mean net per trade at 1.0x on that half (the
-  statistic validation selection ranks by; a config without trades earns 0)
-  is ranked on the other half. PBO is the share of splits where it ranks at
-  or below the median. A split where every config ties in-sample selects
-  nothing and is skipped. The selection gates (significance, stress) are
-  not re-run per split. Near 0 is good; 0.5 means picking the in-sample best
-  is no better than chance. It needs at least two configs.
+  and Zhu, 2017), by combinatorially symmetric cross-validation. It compares
+  the configs with at least `sample.min_trades_validation` validation
+  trades, the configs validation selection can pick (`configs` counts them),
+  so it needs at least two of them. The most recent walk-forward test folds
+  are grouped into equal contiguous blocks: the even count from 4 to 16 that
+  leaves out the fewest (oldest) folds, so at least 4 folds are needed. For
+  every way to pick half of the blocks, the config with the best mean net
+  per trade at 1.0x on that half (the statistic validation selection ranks
+  by; a config without trades in that half earns 0) is ranked on the other
+  half. PBO is the share of splits where it ranks at or below the median. A
+  split where every config ties in-sample selects nothing and is skipped.
+  The other selection gates (significance, stress) are not re-run per split.
+  Near 0 is good; 0.5 means picking the in-sample best is no better than
+  chance.
 
 ## Point-in-time checks
 

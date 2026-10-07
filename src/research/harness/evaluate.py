@@ -14,9 +14,9 @@ from research.harness.overfit import (
     BlockStats,
     ConfigUnderTest,
     Overfitting,
-    Pbo,
     cscv_blocks,
     deflated_sharpe,
+    no_pbo,
     probability_of_backtest_overfitting,
 )
 from research.harness.spec import ConfigSpec, CostSpec, HypothesisSpec, SizingSpec
@@ -226,7 +226,7 @@ def decide(spec: HypothesisSpec, table: BarTable) -> Decision:
         holdout_funding=None if holdout is None else holdout.funding,
         holdout_mean_weight=None if holdout is None else holdout.mean_weight,
         overfitting=_overfitting(
-            spec, series_by_config, nets_by_config, fold_series_by_config, folds, selected_index
+            spec, scores, series_by_config, fold_series_by_config, folds, selected_index
         ),
     )
     _assert_promotion_invariant(decision)
@@ -675,35 +675,36 @@ def _concat_series(parts: Sequence[TradeSeries]) -> TradeSeries:
 
 def _overfitting(
     spec: HypothesisSpec,
+    scores: tuple[ConfigScore, ...],
     series_by_config: Sequence[tuple[ConfigSpec, TradeSeries]],
-    nets_by_config: Sequence[dict[str, MetricBlock]],
     fold_series_by_config: Sequence[tuple[TradeSeries, ...]],
     folds: tuple[Fold, ...],
     selected_index: int | None,
 ) -> Overfitting:
     """The deflated Sharpe ratio and PBO, both on validation net returns at 1.0x.
 
-    They are reported, never gated on.
+    They are reported, never gated on. PBO compares only the configs that meet
+    the trade floor, as validation selection does; it does not re-run the
+    other selection gates.
     """
 
+    floored = _floored_indices(spec, scores)
     dsr = deflated_sharpe(
-        len(spec.configs), _tested_config(spec, series_by_config, nets_by_config, selected_index)
+        len(spec.configs), _tested_config(spec, scores, series_by_config, floored, selected_index)
     )
     groups = cscv_blocks(len(folds))
     if groups is None:
-        pbo = Pbo(
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            f"PBO needs at least 4 walk-forward test folds; this run has {len(folds)}.",
+        pbo = no_pbo(f"PBO needs at least 4 walk-forward test folds; this run has {len(folds)}.")
+    elif len(floored) < 2:
+        pbo = no_pbo(
+            "PBO needs at least two configs that meet the trade floor; "
+            f"this run has {len(floored)}.",
+            configs=len(floored),
         )
     else:
         nets_by_fold = [
-            [part.net(spec.costs, 1.0) for part in fold_series]
-            for fold_series in fold_series_by_config
+            [part.net(spec.costs, 1.0) for part in fold_series_by_config[index]]
+            for index in floored
         ]
         pbo = replace(
             probability_of_backtest_overfitting(
@@ -723,34 +724,39 @@ def _overfitting(
     return Overfitting(deflated_sharpe=dsr, pbo=pbo)
 
 
+def _floored_indices(spec: HypothesisSpec, scores: tuple[ConfigScore, ...]) -> list[int]:
+    """The configs with at least sample.min_trades_validation validation trades."""
+
+    return [
+        index
+        for index, score in enumerate(scores)
+        if score.validation_net["1.0"].trade_count >= spec.sample.min_trades_validation
+    ]
+
+
 def _tested_config(
     spec: HypothesisSpec,
+    scores: tuple[ConfigScore, ...],
     series_by_config: Sequence[tuple[ConfigSpec, TradeSeries]],
-    nets_by_config: Sequence[dict[str, MetricBlock]],
+    floored: list[int],
     selected_index: int | None,
 ) -> ConfigUnderTest | None:
-    """The config validation selected, else the best validation mean that meets the floor.
+    """The config validation selected, else the best validation mean among ``floored``.
 
-    Ranking by mean net per trade, as validation selection does, keeps the
-    diagnostic on the config the run takes forward or comes closest to.
+    The fallback uses validation selection's own ranking, so the diagnostic
+    stays on the config the run takes forward or comes closest to.
     """
 
-    if selected_index is None:
-        ranked = [
-            (index, nets["1.0"].mean_return)
-            for index, nets in enumerate(nets_by_config)
-            if nets["1.0"].trade_count >= spec.sample.min_trades_validation
-        ]
-        means = [(index, mean) for index, mean in ranked if mean is not None]
-        if not means:
-            return None
-        index = max(means, key=lambda item: item[1])[0]
-    else:
+    if selected_index is not None:
         index = selected_index
+    elif floored:
+        index = _best_index(scores, floored)
+    else:
+        return None
     config, series = series_by_config[index]
     return ConfigUnderTest(
         config_id=config.id,
-        sharpe=nets_by_config[index]["1.0"].sharpe_per_trade,
+        sharpe=scores[index].validation_net["1.0"].sharpe_per_trade,
         returns=series.net(spec.costs, 1.0),
         selected=selected_index is not None,
     )

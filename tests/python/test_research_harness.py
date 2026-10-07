@@ -22,6 +22,8 @@ from research.harness.errors import HarnessError, IntegrityError, SpecError
 from research.harness.evaluate import (
     Trade,
     TradeSeries,
+    _build_scores,
+    _floored_indices,
     _tested_config,
     collect_trades,
     decide,
@@ -29,6 +31,8 @@ from research.harness.evaluate import (
     summarize,
     trade_series,
 )
+from research.harness.overfit import Overfitting, deflated_sharpe, no_pbo
+from research.harness.report import _overfitting_json, _overfitting_lines
 from research.harness.run import execute, lock_spec
 from research.harness.spec import (
     UNIT_SIZING,
@@ -680,23 +684,25 @@ def test_spec_without_funding_or_sizing_reports_unit_weight(tmp_path: Path) -> N
 
 
 def test_report_carries_overfitting_diagnostics(tmp_path: Path) -> None:
-    document = _run_rows(tmp_path, _regime_rows(420), configs=_two_configs())
+    configs = [*_two_configs(), {"id": "short", "threshold": 0.0, "horizon_bars": 2}]
+    document = _run_rows(tmp_path, _regime_rows(420), configs=configs)
     block = _mapping(document["overfitting"])
     dsr = _mapping(block["deflated_sharpe"])
     # The selected config is tested; the idle one still counts as a trial.
     assert document["selected_config_id"] == "real"
-    assert (dsr["config_id"], dsr["selected"], dsr["trials"]) == ("real", True, 2)
+    assert (dsr["config_id"], dsr["selected"], dsr["trials"]) == ("real", True, 3)
     assert _as_float(dsr["expected_max_sharpe"]) > 0.0
     assert _as_float(dsr["dsr"]) > 0.99
     pbo = _mapping(block["pbo"])
-    # Eight test folds; the planted config is best in and out of sample.
-    assert (pbo["blocks"], pbo["folds_used"], pbo["splits"]) == (8, 8, 70)
+    # PBO compares the two configs that meet the trade floor, over eight test
+    # folds; the planted horizon is best in and out of sample.
+    assert (pbo["configs"], pbo["blocks"], pbo["folds_used"], pbo["splits"]) == (2, 8, 8, 70)
     assert pbo["value"] == 0.0
     assert document["label"] == "passes_h1"
     markdown = (tmp_path / "out" / "result.md").read_text(encoding="utf-8")
     assert "## Overfitting diagnostics" in markdown
     assert "for `real` (selected;" in markdown
-    assert "probability of backtest overfitting: `0.0`" in markdown
+    assert "probability of backtest overfitting: `0.0` (CSCV, 2 configs," in markdown
 
 
 def test_without_a_selection_the_best_validation_mean_is_tested(tmp_path: Path) -> None:
@@ -724,6 +730,8 @@ def test_without_a_selection_the_best_validation_mean_is_tested(tmp_path: Path) 
     assert dsr["trials"] == 4
     pbo = _mapping(block["pbo"])
     assert 0.0 <= _as_float(pbo["value"]) <= 1.0
+    # PBO leaves out the idle config, which validation could never select.
+    assert pbo["configs"] == len(means) == 3
 
 
 def test_dsr_tests_the_selection_else_the_best_floored_mean() -> None:
@@ -747,25 +755,46 @@ def test_dsr_tests_the_selection_else_the_best_floored_mean() -> None:
     nets_by_config = [
         {"1.0": summarize(series.net(spec.costs, 1.0))} for _config, series in series_by_config
     ]
-    selected = _tested_config(spec, series_by_config, nets_by_config, 0)
+    neutral = [1.0] * len(series_by_config)
+    scores = _build_scores(
+        spec,
+        series_by_config,
+        nets_by_config,
+        neutral,
+        {method: neutral for method in ("bonferroni", "holm", "bh")},
+    )
+    floored = _floored_indices(spec, scores)
+    # The two lucky trades and the eight flat ones are under the trade floor.
+    assert floored == [0, 1]
+    selected = _tested_config(spec, scores, series_by_config, floored, 0)
     assert selected is not None
     assert (selected.config_id, selected.selected) == ("steady", True)
     # Nothing selected: the best mean that meets the trade floor, as validation
     # selection ranks, not the best Sharpe; the two lucky trades are ignored.
-    fallback = _tested_config(spec, series_by_config, nets_by_config, None)
+    fallback = _tested_config(spec, scores, series_by_config, floored, None)
     assert fallback is not None
     assert (fallback.config_id, fallback.selected) == ("noisy", False)
+    assert _tested_config(spec, scores, series_by_config, [], None) is None
     # A selected config without a Sharpe (equal returns) is still the one tested.
-    no_spread = _tested_config(spec, series_by_config, nets_by_config, 3)
+    no_spread = _tested_config(spec, scores, series_by_config, floored, 3)
     assert no_spread is not None
     assert (no_spread.config_id, no_spread.selected, no_spread.sharpe) == ("flat", True, None)
+    flat_dsr = deflated_sharpe(len(series_by_config), no_spread)
+    lines = _overfitting_lines(
+        {"overfitting": _overfitting_json(Overfitting(flat_dsr, no_pbo("not run")))}
+    )
+    assert any(
+        line.startswith("- deflated Sharpe ratio: not computed for `flat` (") for line in lines
+    )
 
 
 def test_overfitting_notes_explain_a_missing_value(tmp_path: Path) -> None:
-    document = _run_rows(tmp_path, _regime_rows(420))
+    # The idle config cannot meet the trade floor, so one config is left.
+    document = _run_rows(tmp_path, _regime_rows(420), configs=_two_configs())
     pbo = _mapping(_mapping(document["overfitting"])["pbo"])
-    assert pbo["value"] is None
-    assert "two configs" in str(pbo["note"])
+    # Nothing was split, so no folds are reported as used.
+    assert (pbo["value"], pbo["configs"], pbo["folds_used"]) == (None, 1, None)
+    assert "two configs that meet the trade floor; this run has 1" in str(pbo["note"])
     (tmp_path / "short").mkdir()
     short = _run_rows(tmp_path / "short", _regime_rows(420), configs=_two_configs(), test_bars=100)
     pbo = _mapping(_mapping(short["overfitting"])["pbo"])

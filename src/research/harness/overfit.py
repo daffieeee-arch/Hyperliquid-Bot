@@ -64,7 +64,10 @@ class BlockStats:
 
 @dataclass(frozen=True, slots=True)
 class Pbo:
+    """PBO with the number of configs compared and the CSCV split it used."""
+
     value: float | None
+    configs: int | None
     blocks: int | None
     folds_used: int | None
     splits: int | None
@@ -207,13 +210,13 @@ def probability_of_backtest_overfitting(stats: Sequence[Sequence[BlockStats]]) -
 
     configs = len(stats)
     if configs < 2:
-        return Pbo(None, None, None, None, None, None, "PBO needs at least two configs.")
+        return no_pbo("PBO needs at least two configs.", configs=configs)
     blocks = len(stats[0])
     if any(len(row) != blocks for row in stats):
         raise ValueError("Every config needs the same blocks.")
     if blocks < MIN_CSCV_BLOCKS or blocks % 2:
-        return Pbo(
-            None, blocks, None, None, None, None, "PBO needs an even number of at least 4 blocks."
+        return no_pbo(
+            "PBO needs an even number of at least 4 blocks.", configs=configs, blocks=blocks
         )
     totals = [
         (sum(block.trades for block in row), math.fsum(block.total for block in row))
@@ -242,22 +245,39 @@ def probability_of_backtest_overfitting(stats: Sequence[Sequence[BlockStats]]) -
         logits.append(math.log(omega / (1.0 - omega)))
     if not logits:
         return Pbo(
-            None,
-            blocks,
-            None,
-            0,
-            skipped,
-            None,
-            "No split separates the configs in-sample, so nothing was selected.",
+            value=None,
+            configs=configs,
+            blocks=blocks,
+            folds_used=None,
+            splits=0,
+            skipped_splits=skipped,
+            median_logit=None,
+            note="No split separates the configs in-sample, so nothing was selected.",
         )
     return Pbo(
         value=sum(1 for logit in logits if logit <= 0.0) / len(logits),
+        configs=configs,
         blocks=blocks,
         folds_used=None,
         splits=len(logits),
         skipped_splits=skipped,
         median_logit=statistics.median(logits),
         note=None,
+    )
+
+
+def no_pbo(note: str, *, configs: int | None = None, blocks: int | None = None) -> Pbo:
+    """A PBO that was not computed, and why."""
+
+    return Pbo(
+        value=None,
+        configs=configs,
+        blocks=blocks,
+        folds_used=None,
+        splits=None,
+        skipped_splits=None,
+        median_logit=None,
+        note=note,
     )
 
 

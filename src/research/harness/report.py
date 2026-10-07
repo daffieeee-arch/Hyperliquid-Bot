@@ -30,9 +30,9 @@ LIMITATIONS: Final[tuple[str, ...]] = (
     "the decision bar, capped at max_leverage. Costs and funding scale with the weight.",
     "Latency fills at decision_bar + latency_bars. Zero latency requires allow_zero_latency.",
     "The deflated Sharpe ratio and the probability of backtest overfitting are diagnostics "
-    "and never change the label. They use net returns at 1.0x, count only the "
-    "pre-registered configs as trials, and PBO ranks by mean net per trade without "
-    "re-running the selection gates.",
+    "and never change the label. They use net returns at 1.0x and count only the "
+    "pre-registered configs as trials. PBO compares the configs that meet the trade floor "
+    "by mean net per trade and does not re-run the other selection gates.",
     "Look-ahead control uses the declared clock. A falsely stamped future value is invisible.",
     "paper_candidate is not LIVE, SHADOW, TESTNET, or an order authorization.",
     "Spot Vision timestamps from 2025-01-01 are microseconds; USD-M examples are milliseconds.",
@@ -286,13 +286,16 @@ def _overfitting_lines(document: dict[str, Json]) -> list[str]:
         )
     else:
         note = dsr.get("note") if isinstance(dsr, dict) else None
-        lines.append(f"- deflated Sharpe ratio: not computed ({note})")
+        config = dsr.get("config_id") if isinstance(dsr, dict) else None
+        tested = "" if config is None else f" for `{config}`"
+        lines.append(f"- deflated Sharpe ratio: not computed{tested} ({note})")
     pbo = block.get("pbo")
     if isinstance(pbo, dict) and pbo.get("value") is not None:
         lines.append(
-            "- probability of backtest overfitting: `{value}` (CSCV, {blocks} blocks over "
-            "{folds} folds, {splits} splits)".format(
+            "- probability of backtest overfitting: `{value}` (CSCV, {configs} configs, "
+            "{blocks} blocks over {folds} folds, {splits} splits)".format(
                 value=pbo.get("value"),
+                configs=pbo.get("configs"),
                 blocks=pbo.get("blocks"),
                 folds=pbo.get("folds_used"),
                 splits=pbo.get("splits"),
@@ -358,6 +361,7 @@ def _overfitting_json(result: Overfitting | None) -> dict[str, Json] | None:
         },
         "pbo": {
             "value": pbo.value,
+            "configs": pbo.configs,
             "blocks": pbo.blocks,
             "folds_used": pbo.folds_used,
             "splits": pbo.splits,

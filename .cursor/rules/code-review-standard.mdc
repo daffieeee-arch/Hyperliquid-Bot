@@ -9,9 +9,9 @@ For this repository, **Claude Code's built-in `/code-review` is part of the norm
 
 When opening or updating a feature PR:
 
-1. After the PR exists (and after material follow-up commits), the branch changes get a Claude Code `/code-review` (for example `/code-review high <branch>`). A Cursor agent cannot run it: ask the operator to run it in a Claude Code session.
+1. After the PR exists (and after material follow-up commits), the branch changes get a Claude Code `/code-review` (for example `/code-review high <branch>`). A Cursor agent cannot run it: Claude Code runs it before it merges the PR.
 2. Verify each finding; fix the real ones on the same branch; push; re-run the review when the diff changed materially. Report findings judged not to be bugs, with the reason.
 3. Skip the review only for trivial docs/chore PRs unless the user asks for it anyway.
-4. Do not treat CI green alone as sufficient review for feature PRs — the code review runs before Ready/CoS merge.
+4. Do not treat CI green alone as sufficient review for feature PRs — the code review runs before Claude Code merges. Cursor agents never merge feature PRs.
 
 Canonical workflow text: `AGENTS.md` → Development workflow (code review step).

@@ -139,9 +139,11 @@ independent agent/model review when material or high-risk
         ↓
 resolve blocking findings on the same branch; re-run CI
         ↓
-Cursor stops at Ready (does NOT merge feature PRs)
+Cursor / Codex stop at Ready (do NOT merge feature PRs)
         ↓
-CoS reviews + Squash and Merge when OK (Dependabot: CoS auto on green CI)
+Claude Code /code-review + Squash and Merge when OK
+(execution, risk limits, secrets, LIVE gates, infra: Chupa OK first;
+ Dependabot: on green CI)
         ↓
 delete merged branch / worktree only if no leftover work
         ↓
@@ -156,10 +158,11 @@ Rules:
 - architecture changes must update the relevant documentation/ADR;
 - generated code must pass deterministic tests rather than rely on an LLM review alone;
 - default merge method is Squash and Merge;
-- **Cursor Cloud Agents do not merge feature PRs**; they leave PRs Ready after
-  CI and review fixes;
-- **CoS (Chief of Staff) reviews feature PRs and squash-merges** when OK;
-  Dependabot may be CoS auto-merged on green CI; LIVE/capital needs Chupa OK;
+- **Cursor Cloud Agents and Codex do not merge feature PRs**; they leave PRs
+  Ready after CI and review fixes;
+- **Claude Code reviews feature PRs and squash-merges** when OK; changes to
+  execution, risk limits, secrets, LIVE gates or infra/runtime need Chupa's OK
+  first; Dependabot may be merged on green CI; LIVE/capital needs Chupa OK;
 - extend CI only when existing workflows do not already cover the change;
   prefer the path-based / docs-only skip behavior in [CI](CI.md);
 - independent review is required for material or high-risk changes (execution,

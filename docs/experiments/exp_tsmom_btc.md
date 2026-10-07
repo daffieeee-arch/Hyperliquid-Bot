@@ -47,10 +47,11 @@ separate pre-registration after this one.
   `bn-um-btcusdt-klines-1h`, and `bn-um-btcusdt-funding-2020` (opt-in) with
   `bn-um-btcusdt-funding`.
 - **Table**: `research.bar_tables trend` with `--start 2020-01-01 --end
-  2026-10-01 --lookbacks 168,672,2016 --vol-window 168`, as merged in #126.
-  The spec hash does not cover the builder's code. The run therefore records
-  the git commit it used and the lock file's data fingerprint, and it must
-  use a builder that is unchanged since #126.
+  2026-10-01 --lookbacks 168,672,2016 --vol-window 168`, from the builder
+  merged in #126 (commit `71b0043`). The spec hash does not cover the
+  builder's code, so the Run section refuses a checkout whose
+  `src/research/bar_tables` differs from that commit. The results record the
+  commit used and the lock file's data fingerprint.
 - **Shape**: 57,144 contiguous hourly bars, from 2020-03-25 00:59:59.999 to
   2026-09-30 23:59:59.999 UTC, with one funding settlement every 8 hours.
 - **Signal**: `trend_score` is the mean sign of the 1-, 4- and 12-week log
@@ -183,18 +184,36 @@ holdout.
 
 ## Run (after this document is merged)
 
-Set three paths first:
+Export three paths first. `hist_etl` and `bar_tables` read
+`HIST_ARCHIVES_ROOT` from the environment.
 
-- `REPO_ROOT`: the repository checkout.
-- `HIST_ARCHIVES_ROOT`: the hist_etl archive root.
-- `STUDY_DIR`: a new directory **outside** the repository, so the table and
-  the lock file are never committed.
+```bash
+export REPO_ROOT=...            # the repository checkout
+export HIST_ARCHIVES_ROOT=...   # the hist_etl archive root
+export STUDY_DIR=...            # a new directory OUTSIDE the repository
+```
+
+First, sync the data:
 
 ```bash
 cd "$REPO_ROOT"
 PYTHONPATH=src uv run --frozen python -m research.hist_etl sync \
   --dataset bn-um-btcusdt-klines-1h-2020 --dataset bn-um-btcusdt-klines-1h \
   --dataset bn-um-btcusdt-funding-2020 --dataset bn-um-btcusdt-funding
+```
+
+`sync` exits 2 whenever it reports a `gap`. While the current month is still
+open it always reports one, so check every `gap` line it prints. Continue
+only if each one names a period on or after 2026-10-01, which is outside the
+study's range. Any other gap means a missing or broken archive inside the
+range: stop and fix it first.
+
+Then build and run. Stop at the first command that fails:
+
+```bash
+cd "$REPO_ROOT"
+git rev-parse HEAD
+git diff --exit-code 71b0043 -- src/research/bar_tables   # the pre-registered builder
 mkdir -p "$STUDY_DIR"
 cp docs/experiments/exp_tsmom_btc.spec.yaml "$STUDY_DIR/spec.yaml"
 PYTHONPATH=src uv run --frozen python -m research.bar_tables trend \
@@ -206,9 +225,7 @@ PYTHONPATH=src uv run --frozen python -m research.harness run "$STUDY_DIR/spec.y
   --output-dir "$STUDY_DIR/out"
 ```
 
-`sync` and `bar_tables` read `HIST_ARCHIVES_ROOT`. `sync` exits 2 while the
-current month is still open, which is outside the study's range. `hash` must
-print the digest above.
+`hash` must print the digest above.
 
 The results go into `exp_tsmom_btc.results.md` in a separate PR. That PR
 records:

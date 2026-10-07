@@ -1,6 +1,7 @@
 # Pre-registered: time-series momentum on BTC (exp_tsmom_btc).
-# See docs/experiments/exp_tsmom_btc.md before changing anything here: any
-# edit is a new pre-registration with a new spec_sha256, not a re-run.
+# See docs/experiments/exp_tsmom_btc.md before changing anything here: a
+# change to any field is a new pre-registration with a new spec_sha256, not a
+# re-run. Comments are not part of the hash.
 # Copy it to a study directory outside the repository, build bars.parquet next
 # to the copy, then lock and run it there (see the Run section of the doc).
 

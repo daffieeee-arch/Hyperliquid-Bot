@@ -194,9 +194,12 @@ def test_funding_tilts_fail_closed_without_enough_or_continuous_settlements() ->
     # Bar 4 knows three settlements; a mean over four cannot be formed yet.
     with pytest.raises(BarTableError, match="Only 3 funding settlements"):
         build(funding, (4,))
-    # A gap before the first output bar matters to a tilt, not to funding_rate.
+    # A gap inside the settlements a mean reads fails closed; one older than
+    # every mean is ignored. Bar 4 is the first row and settles at bar 4.
+    gapped = [entry for entry in funding if entry != funding[1]]
+    assert len(build(gapped, (1,))) == 8
     with pytest.raises(BarTableError, match="No funding settlement"):
-        build([entry for entry in funding if entry != funding[1]], (1,))
+        build(gapped, (2,))
     with pytest.raises(BarTableError, match="must not repeat"):
         build(funding, (2, 2))
     with pytest.raises(BarTableError, match="positive settlement counts"):
@@ -320,9 +323,11 @@ def test_the_cli_adds_funding_tilt_columns_only_when_asked(tmp_path: Path) -> No
             "100.0 + i + (i % 3) AS close FROM range(48) t(i)) TO ? (FORMAT PARQUET)",
             [str(klines / "BTCUSDT-2020-01.parquet")],
         )
+        # Settlements from 2019-12-31 00:00, 8 hours apart; i * 0.0001 each.
         connection.execute(
-            "COPY (SELECT make_timestamp(1577836800000000 + i * 28800000000) AS calc_time, "
-            "0.0001 * i AS last_funding_rate FROM range(7) t(i)) TO ? (FORMAT PARQUET)",
+            "COPY (SELECT make_timestamp(1577750400000000 + i * 28800000000) AS calc_time, "
+            "8 AS funding_interval_hours, 0.0001 * i AS last_funding_rate "
+            "FROM range(10) t(i)) TO ? (FORMAT PARQUET)",
             [str(funding / "BTCUSDT-2020-01.parquet")],
         )
     finally:
@@ -330,7 +335,8 @@ def test_the_cli_adds_funding_tilt_columns_only_when_asked(tmp_path: Path) -> No
     base = ["trend", "--root", str(root), "--symbol", "BTCUSDT", "--start", "2020-01-01"]
     base += ["--end", "2020-01-03", "--lookbacks", "4,8", "--vol-window", "6"]
     out = tmp_path / "tilted.parquet"
-    tilt = ["--funding-means", "1,2", "--funding-baseline", "0.0001"]
+    # Four settlements reach back before --start: the funding read does too.
+    tilt = ["--funding-means", "1,4", "--funding-baseline", "0.0001"]
     assert main([*base, *tilt, "--out", str(out)]) == 0
     connection = duckdb.connect()
     try:
@@ -341,16 +347,29 @@ def test_the_cli_adds_funding_tilt_columns_only_when_asked(tmp_path: Path) -> No
             ).fetchall()
         ]
         first = connection.execute(
-            "SELECT funding_tilt_1, funding_tilt_2 FROM read_parquet(?) ORDER BY ts LIMIT 1",
+            "SELECT funding_tilt_1, funding_tilt_4 FROM read_parquet(?) ORDER BY ts LIMIT 1",
             [str(out)],
         ).fetchone()
     finally:
         connection.close()
-    assert columns[-3:] == ["funding_rate", "funding_tilt_1", "funding_tilt_2"]
-    # The first row closes at 08:59:59.999 and knows the 00:00 (0) and 08:00
-    # (0.0001) settlements.
-    assert first == pytest.approx((0.0001 - 0.0001, 0.0001 - 0.00005))
+    assert columns[-3:] == ["funding_rate", "funding_tilt_1", "funding_tilt_4"]
+    # The first row closes on Jan 1 at 08:59:59.999. Its last four settlements
+    # are Dec 31 08:00 and 16:00 and Jan 1 00:00 and 08:00, rates 1 to 4 x 0.0001.
+    assert first == pytest.approx((0.0001 - 0.0004, 0.0001 - 0.00025))
     # The two options go together.
     lone = tmp_path / "lone.parquet"
     assert main([*base, "--funding-means", "1", "--out", str(lone)]) == 2
     assert not lone.exists()
+    # A change of settlement interval inside the read fails closed.
+    connection = duckdb.connect()
+    try:
+        connection.execute(
+            "COPY (SELECT make_timestamp(1577908800000000) AS calc_time, "
+            "4 AS funding_interval_hours, 0.0 AS last_funding_rate) TO ? (FORMAT PARQUET)",
+            [str(funding / "BTCUSDT-2020-01-b.parquet")],
+        )
+    finally:
+        connection.close()
+    mixed = tmp_path / "mixed.parquet"
+    assert main([*base, *tilt, "--out", str(mixed)]) == 2
+    assert not mixed.exists()

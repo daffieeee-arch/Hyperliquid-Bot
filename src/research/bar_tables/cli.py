@@ -48,14 +48,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.interval not in INTERVAL_SECONDS:
             raise BarTableError(f"Unknown interval {args.interval}.")
         closes = _read_closes(root, args.market, args.symbol, args.interval, start_ms, end_ms)
-        funding = _read_funding(root, args.market, args.symbol, start_ms, end_ms)
+        max_gap_ms = args.max_funding_gap_hours * _HOUR_MS
+        # A tilt's mean may reach back before --start, so read that far back too.
+        reach_ms = max(funding_means, default=0) * max_gap_ms
+        funding = _read_funding(
+            root,
+            args.market,
+            args.symbol,
+            start_ms - reach_ms,
+            end_ms,
+            check_interval=bool(funding_means),
+        )
         rows = build_trend_rows(
             closes,
             funding,
             lookbacks=lookbacks,
             vol_window=args.vol_window,
             bar_ms=INTERVAL_SECONDS[args.interval] * 1000,
-            max_funding_gap_ms=args.max_funding_gap_hours * _HOUR_MS,
+            max_funding_gap_ms=max_gap_ms,
             funding_means=funding_means,
             funding_baseline=funding_baseline,
         )
@@ -83,6 +93,8 @@ def write_trend_parquet(
     names = ["ts", "available_ts", "close", *(f"ret_{lookback}" for lookback in lookbacks)]
     names += ["trend_score", "realized_vol", "funding_rate"]
     names += [f"funding_tilt_{count}" for count in funding_means]
+    if any(len(row.funding_tilts) != len(funding_means) for row in rows):
+        raise BarTableError("Each row needs one funding tilt per funding mean count.")
     types = ", ".join(
         f"'{name}': '{'BIGINT' if name in {'ts', 'available_ts'} else 'DOUBLE'}'" for name in names
     )
@@ -144,9 +156,27 @@ def _read_closes(
 
 
 def _read_funding(
-    root: Path, market: str, symbol: str, start_ms: int, end_ms: int
+    root: Path,
+    market: str,
+    symbol: str,
+    start_ms: int,
+    end_ms: int,
+    *,
+    check_interval: bool = False,
 ) -> list[tuple[int, float]]:
     files = _files(root, market, parquet_slug("fundingRate", None), symbol)
+    if check_interval:
+        # A tilt averages settlements against one baseline, so they must all
+        # cover the same interval; a venue switch from 8h to 4h would halve them.
+        intervals = _query(
+            "SELECT DISTINCT funding_interval_hours FROM read_parquet(?) "
+            "WHERE calc_time >= make_timestamp(?) AND calc_time < make_timestamp(?)",
+            [files, start_ms * 1000, end_ms * 1000],
+        )
+        if len(intervals) != 1:
+            raise BarTableError(
+                f"Funding tilts need one settlement interval; found {sorted(map(str, intervals))}."
+            )
     rows = _query(
         "SELECT epoch_ms(calc_time), CAST(last_funding_rate AS DOUBLE) FROM read_parquet(?) "
         "WHERE calc_time >= make_timestamp(?) AND calc_time < make_timestamp(?) "

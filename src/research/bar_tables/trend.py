@@ -122,39 +122,39 @@ def _funding_tilts(
     baseline: float,
     max_gap: int,
 ) -> list[tuple[float, ...]]:
-    """``baseline - mean`` of the last ``K`` settlements at or before each close."""
+    """``baseline - mean`` of the last ``K`` settlements at or before each close.
+
+    Only the settlements some mean reads are checked for gaps: from the
+    oldest one the first output bar needs through the last close.
+    """
 
     if not funding_means:
         return [() for _ in closes]
     known = [entry for entry in funding if entry[0] <= closes[-1]]
-    for ts, rate in known:
-        if not math.isfinite(rate):
-            raise BarTableError(f"Funding rate at {ts} is not a finite number.")
     if any(later[0] <= earlier[0] for earlier, later in pairwise(known)):
         raise BarTableError("Funding settlements must be strictly increasing in time.")
-    edges = [ts for ts, _rate in known] + [closes[-1]]
-    for earlier, later in pairwise(edges):
-        if later - earlier > max_gap:
-            raise BarTableError(
-                f"No funding settlement between {earlier} and {later}; "
-                f"the gap exceeds {max_gap} ms."
-            )
+    longest = max(funding_means)
+    first = sum(1 for ts, _rate in known if ts <= closes[0])
+    if first < longest:
+        raise BarTableError(
+            f"Only {first} funding settlements at or before {closes[0]}; "
+            f"a mean over {longest} needs that many."
+        )
+    needed = known[first - longest :]
+    _check_funding(needed, needed[0][0], closes[-1], max_gap)
     rates = [rate for _ts, rate in known]
+    # The means change only when a settlement arrives, so compute each once.
+    by_count: dict[int, tuple[float, ...]] = {}
     tilts: list[tuple[float, ...]] = []
-    count = 0
+    count = first
     for close in closes:
         while count < len(known) and known[count][0] <= close:
             count += 1
-        if count < max(funding_means):
-            raise BarTableError(
-                f"Only {count} funding settlements at or before {close}; "
-                f"a mean over {max(funding_means)} needs that many."
-            )
-        tilts.append(
-            tuple(
+        if count not in by_count:
+            by_count[count] = tuple(
                 baseline - math.fsum(rates[count - size : count]) / size for size in funding_means
             )
-        )
+        tilts.append(by_count[count])
     return tilts
 
 

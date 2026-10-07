@@ -28,9 +28,9 @@ trading authorization.
   from `commit.txt`. The code check against
   `71b0043755dbbc05544e03a93c1121e7a8d4229c` passed on a clean working
   tree.
-- **Where**: a Claude Code cloud container, not the VPS. The run used a
-  checkout rather than an image, so `image_digest` is empty, and
-  `source_environment` is `DEV`.
+- **Where**: a Claude Code cloud container, not the VPS, from a checkout
+  rather than an image. `source_environment` is `DEV`. `image_digest` is
+  null because the harness does not record one yet, on any run.
 - **Sync**: 168 archives ready. The one gap line was for the open month of
   October 2026 in `bn-um-btcusdt-klines-1h`, which is outside the range.
 - **Spec**: sha256
@@ -68,7 +68,7 @@ The validation period is 17 walk-forward folds, from 2020-09-21 to 2024-11-28.
 
 The same configs, net at 1.0×:
 
-| config | mean weight | Sharpe per trade | annualized Sharpe | win rate | max drawdown | gross iid t (p) |
+| config | mean weight | Sharpe per trade | annualized Sharpe | win rate | max drawdown | gross iid t (gating p) |
 | --- | --- | --- | --- | --- | --- | --- |
 | `any-1w` | 0.95 | −0.024 | −0.17 | 49.5% | 198% | 0.08 (0.468) |
 | `any-2w` | 0.98 | 0.060 | 0.30 | 58.8% | 162% | 0.90 (0.220) |
@@ -80,8 +80,9 @@ The same configs, net at 1.0×:
   length in years (36,720 / 8,760). This mirrors decision rule 2.
 - **Max drawdown**: the harness sums simple per-trade returns without
   compounding.
-- **Gross p**: the larger of the iid and HAC p-values, as in the first
-  table.
+- **Gating p**: the larger of the iid and HAC p-values, as in the first
+  table. It is not always the iid t's own p: for `any-2w`, `any-1w` and
+  `all-2w` it is the HAC p.
 
 ## Overfitting diagnostics
 
@@ -110,14 +111,21 @@ Buy-and-hold of the BTCUSDT perp, computed from the same `bars.parquet`.
 | Simple return | +776.8% | −10.7% |
 | Annualized vol of hourly log returns | 63.3% | 43.9% |
 | Annualized Sharpe of hourly log returns, before funding | 0.82 | −0.15 |
-| Funding a constant long pays (sum of rates) | 58.1% | 7.3% |
+| Funding paid by a constant-notional long (sum of rates) | 58.1% | 7.3% |
 
 - **Zero**: cash returns 0.
-- **The holdout column** is buy-and-hold BTC over those dates. The
-  pre-registration asked for it. It reads the holdout's prices and
-  funding, which are public market history, but not the strategy's holdout
-  returns. It does tell a later spec what the 2025–2026 market did, which is
-  one more reason a new variant needs data from after 2026-09-30.
+- **Funding row**: the sum of the funding rates, which is what a long of
+  constant notional pays. A long of fixed BTC quantity pays on a notional
+  that grew with the price, so it paid more.
+- **The holdout column is a deviation**: it reads holdout rows, while no
+  config was selected.
+  - The pre-registration conflicts with itself here. Its Benchmarks section
+    asks for buy-and-hold over the holdout. Its Periods section says the
+    holdout is read only if validation selects a config.
+  - This run followed Benchmarks. It read the holdout's prices and funding,
+    which are public market history, but not the strategy's holdout returns.
+  - The 2025–2026 market is now known to whoever writes the next spec. That
+    is one more reason a new variant needs data from after 2026-09-30.
 - **Not comparable with the strategy**: the strategy rows are net per-trade
   means of risk-scaled positions, while buy-and-hold is unscaled, hourly and
   before funding. `all-1w` is also the best of four configs on this same
@@ -145,8 +153,8 @@ Not all rules hold, so this family stops on BTC.
   is already 0.069.
 - **Funding was the larger cost**: every config paid net funding on
   average, between 1.2 and 2.9 times its round-trip trading cost. On net,
-  longs paid funding over this period: a constant long paid 58% of its
-  notional over validation.
+  longs paid funding over this period: a constant-notional long paid 58% of
+  its notional over validation.
 - **PBO**: 0.33 means the in-sample best config usually stayed above the
   median out of sample. The ranking is not pure noise, but with four
   configs that is weak evidence.
@@ -167,10 +175,15 @@ Not all rules hold, so this family stops on BTC.
 
 ## Benchmark computation
 
-The script below is verbatim what produced the output. It is not
-committed as a file: save it as `tsmom_benchmark.py` and run
-`python tsmom_benchmark.py "$STUDY_DIR/bars.parquet"` with the environment
-from `uv.lock` (Python 3.13.15, DuckDB 1.5.5).
+The script below is byte-for-byte the file that produced the output. Its
+sha256 is `c4c159b8206d5e6f4f4bff6b0c5a25f18543f3a1024dd8c3a3ebf8496de795e3`.
+It is not committed as a file. To rerun it, save the block as
+`tsmom_benchmark.py`, check the hash, and run it with the locked
+environment (Python 3.13.15, DuckDB 1.5.5):
+
+```bash
+uv run --frozen python -I tsmom_benchmark.py "$STUDY_DIR/bars.parquet"
+```
 
 - **Row ranges** count from 0 in `ts` order and are inclusive.
 - **Validation**: `4320..41039` is `test_start` of fold 0 to `test_end - 1`
@@ -178,6 +191,17 @@ from `uv.lock` (Python 3.13.15, DuckDB 1.5.5).
 - **Holdout**: `41832..57143` is `holdout_start` to `holdout_end - 1`.
 
 ```python
+"""Pre-registered benchmark for exp_tsmom_btc: buy-and-hold BTCUSDT perp.
+
+Usage: python tsmom_benchmark.py <bars.parquet>
+
+Windows are row ranges of the pre-registered table: validation = the 17 test
+folds (rows 4320..41039), holdout = rows 41832..57143. For each window:
+the log return from the close before the window to its last close, the
+annualized vol and Sharpe of hourly log returns (sqrt(8760)), and the summed
+funding rate a constant long pays over the window's bars.
+"""
+
 import sys
 
 import duckdb

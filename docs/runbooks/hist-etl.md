@@ -87,8 +87,10 @@ is `create_time`.
 The core manifest is the warehouse already described in
 [hist-archives-research-warehouse.md](hist-archives-research-warehouse.md)
 (BTCUSDT spot and USD-M from 2025-09, with a daily tail). Older 1m klines,
-funding from 2020-01, mark/index/premium 1m, and USD-M metrics are in the
-manifest with `enabled = false`. Turn one on by id:
+USD-M 1h klines from 2020-01 (`bn-um-btcusdt-klines-1h-2020`, read by
+[exp_tsmom_btc](../experiments/exp_tsmom_btc.md)), funding from 2020-01,
+mark/index/premium 1m, and USD-M metrics are in the manifest with
+`enabled = false`. Turn one on by id:
 
 ```bash
 PYTHONPATH=src uv run --frozen python -m research.hist_etl plan \

@@ -29,8 +29,9 @@ candidate, and it noted that many naive variants die on costs and drawdowns.
 - **H1**: the trend rule's mean net return per trade is > 0 after costs and
   funding, on the untouched holdout.
 
-The test uses alpha 0.05 with Holm across the grid. The reported p-value is
-the larger of the iid t and the Newey-West HAC t.
+The test uses alpha 0.05 with Holm across the grid. Each p-value is the
+larger, so the more conservative, of the iid t-test's and the Newey-West HAC
+t-test's p-values.
 
 ## Universe
 
@@ -46,7 +47,10 @@ separate pre-registration after this one.
   `bn-um-btcusdt-klines-1h`, and `bn-um-btcusdt-funding-2020` (opt-in) with
   `bn-um-btcusdt-funding`.
 - **Table**: `research.bar_tables trend` with `--start 2020-01-01 --end
-  2026-10-01 --lookbacks 168,672,2016 --vol-window 168`.
+  2026-10-01 --lookbacks 168,672,2016 --vol-window 168`, as merged in #126.
+  The spec hash does not cover the builder's code. The run therefore records
+  the git commit it used and the lock file's data fingerprint, and it must
+  use a builder that is unchanged since #126.
 - **Shape**: 57,144 contiguous hourly bars, from 2020-03-25 00:59:59.999 to
   2026-09-30 23:59:59.999 UTC, with one funding settlement every 8 hours.
 - **Signal**: `trend_score` is the mean sign of the 1-, 4- and 12-week log
@@ -133,7 +137,10 @@ Proceed to a PAPER design only if all of these hold:
 1. **Label**: the label is `passes_h1`. That already requires a positive
    holdout net mean at 1.0×, 1.5× and 2.0× costs, with p ≤ alpha.
 2. **Annualized Sharpe**: the holdout net Sharpe at 1.0× is ≥ 0.5,
-   annualized as `sharpe_per_trade × sqrt(8760 / horizon_bars)`.
+   annualized as `sharpe_per_trade × sqrt(trades / 1.748)`. Here `trades` is
+   the selected config's holdout trade count and 1.748 is the holdout's
+   length in years (15,312 / 8,760). A config that is flat part of the time
+   is not credited for trades it did not make.
 3. **Overfitting**: the deflated Sharpe ratio is ≥ 0.95 and the PBO is
    ≤ 0.5. If not, treat the result as overfit even if it passes.
 
@@ -148,7 +155,9 @@ Otherwise this family stops on BTC:
 
 - Cost stress at 1.5× and 2.0×, and adverse funding stress.
 - HAC p-values.
-- The deflated Sharpe ratio and PBO by CSCV (16 blocks of one fold).
+- The deflated Sharpe ratio and PBO by CSCV (16 blocks of one fold). CSCV
+  needs equal blocks, so PBO leaves out the oldest of the 17 folds
+  (2020-09-21 to 2020-12-19). The validation metrics still use all 17.
 - The grid itself: threshold and horizon.
 - The mean position weight.
 
@@ -174,9 +183,16 @@ holdout.
 
 ## Run (after this document is merged)
 
+Set three paths first:
+
+- `REPO_ROOT`: the repository checkout.
+- `HIST_ARCHIVES_ROOT`: the hist_etl archive root.
+- `STUDY_DIR`: a new directory **outside** the repository, so the table and
+  the lock file are never committed.
+
 ```bash
 cd "$REPO_ROOT"
-python -m research.hist_etl sync \
+PYTHONPATH=src uv run --frozen python -m research.hist_etl sync \
   --dataset bn-um-btcusdt-klines-1h-2020 --dataset bn-um-btcusdt-klines-1h \
   --dataset bn-um-btcusdt-funding-2020 --dataset bn-um-btcusdt-funding
 mkdir -p "$STUDY_DIR"
@@ -190,6 +206,13 @@ PYTHONPATH=src uv run --frozen python -m research.harness run "$STUDY_DIR/spec.y
   --output-dir "$STUDY_DIR/out"
 ```
 
-`hash` must print the digest above. The results, with the lock file's
-digests and the benchmarks, go into `exp_tsmom_btc.results.md` in a separate
-PR.
+`sync` and `bar_tables` read `HIST_ARCHIVES_ROOT`. `sync` exits 2 while the
+current month is still open, which is outside the study's range. `hash` must
+print the digest above.
+
+The results go into `exp_tsmom_btc.results.md` in a separate PR. That PR
+records:
+
+- the git commit;
+- the lock file's spec and data digests;
+- the benchmarks.

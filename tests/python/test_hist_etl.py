@@ -166,9 +166,23 @@ def test_default_manifest_publication_and_opt_in_bundle() -> None:
     assert any(
         item.url.endswith("/markPriceKlines/BTCUSDT/1m/BTCUSDT-1m-2020-01.zip") for item in mark
     )
+    # exp_tsmom_btc reads these 1h USD-M months; they stay opt-in.
+    hourly = plan_binance(
+        tuple(spec for spec in manifest.binance if spec.id == "bn-um-btcusdt-klines-1h-2020"),
+        TODAY,
+        root,
+    )
+    assert [hourly[0].filename, hourly[-1].filename] == [
+        "BTCUSDT-1h-2020-01.zip",
+        "BTCUSDT-1h-2025-08.zip",
+    ]
+    assert hourly[0].url.endswith(
+        "/data/futures/um/monthly/klines/BTCUSDT/1h/BTCUSDT-1h-2020-01.zip"
+    )
     enabled = {spec.id for spec in manifest.binance if spec.enabled}
     assert "bn-um-btcusdt-funding-2020" not in enabled
     assert "bn-um-btcusdt-metrics" not in enabled
+    assert "bn-um-btcusdt-klines-1h-2020" not in enabled
 
 
 def test_sync_header_microseconds_and_headerless_milliseconds(tmp_path: Path) -> None:

@@ -58,12 +58,15 @@ separate pre-registration after this one.
   - It covers the row count, the first and last `ts`
     (1585097999999 and 1790812799999), and the Parquet's sha256,
     `fcdbbd9f3d168aaaa8918b942a5371a4badef668db28b9fe448993d2d8007ae7`.
-  - Two independent builds gave identical bytes. A hash says nothing about
+  - Independent builds gave identical bytes, also with 1, 2, 8 and 32
+    DuckDB threads (DuckDB 1.5.5 from `uv.lock`). A hash says nothing about
     returns.
   - The run refuses any other table, whether a different builder, a broken
-    sync or another DuckDB version produced it. The Parquet bytes depend on
-    the DuckDB version that `uv.lock` pins, so run from the commit that
-    merged this pre-registration.
+    sync or another DuckDB version produced it.
+- **Pre-registered code**: the harness that scores the study, the builder,
+  hist_etl and the locked dependencies are pinned to commit `71b0043`. The
+  run refuses a checkout whose `src/research` or `uv.lock` differs from it,
+  including untracked files there.
 - **Signal**: `trend_score` is the mean sign of the 1-, 4- and 12-week log
   returns (168, 672 and 2016 bars).
   - The lookbacks are fixed in advance and combined, not chosen, as Hurst,
@@ -194,13 +197,17 @@ holdout.
 
 ## Run (after this document is merged)
 
-Run from the commit that merged this pre-registration (#127), with three
-exported paths:
+Export three paths:
 
 ```bash
-export REPO_ROOT=...            # the repository checkout, at the #127 merge commit
+export REPO_ROOT=...            # the repository checkout
 export HIST_ARCHIVES_ROOT=...   # the hist_etl archive root
 export STUDY_DIR=...            # a new directory OUTSIDE the repository
+```
+
+Sync the data:
+
+```bash
 cd "$REPO_ROOT"
 PYTHONPATH=src uv run --frozen python -m research.hist_etl sync \
   --dataset bn-um-btcusdt-klines-1h-2020 --dataset bn-um-btcusdt-klines-1h \
@@ -208,35 +215,45 @@ PYTHONPATH=src uv run --frozen python -m research.hist_etl sync \
 ```
 
 `sync` exits 2 whenever it reports a gap. It always reports one while the
-current month is open, so this step is not chained to the next. The
-fingerprint check below catches anything in the range that is missing or
-different.
+current month is open, so this step is not chained to the next. Read each
+`gap` or `error` line it prints. A gap for a period before 2026-10-01, or any
+error, is a missing or broken archive inside the range: stop and fix it. The
+fingerprint check below is the backstop for anything that slips through.
+
+Then build, check and run. The block runs in a subshell, so its
+`set -euo pipefail` stops the block at the first failure without closing
+your shell:
 
 ```bash
-set -euo pipefail
-cd "$REPO_ROOT"
-git rev-parse HEAD
-mkdir -p "$STUDY_DIR"
-cp docs/experiments/exp_tsmom_btc.spec.yaml "$STUDY_DIR/spec.yaml"
-PYTHONPATH=src uv run --frozen python -m research.bar_tables trend \
-  --symbol BTCUSDT --start 2020-01-01 --end 2026-10-01 \
-  --lookbacks 168,672,2016 --vol-window 168 --out "$STUDY_DIR/bars.parquet"
-PYTHONPATH=src uv run --frozen python -m research.harness lock "$STUDY_DIR/spec.yaml"
-python3 -c '
+(
+  set -euo pipefail
+  cd "$REPO_ROOT"
+  git rev-parse HEAD
+  # The pre-registered code: no change, tracked or not, since 71b0043.
+  git diff --exit-code 71b0043 -- src/research uv.lock
+  test -z "$(git status --porcelain -- src/research uv.lock)"
+  mkdir -p "$STUDY_DIR"
+  cp docs/experiments/exp_tsmom_btc.spec.yaml "$STUDY_DIR/spec.yaml"
+  PYTHONPATH=src uv run --frozen python -m research.bar_tables trend \
+    --symbol BTCUSDT --start 2020-01-01 --end 2026-10-01 \
+    --lookbacks 168,672,2016 --vol-window 168 --out "$STUDY_DIR/bars.parquet"
+  PYTHONPATH=src uv run --frozen python -m research.harness lock "$STUDY_DIR/spec.yaml"
+  PYTHONPATH=src uv run --frozen python -c '
 import json, sys
 lock = json.load(open(sys.argv[1]))
+found = (lock.get("spec_sha256"), lock.get("data_fingerprint", {}).get("fingerprint_sha256"))
 expected = (
     "2c8def878612ce08cea11171209a26b65034cda84bc4df92039b150dc96c3e31",
     "0553f54a851deae6759cc2a23619670000b07976d677e5fcf604ee9902a7eb09",
 )
-found = (lock["spec_sha256"], lock["data_fingerprint"]["fingerprint_sha256"])
 sys.exit(0 if found == expected else f"not the pre-registered spec and table: {found}")
 ' "$STUDY_DIR/spec.yaml.lock.json"
-PYTHONPATH=src uv run --frozen python -m research.harness run "$STUDY_DIR/spec.yaml" \
-  --output-dir "$STUDY_DIR/out"
+  PYTHONPATH=src uv run --frozen python -m research.harness run "$STUDY_DIR/spec.yaml" \
+    --output-dir "$STUDY_DIR/out"
+)
 ```
 
-The study runs only after the check passes.
+The study runs only after both checks pass.
 
 The results go into `exp_tsmom_btc.results.md` in a separate PR. That PR
 records:

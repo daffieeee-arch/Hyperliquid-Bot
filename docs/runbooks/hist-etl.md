@@ -218,9 +218,11 @@ removed, or re-ranged dataset stay on disk but out of the view, so they
 cannot charge a bar twice. When no file of a coin qualifies, or the coin's
 datasets were removed from the manifest, its view is dropped, so a query
 fails instead of reading stale rows; the next sync that selects a month file
-creates it again. A name the operator also declares outside the generated
-block follows the rule for any such view: once dropped, it is not generated
-again until `--replace-legacy-views`. A month that is not selected is missing
+creates it again. The exception is a name the operator also declares outside
+the generated block. Like any such view, it is then not generated again until
+`--replace-legacy-views`, and the drop also removes a view the operator ran
+under that name; its statement stays in `catalog.sql`. Do not declare
+`hist_hl_funding_*` names by hand. A month that is not selected is missing
 from a view that still has other months, like a hole: `sync` and `verify`
 report it.
 

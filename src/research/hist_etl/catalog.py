@@ -13,7 +13,6 @@ import duckdb
 
 from research.hist_etl.errors import HistEtlError
 from research.hist_etl.files import atomic_write_text, warn
-from research.hist_etl.hyperliquid import FUNDING_COLUMNS
 
 _BLOCK = re.compile(
     r"-- BEGIN research\.hist_etl\n.*?-- END research\.hist_etl\n?",
@@ -53,7 +52,8 @@ def refresh_catalog(
     The SQL file is replaced only after DuckDB accepts the new block.
     ``hyperliquid_files`` maps each manifest coin to the funding month files
     the manifest selects (see ``hyperliquid.funding_view_files``); it has no
-    default, so no caller drops or keeps funding views by omission.
+    default, so no caller drops or keeps funding views by omission. A
+    funding view of the previous block with no selected file is dropped.
     """
 
     views = render_statements(
@@ -64,7 +64,7 @@ def refresh_catalog(
     catalog_path = root / "catalog.sql"
     existing = catalog_path.read_text(encoding="utf-8") if catalog_path.is_file() else ""
     owned = _managed_names(existing)
-    views = (*views, *_emptied_funding_views(views, owned))
+    stale = _stale_funding_views(existing, views, owned)
     live = _live_relations(root)
     # A relation that already exists in DuckDB, and was not emitted by the previous
     # hist_etl block, belongs to the operator. CREATE OR REPLACE would destroy it.
@@ -91,7 +91,7 @@ def refresh_catalog(
             f"skipping view {name}: an existing catalog definition is outside the "
             "hist_etl block; pass --replace-legacy-views to replace it"
         )
-    preserved = _preserved_statements(existing, set(names), live)
+    preserved = _preserved_statements(existing, set(names) | set(stale), live)
     if preserved:
         merged = merged.replace(f"{_END}\n", preserved + f"{_END}\n", 1)
     if replace_legacy_views and existing:
@@ -109,6 +109,7 @@ def refresh_catalog(
         print(diff if diff else "catalog\tno changes\n")
         print(f"catalog\tbackup\t{backup}")
     apply_catalog(root, merged)
+    _drop_views(root, stale)
     atomic_write_text(catalog_path, merged)
     return names, foreign
 
@@ -163,24 +164,40 @@ def render_statements(
     return tuple(views)
 
 
-def _emptied_funding_views(
-    emitted: Sequence[tuple[str, str]], owned: set[str]
-) -> tuple[tuple[str, str], ...]:
+def _stale_funding_views(
+    existing: str, views: Sequence[tuple[str, str]], owned: set[str]
+) -> tuple[str, ...]:
     """Funding views of the previous block that have no selected file now.
 
-    Kept as they were, they would go on reading month files the manifest no
-    longer selects: a month whose window changed, or a coin whose datasets
-    were removed. Each is replaced by a view with the same columns and no
-    rows; a view that never existed is not created.
+    Kept, they would go on reading month files the manifest no longer selects:
+    a month whose window changed, or a coin whose datasets were removed. They
+    are dropped instead, so a query fails loudly rather than reading stale
+    rows or none. The next run that selects a file creates the view again. A
+    name the operator also declares outside the block is left alone.
     """
 
-    names = {name for name, _statement in emitted}
-    columns = ", ".join(f"CAST(NULL AS {kind}) AS {column}" for column, kind in FUNDING_COLUMNS)
+    emitted = {name for name, _statement in views}
+    outside = {match.group(1) for match in _VIEW_DECL.finditer(_BLOCK.sub("", existing))}
     return tuple(
-        (name, f"CREATE OR REPLACE VIEW {name} AS\nSELECT {columns}\nWHERE false;\n")
-        for name in sorted(owned - names)
-        if _FUNDING_VIEW.fullmatch(name)
+        name for name in sorted(owned - emitted - outside) if _FUNDING_VIEW.fullmatch(name)
     )
+
+
+def _drop_views(root: Path, names: Sequence[str]) -> None:
+    if not names:
+        return
+    connection = _connect(root / "research.duckdb")
+    try:
+        rows = connection.execute(
+            "SELECT view_name FROM duckdb_views() WHERE schema_name = 'main' AND NOT internal"
+        ).fetchall()
+        live_views = {str(row[0]) for row in rows}
+        for name in names:
+            if name in live_views:
+                warn(f"dropping view {name}: no funding month file of the manifest selects it")
+                connection.execute(f"DROP VIEW {name}")
+    finally:
+        connection.close()
 
 
 def merge_catalog(

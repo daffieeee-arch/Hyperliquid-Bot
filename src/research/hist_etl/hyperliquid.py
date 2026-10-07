@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import urllib.error
 import urllib.request
 from collections.abc import Sequence
@@ -52,27 +53,13 @@ from research.hist_etl.models import (
 )
 
 SLOT_TOLERANCE_MS = 60_000
-# The published Parquet schema, in column order. A view with no current file
-# keeps this schema and returns no rows (see catalog).
-FUNDING_COLUMNS: tuple[tuple[str, str], ...] = (
-    ("ts", "TIMESTAMP"),
-    ("slot_start", "TIMESTAMP"),
-    ("funding_time_ms", "BIGINT"),
-    ("coin", "VARCHAR"),
-    ("funding_rate", "DOUBLE"),
-    ("funding_rate_text", "VARCHAR"),
-    ("premium", "DOUBLE"),
-    ("premium_text", "VARCHAR"),
-    ("funding_interval_hours", "INTEGER"),
-    ("dataset_id", "VARCHAR"),
-    ("source_name", "VARCHAR"),
-)
 # The venue limit is a weight budget per minute: after a 429, wait one window.
 RATE_LIMIT_WAIT_SECONDS = 60.0
 _MS_PER_HOUR = 3_600_000
 _SOURCE = "hyperliquid-info-fundingHistory"
 _ROW_KEYS = ("coin", "fundingRate", "premium", "time")
 _GAP_SAMPLES = 20
+_MONTH_STAMP = re.compile(r"(20\d{2})-(0[1-9]|1[0-2])")
 
 
 class RawWindowChanged(HistEtlError):
@@ -317,6 +304,32 @@ def raw_status(raw_path: Path, window: FundingWindow, *, settled: bool) -> str:
     return "match"
 
 
+def ahead_of_cutoff(root: Path, window: FundingWindow) -> bool:
+    """A month on disk already reaches past this open month's cutoff.
+
+    Only a run whose ``--today`` is before an earlier sync sees this. The month
+    is left as it is: not shrunk to the earlier cutoff, and not judged against
+    it.
+    """
+
+    if window.complete:
+        return False
+    for settled in (True, False):
+        end_ms = _raw_end_ms(raw_funding_path(root, window, settled=settled))
+        if end_ms is not None and end_ms > window.end_ms:
+            return True
+    return False
+
+
+def _raw_end_ms(raw_path: Path) -> int | None:
+    try:
+        payload = json.loads(raw_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    end_ms = payload.get("end_ms") if isinstance(payload, dict) else None
+    return end_ms if type(end_ms) is int else None
+
+
 def ready_to_settle(
     spec: HyperliquidFundingSpec, window: FundingWindow, rows: Sequence[FundingRow]
 ) -> bool:
@@ -385,7 +398,7 @@ def audit_funding_month(
     """
 
     settled = raw_funding_path(root, window, settled=True)
-    use_settled = window.complete and settled.is_file()
+    use_settled = settled.is_file()
     raw_path = settled if use_settled else raw_funding_path(root, window, settled=False)
     if not raw_path.is_file():
         return (Gap("missing_hyperliquid_raw", spec.id, raw_path.name),)
@@ -531,25 +544,20 @@ def _decide(
     record the window it covers: the view selects month files by that window.
     """
 
-    if destination.is_file() and _is_provisional(destination):
+    payload = _sidecar_payload(destination) if destination.is_file() else None
+    if payload is not None and payload.get("provisional") is True:
         recorded = decide_output(destination, (source,), rebuild=False)
         action = "audit" if recorded == "audit" else "write"
     else:
         action = decide_output(destination, (source,), rebuild=rebuild)
-    if action == "audit" and _recorded_window(destination) != (covered.start_ms, covered.end_ms):
+    if action == "audit" and _recorded_window(payload) != (covered.start_ms, covered.end_ms):
         return "write"
     return action
 
 
-def _is_provisional(destination: Path) -> bool:
-    payload = _sidecar_payload(destination)
-    return payload is not None and payload.get("provisional") is True
-
-
-def _recorded_window(destination: Path) -> tuple[int, int] | None:
+def _recorded_window(payload: dict[str, object] | None) -> tuple[int, int] | None:
     """The ``start_ms`` / ``end_ms`` a month file's sidecar says it covers."""
 
-    payload = _sidecar_payload(destination)
     if payload is None:
         return None
     start_ms = payload.get("start_ms")
@@ -655,31 +663,50 @@ def _write_parquet(
 
 
 def funding_view_files(
-    root: Path, specs: Sequence[HyperliquidFundingSpec], today: date
+    root: Path, specs: Sequence[HyperliquidFundingSpec]
 ) -> dict[str, tuple[Path, ...]]:
-    """Per coin, the month files the manifest selects on ``today``, in month order.
+    """Per coin, the month files the manifest selects, in month order.
 
-    A file is in the view only when its sidecar covers the month the manifest
-    asks for: a settled month exactly, a provisional one up to the day it was
-    fetched. Files of a renamed, removed, or re-ranged dataset stay on disk but
-    out of the view, so no bar is charged twice.
+    A file is in the view only when its sidecar covers its month as the
+    manifest defines it: a settled month exactly, a provisional one from the
+    month's start up to the day it was fetched. No date is read, so neither
+    ``--today`` nor the clock changes what the views read. Files of a renamed,
+    removed, or re-ranged dataset stay on disk but out of the view, so no bar
+    is charged twice.
     """
 
     by_coin: dict[str, list[tuple[str, Path]]] = {spec.coin: [] for spec in specs}
     for spec in specs:
-        for window in funding_windows(spec, today):
+        months = _months_on_disk(root, spec)
+        if not months:
+            continue
+        # Cut off after the last month on disk, every month up to it has its
+        # full window.
+        for window in funding_windows(spec, _next_month(max(months))):
             path = hyperliquid_parquet_path(root, window)
             if _sidecar_covers(path, window):
                 by_coin[spec.coin].append((window.month, path))
     return {coin: tuple(path for _month, path in sorted(items)) for coin, items in by_coin.items()}
 
 
+def _months_on_disk(root: Path, spec: HyperliquidFundingSpec) -> list[date]:
+    directory = root / "parquet" / "hist_etl" / "hyperliquid" / "funding" / spec.coin
+    suffix = f".{spec.id}.parquet"
+    months: list[date] = []
+    for path in directory.glob(f"*{suffix}"):
+        stamp = _MONTH_STAMP.fullmatch(path.name.removesuffix(suffix))
+        if stamp is not None:
+            months.append(date(int(stamp.group(1)), int(stamp.group(2)), 1))
+    return months
+
+
 def _sidecar_covers(path: Path, window: FundingWindow) -> bool:
-    recorded = _recorded_window(path) if path.is_file() else None
-    if recorded is None or recorded[0] != window.start_ms:
+    payload = _sidecar_payload(path) if path.is_file() else None
+    recorded = _recorded_window(payload)
+    if payload is None or recorded is None or recorded[0] != window.start_ms:
         return False
     end_ms = recorded[1]
-    if _is_provisional(path):
+    if payload.get("provisional") is True:
         return window.start_ms < end_ms <= window.end_ms
     return end_ms == window.end_ms
 

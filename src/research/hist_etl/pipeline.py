@@ -23,7 +23,9 @@ from research.hist_etl.download import (
 from research.hist_etl.errors import HistEtlError
 from research.hist_etl.http import RateLimiter, Transport, build_transport
 from research.hist_etl.hyperliquid import (
+    FundingWindow,
     JsonPoster,
+    ahead_of_cutoff,
     audit_funding_month,
     build_poster,
     fetch_funding,
@@ -166,7 +168,7 @@ def run_sync(
     )
     _applied, foreign = refresh_catalog(
         safe_root,
-        hyperliquid_files=_funding_view_files(safe_root, manifest),
+        hyperliquid_files=funding_view_files(safe_root, manifest.hyperliquid),
         replace_legacy_views=replace_legacy_views,
     )
     for name in foreign:
@@ -222,6 +224,9 @@ def run_verify(
         gaps.extend(audit_kraken_tree(spec, safe_root))
     for funding_spec in hyperliquid:
         for window in funding_windows(funding_spec, _settled_today(today)):
+            if ahead_of_cutoff(safe_root, window):
+                gaps.append(_ahead_gap(funding_spec, window))
+                continue
             gaps.extend(audit_funding_month(funding_spec, window, root=safe_root))
     _write_report(safe_root, gaps, command="verify")
     for gap in gaps:
@@ -244,7 +249,7 @@ def run_catalog(
         raise HistEtlError(f"archive root does not exist: {safe_root}", exit_code=2)
     names, foreign = refresh_catalog(
         safe_root,
-        hyperliquid_files=_funding_view_files(safe_root, manifest),
+        hyperliquid_files=funding_view_files(safe_root, manifest.hyperliquid),
         replace_legacy_views=replace_legacy_views,
     )
     print(f"catalog\tviews={len(names)}")
@@ -253,14 +258,13 @@ def run_catalog(
     return 2 if foreign else 0
 
 
-def _funding_view_files(root: Path, manifest: HistManifest) -> dict[str, tuple[Path, ...]]:
-    """The funding month files the manifest selects as of the real UTC date.
-
-    Not ``--today``: a test run with an earlier cutoff must not hide later
-    months from the shared research views.
-    """
-
-    return funding_view_files(root, manifest.hyperliquid, datetime.now(UTC).date())
+def _ahead_gap(spec: HyperliquidFundingSpec, window: FundingWindow) -> Gap:
+    return Gap(
+        "hyperliquid_ahead_of_today",
+        spec.id,
+        f"{window.coin} {window.month} on disk reaches past --today; left as is "
+        "(test an earlier cutoff with a scratch --root)",
+    )
 
 
 def _settled_today(today: date) -> date:
@@ -282,7 +286,10 @@ def _describe_hyperliquid(
     for spec in specs:
         for window in funding_windows(spec, _settled_today(today)):
             settled = raw_funding_path(root, window, settled=True)
-            if window.complete and settled.is_file():
+            if ahead_of_cutoff(root, window):
+                opened = raw_funding_path(root, window, settled=False)
+                action, raw = "ahead", settled if settled.is_file() else opened
+            elif settled.is_file():
                 status = raw_status(settled, window, settled=True)
                 action, raw = ("present" if status == "match" else status), settled
             elif window.complete:
@@ -306,10 +313,15 @@ def _sync_hyperliquid(
     limiter = RateLimiter(hyperliquid_rate(manifest.requests_per_second), default_sleeper)
     for spec in specs:
         for window in funding_windows(spec, _settled_today(today)):
+            if ahead_of_cutoff(root, window):
+                # An earlier --today than a past sync: never shrink a month.
+                gaps.append(_ahead_gap(spec, window))
+                continue
             settled = raw_funding_path(root, window, settled=True)
-            if window.complete and settled.is_file():
-                # Never overwritten. If the dataset's range changed since, the
-                # load reports hyperliquid_window_changed until it is moved.
+            if settled.is_file():
+                # Never overwritten. If the dataset's range changed since, even
+                # to run to today, the load reports hyperliquid_window_changed
+                # until it is moved.
                 raw, provisional = settled, False
             else:
                 # Any month that is not settled yet is fetched again: the open

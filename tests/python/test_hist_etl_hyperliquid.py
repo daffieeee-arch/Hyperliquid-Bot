@@ -13,7 +13,6 @@ from pytest import CaptureFixture
 from research.hist_etl.errors import HistEtlError
 from research.hist_etl.http import RateLimiter
 from research.hist_etl.hyperliquid import (
-    FUNDING_COLUMNS,
     RATE_LIMIT_WAIT_SECONDS,
     SLOT_TOLERANCE_MS,
     FundingWindow,
@@ -183,7 +182,19 @@ def test_sync_writes_months_reuses_settled_ones_and_grows_the_open_one(tmp_path:
     assert _sidecar(settled)["provisional"] is False
     assert _sidecar(hyperliquid_parquet_path(tmp_path, october))["provisional"] is True
     assert _view_count(tmp_path) == 72
-    assert _parquet_schema(settled) == list(FUNDING_COLUMNS)
+    assert _parquet_schema(settled) == [
+        ("ts", "TIMESTAMP"),
+        ("slot_start", "TIMESTAMP"),
+        ("funding_time_ms", "BIGINT"),
+        ("coin", "VARCHAR"),
+        ("funding_rate", "DOUBLE"),
+        ("funding_rate_text", "VARCHAR"),
+        ("premium", "DOUBLE"),
+        ("premium_text", "VARCHAR"),
+        ("funding_interval_hours", "INTEGER"),
+        ("dataset_id", "VARCHAR"),
+        ("source_name", "VARCHAR"),
+    ]
     settled_mtime = settled.stat().st_mtime_ns
     raw_bytes = raw_funding_path(tmp_path, september, settled=True).read_bytes()
 
@@ -395,15 +406,14 @@ def test_a_settled_file_for_a_changed_window_is_reported(
     first = _manifest(tmp_path, start=first_start, end=first_end)
     assert _sync(tmp_path, first, poster, today) == 0
     assert _view_count(tmp_path) == days * 24
-    schema = _view_schema(tmp_path)
     # The operator widens the range; the settled part month is not trusted.
     extended = _manifest(tmp_path, start="2026-09-01", end="2026-09-30")
     assert _sync(tmp_path, extended, poster, today) == 2
     assert _gap_kinds(tmp_path) == ["hyperliquid_window_changed"]
-    # It does not stand in for the whole month: the view keeps its columns
-    # and has no rows until the month is fetched again.
-    assert _view_count(tmp_path) == 0
-    assert _view_schema(tmp_path) == schema
+    # It does not stand in for the whole month. With no month selected the
+    # view is dropped, so a query fails instead of reading part of a month.
+    assert not _has_view(tmp_path)
+    assert "hist_hl_funding_btc" not in (tmp_path / "catalog.sql").read_text()
     assert (
         run_verify(root=tmp_path, manifest_path=extended, today=today, dataset_ids=None, env={})
         == 2
@@ -421,6 +431,29 @@ def test_a_settled_file_for_a_changed_window_is_reported(
     assert _gap_kinds(tmp_path) == ["refused_overwrite"]
     assert _sync(tmp_path, extended, poster, today, rebuild=True) == 0
     assert _view_count(tmp_path) == 30 * 24
+
+
+def test_a_settled_month_extended_to_today_is_reported(
+    tmp_path: Path, capsys: CaptureFixture[str]
+) -> None:
+    start = datetime(2026, 9, 1, tzinfo=UTC)
+    today = date(2026, 9, 20)
+    poster = FakeFundingPoster(_hourly(start, 24 * 30), page_size=1000)
+    first = _manifest(tmp_path, start="2026-09-01", end="2026-09-10")
+    assert _sync(tmp_path, first, poster, today) == 0
+    # The range now runs to today: the settled ten days are not the open month.
+    extended = _manifest(tmp_path, start="2026-09-01")
+    assert _sync(tmp_path, extended, poster, today) == 2
+    assert _gap_kinds(tmp_path) == ["hyperliquid_window_changed"]
+    assert (
+        run_verify(root=tmp_path, manifest_path=extended, today=today, dataset_ids=None, env={})
+        == 2
+    )
+    assert _gap_kinds(tmp_path) == ["hyperliquid_window_changed"]
+    capsys.readouterr()
+    run_plan(root=tmp_path, manifest_path=extended, today=today, dataset_ids=None, env={})
+    lines = [line for line in capsys.readouterr().out.splitlines() if "hl-test" in line]
+    assert [line.split("\t")[1] for line in lines] == ["window_changed"]
 
 
 def test_verify_judges_an_ended_month_over_all_its_slots(tmp_path: Path) -> None:
@@ -483,10 +516,22 @@ def test_view_reads_only_the_files_the_manifest_selects(tmp_path: Path) -> None:
     # One row per settlement: the old file would charge every bar twice.
     assert _view_count(tmp_path) == 24
     assert _view_sources(tmp_path) == {"hl-renamed"}
-    # A coin no longer in the manifest keeps its view, with no rows.
+    # A coin no longer in the manifest loses its view.
     other = _manifest(tmp_path, start="2026-09-01", end="2026-09-01", coin="ETH")
     assert run_catalog(root=tmp_path, manifest_path=other, dataset_ids=None, env={}) == 0
-    assert _view_count(tmp_path) == 0
+    assert not _has_view(tmp_path)
+
+
+def test_a_funding_view_the_operator_also_declares_is_not_dropped(tmp_path: Path) -> None:
+    start = datetime(2026, 9, 1, tzinfo=UTC)
+    manifest = _manifest(tmp_path, start="2026-09-01", end="2026-09-01")
+    assert _sync(tmp_path, manifest, FakeFundingPoster(_hourly(start, 24)), date(2026, 10, 1)) == 0
+    catalog = tmp_path / "catalog.sql"
+    operator = "CREATE OR REPLACE VIEW hist_hl_funding_btc AS SELECT 1 AS x;\n"
+    catalog.write_text(catalog.read_text(encoding="utf-8") + operator, encoding="utf-8")
+    other = _manifest(tmp_path, start="2026-09-01", end="2026-09-01", coin="ETH")
+    assert run_catalog(root=tmp_path, manifest_path=other, dataset_ids=None, env={}) == 0
+    assert _has_view(tmp_path)
 
 
 def test_a_sidecar_without_its_window_is_rewritten(tmp_path: Path) -> None:
@@ -512,16 +557,32 @@ def test_a_sidecar_without_its_window_is_rewritten(tmp_path: Path) -> None:
     assert _view_count(tmp_path) == 24
 
 
-def test_an_earlier_today_does_not_shrink_the_view(tmp_path: Path) -> None:
+def test_an_earlier_today_leaves_later_months_as_they_are(
+    tmp_path: Path, capsys: CaptureFixture[str]
+) -> None:
     start = datetime(2026, 9, 29, tzinfo=UTC)
     manifest = _manifest(tmp_path, start="2026-09-29")
-    poster = FakeFundingPoster(_hourly(start, 24 * 6), page_size=100)
-    assert _sync(tmp_path, manifest, poster, date(2026, 10, 3)) == 0
-    # A test run with an earlier cutoff sees September as the open month. It
-    # does not replace the settled file, and the view keeps every month.
-    assert _sync(tmp_path, manifest, poster, date(2026, 9, 30)) == 2
-    assert _gap_kinds(tmp_path) == ["refused_overwrite"]
-    assert _view_count(tmp_path) == 96
+    poster = FakeFundingPoster(_hourly(start, 24 * 8), page_size=100)
+    assert _sync(tmp_path, manifest, poster, date(2026, 10, 6)) == 0
+    assert _view_count(tmp_path) == 7 * 24
+    # A test run with an earlier cutoff would shrink the open month, or treat
+    # the settled September as open: both are left as they are, and reported.
+    for earlier in (date(2026, 10, 3), date(2026, 9, 30)):
+        poster.requests.clear()
+        assert _sync(tmp_path, manifest, poster, earlier) == 2
+        assert _gap_kinds(tmp_path) == ["hyperliquid_ahead_of_today"]
+        assert poster.requests == []
+        assert _view_count(tmp_path) == 7 * 24
+    cutoff = date(2026, 10, 3)
+    assert (
+        run_verify(root=tmp_path, manifest_path=manifest, today=cutoff, dataset_ids=None, env={})
+        == 2
+    )
+    assert _gap_kinds(tmp_path) == ["hyperliquid_ahead_of_today"]
+    capsys.readouterr()
+    run_plan(root=tmp_path, manifest_path=manifest, today=cutoff, dataset_ids=None, env={})
+    lines = [line for line in capsys.readouterr().out.splitlines() if "hl-test" in line]
+    assert [line.split("\t")[1] for line in lines] == ["present", "ahead"]
 
 
 def _sync(
@@ -636,13 +697,9 @@ def _view_count(root: Path) -> int:
     return count
 
 
-def _view_schema(root: Path) -> list[tuple[str, str]]:
-    rows = _query(
-        root,
-        "SELECT column_name, data_type FROM information_schema.columns "
-        "WHERE table_name = 'hist_hl_funding_btc' ORDER BY ordinal_position",
-    )
-    return [(str(name), str(kind)) for name, kind in rows]
+def _has_view(root: Path) -> bool:
+    sql = "SELECT view_name FROM duckdb_views() WHERE view_name = 'hist_hl_funding_btc'"
+    return bool(_query(root, sql))
 
 
 def _view_sources(root: Path) -> set[str]:

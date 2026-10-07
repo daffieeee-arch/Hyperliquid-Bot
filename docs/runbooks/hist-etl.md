@@ -172,8 +172,12 @@ window no longer matches is not overwritten: `sync` and `verify` report
 `hyperliquid_window_changed` and `plan` lists it as `window_changed`, until
 the raw file is moved aside. The next `sync --dataset <id> --rebuild` then
 fetches the month and replaces its Parquet file. `--today` can move the
-cutoff back for a test, never past the real UTC date. `verify` judges an
-ended month over all its slots, whatever its file covers.
+cutoff back for a test, never past the real UTC date. A month on disk that
+already reaches past an earlier `--today` (a later sync fetched it) is left
+as it is, never shrunk: `sync` and `verify` report it as
+`hyperliquid_ahead_of_today` and `plan` lists it as `ahead`. Test an earlier
+cutoff with a scratch `--root`. `verify` judges an ended month over all its
+slots, whatever its file covers.
 
 Columns: `ts` (the settlement time, UTC; the rate is known and charged then),
 `slot_start` (the start of the settlement slot the print belongs to),
@@ -205,14 +209,16 @@ PYTHONPATH=src uv run --frozen python -m research.hist_etl sync --dataset hl-per
 
 Datasets for one coin may not cover the same day. Both write to the same coin
 directory and to the one view `hist_hl_funding_{coin}`. The view reads only
-the month files the manifest selects now: the coin's datasets, and only a
-file whose sidecar covers the month's current window (exactly once settled;
-up to the day it was fetched while provisional). Files of a renamed,
-removed, or re-ranged dataset stay on disk but out of the view, so they
-cannot charge a bar twice. When no file of a coin qualifies, or the coin's
-datasets were removed from the manifest, an existing view keeps its columns
-and returns no rows. The views follow the manifest as of the real UTC date:
-`--today` changes what a sync fetches, not what the views read.
+the month files the manifest selects: the coin's datasets, and only a file
+whose sidecar covers its month as the manifest defines it (exactly once
+settled; from the month's start up to the day it was fetched while
+provisional). No date is read, so `--today` does not change the views. Files
+of a renamed, removed, or re-ranged dataset stay on disk but out of the view,
+so they cannot charge a bar twice. When no file of a coin qualifies, or the
+coin's datasets were removed from the manifest, its view is dropped: a query
+fails instead of reading part of the data. The next sync that selects a
+month file creates it again. A view of that name that the operator also
+declares outside the generated block is never dropped.
 
 For a harness `role: funding` column on hourly bars stamped at their close,
 the settlement printed at the bar's close belongs to that bar:

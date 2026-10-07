@@ -1,0 +1,120 @@
+{
+  "canonical_spec": {
+    "alpha": 0.05,
+    "configs": [
+      {
+        "horizon_bars": 168,
+        "id": "any-1w",
+        "threshold": 0.0
+      },
+      {
+        "horizon_bars": 336,
+        "id": "any-2w",
+        "threshold": 0.0
+      },
+      {
+        "horizon_bars": 168,
+        "id": "all-1w",
+        "threshold": 0.5
+      },
+      {
+        "horizon_bars": 336,
+        "id": "all-2w",
+        "threshold": 0.5
+      }
+    ],
+    "costs": {
+      "fee_bps": 4.5,
+      "funding_column": "funding_rate",
+      "latency_bars": 1,
+      "slippage_bps": 1.0,
+      "spread_bps": 0.5
+    },
+    "data": {
+      "backend": "parquet",
+      "columns": {
+        "available_ts": {
+          "dtype": "int64",
+          "role": "availability"
+        },
+        "close": {
+          "dtype": "float64",
+          "role": "price"
+        },
+        "funding_rate": {
+          "dtype": "float64",
+          "role": "funding"
+        },
+        "realized_vol": {
+          "dtype": "float64",
+          "role": "feature"
+        },
+        "trend_score": {
+          "dtype": "float64",
+          "role": "feature"
+        },
+        "ts": {
+          "dtype": "int64",
+          "role": "timestamp"
+        }
+      },
+      "max_gap": 3600000,
+      "max_rows": 100000,
+      "parquet_path": "bars.parquet",
+      "price_column": "close",
+      "timestamp_column": "ts"
+    },
+    "dataset_version": "bn-um-btcusdt-klines-1h+funding 2020-01-01..2026-10-01, bar_tables trend 168/672/2016, vol 168",
+    "direction": "signed",
+    "features": [
+      {
+        "available_at_column": "available_ts",
+        "column": "trend_score",
+        "name": "trend_score"
+      },
+      {
+        "available_at_column": "available_ts",
+        "column": "realized_vol",
+        "name": "realized_vol"
+      }
+    ],
+    "h0": "Mean net return per trade of the trend rule is less than or equal to zero after costs and funding.",
+    "h1": "Mean net return per trade of the trend rule is greater than zero after costs and funding on the untouched holdout.",
+    "hypothesis_id": "tsmom-btc-1h-trend3",
+    "sample": {
+      "min_folds": 8,
+      "min_trades_holdout": 25,
+      "min_trades_validation": 40
+    },
+    "selection_method": "holm",
+    "signal_feature": "trend_score",
+    "sizing": {
+      "max_leverage": 2.0,
+      "method": "vol_target",
+      "target_vol": 0.005,
+      "vol_feature": "realized_vol"
+    },
+    "split": {
+      "holdout_bars": 15312,
+      "method": "expanding",
+      "test_bars": 2160,
+      "train_bars": 4320
+    },
+    "universe": "binance-um-btcusdt-perp-1h"
+  },
+  "data_fingerprint": {
+    "fingerprint_sha256": "0553f54a851deae6759cc2a23619670000b07976d677e5fcf604ee9902a7eb09",
+    "inputs": [
+      {
+        "backend": "parquet",
+        "checksum_algorithm": "sha256",
+        "content_checksum": "fcdbbd9f3d168aaaa8918b942a5371a4badef668db28b9fe448993d2d8007ae7",
+        "locator": "bars.parquet",
+        "row_count": 57144,
+        "timestamp_max": 1790812799999,
+        "timestamp_min": 1585097999999
+      }
+    ]
+  },
+  "spec_sha256": "2c8def878612ce08cea11171209a26b65034cda84bc4df92039b150dc96c3e31"
+}

@@ -181,7 +181,9 @@ both describe validation.
   two candidates, when every candidate ties in-sample, or when the best
   in-sample mean is not positive, as validation would select nothing then.
   The significance and stress gates are not re-run per split. Near 0 is
-  good; 0.5 means picking the in-sample best is no better than chance.
+  good; 0.5 means picking the in-sample best is no better than chance. Read
+  `value` together with `splits`: a PBO from a few splits, the rest skipped,
+  says little.
 
 ## Point-in-time checks
 

@@ -182,6 +182,15 @@ def test_pbo_reports_why_it_has_no_value() -> None:
         [[BlockStats(5, 0.0)] * 4, [BlockStats(5, -1.0)] * 4]
     )
     assert (flat_best.value, flat_best.skipped_splits) == (None, 6)
+    # Mixed: only the splits with block 0 in-sample have a positive best, and
+    # only they are counted.
+    mixed = probability_of_backtest_overfitting(
+        [
+            [BlockStats(5, 3.0), BlockStats(5, -1.0), BlockStats(5, -1.0), BlockStats(5, -1.0)],
+            [BlockStats(5, -2.0)] * 4,
+        ]
+    )
+    assert (mixed.value, mixed.splits, mixed.skipped_splits) == (0.0, 3, 3)
     one = probability_of_backtest_overfitting([idle])
     assert (one.value, one.blocks) == (None, None)
     assert one.note is not None and "two configs" in one.note

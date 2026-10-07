@@ -689,9 +689,9 @@ def _overfitting(
 ) -> Overfitting:
     """The deflated Sharpe ratio and PBO, both on validation net returns at 1.0x.
 
-    They are reported, never gated on. In each CSCV split, PBO selects among
-    the configs that meet the trade floor pro-rated to the in-sample folds; it
-    does not re-run the other selection gates.
+    They are reported, never gated on. In each CSCV split, PBO picks the best
+    positive mean among the configs that meet the trade floor pro-rated to the
+    in-sample folds; it does not re-run the significance and stress gates.
     """
 
     floored = _floored_indices(spec, scores)

@@ -868,9 +868,16 @@ def test_a_thin_holdout_keeps_the_validation_diagnostics(tmp_path: Path) -> None
     configs = [*_two_configs(), {"id": "long", "threshold": 0.0, "horizon_bars": 8}]
     document = _run_rows(tmp_path, _regime_rows(420), configs=configs)
     assert (document["label"], document["selected_config_id"]) == ("not_enough_data", "long")
+    reasons = document["reasons"]
+    assert isinstance(reasons, list)
+    assert any("sample.min_trades_holdout" in str(reason) for reason in reasons)
     block = _mapping(document["overfitting"])
-    assert _mapping(block["deflated_sharpe"])["dsr"] is not None
-    assert _mapping(block["pbo"])["value"] is not None
+    dsr = _mapping(block["deflated_sharpe"])
+    pbo = _mapping(block["pbo"])
+    assert (dsr["config_id"], dsr["selected"], dsr["note"]) == ("long", True, None)
+    assert _as_float(dsr["dsr"]) > 0.0
+    assert (pbo["note"], pbo["splits"]) == (None, 70)
+    assert pbo["value"] is not None
 
 
 def test_funding_paid_on_the_position_wipes_a_planted_edge(tmp_path: Path) -> None:

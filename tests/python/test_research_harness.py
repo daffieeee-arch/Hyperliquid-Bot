@@ -735,7 +735,9 @@ def test_without_a_selection_the_best_validation_mean_is_tested(tmp_path: Path) 
     # Every pre-registered config is a trial, the idle one included.
     assert dsr["trials"] == 4
     pbo = _mapping(block["pbo"])
-    assert 0.0 <= _as_float(pbo["value"]) <= 1.0
+    # After costs no config earns in-sample in any split, so, as in
+    # validation, no split selects anything.
+    assert (pbo["value"], pbo["splits"], pbo["skipped_splits"]) == (None, 0, 70)
     assert pbo["in_sample_floor"] == 10
 
 
@@ -831,7 +833,7 @@ def test_overfitting_notes_explain_a_missing_value(tmp_path: Path) -> None:
     document = _run_rows(tmp_path, _regime_rows(420), configs=_two_configs())
     pbo = _mapping(_mapping(document["overfitting"])["pbo"])
     assert (pbo["value"], pbo["splits"], pbo["skipped_splits"]) == (None, 0, 70)
-    assert "nothing was selected" in str(pbo["note"])
+    assert "No split selected a config" in str(pbo["note"])
     # A single config is never split, so no folds are reported as used.
     (tmp_path / "one").mkdir()
     one = _run_rows(tmp_path / "one", _regime_rows(420))

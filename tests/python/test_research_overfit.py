@@ -167,10 +167,21 @@ def test_pbo_reports_why_it_has_no_value() -> None:
     nothing = probability_of_backtest_overfitting([idle, idle])
     assert nothing.value is None
     assert (nothing.splits, nothing.skipped_splits) == (0, 6)
-    assert nothing.note is not None and "nothing was selected" in nothing.note
+    assert nothing.note is not None and "No split selected a config" in nothing.note
     # A config with trades but no rival above the floor selects nothing either.
     alone = probability_of_backtest_overfitting([[BlockStats(5, 1.0)] * 4, idle])
     assert (alone.value, alone.splits, alone.skipped_splits) == (None, 0, 6)
+    # Validation never takes a config whose mean is not positive, so a split
+    # whose best in-sample mean is a loss selects nothing.
+    losers = probability_of_backtest_overfitting(
+        [[BlockStats(5, -1.0)] * 4, [BlockStats(5, -2.0)] * 4]
+    )
+    assert (losers.value, losers.splits, losers.skipped_splits) == (None, 0, 6)
+    # A best mean of exactly 0 is not positive either.
+    flat_best = probability_of_backtest_overfitting(
+        [[BlockStats(5, 0.0)] * 4, [BlockStats(5, -1.0)] * 4]
+    )
+    assert (flat_best.value, flat_best.skipped_splits) == (None, 6)
     one = probability_of_backtest_overfitting([idle])
     assert (one.value, one.blocks) == (None, None)
     assert one.note is not None and "two configs" in one.note

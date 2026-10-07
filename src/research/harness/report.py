@@ -31,9 +31,9 @@ LIMITATIONS: Final[tuple[str, ...]] = (
     "Latency fills at decision_bar + latency_bars. Zero latency requires allow_zero_latency.",
     "The deflated Sharpe ratio and the probability of backtest overfitting are diagnostics "
     "and never change the label. They use net returns at 1.0x and count only the "
-    "pre-registered configs as trials. In each split PBO picks by mean net per trade among "
-    "the configs that meet the trade floor pro-rated to the in-sample folds, and does not "
-    "re-run the other selection gates.",
+    "pre-registered configs as trials. In each split PBO picks the best positive mean net "
+    "per trade among the configs that meet the trade floor pro-rated to the in-sample "
+    "folds, and does not re-run the significance and stress gates.",
     "Look-ahead control uses the declared clock. A falsely stamped future value is invisible.",
     "paper_candidate is not LIVE, SHADOW, TESTNET, or an order authorization.",
     "Spot Vision timestamps from 2025-01-01 are microseconds; USD-M examples are milliseconds.",
@@ -343,9 +343,7 @@ def _holdout_json(decision: Decision) -> dict[str, Json] | None:
     }
 
 
-def _overfitting_json(result: Overfitting | None) -> dict[str, Json] | None:
-    if result is None:
-        return None
+def _overfitting_json(result: Overfitting) -> dict[str, Json]:
     dsr = result.deflated_sharpe
     pbo = result.pbo
     return {

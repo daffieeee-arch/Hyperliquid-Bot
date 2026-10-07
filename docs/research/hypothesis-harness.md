@@ -176,11 +176,12 @@ both describe validation.
   candidate with the best in-sample mean net per trade at 1.0x (the
   statistic validation selection ranks by) is ranked among the candidates
   on the other half, where a candidate without trades earns 0. PBO is the
-  share of splits where the pick ranks at or below the median. A split with
-  fewer than two candidates, or where every candidate ties in-sample,
-  selects nothing and is skipped (`skipped_splits`). The other selection
-  gates (significance, stress) are not re-run per split. Near 0 is good;
-  0.5 means picking the in-sample best is no better than chance.
+  share of splits where the pick ranks at or below the median. A split
+  selects nothing and is skipped (`skipped_splits`) when it has fewer than
+  two candidates, when every candidate ties in-sample, or when the best
+  in-sample mean is not positive, as validation would select nothing then.
+  The significance and stress gates are not re-run per split. Near 0 is
+  good; 0.5 means picking the in-sample best is no better than chance.
 
 ## Point-in-time checks
 

@@ -210,10 +210,11 @@ def probability_of_backtest_overfitting(
     from in-sample data only. The candidate with the best in-sample mean net
     return per trade (the first one on a tie) is ranked by its out-of-sample
     mean among the candidates, ties sharing the average rank; a candidate
-    without out-of-sample trades earns 0 there. A split with fewer than two
-    candidates, or where every candidate ties in-sample, selects nothing and
-    is skipped. A split counts as overfit when the pick ranks at or below the
-    median (logit <= 0).
+    without out-of-sample trades earns 0 there. A split selects nothing and is
+    skipped when it has fewer than two candidates, when every candidate ties
+    in-sample, or when the best in-sample mean is not positive, since
+    validation would select nothing then. A split counts as overfit when the
+    pick ranks at or below the median (logit <= 0).
 
     Each half is summed from its own blocks, never as the total minus the
     other half, so configs with the same out-of-sample blocks tie exactly.
@@ -257,8 +258,8 @@ def probability_of_backtest_overfitting(
             skipped_splits=skipped,
             median_logit=None,
             note=(
-                "No split has two configs that meet the in-sample trade floor and differ "
-                "in-sample, so nothing was selected."
+                "No split selected a config: none had two configs over the in-sample trade "
+                "floor whose best in-sample mean was positive and untied."
             ),
         )
     return Pbo(
@@ -303,7 +304,8 @@ def _split_logit(
 
     candidates = [index for index, (trades, _total) in enumerate(in_sample) if trades >= min_trades]
     in_perf = [_mean(*in_sample[index]) for index in candidates]
-    if len(candidates) < 2 or max(in_perf) == min(in_perf):
+    # Validation never takes a config whose mean is not positive.
+    if len(candidates) < 2 or max(in_perf) == min(in_perf) or max(in_perf) <= 0.0:
         return None
     out_perf = [_mean(*out_of_sample[index]) for index in candidates]
     best = max(range(len(candidates)), key=in_perf.__getitem__)

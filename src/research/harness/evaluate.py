@@ -148,10 +148,10 @@ class Decision:
     holdout_config_id: str | None
     holdout_gross: MetricBlock | None
     holdout_net: dict[str, MetricBlock] | None
+    # Diagnostics only: they never change the label.
+    overfitting: Overfitting
     holdout_funding: MetricBlock | None = None
     holdout_mean_weight: float | None = None
-    # Diagnostics only: they never change the label.
-    overfitting: Overfitting | None = None
 
 
 @dataclass(frozen=True, slots=True)

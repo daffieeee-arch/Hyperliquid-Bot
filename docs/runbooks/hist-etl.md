@@ -1,7 +1,8 @@
 # Historical archive ETL
 
 PAPER / free public data only. This pipeline does not place orders, read
-exchange keys, or attach to capture tmux sessions.
+exchange keys, or attach to capture tmux sessions. Hyperliquid funding comes
+from the public info endpoint, which needs no key.
 
 Command:
 
@@ -122,6 +123,79 @@ Put zips under `kraken-ohlcvt/Kraken_OHLCVT*.zip`. An optional `url` in the
 manifest downloads one https zip when that file is absent. Kraken does not
 publish a SHA256 sidecar; the zip must open and contain the selected CSV.
 
+## Hyperliquid funding
+
+Source: the public info endpoint `fundingHistory`
+([docs](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint/perpetuals)),
+a JSON POST to `https://api.hyperliquid.xyz/info` with no key or account. It
+returns `{coin, fundingRate, premium, time}` rows, oldest first, at most 500
+per response; `startTime` and `endTime` are inclusive milliseconds. The ETL
+pages from the last returned time, one UTC month at a time, and reads complete
+UTC days only (a day is fetched after it ends).
+
+REST requests share 1200 weight per minute per IP. An info request weighs 20
+and `fundingHistory` adds 1 per 20 rows, so a full page is 45 and the manifest
+`requests_per_second` is capped at 0.4 for this endpoint
+([rate limits](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/rate-limits-and-user-limits)).
+The first backfill of BTC (about 29,000 rows from 2023) takes roughly 60
+requests; a daily sync after that takes one or two.
+
+Layout:
+
+```text
+hyperliquid-api/funding/{dataset_id}/{COIN}-funding-YYYY-MM.json       # settled month, written once
+hyperliquid-api/funding/{dataset_id}/{COIN}-funding-YYYY-MM.open.json  # current month, rewritten each sync
+parquet/hist_etl/hyperliquid/funding/{COIN}/YYYY-MM.{dataset_id}.parquet
+```
+
+A settled month's raw file is canonical JSON of the rows as published, so two
+fetches of the same month have the same bytes. It is reused, not fetched
+again; delete it by hand to refetch a month. The current month is fetched on
+every sync. Its Parquet sidecar says `"provisional": true`, and that file is
+replaced on each sync until the month settles. Settled month files follow the
+same `.sources.json` rule as the other venues (`sync --rebuild` to replace).
+`.open.json` files are not deleted.
+
+Columns: `ts` (the settlement time, UTC; the rate is known and charged then),
+`slot_start` (the start of the settlement slot the print belongs to),
+`funding_time_ms`, `coin`, `funding_rate`, `funding_rate_text` (the published
+decimal), `premium`, `premium_text`, `funding_interval_hours`, `dataset_id`,
+`source_name`. `funding_rate` is the rate for one settlement: per hour from
+2023-06-08, per 8 hours before.
+
+Gaps are judged per settlement slot, not by timestamp spacing: settlement
+times jitter by about a second, and a late settlement can land minutes into
+its slot. A slot with no print is a `funding_hole` (exit 2, the month is still
+written). Two prints in one slot, or two different prints at one time, is a
+`funding_conflict`, and that month is not written. `known_holes` in the
+manifest lists slots the venue never published, so they are not reported on
+every run. For BTC these are 2023-07-02 20:00, 2023-08-23 20:00, and
+2024-08-15 13:00 UTC, checked against `fundingHistory` on 2026-10-07. Any
+other missing slot is a gap.
+
+The venue settled every 8 hours until 2023-06-07 and hourly from 2023-06-08,
+so the manifest has two datasets for BTC. `hl-perp-btc-funding` (hourly) is
+enabled; `hl-perp-btc-funding-8h` is opt-in:
+
+```bash
+PYTHONPATH=src uv run --frozen python -m research.hist_etl sync --dataset hl-perp-btc-funding-8h
+```
+
+Datasets for one coin may not cover the same day. Both write to the same coin
+directory and to the one view `hist_hl_funding_{coin}`.
+
+For a harness `role: funding` column on hourly bars stamped at their close,
+the settlement printed at the bar's close belongs to that bar:
+
+```sql
+SELECT bar.ts, bar.close, coalesce(funding.funding_rate, 0.0) AS funding_rate
+FROM hourly_bars AS bar
+LEFT JOIN hist_hl_funding_btc AS funding ON funding.slot_start = bar.ts
+```
+
+Bars stamped at their open (like Kraken OHLCVT) add the interval first.
+Coarser bars sum the settlements inside each bar.
+
 ## Catalog
 
 `catalog` rewrites only the marked block in `catalog.sql`. Default view names
@@ -129,6 +203,7 @@ do not collide with the warehouse views Quant already uses:
 
 - `hist_bn_{market}_{symbol}_{slug}`, for example `hist_bn_um_btcusdt_klines_1h`
 - `hist_kr_ohlcvt_{pair}_{interval}`, for example `hist_kr_ohlcvt_xbtusd_1d`
+- `hist_hl_funding_{coin}`, for example `hist_hl_funding_btc`
 
 `hist_bn_um_klines_1h`, `hist_bn_spot_aggtrades`, `hist_bn_um_funding`, and
 `hist_kr_xbtusd_1d` stay where they are. `sync --replace-legacy-views` or

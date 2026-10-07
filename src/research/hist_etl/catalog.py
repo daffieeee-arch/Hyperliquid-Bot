@@ -29,6 +29,8 @@ _VIEW_STMT = re.compile(
 _VIEW_NAME = re.compile(r"[a-z][a-z0-9_]*")
 _BINANCE_FILE = re.compile(r"^([A-Z0-9]+)-\d{4}-\d{2}\.parquet$")
 _KRAKEN_FILE = re.compile(r"^\d{4}-\d{2}\.parquet$")
+_HYPERLIQUID_FILE = re.compile(r"^\d{4}-\d{2}\.[a-z0-9][a-z0-9-]*\.parquet$")
+_COIN_DIR = re.compile(r"^[A-Z0-9]{1,20}$")
 _BEGIN = "-- BEGIN research.hist_etl"
 _END = "-- END research.hist_etl"
 _LOCK_ATTEMPTS = 5
@@ -133,6 +135,17 @@ def render_statements(
                     replace_legacy=replace_legacy_views,
                 ):
                     views.append((name, _view(name, relative)))
+    hyperliquid = root / "parquet" / "hist_etl" / "hyperliquid" / "funding"
+    if hyperliquid.is_dir():
+        for coin_dir in sorted(path for path in hyperliquid.iterdir() if path.is_dir()):
+            if _COIN_DIR.fullmatch(coin_dir.name) is None:
+                continue
+            funding_files = _hyperliquid_files(coin_dir)
+            if not funding_files:
+                continue
+            relative = tuple(_relative(root, path) for path in funding_files)
+            name = f"hist_hl_funding_{coin_dir.name.lower()}"
+            views.append((name, _view(name, relative)))
     return tuple(views)
 
 
@@ -271,6 +284,18 @@ def _kraken_files(directory: Path) -> tuple[Path, ...]:
     for path in sorted(directory.glob("*.parquet")):
         sidecar = path.with_name(path.name + ".sources.json")
         if _KRAKEN_FILE.fullmatch(path.name) is None or not sidecar.is_file():
+            continue
+        files.append(path)
+    return tuple(files)
+
+
+def _hyperliquid_files(directory: Path) -> tuple[Path, ...]:
+    """Month files of every dataset for one coin; the manifest keeps their days apart."""
+
+    files: list[Path] = []
+    for path in sorted(directory.glob("*.parquet")):
+        sidecar = path.with_name(path.name + ".sources.json")
+        if _HYPERLIQUID_FILE.fullmatch(path.name) is None or not sidecar.is_file():
             continue
         files.append(path)
     return tuple(files)

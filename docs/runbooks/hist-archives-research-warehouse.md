@@ -70,8 +70,9 @@ and tiny stubs belong in the Hyperliquid-Bot repo.
 The repeatable pipeline lives in the repo as `python -m research.hist_etl`
 (`plan`, `sync`, `verify`, `catalog`). It reads `HIST_ARCHIVES_ROOT` and does
 not embed this host path. See [hist-etl.md](hist-etl.md). New Parquet goes to
-`parquet/hist_etl/` and new views are `hist_bn_{market}_{symbol}_{slug}` and
-`hist_kr_ohlcvt_{pair}_{interval}`. A default catalog run does not replace
+`parquet/hist_etl/` and new views are `hist_bn_{market}_{symbol}_{slug}`,
+`hist_kr_ohlcvt_{pair}_{interval}`, and `hist_hl_funding_{coin}` (Hyperliquid
+perp funding from the public info endpoint). A default catalog run does not replace
 `hist_bn_spot_aggtrades`, `hist_bn_um_klines_1h`, `hist_bn_um_funding`, or
 `hist_kr_xbtusd_1d`. The legacy `convert_all.py` on disk is not the supported
 entry point.

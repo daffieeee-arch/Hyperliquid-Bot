@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 # Binance Vision: spot timestamps are microseconds from this date onward.
@@ -51,6 +51,13 @@ KRAKEN_MINUTES_TO_SLUG: dict[int, str] = {
 
 USER_AGENT = "hyperliquid-bot-hist-etl/1"
 BINANCE_VISION_BASE = "https://data.binance.vision/"
+# Public info endpoint. fundingHistory needs no key and no account.
+HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
+# REST requests share 1200 weight per minute per IP. An info request weighs 20,
+# and fundingHistory adds 1 per 20 rows returned, so a full 500-row page is 45:
+# at most ~26 pages a minute. 0.4 per second stays under that.
+# https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/rate-limits-and-user-limits
+HYPERLIQUID_MAX_REQUESTS_PER_SECOND = 0.4
 
 
 def parquet_slug(dataset: str, interval: str | None) -> str:
@@ -104,6 +111,26 @@ class KrakenSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class HyperliquidFundingSpec:
+    """Hyperliquid perp funding settlements over an inclusive UTC date range.
+
+    ``funding_interval_hours`` is the venue's settlement cadence over that
+    range; every slot of that length should hold one print. ``known_holes``
+    are settlement slots the venue never published, acknowledged by an
+    operator so they are not reported again.
+    """
+
+    id: str
+    coin: str
+    start: date
+    end: date | None
+    end_token: str
+    funding_interval_hours: int
+    known_holes: tuple[datetime, ...]
+    enabled: bool
+
+
+@dataclass(frozen=True, slots=True)
 class HistManifest:
     min_free_bytes: int
     requests_per_second: float
@@ -111,6 +138,7 @@ class HistManifest:
     timeout_seconds: float
     binance: tuple[BinanceSpec, ...]
     kraken: tuple[KrakenSpec, ...]
+    hyperliquid: tuple[HyperliquidFundingSpec, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

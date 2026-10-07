@@ -176,5 +176,6 @@ def test_pbo_reports_why_it_has_no_value() -> None:
     assert one.note is not None and "two configs" in one.note
     odd = probability_of_backtest_overfitting([[BlockStats(1, 1.0)] * 5] * 2)
     assert odd.value is None
+    assert odd.note is not None and "got 5" in odd.note
     with pytest.raises(ValueError):
         probability_of_backtest_overfitting([idle, [BlockStats(0, 0.0)] * 6])

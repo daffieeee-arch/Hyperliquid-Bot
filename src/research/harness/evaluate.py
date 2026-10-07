@@ -17,6 +17,7 @@ from research.harness.overfit import (
     Overfitting,
     cscv_blocks,
     deflated_sharpe,
+    no_dsr,
     no_pbo,
     probability_of_backtest_overfitting,
 )
@@ -683,19 +684,25 @@ def _overfitting(
 
     They are reported, never gated on. In each CSCV split, PBO selects among
     the configs that meet the trade floor pro-rated to the in-sample folds; it
-    does not re-run the other selection gates.
+    does not re-run the other selection gates. A run below sample.min_folds is
+    not_enough_data, so neither diagnostic is computed for it.
     """
 
+    if len(folds) < spec.sample.min_folds:
+        note = (
+            f"Walk-forward produced {len(folds)} test folds; "
+            f"sample.min_folds is {spec.sample.min_folds}."
+        )
+        return Overfitting(deflated_sharpe=no_dsr(len(spec.configs), note), pbo=no_pbo(note))
     floored = _floored_indices(spec, scores)
     dsr = deflated_sharpe(
         len(spec.configs), _tested_config(spec, scores, series_by_config, floored, selected_index)
     )
-    # A run below sample.min_folds is not_enough_data, so PBO is not shown for it.
-    required = max(MIN_CSCV_BLOCKS, spec.sample.min_folds)
-    groups = cscv_blocks(len(folds)) if len(folds) >= required else None
+    groups = cscv_blocks(len(folds))
     if groups is None:
         pbo = no_pbo(
-            f"PBO needs at least {required} walk-forward test folds; this run has {len(folds)}."
+            f"PBO needs at least {MIN_CSCV_BLOCKS} walk-forward test folds; "
+            f"this run has {len(folds)}."
         )
     else:
         folds_used = sum(len(group) for group in groups)

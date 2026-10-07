@@ -841,15 +841,18 @@ def test_overfitting_notes_explain_a_missing_value(tmp_path: Path) -> None:
     assert "probability of backtest overfitting: not computed. PBO needs at least 4" in markdown
 
 
-def test_pbo_waits_for_sample_min_folds(tmp_path: Path) -> None:
+def test_diagnostics_wait_for_sample_min_folds(tmp_path: Path) -> None:
     # Eight folds are enough for CSCV, but the spec asks for ten, so the run
-    # is not_enough_data and PBO is not shown.
+    # is not_enough_data and neither diagnostic is shown.
     configs = [*_two_configs(), {"id": "short", "threshold": 0.0, "horizon_bars": 2}]
     document = _run_rows(tmp_path, _regime_rows(420), configs=configs, min_folds=10)
     assert document["label"] == "not_enough_data"
-    pbo = _mapping(_mapping(document["overfitting"])["pbo"])
-    assert pbo["value"] is None
-    assert "at least 10 walk-forward test folds; this run has 8" in str(pbo["note"])
+    block = _mapping(document["overfitting"])
+    dsr = _mapping(block["deflated_sharpe"])
+    pbo = _mapping(block["pbo"])
+    assert (dsr["dsr"], dsr["config_id"], dsr["trials"], pbo["value"]) == (None, None, 3, None)
+    for note in (dsr["note"], pbo["note"]):
+        assert "8 test folds; sample.min_folds is 10" in str(note)
 
 
 def test_funding_paid_on_the_position_wipes_a_planted_edge(tmp_path: Path) -> None:

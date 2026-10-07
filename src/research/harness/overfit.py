@@ -148,13 +148,13 @@ def deflated_sharpe(trials: int, tested: ConfigUnderTest | None) -> DeflatedShar
     """
 
     if tested is None:
-        return _no_dsr(
+        return no_dsr(
             trials, "No config to test: none was selected and none meets the trade floor."
         )
     observations = len(tested.returns)
     moments = sample_moments(tested.returns)
     if tested.sharpe is None or observations < 2 or moments is None:
-        return _no_dsr(
+        return no_dsr(
             trials, "The tested config's validation trade returns have no spread.", tested
         )
     variance = 1.0 / (observations - 1)
@@ -229,7 +229,10 @@ def probability_of_backtest_overfitting(
     if any(len(row) != blocks for row in stats):
         raise ValueError("Every config needs the same blocks.")
     if blocks < MIN_CSCV_BLOCKS or blocks % 2:
-        return no_pbo("PBO needs an even number of at least 4 blocks.", in_sample_floor=min_trades)
+        return no_pbo(
+            f"PBO needs an even number of at least 4 blocks; it got {blocks}.",
+            in_sample_floor=min_trades,
+        )
     logits: list[float] = []
     skipped = 0
     # A split and its mirror swap the two halves, so one pair of sums serves both.
@@ -323,7 +326,9 @@ def _average_rank(values: Sequence[float], index: int) -> float:
     return below + (equal + 1) / 2.0
 
 
-def _no_dsr(trials: int, note: str, tested: ConfigUnderTest | None = None) -> DeflatedSharpe:
+def no_dsr(trials: int, note: str, tested: ConfigUnderTest | None = None) -> DeflatedSharpe:
+    """A deflated Sharpe ratio that was not computed, and why."""
+
     return DeflatedSharpe(
         config_id=None if tested is None else tested.config_id,
         selected=None if tested is None else tested.selected,

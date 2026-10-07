@@ -17,6 +17,7 @@ from pathlib import Path
 import duckdb
 import pytest
 
+from research.harness.benchmark import benchmark, buy_and_hold
 from research.harness.data import BarTable
 from research.harness.errors import HarnessError, IntegrityError, SpecError
 from research.harness.evaluate import (
@@ -671,7 +672,7 @@ def test_any_non_positive_volatility_fails_the_run_closed(tmp_path: Path) -> Non
 
 def test_spec_without_funding_or_sizing_reports_unit_weight(tmp_path: Path) -> None:
     document = _run_rows(tmp_path, _regime_rows(420), configs=_two_configs())
-    assert document["harness_version"] == "4"
+    assert document["harness_version"] == "5"
     assert document["label"] == "passes_h1"
     assert _mapping(document["costs"])["funding_column"] is None
     assert _mapping(document["sizing"])["method"] == "unit"
@@ -948,6 +949,137 @@ def test_vol_feature_from_the_future_fails_closed(tmp_path: Path) -> None:
     assert document["status"] == "failed_closed"
     assert document["failure_kind"] == "lookahead"
     assert document["promotion_decision"] == "forbidden"
+
+
+def test_buy_and_hold_prices_one_unit_long_like_a_trade() -> None:
+    # Bar 0's rate is before the hold and must not count.
+    table = BarTable(
+        timestamps=(0, 1, 2, 3),
+        prices=(100.0, 110.0, 99.0, 121.0),
+        features={},
+        availability={},
+        funding=(9.0, 0.001, -0.002, 0.003),
+    )
+    result = buy_and_hold(_costs(fee_bps=5.0), table, 0, 4)
+    assert result is not None
+    # A fixed quantity pays each rate on the notional at that bar's close.
+    paid = 0.001 * 1.1 + 0.003 * 1.21
+    received = 0.002 * 0.99
+    assert (result.start, result.end, result.bars_held) == (0, 4, 3)
+    assert result.gross_return == pytest.approx(0.21)
+    assert result.log_return == pytest.approx(math.log(1.21))
+    assert result.funding == pytest.approx(received - paid)
+    assert result.funding_rate_sum == pytest.approx(0.002)
+    assert result.net["1.0"] == pytest.approx(0.21 - 0.001 - paid + received)
+    assert result.net["2.0"] == pytest.approx(0.21 - 0.002 - 2.0 * paid + received / 2.0)
+    per_bar = [math.log(1.1), math.log(0.9), math.log(121.0 / 99.0)]
+    mean = sum(per_bar) / 3
+    stdev = math.sqrt(sum((value - mean) ** 2 for value in per_bar) / 2)
+    assert result.mean_log_return_per_bar == pytest.approx(mean)
+    assert result.stdev_log_return_per_bar == pytest.approx(stdev)
+    assert result.sharpe_per_bar == pytest.approx(mean / stdev)
+    assert buy_and_hold(_costs(fee_bps=5.0), table, 3, 4) is None
+    with pytest.raises(HarnessError, match="outside the table"):
+        buy_and_hold(_costs(fee_bps=5.0), table, 0, 5)
+    unfunded = BarTable(
+        timestamps=table.timestamps, prices=table.prices, features={}, availability={}
+    )
+    plain = buy_and_hold(_costs(fee_bps=5.0), unfunded, 0, 4)
+    assert plain is not None
+    assert (plain.funding, plain.funding_rate_sum) == (None, None)
+    assert plain.net["1.0"] == pytest.approx(0.21 - 0.001)
+
+
+def test_a_sealed_holdout_keeps_its_benchmark_unread() -> None:
+    # Flat prices and costs: no config is selected, so the holdout stays
+    # sealed. Poisoning its prices must not change anything.
+    spec = validate_spec(_json(_spec_body(parquet=True)))
+    rows = _alternating_rows(420, bar_return=0.0)
+    clean = _bar_table(rows)
+    poisoned = BarTable(
+        timestamps=clean.timestamps,
+        prices=tuple(
+            math.nan if index >= 336 else price for index, price in enumerate(clean.prices)
+        ),
+        features=clean.features,
+        availability=clean.availability,
+    )
+    results = []
+    for table in (clean, poisoned):
+        decision = decide(spec, table)
+        assert decision.holdout_config_id is None
+        results.append(benchmark(spec.costs, table, decision))
+    assert results[0] == results[1]
+    validation = results[0].validation
+    assert validation is not None
+    assert (validation.start, validation.end) == (112, 336)
+    assert validation.gross_return == 0.0
+    assert results[0].holdout is None
+
+
+def test_report_carries_the_buy_and_hold_benchmark(tmp_path: Path) -> None:
+    selected = _run_rows(tmp_path / "selected", _regime_rows(420), configs=_two_configs())
+    assert selected["label"] == "passes_h1"
+    block = _mapping(selected["benchmark"])
+    assert block["method"] == "buy_and_hold"
+    validation = _mapping(block["validation"])
+    holdout = _mapping(block["holdout"])
+    assert (validation["start"], validation["end"], validation["bars_held"]) == (112, 336, 223)
+    assert (holdout["start"], holdout["end"], holdout["bars_held"]) == (336, 420, 83)
+    assert validation["funding"] is None
+    assert set(_mapping(holdout["net"])) == {"1.0", "1.5", "2.0"}
+    markdown = (tmp_path / "selected" / "out" / "result.md").read_text(encoding="utf-8")
+    assert "## Benchmark" in markdown
+    assert "- holdout: 83 bars held" in markdown
+    sealed = _run_rows(
+        tmp_path / "sealed",
+        _alternating_rows(420, bar_return=0.0),
+        fee_bps=5.0,
+        slippage_bps=0.0,
+        spread_bps=0.0,
+    )
+    assert sealed["holdout"] is None
+    assert _mapping(sealed["benchmark"])["holdout"] is None
+    markdown = (tmp_path / "sealed" / "out" / "result.md").read_text(encoding="utf-8")
+    assert "- holdout: sealed (not evaluated)" in markdown
+
+
+def test_benchmark_reports_funding_when_the_spec_declares_it(tmp_path: Path) -> None:
+    rows = _regime_rows(420)
+    funding = [0.001] * len(rows)
+    document = _run_extended(tmp_path, rows, funding=funding, configs=_two_configs())
+    validation = _mapping(_mapping(document["benchmark"])["validation"])
+    # 223 held bars at 0.001 each, for a long of constant notional.
+    assert _as_float(validation["funding_rate_sum"]) == pytest.approx(0.223)
+    assert _as_float(validation["funding"]) < 0.0
+
+
+def test_image_digest_is_recorded_and_a_malformed_one_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("RESEARCH_IMAGE_DIGEST", raising=False)
+    unset = _run_rows(tmp_path / "unset", _regime_rows(420), configs=_two_configs())
+    assert unset["image_digest"] is None
+    digest = "sha256:" + "ab" * 32
+    monkeypatch.setenv("RESEARCH_IMAGE_DIGEST", digest)
+    recorded = _run_rows(tmp_path / "recorded", _regime_rows(420), configs=_two_configs())
+    assert recorded["status"] == "completed"
+    assert recorded["image_digest"] == digest
+    for value in ("", "latest", "sha256:" + "AB" * 32, digest + "0"):
+        monkeypatch.setenv("RESEARCH_IMAGE_DIGEST", value)
+        refused = _run_rows(tmp_path / f"refused{len(value)}", _regime_rows(420))
+        assert refused["status"] == "failed_closed"
+        assert refused["failure_kind"] == "data_config"
+        assert refused["promotion_decision"] == "forbidden"
+
+
+def _bar_table(rows: Sequence[tuple[int, float, float, int]]) -> BarTable:
+    return BarTable(
+        timestamps=tuple(row[0] for row in rows),
+        prices=tuple(row[1] for row in rows),
+        features={"taker_imbalance": tuple(row[2] for row in rows)},
+        availability={"imbalance_available_ts": tuple(row[3] for row in rows)},
+    )
 
 
 def _run_extended(

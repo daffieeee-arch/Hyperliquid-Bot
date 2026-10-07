@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from datetime import UTC, datetime
 from typing import Final
 
+from research.harness.benchmark import Benchmark, BuyAndHold
 from research.harness.costs import STRESS_MULTIPLIERS, round_trip_cost, stress_key
 from research.harness.data import BarTable
 from research.harness.errors import HarnessError
@@ -16,8 +18,9 @@ from research.harness.overfit import Overfitting
 from research.harness.spec import HypothesisSpec, Json
 from research.harness.splits import Fold
 
-HARNESS_VERSION: Final = "4"
+HARNESS_VERSION: Final = "5"
 _ENVIRONMENTS: Final = frozenset({"DEV", "CI", "VPS_RESEARCH"})
+_IMAGE_DIGEST: Final = re.compile(r"sha256:[0-9a-f]{64}")
 LIMITATIONS: Final[tuple[str, ...]] = (
     "The gate uses the larger of the iid t p-value and a Newey-West HAC t p-value.",
     "Sharpe is per trade, not annualized. Drawdown sums simple returns.",
@@ -34,6 +37,8 @@ LIMITATIONS: Final[tuple[str, ...]] = (
     "pre-registered configs as trials. In each split PBO picks the best positive mean net "
     "per trade among the configs that meet the trade floor pro-rated to the in-sample "
     "folds, and does not re-run the significance and stress gates.",
+    "The buy-and-hold benchmark is one unit long over the validation test folds, and over the "
+    "holdout only when a config was selected. It is context and never changes the label.",
     "Look-ahead control uses the declared clock. A falsely stamped future value is invisible.",
     "paper_candidate is not LIVE, SHADOW, TESTNET, or an order authorization.",
     "Spot Vision timestamps from 2025-01-01 are microseconds; USD-M examples are milliseconds.",
@@ -45,6 +50,23 @@ def source_environment() -> str:
     raw = os.environ.get("RESEARCH_ENV", "DEV")
     if raw not in _ENVIRONMENTS:
         raise HarnessError("data_config", "RESEARCH_ENV must be DEV, CI, or VPS_RESEARCH.")
+    return raw
+
+
+def image_digest() -> str | None:
+    """The container image digest from RESEARCH_IMAGE_DIGEST; None when it is unset.
+
+    A value that is set must be a full ``sha256:`` digest, so a broken image
+    template fails the run instead of recording a wrong provenance.
+    """
+
+    raw = os.environ.get("RESEARCH_IMAGE_DIGEST")
+    if raw is None:
+        return None
+    if _IMAGE_DIGEST.fullmatch(raw) is None:
+        raise HarnessError(
+            "data_config", "RESEARCH_IMAGE_DIGEST must be sha256: and 64 lowercase hex digits."
+        )
     return raw
 
 
@@ -94,6 +116,7 @@ def completed_document(
     table: BarTable,
     decision: Decision,
     data_fingerprint: dict[str, Json],
+    benchmark: Benchmark,
 ) -> dict[str, Json]:
     timestamps = table.timestamps
     return {
@@ -113,7 +136,7 @@ def completed_document(
         "selection_method": spec.selection_method,
         "source_environment": source_environment(),
         "source_commit": source_commit(),
-        "image_digest": None,
+        "image_digest": image_digest(),
         "bar_count": len(timestamps),
         "timestamp_min": timestamps[0] if timestamps else None,
         "timestamp_max": timestamps[-1] if timestamps else None,
@@ -152,6 +175,11 @@ def completed_document(
         "selected_config_id": decision.selected_config_id,
         "primary_config_id": decision.primary_config_id,
         "holdout": _holdout_json(decision),
+        "benchmark": {
+            "method": "buy_and_hold",
+            "validation": _buy_and_hold_json(benchmark.validation),
+            "holdout": _buy_and_hold_json(benchmark.holdout),
+        },
         "overfitting": _overfitting_json(decision.overfitting),
         "reasons": list(decision.reasons),
         "limitations": list(LIMITATIONS),
@@ -198,6 +226,8 @@ def render_markdown(document: dict[str, Json]) -> str:
     if status == "completed":
         lines.extend(["", "## Validation", ""])
         lines.extend(_validation_lines(document))
+        lines.extend(["", "## Benchmark", ""])
+        lines.extend(_benchmark_lines(document))
         lines.extend(["", "## Overfitting diagnostics", ""])
         lines.extend(_overfitting_lines(document))
         lines.extend(["", "## Holdout", ""])
@@ -260,6 +290,37 @@ def _validation_lines(document: dict[str, Json]) -> list[str]:
         )
     lines.append("")
     lines.append("p is the more conservative of the iid t and the Newey-West HAC t.")
+    return lines
+
+
+def _benchmark_lines(document: dict[str, Json]) -> list[str]:
+    block = document.get("benchmark")
+    if not isinstance(block, dict):
+        return ["- benchmark block missing"]
+    lines = [
+        "Buy-and-hold: one unit long from the window's first close to its last. "
+        "Context only; it never changes the label.",
+        "",
+    ]
+    for window in ("validation", "holdout"):
+        values = block.get(window)
+        if not isinstance(values, dict):
+            state = "sealed (not evaluated)" if window == "holdout" else "no window"
+            lines.append(f"- {window}: {state}")
+            continue
+        lines.append(
+            (
+                "- {window}: {bars} bars held, gross `{gross}`, funding `{funding}`, "
+                "net 1.0 `{net}`, Sharpe per bar `{sharpe}`"
+            ).format(
+                window=window,
+                bars=values.get("bars_held"),
+                gross=values.get("gross_return"),
+                funding=values.get("funding"),
+                net=_mapping_field(values.get("net"), "1.0"),
+                sharpe=values.get("sharpe_per_bar"),
+            )
+        )
     return lines
 
 
@@ -340,6 +401,24 @@ def _holdout_json(decision: Decision) -> dict[str, Json] | None:
         "net": {key: _metric_json(block) for key, block in decision.holdout_net.items()},
         "funding": _optional_metric_json(decision.holdout_funding),
         "mean_weight": decision.holdout_mean_weight,
+    }
+
+
+def _buy_and_hold_json(result: BuyAndHold | None) -> dict[str, Json] | None:
+    if result is None:
+        return None
+    return {
+        "start": result.start,
+        "end": result.end,
+        "bars_held": result.bars_held,
+        "gross_return": result.gross_return,
+        "log_return": result.log_return,
+        "funding": result.funding,
+        "funding_rate_sum": result.funding_rate_sum,
+        "net": dict(result.net),
+        "mean_log_return_per_bar": result.mean_log_return_per_bar,
+        "stdev_log_return_per_bar": result.stdev_log_return_per_bar,
+        "sharpe_per_bar": result.sharpe_per_bar,
     }
 
 

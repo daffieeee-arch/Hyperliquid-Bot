@@ -112,13 +112,15 @@ used-up one. A trade print stays used up until the next print. An IOC that
 meets a used-up level completes as `CANCELED` with
 `unfilled_reason: touch_consumed`; a strategy order is checked against the
 quote it would fill on, after its latency, not the one it was decided on.
-With zero latency those are the same quote, so such an order is rejected
-with `touch_consumed` instead (recorded once while the block lasts). A stop
-exit or kill flatten on a used-up level waits for new size, a new price, or
-the refill, cancels a strategy order meanwhile, and `health.json` shows
-`exit_waiting_for_quote: true`. Because the BBO feed only pushes changes,
-`on_clock` retries a waiting stop exit too, so a quiet book does not hold it
-until the stale-data halt.
+When those are the same quote (zero latency, decided on a BBO, or on a print
+while the book is not complete), such an order is rejected with
+`touch_consumed` instead, recorded once while the block lasts. A stop exit or
+kill flatten on a used-up level waits for new size, a new price, or the
+refill, cancels a strategy order meanwhile, and `health.json` shows
+`exit_waiting_for_quote: true`. The BBO feed only pushes changes, so
+`on_clock` retries such a waiting exit and then applies the loss limits to
+the new equity, in the last event's window. A band or a missing touch is not
+retried on the clock; it needs a new quote.
 
 While an order waits, the same target from the strategy keeps it working,
 even when the order was rounded or clipped to the risk size; only a changed
@@ -146,18 +148,18 @@ PnL stays null until a venue mark or a complete two-sided book exists.
   line is written and a zero-latency reduce-only IOC (`stop-exit`) closes the
   position at the touch, retried on later quotes until flat. With no mark at
   all (one-sided book, no venue mark) a trade processed after the stop was
-  set triggers it if its venue time is later than the last print before the
-  stop. That skips a print re-delivered after a reconnect; a new print from
-  the same block only counts one block later. Prints are compared with
-  prints, so clock skew between feeds does not hide a real one. With no
-  print before the stop, any later print counts: a re-delivered one can
-  cause an early exit, never a missed stop. That is an exit trigger only,
-  and equity still treats the price as missing. The config refuses a stop
-  distance not wider than `slippage_fraction`, which would stop out every
-  fill at once. Choose it wider than half the spread plus slippage as well;
-  the spread cannot be checked up front, and a narrower stop fires on the
-  first mark after a fill. A gap fills at the touch, beyond the stop: the
-  loss is then larger than the risk budget.
+  set triggers it unless its venue time is older than the latest print time
+  seen before the stop (a print re-delivered after a reconnect). Prints are
+  compared with prints, so clock skew between feeds does not hide a real
+  one. A print from that same block, or any print when none came before the
+  stop, counts: an unclear print may exit early but never hides a real stop.
+  That is an exit trigger only, and equity still treats the price as
+  missing. The config refuses a stop distance not wider than
+  `slippage_fraction`, which would stop out every fill at once. Choose it
+  wider than half the spread plus slippage as well; the spread cannot be
+  checked up front, and a narrower stop fires on the first mark after a
+  fill. A gap fills at the touch, beyond the stop: the loss is then larger
+  than the risk budget.
 - After a stop-out the strategy cannot re-open the same direction
   (`stop_lockout`, recorded once) until its target goes flat or reverses
   (`stop_lockout_cleared`). A stop-out does not halt the engine.

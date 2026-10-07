@@ -963,13 +963,36 @@ def test_stop_ignores_an_old_print_redelivered_after_the_stop(tmp_path: Path) ->
     engine.on_event(_trade(ns=1_000_000, price="100000", size="0.5", ordinal=1, event_time=one_ms))
     engine.on_event(_bbo(ns=2_000_000, bid="100000", ask="100001", ordinal=2))
     engine.on_event(_bbo(ns=3_000_000, bid="99990", ask=None, ask_size=None, ordinal=3))
-    # A reconnect snapshot re-sends prints up to the last one before the stop.
+    # A reconnect snapshot re-sends a print older than the last one before the stop.
     engine.on_event(_trade(ns=4_000_000, price="97000", size="0.5", ordinal=4, event_time=CREATED))
-    engine.on_event(_trade(ns=5_000_000, price="97000", size="0.5", ordinal=5, event_time=one_ms))
     assert engine.position_quantity == Decimal("0.1")
     assert not [row for row in _ledger(tmp_path / "redeliver") if row["type"] == "stop_triggered"]
-    # A print stamped after that one is new and triggers the stop.
+    # A print from the same block as that one may be new: it counts, because an
+    # unclear print may exit early but must never hide a real stop.
+    engine.on_event(_trade(ns=5_000_000, price="97000", size="0.5", ordinal=5, event_time=one_ms))
+    engine.close()
+    assert engine.position_quantity == Decimal("0")
+
+
+def test_stop_trade_floor_is_the_latest_print_time_not_the_last_received(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(
+        tmp_path,
+        "tradehigh",
+        strategy=ScriptedStrategy((Decimal("0"), Decimal("0"), Decimal("0.1"))),
+    )
     two_ms = CREATED + timedelta(milliseconds=2)
+    engine.on_event(_trade(ns=1_000_000, price="100000", size="0.5", ordinal=1, event_time=two_ms))
+    # Received later but stamped earlier: a replayed print must not lower the floor.
+    one_ms = CREATED + timedelta(milliseconds=1)
+    engine.on_event(_trade(ns=2_000_000, price="100000", size="0.5", ordinal=2, event_time=one_ms))
+    engine.on_event(_bbo(ns=3_000_000, bid="100000", ask="100001", ordinal=3))
+    assert engine.position_quantity == Decimal("0.1")
+    engine.on_event(_bbo(ns=4_000_000, bid="99990", ask=None, ask_size=None, ordinal=4))
+    between = CREATED + timedelta(microseconds=1500)
+    engine.on_event(_trade(ns=5_000_000, price="97000", size="0.5", ordinal=5, event_time=between))
+    assert engine.position_quantity == Decimal("0.1")
     engine.on_event(_trade(ns=6_000_000, price="97000", size="0.5", ordinal=6, event_time=two_ms))
     engine.close()
     assert engine.position_quantity == Decimal("0")
@@ -1107,6 +1130,64 @@ def test_waiting_stop_exit_retries_on_the_clock_after_the_refill(tmp_path: Path)
     assert engine.position_quantity == Decimal("0.02")
     assert engine.kill_switch == "NONE"
     engine.close()
+
+
+def test_clock_retries_only_an_exit_waiting_for_a_refill(tmp_path: Path) -> None:
+    # A missing touch needs a new quote, not more time: the clock adds nothing.
+    engine = _engine(tmp_path, "clockonly", strategy=ScriptedStrategy((Decimal("0.1"),)))
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001", ordinal=1))
+    engine.on_event(_bbo(ns=1_000_000, bid="97990", ask="97991", bid_size="0", ordinal=2))
+    assert read_health(engine.health_path)["flatten_blocked_missing_price"] is True
+    orders_before = _state(engine)["order_count"]
+    engine.on_clock(now_utc_ns=2_000_000_000, now_utc=CREATED + timedelta(seconds=2))
+    engine.close()
+    assert _state(engine)["order_count"] == orders_before
+    assert engine.position_quantity == Decimal("0.1")
+
+
+def test_clock_exit_fill_applies_the_loss_limits(tmp_path: Path) -> None:
+    # The second partial exit, filled on the clock, realizes the loss that
+    # breaches the daily limit; the halt is applied at once.
+    engine = _engine(
+        tmp_path,
+        "clocklimit",
+        strategy=ScriptedStrategy((Decimal("0.1"),)),
+        config=_instant(risk_limits=_loose_loss_limits(drawdown="0.5", daily="0.0029")),
+    )
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001", ordinal=1))
+    engine.on_event(_bbo(ns=1_000_000, bid="97000", ask="98000", bid_size="0.04", ordinal=2))
+    assert engine.position_quantity == Decimal("0.06")
+    assert engine.kill_switch == "NONE"
+    engine.on_clock(now_utc_ns=1_001_000_000, now_utc=CREATED + timedelta(milliseconds=1001))
+    assert engine.position_quantity == Decimal("0.02")
+    assert engine.kill_switch == "HALT_NEW"
+    assert read_health(engine.health_path)["kill_reason"] == "daily_loss"
+    engine.close()
+
+
+def test_zero_latency_order_decided_on_a_trade_waits_for_the_next_quote(
+    tmp_path: Path,
+) -> None:
+    # With a complete book a trade print is not a fill quote, so a used-up ask
+    # at decision time does not block the order: it fills on the next BBO.
+    engine = _engine(
+        tmp_path,
+        "tradewait",
+        strategy=_SilentAfterTargets(tuple(Decimal(text) for text in ("0.05", "0", "0.05"))),
+    )
+    engine.on_event(_bbo(ns=0, bid="99999", ask="100000", ask_size="0.05", ordinal=1))
+    engine.on_event(_bbo(ns=1_000_000, bid="99999", ask="100000", ask_size="0.05", ordinal=2))
+    engine.on_event(_trade(ns=2_000_000, price="100000", size="0.01", ordinal=3))
+    engine.on_event(_bbo(ns=3_000_000, bid="99999", ask="100001", ordinal=4))
+    engine.close()
+    state = _state(engine)
+    assert engine.position_quantity == Decimal("0.05")
+    assert [(row["side"], row["status"]) for row in _objects(state["orders"])] == [
+        ("BUY", "FILLED"),
+        ("SELL", "FILLED"),
+        ("BUY", "FILLED"),
+    ]
+    assert state["risk_rejection_count"] == 0
 
 
 def test_zero_size_at_a_taken_price_is_a_missing_touch(tmp_path: Path) -> None:

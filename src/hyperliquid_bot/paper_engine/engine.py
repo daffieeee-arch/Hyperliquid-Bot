@@ -440,7 +440,11 @@ class PaperEngine:
         with self._fail_closed(observed):
             if now_utc_ns - anchor > self._config.stale_after_ns:
                 self._flatten_halt("stale_data")
-                self._enforce_flat(now_utc_ns, observed)
+            else:
+                # The BBO feed only pushes changes, so a waiting stop exit also
+                # retries on the clock once the level it used up has refilled.
+                self._check_stop(now_utc_ns)
+            self._enforce_flat(now_utc_ns, observed)
             self._persist(observed)
 
     def close(self) -> None:
@@ -660,9 +664,11 @@ class PaperEngine:
                 and self._stop_set_trade_count is not None
                 and self._trade_count > self._stop_set_trade_count
                 # A print re-delivered after a reconnect carries its old venue
-                # time; it is older than the last print before the stop.
+                # time. Only a print stamped after the last one before the stop
+                # counts; with no earlier print, any later one does, which can
+                # exit early but never miss the stop.
                 and (
-                    self._stop_trade_floor is None or trade.event_time_utc >= self._stop_trade_floor
+                    self._stop_trade_floor is None or trade.event_time_utc > self._stop_trade_floor
                 )
             ):
                 # No mark at all (one-sided book, no venue mark): a trade printed
@@ -724,7 +730,7 @@ class PaperEngine:
         """
 
         price, size = _displayed(event, side)
-        if price is None or size is None:
+        if price is None or size is None or size <= 0:
             return price, size, False
         if isinstance(event, TradeEvent):
             taken = self._trade_taken
@@ -814,6 +820,22 @@ class PaperEngine:
             )
             return
         touch_price, _touch_size = priced
+        if (
+            not immediate
+            and self._config.latency_ns == 0
+            and self._touch_used_up(desired.side, received_ns)
+        ):
+            # A zero-latency order fills on this very quote, which PAPER already
+            # took: one recorded block, not an accepted-then-cancelled IOC on
+            # every event. With latency the order is checked on the quote it
+            # fills on instead.
+            self._reject(
+                reason="touch_consumed",
+                detail=reason,
+                received_utc_ns=received_ns,
+                desired=desired,
+            )
+            return
         limit_price = self._limit_price(desired, touch_price)
         # The notional a fill can reach. A BUY limit caps it; a SELL limit only
         # floors the price, so a short gets the same cushion above the touch
@@ -1049,8 +1071,8 @@ class PaperEngine:
             return
         event = self._current_touch_event()
         if event is None:
-            # Only a kill flatten or stop exit fills from the book here.
-            self._missing_flatten = True
+            # The flag reports a blocked exit, so it follows reduce_only.
+            self._missing_flatten = working.reduce_only
             return
         self._fill_against(working, event, received_ns=received_ns)
 
@@ -1190,11 +1212,8 @@ class PaperEngine:
         if held is not None and held.until_ns > received_ns:
             taken += held.quantity
         # Keep only what is still held back, so the map stays small.
-        self._book_taken = {
-            other: entry
-            for other, entry in self._book_taken.items()
-            if entry.until_ns > received_ns
-        }
+        for expired in [k for k, v in self._book_taken.items() if v.until_ns <= received_ns]:
+            del self._book_taken[expired]
         self._book_taken[key] = _Taken(
             quantity=taken, until_ns=received_ns + self._config.touch_refill_ns
         )

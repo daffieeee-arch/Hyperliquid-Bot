@@ -107,13 +107,18 @@ price on one side is held back from the displayed size at that price; more
 fills there add to it and restart the timer. A level that leaves the touch
 and comes back in that time is still short. After it, the level counts as
 refilled by other makers. A price PAPER has not taken from offers its full
-displayed size. A trade print stays used up until the next print. An IOC
-that meets a used-up level completes as `CANCELED` with
+displayed size, and a displayed size of zero is a missing touch, not a
+used-up one. A trade print stays used up until the next print. An IOC that
+meets a used-up level completes as `CANCELED` with
 `unfilled_reason: touch_consumed`; a strategy order is checked against the
-quote it would fill on, after its latency, not the one it was decided on. A
-stop exit or kill flatten on a used-up level waits for new size, a new price,
-or the refill, cancels a strategy order meanwhile, and `health.json` shows
-`exit_waiting_for_quote: true`.
+quote it would fill on, after its latency, not the one it was decided on.
+With zero latency those are the same quote, so such an order is rejected
+with `touch_consumed` instead (recorded once while the block lasts). A stop
+exit or kill flatten on a used-up level waits for new size, a new price, or
+the refill, cancels a strategy order meanwhile, and `health.json` shows
+`exit_waiting_for_quote: true`. Because the BBO feed only pushes changes,
+`on_clock` retries a waiting stop exit too, so a quiet book does not hold it
+until the stale-data halt.
 
 While an order waits, the same target from the strategy keeps it working,
 even when the order was rounded or clipped to the risk size; only a changed
@@ -141,16 +146,18 @@ PnL stays null until a venue mark or a complete two-sided book exists.
   line is written and a zero-latency reduce-only IOC (`stop-exit`) closes the
   position at the touch, retried on later quotes until flat. With no mark at
   all (one-sided book, no venue mark) a trade processed after the stop was
-  set triggers it, unless its venue time is older than the last print before
-  the stop (a print re-delivered after a reconnect). Prints are compared
-  with prints, so clock skew between feeds does not hide a real one. That is
-  an exit trigger only, and equity still treats the price as missing. The
-  config refuses a stop distance not wider than
-  `slippage_fraction`, which would stop out every fill at once. Choose it
-  wider than half the spread plus slippage as well; the spread cannot be
-  checked up front, and a narrower stop fires on the first mark after a
-  fill. A gap fills at the touch, beyond the stop: the loss is then larger
-  than the risk budget.
+  set triggers it if its venue time is later than the last print before the
+  stop. That skips a print re-delivered after a reconnect; a new print from
+  the same block only counts one block later. Prints are compared with
+  prints, so clock skew between feeds does not hide a real one. With no
+  print before the stop, any later print counts: a re-delivered one can
+  cause an early exit, never a missed stop. That is an exit trigger only,
+  and equity still treats the price as missing. The config refuses a stop
+  distance not wider than `slippage_fraction`, which would stop out every
+  fill at once. Choose it wider than half the spread plus slippage as well;
+  the spread cannot be checked up front, and a narrower stop fires on the
+  first mark after a fill. A gap fills at the touch, beyond the stop: the
+  loss is then larger than the risk budget.
 - After a stop-out the strategy cannot re-open the same direction
   (`stop_lockout`, recorded once) until its target goes flat or reverses
   (`stop_lockout_cleared`). A stop-out does not halt the engine.
@@ -186,5 +193,7 @@ same strategy, risk, and fill path.
 - Depletion is a fixed refill time at the touch only. The book behind the
   touch is not modelled: an exit on a used-up level waits instead of walking
   to the next level, and a refill is assumed, not observed.
+- The engine does not deduplicate trade prints. A feed that re-delivers old
+  prints after a reconnect should drop them by trade id before the engine.
 - A create-only run does not recover an open position after a process restart.
 - Paper fills are not evidence of edge, capacity, or LIVE readiness.

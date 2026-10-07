@@ -809,6 +809,12 @@ def test_every_config_under_the_trade_floor_is_not_enough_data(tmp_path: Path) -
     reasons = document["reasons"]
     assert isinstance(reasons, list)
     assert any("fewer validation trades" in str(reason) for reason in reasons)
+    # Validation compared nothing, so neither diagnostic is computed.
+    block = _mapping(document["overfitting"])
+    for name, field in (("deflated_sharpe", "dsr"), ("pbo", "value")):
+        diagnostic = _mapping(block[name])
+        assert diagnostic[field] is None
+        assert "fewer validation trades" in str(diagnostic["note"])
 
 
 def test_the_in_sample_floor_is_pro_rated_and_rounded_up() -> None:
@@ -853,6 +859,18 @@ def test_diagnostics_wait_for_sample_min_folds(tmp_path: Path) -> None:
     assert (dsr["dsr"], dsr["config_id"], dsr["trials"], pbo["value"]) == (None, None, 3, None)
     for note in (dsr["note"], pbo["note"]):
         assert "8 test folds; sample.min_folds is 10" in str(note)
+    markdown = (tmp_path / "out" / "result.md").read_text(encoding="utf-8")
+    assert "- deflated Sharpe ratio: not computed. Walk-forward produced 8 test folds" in markdown
+
+
+def test_a_thin_holdout_keeps_the_validation_diagnostics(tmp_path: Path) -> None:
+    # Validation selects the 8-bar horizon, but its holdout has too few trades.
+    configs = [*_two_configs(), {"id": "long", "threshold": 0.0, "horizon_bars": 8}]
+    document = _run_rows(tmp_path, _regime_rows(420), configs=configs)
+    assert (document["label"], document["selected_config_id"]) == ("not_enough_data", "long")
+    block = _mapping(document["overfitting"])
+    assert _mapping(block["deflated_sharpe"])["dsr"] is not None
+    assert _mapping(block["pbo"])["value"] is not None
 
 
 def test_funding_paid_on_the_position_wipes_a_planted_edge(tmp_path: Path) -> None:

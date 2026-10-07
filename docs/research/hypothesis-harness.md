@@ -144,9 +144,11 @@ trade), which is the point of pre-registering it.
 `result.json` has an `overfitting` block, summarized in `result.md`. Both
 values are diagnostics: they never change the label or the promotion
 decision. Both count only the pre-registered grid as trials, so exploration
-done outside the harness is not deflated. Neither is computed when the run
-has fewer than `sample.min_folds` folds, where the label is
-`not_enough_data`.
+done outside the harness is not deflated. Neither is computed when
+validation itself is `not_enough_data` (fewer than `sample.min_folds` folds,
+or no config with `sample.min_trades_validation` trades); `note` then gives
+the validation reason. A holdout short of trades leaves them in place, since
+both describe validation.
 
 - **Deflated Sharpe ratio** (Bailey and López de Prado, 2014). It tests the
   config validation selected, or, when nothing was selected, the config

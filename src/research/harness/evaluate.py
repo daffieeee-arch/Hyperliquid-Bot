@@ -191,6 +191,15 @@ def decide(spec: HypothesisSpec, table: BarTable) -> Decision:
     }
     scores = _build_scores(spec, series_by_config, nets_by_config, family_p, adjusted)
     label, reasons, selected_index = _validation_label(spec, scores, folds)
+    # Validation without enough data compared nothing, so neither diagnostic
+    # applies. A thin holdout later does not change them: they describe validation.
+    if label == LABEL_NOT_ENOUGH_DATA:
+        note = " ".join(reasons)
+        overfitting = Overfitting(no_dsr(len(spec.configs), note), no_pbo(note))
+    else:
+        overfitting = _overfitting(
+            spec, scores, series_by_config, fold_series_by_config, folds, selected_index
+        )
     holdout_config_id: str | None = None
     holdout: _HoldoutResult | None = None
     if selected_index is None:
@@ -227,9 +236,7 @@ def decide(spec: HypothesisSpec, table: BarTable) -> Decision:
         holdout_net=None if holdout is None else holdout.net,
         holdout_funding=None if holdout is None else holdout.funding,
         holdout_mean_weight=None if holdout is None else holdout.mean_weight,
-        overfitting=_overfitting(
-            spec, scores, series_by_config, fold_series_by_config, folds, selected_index
-        ),
+        overfitting=overfitting,
     )
     _assert_promotion_invariant(decision)
     return decision
@@ -684,16 +691,9 @@ def _overfitting(
 
     They are reported, never gated on. In each CSCV split, PBO selects among
     the configs that meet the trade floor pro-rated to the in-sample folds; it
-    does not re-run the other selection gates. A run below sample.min_folds is
-    not_enough_data, so neither diagnostic is computed for it.
+    does not re-run the other selection gates.
     """
 
-    if len(folds) < spec.sample.min_folds:
-        note = (
-            f"Walk-forward produced {len(folds)} test folds; "
-            f"sample.min_folds is {spec.sample.min_folds}."
-        )
-        return Overfitting(deflated_sharpe=no_dsr(len(spec.configs), note), pbo=no_pbo(note))
     floored = _floored_indices(spec, scores)
     dsr = deflated_sharpe(
         len(spec.configs), _tested_config(spec, scores, series_by_config, floored, selected_index)

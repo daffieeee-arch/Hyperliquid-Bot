@@ -42,3 +42,14 @@ shadcn/ui blocks (MIT) and the Tabler admin template (MIT). No paid component
 pack is used: shadcnblocks.com Pro, TailAdmin PRO and paid Tremor blocks are
 deliberately out of scope. ApexCharts is deliberately not used — releases from
 6.0.0 moved to a revenue-gated dual license.
+
+---
+
+IBM Plex Sans and IBM Plex Mono
+Copyright 2017-2019 IBM Corp.
+License: SIL Open Font License, Version 1.1
+https://github.com/IBM/plex
+
+The latin 400, 500 and 600 weights are vendored as woff2 files from
+Fontsource 5.3.0 (@fontsource/ibm-plex-sans, @fontsource/ibm-plex-mono) in
+src/app/fonts/, with each family's license text next to them.

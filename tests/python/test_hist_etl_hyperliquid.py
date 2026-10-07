@@ -13,6 +13,8 @@ from pytest import CaptureFixture
 from research.hist_etl.errors import HistEtlError
 from research.hist_etl.http import RateLimiter
 from research.hist_etl.hyperliquid import (
+    RATE_LIMIT_WAIT_SECONDS,
+    SLOT_TOLERANCE_MS,
     FundingWindow,
     UrllibJsonPoster,
     build_poster,
@@ -24,10 +26,17 @@ from research.hist_etl.hyperliquid import (
 )
 from research.hist_etl.manifest import assert_known_ids, load_manifest
 from research.hist_etl.models import HYPERLIQUID_INFO_URL, HyperliquidFundingSpec
-from research.hist_etl.pipeline import run_plan, run_sync, run_verify
+from research.hist_etl.pipeline import _settled_today, run_plan, run_sync, run_verify
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 HOUR_MS = 3_600_000
+
+
+@pytest.fixture(autouse=True)
+def _no_real_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The venue rate cap always applies; tests do not wait it out."""
+
+    monkeypatch.setattr("research.hist_etl.pipeline.default_sleeper", _no_sleep)
 
 
 class FakeFundingPoster:
@@ -124,13 +133,14 @@ def test_fetch_pages_through_the_window_and_fails_closed() -> None:
     times = [*_hourly(datetime(2026, 9, 1, tzinfo=UTC), 12), window.end_ms + 5]
     poster = FakeFundingPoster(times, page_size=5)
     rows = fetch_funding(poster, window, limiter=_limiter(), max_retries=3, sleeper=_no_sleep)
-    assert [row["time"] for row in rows] == times[:12]
+    assert [row.time_ms for row in rows] == times[:12]
     assert [request["startTime"] for request in poster.requests[:3]] == [
-        window.start_ms,
+        window.start_ms - SLOT_TOLERANCE_MS,
         times[4] + 1,
         times[9] + 1,
     ]
-    assert all(request["endTime"] == window.end_ms - 1 for request in poster.requests)
+    last = window.end_ms - SLOT_TOLERANCE_MS - 1
+    assert all(request["endTime"] == last for request in poster.requests)
     assert poster.requests[0]["type"] == "fundingHistory"
     retried = FakeFundingPoster(times[:3], page_size=5)
     retried.queued = [(429, b""), ConnectionResetError("dropped")]
@@ -159,8 +169,9 @@ def test_sync_writes_months_reuses_settled_ones_and_grows_the_open_one(tmp_path:
     assert _sync(tmp_path, manifest, poster, date(2026, 10, 2)) == 0
     september = _window_for(tmp_path, manifest, "2026-09", date(2026, 10, 2))
     october = _window_for(tmp_path, manifest, "2026-10", date(2026, 10, 2))
-    assert raw_funding_path(tmp_path, september).name == "BTC-funding-2026-09.json"
-    assert raw_funding_path(tmp_path, october).name == "BTC-funding-2026-10.open.json"
+    assert raw_funding_path(tmp_path, september, settled=True).is_file()
+    assert raw_funding_path(tmp_path, october, settled=False).is_file()
+    assert not raw_funding_path(tmp_path, october, settled=True).exists()
     settled = hyperliquid_parquet_path(tmp_path, september)
     assert _sidecar(settled)["provisional"] is False
     assert _sidecar(hyperliquid_parquet_path(tmp_path, october))["provisional"] is True
@@ -168,19 +179,20 @@ def test_sync_writes_months_reuses_settled_ones_and_grows_the_open_one(tmp_path:
     columns = _columns(settled)
     assert {"ts", "slot_start", "funding_rate", "funding_rate_text", "premium"} <= columns
     settled_mtime = settled.stat().st_mtime_ns
-    raw_bytes = raw_funding_path(tmp_path, september).read_bytes()
+    raw_bytes = raw_funding_path(tmp_path, september, settled=True).read_bytes()
 
     poster.requests.clear()
     assert _sync(tmp_path, manifest, poster, date(2026, 10, 2)) == 0
     # The settled month is read from disk; only the open month is fetched.
     starts = [request["startTime"] for request in poster.requests]
-    assert starts[0] == october.start_ms
-    assert all(isinstance(start, int) and start >= october.start_ms for start in starts)
+    first_print = october.start_ms - SLOT_TOLERANCE_MS
+    assert starts[0] == first_print
+    assert all(isinstance(start, int) and start >= first_print for start in starts)
     assert settled.stat().st_mtime_ns == settled_mtime
 
     assert _sync(tmp_path, manifest, poster, date(2026, 10, 3)) == 0
     assert _view_count(tmp_path) == 96
-    assert raw_funding_path(tmp_path, september).read_bytes() == raw_bytes
+    assert raw_funding_path(tmp_path, september, settled=True).read_bytes() == raw_bytes
     assert (
         run_verify(
             root=tmp_path, manifest_path=manifest, today=date(2026, 10, 3), dataset_ids=None, env={}
@@ -237,7 +249,9 @@ def test_verify_sees_an_edited_raw_file(tmp_path: Path) -> None:
         run_verify(root=tmp_path, manifest_path=manifest, today=today, dataset_ids=None, env={})
         == 0
     )
-    raw = raw_funding_path(tmp_path, _window_for(tmp_path, manifest, "2026-09", today))
+    raw = raw_funding_path(
+        tmp_path, _window_for(tmp_path, manifest, "2026-09", today), settled=True
+    )
     raw.write_text(raw.read_text(encoding="utf-8").replace("0.0000125", "0.0000126", 1))
     assert (
         run_verify(root=tmp_path, manifest_path=manifest, today=today, dataset_ids=None, env={})
@@ -272,10 +286,86 @@ def test_plan_lists_fetch_open_and_present_months(
 
 
 def test_request_rate_stays_inside_the_venue_weight_budget() -> None:
-    assert hyperliquid_rate(2.0) == 0.4
+    assert hyperliquid_rate(2.0) == 0.3
     assert hyperliquid_rate(0.2) == 0.2
-    assert hyperliquid_rate(0.0) == 0.0
+    # 0 means unlimited for the file servers, never for this endpoint.
+    assert hyperliquid_rate(0.0) == 0.3
     assert isinstance(build_poster(5.0), UrllibJsonPoster)
+
+
+def test_a_429_waits_out_the_weight_window() -> None:
+    window = _window(datetime(2026, 9, 1, tzinfo=UTC), hours=2)
+    poster = FakeFundingPoster(_hourly(datetime(2026, 9, 1, tzinfo=UTC), 2))
+    poster.queued = [(429, b"")]
+    waits: list[float] = []
+    fetch_funding(poster, window, limiter=_limiter(), max_retries=3, sleeper=waits.append)
+    assert waits == [RATE_LIMIT_WAIT_SECONDS]
+
+
+def test_today_after_the_real_date_cannot_settle_the_running_month() -> None:
+    real = datetime.now(UTC).date()
+    assert _settled_today(real + timedelta(days=40)) == real
+    assert _settled_today(date(2026, 9, 1)) == date(2026, 9, 1)
+
+
+def test_verify_accepts_an_open_month_fetched_on_an_earlier_day(tmp_path: Path) -> None:
+    start = datetime(2026, 9, 29, tzinfo=UTC)
+    manifest = _manifest(tmp_path, start="2026-09-29")
+    poster = FakeFundingPoster(_hourly(start, 24 * 6), page_size=100)
+    assert _sync(tmp_path, manifest, poster, date(2026, 10, 2)) == 0
+    # The open month was fetched through 2026-10-01; verify runs days later.
+    assert (
+        run_verify(
+            root=tmp_path, manifest_path=manifest, today=date(2026, 10, 4), dataset_ids=None, env={}
+        )
+        == 0
+    )
+
+
+def test_a_truncated_settled_month_stays_provisional_until_complete(tmp_path: Path) -> None:
+    start = datetime(2026, 9, 1, tzinfo=UTC)
+    manifest = _manifest(tmp_path, start="2026-09-01", end="2026-09-02")
+    window = _window_for(tmp_path, manifest, "2026-09", date(2026, 10, 1))
+    # A node that lags: the second day is missing from the first answer.
+    lagging = FakeFundingPoster(_hourly(start, 24), page_size=100)
+    assert _sync(tmp_path, manifest, lagging, date(2026, 10, 1)) == 2
+    assert not raw_funding_path(tmp_path, window, settled=True).exists()
+    assert _sidecar(hyperliquid_parquet_path(tmp_path, window))["provisional"] is True
+    # The next sync fetches the month again and freezes it once complete.
+    complete = FakeFundingPoster(_hourly(start, 48), page_size=100)
+    assert _sync(tmp_path, manifest, complete, date(2026, 10, 1)) == 0
+    assert raw_funding_path(tmp_path, window, settled=True).is_file()
+    assert _sidecar(hyperliquid_parquet_path(tmp_path, window))["provisional"] is False
+    assert _view_count(tmp_path) == 48
+
+
+def test_a_print_just_before_its_slot_belongs_to_that_slot(tmp_path: Path) -> None:
+    start = datetime(2026, 9, 1, tzinfo=UTC)
+    times = _hourly(start, 24)
+    # The 20:00 settlement stamped 10 ms early, and the month's first one too.
+    times[20] = _ms(start) + 20 * HOUR_MS - 10
+    times[0] = _ms(start) - 10
+    manifest = _manifest(tmp_path, start="2026-09-01", end="2026-09-01")
+    assert (
+        _sync(tmp_path, manifest, FakeFundingPoster(times, page_size=100), date(2026, 10, 1)) == 0
+    )
+    assert _view_count(tmp_path) == 24
+
+
+def test_view_keeps_one_row_per_settlement(tmp_path: Path) -> None:
+    start = datetime(2026, 9, 1, tzinfo=UTC)
+    manifest = _manifest(tmp_path, start="2026-09-01", end="2026-09-01")
+    assert _sync(tmp_path, manifest, FakeFundingPoster(_hourly(start, 24)), date(2026, 10, 1)) == 0
+    window = _window_for(tmp_path, manifest, "2026-09", date(2026, 10, 1))
+    month = hyperliquid_parquet_path(tmp_path, window)
+    # A dataset renamed by the operator leaves its old month file behind.
+    stale = month.with_name("2026-09.hl-renamed.parquet")
+    stale.write_bytes(month.read_bytes())
+    stale.with_name(stale.name + ".sources.json").write_bytes(
+        month.with_name(month.name + ".sources.json").read_bytes()
+    )
+    assert _sync(tmp_path, manifest, FakeFundingPoster(_hourly(start, 24)), date(2026, 10, 1)) == 0
+    assert _view_count(tmp_path) == 24
 
 
 def _sync(root: Path, manifest: Path, poster: FakeFundingPoster, today: date) -> int:

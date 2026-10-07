@@ -134,11 +134,13 @@ pages from the last returned time, one UTC month at a time, and reads complete
 UTC days only (a day is fetched after it ends).
 
 REST requests share 1200 weight per minute per IP. An info request weighs 20
-and `fundingHistory` adds 1 per 20 rows, so a full page is 45 and the manifest
-`requests_per_second` is capped at 0.4 for this endpoint
+and `fundingHistory` adds 1 per 20 rows, so a full page is 45. The manifest
+`requests_per_second` is capped at 0.3 for this endpoint (810 weight a
+minute, leaving room for anything else on the IP), and a rate of 0 does not
+lift the cap. After a 429 the client waits a full minute before it retries
 ([rate limits](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/rate-limits-and-user-limits)).
 The first backfill of BTC (about 29,000 rows from 2023) takes roughly 60
-requests; a daily sync after that takes one or two.
+requests, a few minutes; a daily sync after that takes one or two.
 
 Layout:
 
@@ -148,13 +150,18 @@ hyperliquid-api/funding/{dataset_id}/{COIN}-funding-YYYY-MM.open.json  # current
 parquet/hist_etl/hyperliquid/funding/{COIN}/YYYY-MM.{dataset_id}.parquet
 ```
 
-A settled month's raw file is canonical JSON of the rows as published, so two
-fetches of the same month have the same bytes. It is reused, not fetched
-again; delete it by hand to refetch a month. The current month is fetched on
-every sync. Its Parquet sidecar says `"provisional": true`, and that file is
-replaced on each sync until the month settles. Settled month files follow the
-same `.sources.json` rule as the other venues (`sync --rebuild` to replace).
-`.open.json` files are not deleted.
+A month settles only when it has ended and its fetch has a print in every
+settlement slot, apart from `known_holes`, with no conflict. Its raw file is
+then canonical JSON of the rows as published, so two fetches of the same
+month have the same bytes, and it is reused, not fetched again (delete it by
+hand to refetch a month). Every other month, the current one or an ended
+month with a missing slot, is fetched again on every sync and written to
+`.open.json`, so a truncated answer from a lagging node is never frozen. Its
+Parquet sidecar says `"provisional": true`, and that file is replaced on each
+sync until the month settles. Settled month files follow the same
+`.sources.json` rule as the other venues (`sync --rebuild` to replace).
+`.open.json` files are not deleted. `--today` can move the cutoff back for a
+test, never past the real UTC date.
 
 Columns: `ts` (the settlement time, UTC; the rate is known and charged then),
 `slot_start` (the start of the settlement slot the print belongs to),
@@ -165,9 +172,12 @@ decimal), `premium`, `premium_text`, `funding_interval_hours`, `dataset_id`,
 
 Gaps are judged per settlement slot, not by timestamp spacing: settlement
 times jitter by about a second, and a late settlement can land minutes into
-its slot. A slot with no print is a `funding_hole` (exit 2, the month is still
-written). Two prints in one slot, or two different prints at one time, is a
-`funding_conflict`, and that month is not written. `known_holes` in the
+its slot. A print belongs to the slot that starts at most 60 seconds after
+it, so one stamped just before the hour still counts for that hour, and a
+month covers the slots that start inside it. A slot with no print is a
+`funding_hole` (exit 2, the month is still written, provisionally). Two prints
+in one slot, or two different prints at one time, is a `funding_conflict`,
+and that month is not written. `known_holes` in the
 manifest lists slots the venue never published, so they are not reported on
 every run. For BTC these are 2023-07-02 20:00, 2023-08-23 20:00, and
 2024-08-15 13:00 UTC, checked against `fundingHistory` on 2026-10-07. Any
@@ -182,7 +192,9 @@ PYTHONPATH=src uv run --frozen python -m research.hist_etl sync --dataset hl-per
 ```
 
 Datasets for one coin may not cover the same day. Both write to the same coin
-directory and to the one view `hist_hl_funding_{coin}`.
+directory and to the one view `hist_hl_funding_{coin}`. The view keeps one row
+per settlement time, so month files left behind by a renamed or re-ranged
+dataset cannot count a settlement twice.
 
 For a harness `role: funding` column on hourly bars stamped at their close,
 the settlement printed at the bar's close belongs to that bar:

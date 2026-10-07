@@ -145,7 +145,7 @@ def render_statements(
                 continue
             relative = tuple(_relative(root, path) for path in funding_files)
             name = f"hist_hl_funding_{coin_dir.name.lower()}"
-            views.append((name, _view(name, relative)))
+            views.append((name, _one_row_per_settlement(name, relative)))
     return tuple(views)
 
 
@@ -334,6 +334,28 @@ def _view(name: str, relative_paths: tuple[str, ...]) -> str:
         raise HistEtlError(f"{name} has no parquet files", exit_code=2)
     listed = ",\n".join(f"    '__HIST__/{path}'" for path in relative_paths)
     return f"CREATE OR REPLACE VIEW {name} AS\nSELECT * FROM read_parquet([\n{listed}\n]);\n"
+
+
+def _one_row_per_settlement(name: str, relative_paths: tuple[str, ...]) -> str:
+    """A funding view that cannot count one settlement twice.
+
+    Files left behind by a renamed or re-ranged dataset stay on disk with their
+    sidecars; keeping one row per settlement time stops a harness join from
+    charging the same funding twice.
+    """
+
+    plain = _view(name, relative_paths)
+    source = plain.split(" AS\n", 1)[1].rstrip().removesuffix(";")
+    return (
+        f"CREATE OR REPLACE VIEW {name} AS\n"
+        "SELECT * EXCLUDE (settlement_rank) FROM (\n"
+        "  SELECT *, row_number() OVER (\n"
+        "    PARTITION BY funding_time_ms ORDER BY dataset_id, source_name\n"
+        "  ) AS settlement_rank\n"
+        f"  FROM ({source})\n"
+        ")\n"
+        "WHERE settlement_rank = 1;\n"
+    )
 
 
 def _strip_views(sql: str, names: set[str]) -> str:

@@ -5,16 +5,20 @@ milliseconds and returns ``{coin, fundingRate, premium, time}`` rows, oldest
 first, at most 500 per response. No key or account is involved.
 https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint/perpetuals
 
-The ETL pages through one UTC month at a time and keeps each completed month
-as an immutable raw JSON file, so a re-run reads the same bytes. The current
-month is fetched again on every sync and written as provisional output. One
-Parquet file per month follows the ``.sources.json`` sidecar contract of the
-other venues.
+The ETL reads one UTC month at a time. A month that has ended, and whose
+fetch has a print in every settlement slot (or only acknowledged holes), is
+kept as an immutable raw JSON file, so a re-run reads the same bytes. Any
+other month (the current one, or a settled one with a missing slot) is
+fetched again on every sync and written as provisional output, so a
+truncated response is never frozen. One Parquet file per month follows the
+``.sources.json`` sidecar contract of the other venues.
 
 Settlement times jitter by about a second, and a late settlement can land
 minutes into its slot, so completeness is judged per settlement slot (the
-``funding_interval_hours`` interval a print falls in), not by the spacing of
-consecutive timestamps.
+``funding_interval_hours`` interval a print belongs to), not by the spacing
+of consecutive timestamps. A print belongs to the slot that starts at most
+``SLOT_TOLERANCE_MS`` after it, so a print stamped just before the hour still
+lands in that hour's slot; a month's window is defined in those slots.
 """
 
 from __future__ import annotations
@@ -25,7 +29,7 @@ import os
 import urllib.error
 import urllib.request
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -46,6 +50,9 @@ from research.hist_etl.models import (
     SourceDigest,
 )
 
+SLOT_TOLERANCE_MS = 60_000
+# The venue limit is a weight budget per minute: after a 429, wait one window.
+RATE_LIMIT_WAIT_SECONDS = 60.0
 _MS_PER_HOUR = 3_600_000
 _SOURCE = "hyperliquid-info-fundingHistory"
 _ROW_KEYS = ("coin", "fundingRate", "premium", "time")
@@ -84,19 +91,23 @@ def build_poster(timeout: float) -> JsonPoster:
 
 
 def hyperliquid_rate(requests_per_second: float) -> float:
-    """The manifest rate, capped by the venue weight budget. 0 keeps unlimited."""
+    """The manifest rate, never above the venue weight budget.
+
+    A manifest or environment rate of 0 means unlimited for the file servers;
+    here it still gets the cap, so no setting can exceed the venue budget.
+    """
 
     if requests_per_second <= 0:
-        return requests_per_second
+        return HYPERLIQUID_MAX_REQUESTS_PER_SECOND
     return min(requests_per_second, HYPERLIQUID_MAX_REQUESTS_PER_SECOND)
 
 
 @dataclass(frozen=True, slots=True)
 class FundingWindow:
-    """One month of one dataset: ``[start_ms, end_ms)``.
+    """One month of one dataset: settlement slots ``[start_ms, end_ms)``.
 
-    ``complete`` means no later sync can add rows to this window: the month
-    (or the dataset's range inside it) ended before the first incomplete UTC day.
+    ``complete`` means the month (or the dataset's range inside it) ended
+    before the first incomplete UTC day, so no later sync can add a slot.
     """
 
     dataset_id: str
@@ -147,10 +158,10 @@ def funding_windows(spec: HyperliquidFundingSpec, today: date) -> tuple[FundingW
     return tuple(windows)
 
 
-def raw_funding_path(root: Path, window: FundingWindow) -> Path:
-    """Immutable for a complete window; ``.open.json`` is rewritten while it is open."""
+def raw_funding_path(root: Path, window: FundingWindow, *, settled: bool) -> Path:
+    """``.json`` is a settled, immutable month; ``.open.json`` is rewritten each sync."""
 
-    suffix = ".json" if window.complete else ".open.json"
+    suffix = ".json" if settled else ".open.json"
     name = f"{window.coin}-funding-{window.month}{suffix}"
     return root / "hyperliquid-api" / "funding" / window.dataset_id / name
 
@@ -158,6 +169,12 @@ def raw_funding_path(root: Path, window: FundingWindow) -> Path:
 def hyperliquid_parquet_path(root: Path, window: FundingWindow) -> Path:
     name = f"{window.month}.{window.dataset_id}.parquet"
     return root / "parquet" / "hist_etl" / "hyperliquid" / "funding" / window.coin / name
+
+
+def slot_of(time_ms: int, interval_ms: int) -> int:
+    """The settlement slot a print belongs to, tolerating a print just before it."""
+
+    return (time_ms + SLOT_TOLERANCE_MS) // interval_ms
 
 
 def post_with_retries(
@@ -182,7 +199,10 @@ def post_with_retries(
             delay *= 2
             continue
         if status in RETRYABLE_STATUS and attempt < max_retries:
-            sleeper(delay)
+            # A 429 means the minute's weight budget is spent (perhaps by
+            # another process on this IP): short backoffs would all land
+            # inside the same window.
+            sleeper(max(delay, RATE_LIMIT_WAIT_SECONDS) if status == 429 else delay)
             delay *= 2
             continue
         if status != 200:
@@ -199,17 +219,17 @@ def fetch_funding(
     max_retries: int,
     sleeper: Sleeper,
     url: str = HYPERLIQUID_INFO_URL,
-) -> tuple[dict[str, object], ...]:
-    """Every row with ``start_ms <= time < end_ms``, oldest first.
+) -> tuple[FundingRow, ...]:
+    """Every print whose slot is in the window, oldest first.
 
     Pages advance from the last returned time, so the loop does not depend on
     the 500-row page size. A page outside the window, out of order, or that
     does not advance fails closed.
     """
 
-    rows: list[dict[str, object]] = []
-    cursor = window.start_ms
-    last_inclusive = window.end_ms - 1
+    first, last_inclusive = _print_bounds(window)
+    rows: list[FundingRow] = []
+    cursor = first
     while cursor <= last_inclusive:
         payload = json.dumps(
             {
@@ -226,11 +246,10 @@ def fetch_funding(
         page = _decode_page(body, window)
         if not page:
             break
-        times = [_row_time(row) for row in page]
-        if times != sorted(times) or times[0] < cursor or times[-1] > last_inclusive:
+        times = [row.time_ms for row in page]
+        if times != sorted(times) or times[0] < cursor:
             raise HistEtlError(
-                f"fundingHistory page for {window.coin} {window.month} is out of order "
-                "or outside the requested window",
+                f"fundingHistory page for {window.coin} {window.month} is out of order",
                 exit_code=2,
             )
         rows.extend(page)
@@ -238,7 +257,7 @@ def fetch_funding(
     return tuple(rows)
 
 
-def write_raw(path: Path, window: FundingWindow, rows: Sequence[dict[str, object]]) -> None:
+def write_raw(path: Path, window: FundingWindow, rows: Sequence[FundingRow]) -> None:
     """Canonical JSON, so two fetches of a settled month give the same bytes."""
 
     payload = {
@@ -246,9 +265,31 @@ def write_raw(path: Path, window: FundingWindow, rows: Sequence[dict[str, object
         "coin": window.coin,
         "start_ms": window.start_ms,
         "end_ms": window.end_ms,
-        "rows": list(rows),
+        "rows": [
+            {
+                "coin": window.coin,
+                "fundingRate": row.funding_rate_text,
+                "premium": row.premium_text,
+                "time": row.time_ms,
+            }
+            for row in rows
+        ],
     }
     atomic_write_text(path, json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n")
+
+
+def ready_to_settle(
+    spec: HyperliquidFundingSpec, window: FundingWindow, rows: Sequence[FundingRow]
+) -> bool:
+    """A month is frozen only when it has ended and every slot is accounted for.
+
+    A truncated or failing response then stays provisional and is fetched
+    again, instead of being kept forever as an immutable file.
+    """
+
+    return (
+        window.complete and not slot_conflicts(spec, rows) and not funding_holes(spec, window, rows)
+    )
 
 
 def materialize_funding_month(
@@ -258,6 +299,7 @@ def materialize_funding_month(
     *,
     root: Path,
     rebuild: bool,
+    provisional: bool,
 ) -> tuple[Gap, ...]:
     """Write one month of Parquet from its raw file, or report why not.
 
@@ -266,13 +308,13 @@ def materialize_funding_month(
     """
 
     try:
-        rows = load_raw(raw_path, window)
+        rows, covered = load_raw(raw_path, window)
     except HistEtlError as exc:
         return (Gap("hyperliquid_schema", spec.id, str(exc)),)
     conflicts = slot_conflicts(spec, rows)
     if conflicts:
         return conflicts
-    holes = funding_holes(spec, window, rows)
+    holes = funding_holes(spec, covered, rows)
     source = SourceDigest(name=raw_path.name, sha256=cached_sha256(root, raw_path), path=raw_path)
     destination = hyperliquid_parquet_path(root, window)
     action = _decide(destination, source, rebuild=rebuild)
@@ -287,23 +329,32 @@ def materialize_funding_month(
         detail = f"refusing to overwrite {destination.name}: {reason}; pass --rebuild to replace it"
         warn(detail)
         return (Gap("refused_overwrite", spec.id, detail), *holes)
-    _write_parquet(destination, spec, window, rows, source)
+    _write_parquet(destination, spec, rows, source, provisional=provisional)
     return holes
 
 
 def audit_funding_month(
     spec: HyperliquidFundingSpec, window: FundingWindow, *, root: Path
 ) -> tuple[Gap, ...]:
-    """Re-check a month on disk against its raw file. Does not fetch or rewrite."""
+    """Re-check a month on disk against its raw file. Does not fetch or rewrite.
 
-    raw_path = raw_funding_path(root, window)
+    The settled raw file is checked when the month has one; otherwise the
+    provisional one, over the slots it covered when it was fetched.
+    """
+
+    settled = raw_funding_path(root, window, settled=True)
+    raw_path = (
+        settled
+        if window.complete and settled.is_file()
+        else raw_funding_path(root, window, settled=False)
+    )
     if not raw_path.is_file():
         return (Gap("missing_hyperliquid_raw", spec.id, raw_path.name),)
     destination = hyperliquid_parquet_path(root, window)
     if not destination.is_file():
         return (Gap("missing_parquet", spec.id, destination.name),)
     try:
-        rows = load_raw(raw_path, window)
+        rows, covered = load_raw(raw_path, window)
     except HistEtlError as exc:
         return (Gap("hyperliquid_schema", spec.id, str(exc)),)
     # A fresh hash, not the size/mtime cache: verify must see any edit.
@@ -316,11 +367,15 @@ def audit_funding_month(
                 f"{destination.name} was not built from {raw_path.name}",
             ),
         )
-    return (*slot_conflicts(spec, rows), *funding_holes(spec, window, rows))
+    return (*slot_conflicts(spec, rows), *funding_holes(spec, covered, rows))
 
 
-def load_raw(raw_path: Path, window: FundingWindow) -> tuple[FundingRow, ...]:
-    """Typed, deduplicated rows. Disagreeing duplicates of one time fail closed."""
+def load_raw(raw_path: Path, window: FundingWindow) -> tuple[tuple[FundingRow, ...], FundingWindow]:
+    """Typed, deduplicated rows and the window the file covers.
+
+    A provisional file covers the slots up to the day it was fetched, which
+    may end before today's window does. Disagreeing duplicates fail closed.
+    """
 
     try:
         payload = json.loads(raw_path.read_text(encoding="utf-8"))
@@ -331,33 +386,36 @@ def load_raw(raw_path: Path, window: FundingWindow) -> tuple[FundingRow, ...]:
         or payload.get("source") != _SOURCE
         or payload.get("coin") != window.coin
         or payload.get("start_ms") != window.start_ms
-        or payload.get("end_ms") != window.end_ms
         or not isinstance(payload.get("rows"), list)
     ):
         raise HistEtlError(f"{raw_path.name} does not describe this window", exit_code=2)
+    end_ms = payload.get("end_ms")
+    if type(end_ms) is not int or not window.start_ms < end_ms <= window.end_ms:
+        raise HistEtlError(f"{raw_path.name} covers slots outside this window", exit_code=2)
+    covered = replace(window, end_ms=end_ms)
     by_time: dict[int, FundingRow] = {}
     for item in payload["rows"]:
-        row = _typed_row(item, window, raw_path.name)
+        row = _typed_row(item, covered, raw_path.name)
         known = by_time.get(row.time_ms)
         if known is not None and known != row:
             raise HistEtlError(
                 f"{raw_path.name} has two different prints at {row.time_ms}", exit_code=2
             )
         by_time[row.time_ms] = row
-    return tuple(by_time[key] for key in sorted(by_time))
+    return tuple(by_time[key] for key in sorted(by_time)), covered
 
 
 def slot_conflicts(spec: HyperliquidFundingSpec, rows: Sequence[FundingRow]) -> tuple[Gap, ...]:
     """Two settlements in one slot would double a bar's funding: refuse the month."""
 
     interval = spec.funding_interval_hours * _MS_PER_HOUR
-    seen: dict[int, int] = {}
+    seen: set[int] = set()
     doubled: list[str] = []
     for row in rows:
-        slot = row.time_ms // interval
+        slot = slot_of(row.time_ms, interval)
         if slot in seen:
             doubled.append(_iso(slot * interval))
-        seen[slot] = row.time_ms
+        seen.add(slot)
     if not doubled:
         return ()
     return (
@@ -376,7 +434,7 @@ def funding_holes(
     """Settlement slots inside the window with no print and no acknowledgement."""
 
     interval = spec.funding_interval_hours * _MS_PER_HOUR
-    present = {row.time_ms // interval for row in rows}
+    present = {slot_of(row.time_ms, interval) for row in rows}
     acknowledged = {_ms(moment) // interval for moment in spec.known_holes}
     first = -(-window.start_ms // interval)
     last = (window.end_ms - 1) // interval
@@ -395,8 +453,14 @@ def funding_holes(
     )
 
 
+def _print_bounds(window: FundingWindow) -> tuple[int, int]:
+    """Inclusive print times whose slot lies in the window."""
+
+    return window.start_ms - SLOT_TOLERANCE_MS, window.end_ms - SLOT_TOLERANCE_MS - 1
+
+
 def _decide(destination: Path, source: SourceDigest, *, rebuild: bool) -> str:
-    """A provisional (open-month) file is always replaced; others follow the sidecar rule."""
+    """A provisional file is always replaced; others follow the sidecar rule."""
 
     if destination.is_file() and _is_provisional(destination):
         recorded = decide_output(destination, (source,), rebuild=False)
@@ -416,16 +480,17 @@ def _is_provisional(destination: Path) -> bool:
 def _write_parquet(
     destination: Path,
     spec: HyperliquidFundingSpec,
-    window: FundingWindow,
     rows: Sequence[FundingRow],
     source: SourceDigest,
+    *,
+    provisional: bool,
 ) -> None:
     interval = spec.funding_interval_hours * _MS_PER_HOUR
     records = [
         (
             row.time_ms,
-            (row.time_ms // interval) * interval,
-            window.coin,
+            slot_of(row.time_ms, interval) * interval,
+            spec.coin,
             float(Decimal(row.funding_rate_text)),
             row.funding_rate_text,
             float(Decimal(row.premium_text)),
@@ -489,13 +554,13 @@ def _write_parquet(
         sidecar,
         {
             "sources": [{"name": source.name, "sha256": source.sha256}],
-            "provisional": not window.complete,
+            "provisional": provisional,
             "funding_interval_hours": spec.funding_interval_hours,
         },
     )
 
 
-def _decode_page(body: bytes, window: FundingWindow) -> list[dict[str, object]]:
+def _decode_page(body: bytes, window: FundingWindow) -> list[FundingRow]:
     try:
         page = json.loads(body)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -504,18 +569,7 @@ def _decode_page(body: bytes, window: FundingWindow) -> list[dict[str, object]]:
         ) from exc
     if not isinstance(page, list):
         raise HistEtlError(f"fundingHistory for {window.coin} did not return a list", exit_code=2)
-    rows: list[dict[str, object]] = []
-    for item in page:
-        row = _typed_row(item, window, "fundingHistory response")
-        rows.append(
-            {
-                "coin": window.coin,
-                "fundingRate": row.funding_rate_text,
-                "premium": row.premium_text,
-                "time": row.time_ms,
-            }
-        )
-    return rows
+    return [_typed_row(item, window, "fundingHistory response") for item in page]
 
 
 def _typed_row(item: object, window: FundingWindow, origin: str) -> FundingRow:
@@ -524,20 +578,14 @@ def _typed_row(item: object, window: FundingWindow, origin: str) -> FundingRow:
     if item["coin"] != window.coin:
         raise HistEtlError(f"{origin} has a row for coin {item['coin']!r}", exit_code=2)
     time_ms = item["time"]
-    if type(time_ms) is not int or not window.start_ms <= time_ms < window.end_ms:
+    first, last_inclusive = _print_bounds(window)
+    if type(time_ms) is not int or not first <= time_ms <= last_inclusive:
         raise HistEtlError(f"{origin} has a row outside {window.month}", exit_code=2)
     return FundingRow(
         time_ms=time_ms,
         funding_rate_text=_decimal_text(item["fundingRate"], origin),
         premium_text=_decimal_text(item["premium"], origin),
     )
-
-
-def _row_time(row: dict[str, object]) -> int:
-    value = row["time"]
-    if type(value) is not int:
-        raise HistEtlError("fundingHistory row time is not an integer", exit_code=2)
-    return value
 
 
 def _decimal_text(value: object, origin: str) -> str:

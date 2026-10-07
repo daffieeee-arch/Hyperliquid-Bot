@@ -31,6 +31,7 @@ from research.hist_etl.hyperliquid import (
     hyperliquid_rate,
     materialize_funding_month,
     raw_funding_path,
+    ready_to_settle,
     write_raw,
 )
 from research.hist_etl.kraken import audit_kraken_tree, ingest_kraken, manifest_present
@@ -89,9 +90,11 @@ def run_plan(
     env: Mapping[str, str],
     transport: Transport | None = None,
 ) -> int:
-    manifest, binance, kraken, safe_root = _context(root, manifest_path, dataset_ids, env)
+    manifest, binance, kraken, hyperliquid, safe_root = _context(
+        root, manifest_path, dataset_ids, env
+    )
     lines, items = _describe(manifest, binance, kraken, safe_root, today, transport, probe=True)
-    lines.extend(_describe_hyperliquid(_hyperliquid(manifest, dataset_ids), safe_root, today))
+    lines.extend(_describe_hyperliquid(hyperliquid, safe_root, today))
     for line in lines:
         print(line)
     _print_summary(items, safe_root, manifest.min_free_bytes)
@@ -122,7 +125,9 @@ def run_sync(
             env=env,
             transport=transport,
         )
-    manifest, binance, kraken, safe_root = _context(root, manifest_path, dataset_ids, env)
+    manifest, binance, kraken, hyperliquid, safe_root = _context(
+        root, manifest_path, dataset_ids, env
+    )
     assert_free(safe_root, manifest.min_free_bytes)
     safe_root.mkdir(parents=True, exist_ok=True)
     client = transport if transport is not None else build_transport(manifest.timeout_seconds)
@@ -149,7 +154,7 @@ def run_sync(
     _sync_kraken(manifest, kraken, safe_root, client, limiter, gaps, rebuild=rebuild)
     _sync_hyperliquid(
         manifest,
-        _hyperliquid(manifest, dataset_ids),
+        hyperliquid,
         safe_root,
         today,
         poster if poster is not None else build_poster(manifest.timeout_seconds),
@@ -179,7 +184,9 @@ def run_verify(
     dataset_ids: tuple[str, ...] | None,
     env: Mapping[str, str],
 ) -> int:
-    _manifest, binance, kraken, safe_root = _context(root, manifest_path, dataset_ids, env)
+    _manifest, binance, kraken, hyperliquid, safe_root = _context(
+        root, manifest_path, dataset_ids, env
+    )
     if not safe_root.is_dir():
         raise HistEtlError(f"archive root does not exist: {safe_root}", exit_code=2)
     gaps: list[Gap] = []
@@ -206,8 +213,8 @@ def run_verify(
             gaps.append(Gap("missing_kraken_zip", spec.id, f"no zip matched {spec.zip_glob}"))
             continue
         gaps.extend(audit_kraken_tree(spec, safe_root))
-    for funding_spec in _hyperliquid(_manifest, dataset_ids):
-        for window in funding_windows(funding_spec, today):
+    for funding_spec in hyperliquid:
+        for window in funding_windows(funding_spec, _settled_today(today)):
             gaps.extend(audit_funding_month(funding_spec, window, root=safe_root))
     _write_report(safe_root, gaps, command="verify")
     for gap in gaps:
@@ -223,7 +230,9 @@ def run_catalog(
     env: Mapping[str, str],
     replace_legacy_views: bool = False,
 ) -> int:
-    _manifest, _binance, _kraken, safe_root = _context(root, manifest_path, dataset_ids, env)
+    _manifest, _binance, _kraken, _hyperliquid, safe_root = _context(
+        root, manifest_path, dataset_ids, env
+    )
     if not safe_root.is_dir():
         raise HistEtlError(f"archive root does not exist: {safe_root}", exit_code=2)
     names, foreign = refresh_catalog(safe_root, replace_legacy_views=replace_legacy_views)
@@ -233,27 +242,31 @@ def run_catalog(
     return 2 if foreign else 0
 
 
-def _hyperliquid(
-    manifest: HistManifest, dataset_ids: tuple[str, ...] | None
-) -> tuple[HyperliquidFundingSpec, ...]:
-    return select_hyperliquid(manifest, dataset_ids)
+def _settled_today(today: date) -> date:
+    """``--today`` may move the cutoff back, never past the real UTC date.
+
+    A later date would treat the running month as ended and try to settle a
+    month the venue has not finished publishing.
+    """
+
+    return min(today, datetime.now(UTC).date())
 
 
 def _describe_hyperliquid(
     specs: tuple[HyperliquidFundingSpec, ...], root: Path, today: date
 ) -> list[str]:
-    """A settled month on disk is reused; an open month is fetched on every sync."""
+    """A settled month on disk is reused; any other month is fetched on every sync."""
 
     lines: list[str] = []
     for spec in specs:
-        for window in funding_windows(spec, today):
-            raw = raw_funding_path(root, window)
-            if not window.complete:
-                action = "open"
-            elif raw.is_file():
-                action = "present"
+        for window in funding_windows(spec, _settled_today(today)):
+            settled = raw_funding_path(root, window, settled=True)
+            if window.complete and settled.is_file():
+                action, raw = "present", settled
+            elif window.complete:
+                action, raw = "download", settled
             else:
-                action = "download"
+                action, raw = "open", raw_funding_path(root, window, settled=False)
             lines.append(f"plan\t{action}\t{spec.id}\t{raw.name}\t\t{HYPERLIQUID_INFO_URL}")
     return lines
 
@@ -270,11 +283,14 @@ def _sync_hyperliquid(
 ) -> None:
     limiter = RateLimiter(hyperliquid_rate(manifest.requests_per_second), default_sleeper)
     for spec in specs:
-        for window in funding_windows(spec, today):
-            raw = raw_funding_path(root, window)
-            # A settled month is fetched once and then read from disk; the
-            # open month is fetched again so its provisional file grows.
-            if not (window.complete and raw.is_file()):
+        for window in funding_windows(spec, _settled_today(today)):
+            settled = raw_funding_path(root, window, settled=True)
+            if window.complete and settled.is_file():
+                raw, provisional = settled, False
+            else:
+                # Any month that is not settled yet is fetched again: the open
+                # month grows, and a settled month with a missing slot (a
+                # truncated response) gets another chance before it freezes.
                 try:
                     assert_free(root, manifest.min_free_bytes)
                     rows = fetch_funding(
@@ -289,8 +305,16 @@ def _sync_hyperliquid(
                         raise
                     gaps.append(Gap("hyperliquid_fetch_failed", spec.id, str(exc)))
                     continue
+                if ready_to_settle(spec, window, rows):
+                    raw, provisional = settled, False
+                else:
+                    raw, provisional = raw_funding_path(root, window, settled=False), True
                 write_raw(raw, window, rows)
-            gaps.extend(materialize_funding_month(spec, window, raw, root=root, rebuild=rebuild))
+            gaps.extend(
+                materialize_funding_month(
+                    spec, window, raw, root=root, rebuild=rebuild, provisional=provisional
+                )
+            )
             print(f"sync\tready\t{spec.id}\t{raw}")
 
 
@@ -299,13 +323,20 @@ def _context(
     manifest_path: Path,
     dataset_ids: tuple[str, ...] | None,
     env: Mapping[str, str],
-) -> tuple[HistManifest, tuple[BinanceSpec, ...], tuple[KrakenSpec, ...], Path]:
+) -> tuple[
+    HistManifest,
+    tuple[BinanceSpec, ...],
+    tuple[KrakenSpec, ...],
+    tuple[HyperliquidFundingSpec, ...],
+    Path,
+]:
     manifest = apply_env(load_manifest(manifest_path), env)
     assert_known_ids(manifest, dataset_ids)
     return (
         manifest,
         select_binance(manifest, dataset_ids),
         select_kraken(manifest, dataset_ids),
+        select_hyperliquid(manifest, dataset_ids),
         assert_safe_root(root),
     )
 

@@ -55,9 +55,10 @@ BINANCE_VISION_BASE = "https://data.binance.vision/"
 HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
 # REST requests share 1200 weight per minute per IP. An info request weighs 20,
 # and fundingHistory adds 1 per 20 rows returned, so a full 500-row page is 45:
-# at most ~26 pages a minute. 0.4 per second stays under that.
+# at most ~26 pages a minute. 0.3 per second (810 weight a minute) leaves room
+# for anything else on the same IP.
 # https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/rate-limits-and-user-limits
-HYPERLIQUID_MAX_REQUESTS_PER_SECOND = 0.4
+HYPERLIQUID_MAX_REQUESTS_PER_SECOND = 0.3
 
 
 def parquet_slug(dataset: str, interval: str | None) -> str:

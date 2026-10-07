@@ -327,11 +327,6 @@ class PaperEngine:
         # only uses a trade that arrived after the stop was set.
         self._trade_count = 0
         self._stop_set_trade_count: int | None = None
-        # Latest venue time on the trade feed, and its value when the stop was
-        # set. A print older than that floor is a re-delivered one; comparing
-        # within the trade feed avoids clock skew between feeds.
-        self._trade_time_high: datetime | None = None
-        self._stop_trade_floor: datetime | None = None
         self._stop_exit_pending = False
         # +1 after a long was stopped, -1 after a short: blocks re-entering the
         # same direction until the strategy's target goes flat or reverses.
@@ -454,14 +449,18 @@ class PaperEngine:
         clock: a band or a missing touch needs a new quote, not more time.
         """
 
+        # Roll the loss windows to the clock first, so a fill after midnight
+        # counts in the new day against the equity before it. Windows only
+        # roll forward, so a clock behind the last event never rolls one back.
+        self._mark_limits(observed)
+        fills_before = self._fill_count
         if self._stop_exit_pending:
             self._check_stop(now_utc_ns)
         self._enforce_flat(now_utc_ns, observed)
-        if self._last_event_time is not None:
-            # A fill changes realized equity: apply the limits now, in the
-            # window of the last event, as the next event would before the
-            # strategy runs.
-            self._mark_limits(self._last_event_time)
+        if self._fill_count != fills_before:
+            # A fill changed realized equity: apply the limits now rather
+            # than at the next event.
+            self._mark_limits(observed)
             self._enforce_flat(now_utc_ns, observed)
 
     def close(self) -> None:
@@ -538,8 +537,6 @@ class PaperEngine:
             self._trade = event
             self._trade_count += 1
             self._trade_taken = Decimal("0")
-            if self._trade_time_high is None or event.event_time_utc > self._trade_time_high:
-                self._trade_time_high = event.event_time_utc
             return
         if isinstance(event, MarkEvent):
             self._venue_mark = event.mark_price
@@ -661,7 +658,7 @@ class PaperEngine:
             reason=target.reason,
             immediate=False,
             fills_on_decision_quote=(
-                self._config.latency_ns == 0 and _fill_quote_event(event, self._book_complete())
+                self._config.latency_ns == 0 and event is self._current_touch_event()
             ),
         )
 
@@ -685,17 +682,13 @@ class PaperEngine:
                 and trade is not None
                 and self._stop_set_trade_count is not None
                 and self._trade_count > self._stop_set_trade_count
-                # A print re-delivered after a reconnect carries its old venue
-                # time and is skipped when older than the floor. A print at the
-                # floor's time (same block) or with no floor counts: an unclear
-                # print may exit early, but must never hide a real stop.
-                and (
-                    self._stop_trade_floor is None or trade.event_time_utc >= self._stop_trade_floor
-                )
             ):
-                # No mark at all (one-sided book, no venue mark): a trade printed
-                # since the stop was set still protects the position. This is an
-                # exit trigger only; equity still treats the price as missing.
+                # No mark at all (one-sided book, no venue mark): a print
+                # processed after the stop was set still protects the position.
+                # Venue times are not compared: a re-delivered old print may
+                # exit early, but a skewed or mis-stamped one never hides a real
+                # stop. This is an exit trigger only; equity still treats the
+                # price as missing.
                 marked = (trade.price, "last_trade")
             if marked is None:
                 return
@@ -1078,8 +1071,8 @@ class PaperEngine:
         working = self._working
         if working is None or event.received_utc_ns < working.eligible_received_ns:
             return
-        if isinstance(event, (BboEvent, TradeEvent)) and _fill_quote_event(
-            event, self._book_complete()
+        if isinstance(event, BboEvent) or (
+            isinstance(event, TradeEvent) and not self._book_complete()
         ):
             self._fill_against(working, event, received_ns=event.received_utc_ns)
 
@@ -1243,7 +1236,6 @@ class PaperEngine:
         if after == 0:
             self._stop_price = None
             self._stop_set_trade_count = None
-            self._stop_trade_floor = None
             self._stop_exit_pending = False
             self._exit_waiting_for_quote = False
             return
@@ -1260,7 +1252,6 @@ class PaperEngine:
             average * (Decimal(1) - distance) if after > 0 else average * (Decimal(1) + distance)
         )
         self._stop_set_trade_count = self._trade_count
-        self._stop_trade_floor = self._trade_time_high
         self._store.append(
             {
                 "type": "stop_set",
@@ -1526,15 +1517,6 @@ def _flatten_desired(position: Decimal) -> _DesiredOrder | None:
     if position < 0:
         return _DesiredOrder("BUY", abs(position), True)
     return None
-
-
-def _fill_quote_event(event: MarketEvent, book_complete: bool) -> bool:
-    """Whether a working order fills on ``event``.
-
-    Any BBO, or a trade print while the book is not complete.
-    """
-
-    return isinstance(event, BboEvent) or (isinstance(event, TradeEvent) and not book_complete)
 
 
 def _displayed(event: BboEvent | TradeEvent, side: str) -> tuple[Decimal | None, Decimal | None]:

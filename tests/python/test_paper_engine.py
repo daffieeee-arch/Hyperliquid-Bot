@@ -141,6 +141,7 @@ def _bbo_at(
     bid: str,
     ask: str,
     ordinal: int,
+    bid_size: str = "1",
 ) -> BboEvent:
     return BboEvent(
         venue=VENUE,
@@ -149,7 +150,7 @@ def _bbo_at(
         received_utc_ns=ns,
         source_event_id=f"bbo-{ordinal}",
         bid_price=Decimal(bid),
-        bid_size=Decimal("1"),
+        bid_size=Decimal(bid_size),
         ask_price=Decimal(ask),
         ask_size=Decimal("1"),
         message_ordinal=ordinal,
@@ -955,52 +956,27 @@ def test_stop_fallback_follows_processing_order_not_receive_stamps(tmp_path: Pat
     assert triggered[0]["mark_source"] == "last_trade"
 
 
-def test_stop_ignores_an_old_print_redelivered_after_the_stop(tmp_path: Path) -> None:
+def test_stop_fallback_fails_safe_on_an_old_stamped_print(tmp_path: Path) -> None:
+    # Venue times are not compared: a print processed after the stop counts
+    # even when stamped before it (a re-delivered one exits early, which is
+    # safer than a skewed stamp hiding a real stop).
     engine = _engine(
-        tmp_path, "redeliver", strategy=ScriptedStrategy((Decimal("0"), Decimal("0.1")))
+        tmp_path, "failsafe", strategy=ScriptedStrategy((Decimal("0"), Decimal("0.1")))
     )
     one_ms = CREATED + timedelta(milliseconds=1)
     engine.on_event(_trade(ns=1_000_000, price="100000", size="0.5", ordinal=1, event_time=one_ms))
     engine.on_event(_bbo(ns=2_000_000, bid="100000", ask="100001", ordinal=2))
     engine.on_event(_bbo(ns=3_000_000, bid="99990", ask=None, ask_size=None, ordinal=3))
-    # A reconnect snapshot re-sends a print older than the last one before the stop.
     engine.on_event(_trade(ns=4_000_000, price="97000", size="0.5", ordinal=4, event_time=CREATED))
-    assert engine.position_quantity == Decimal("0.1")
-    assert not [row for row in _ledger(tmp_path / "redeliver") if row["type"] == "stop_triggered"]
-    # A print from the same block as that one may be new: it counts, because an
-    # unclear print may exit early but must never hide a real stop.
-    engine.on_event(_trade(ns=5_000_000, price="97000", size="0.5", ordinal=5, event_time=one_ms))
     engine.close()
     assert engine.position_quantity == Decimal("0")
-
-
-def test_stop_trade_floor_is_the_latest_print_time_not_the_last_received(
-    tmp_path: Path,
-) -> None:
-    engine = _engine(
-        tmp_path,
-        "tradehigh",
-        strategy=ScriptedStrategy((Decimal("0"), Decimal("0"), Decimal("0.1"))),
-    )
-    two_ms = CREATED + timedelta(milliseconds=2)
-    engine.on_event(_trade(ns=1_000_000, price="100000", size="0.5", ordinal=1, event_time=two_ms))
-    # Received later but stamped earlier: a replayed print must not lower the floor.
-    one_ms = CREATED + timedelta(milliseconds=1)
-    engine.on_event(_trade(ns=2_000_000, price="100000", size="0.5", ordinal=2, event_time=one_ms))
-    engine.on_event(_bbo(ns=3_000_000, bid="100000", ask="100001", ordinal=3))
-    assert engine.position_quantity == Decimal("0.1")
-    engine.on_event(_bbo(ns=4_000_000, bid="99990", ask=None, ask_size=None, ordinal=4))
-    between = CREATED + timedelta(microseconds=1500)
-    engine.on_event(_trade(ns=5_000_000, price="97000", size="0.5", ordinal=5, event_time=between))
-    assert engine.position_quantity == Decimal("0.1")
-    engine.on_event(_trade(ns=6_000_000, price="97000", size="0.5", ordinal=6, event_time=two_ms))
-    engine.close()
-    assert engine.position_quantity == Decimal("0")
+    triggered = [row for row in _ledger(tmp_path / "failsafe") if row["type"] == "stop_triggered"]
+    assert triggered[0]["mark_source"] == "last_trade"
 
 
 def test_stop_fallback_is_not_blocked_by_clock_skew_between_feeds(tmp_path: Path) -> None:
     # The entry fills on a BBO stamped 10 s ahead of the trade feed. The
-    # fallback compares prints with prints, so a real later print still counts.
+    # fallback does not compare venue times, so a real later print still counts.
     engine = _engine(
         tmp_path, "skewfeed", strategy=ScriptedStrategy((Decimal("0"), Decimal("0.1")))
     )
@@ -1163,6 +1139,64 @@ def test_clock_exit_fill_applies_the_loss_limits(tmp_path: Path) -> None:
     assert engine.kill_switch == "HALT_NEW"
     assert read_health(engine.health_path)["kill_reason"] == "daily_loss"
     engine.close()
+
+
+def test_clock_fill_after_midnight_counts_in_the_new_day(tmp_path: Path) -> None:
+    # The stop event is the old day's last; its loss halts that day. The clock
+    # passes midnight, so the window rolls (lifting the halt) before the
+    # waiting exit fills, and that fill's loss is charged to the new day.
+    engine = _engine(
+        tmp_path,
+        "midnight1",
+        strategy=ScriptedStrategy((Decimal("0.1"),)),
+        config=_instant(risk_limits=_loose_loss_limits(drawdown="0.5", daily="0.0002")),
+    )
+    late = datetime(2026, 7, 15, 23, 59, 59, tzinfo=UTC)
+    engine.on_event(_bbo_at(ns=0, event_time=late, bid="100000", ask="100001", ordinal=1))
+    engine.on_event(
+        _bbo_at(
+            ns=1_000_000,
+            event_time=late + timedelta(milliseconds=900),
+            bid="97000",
+            ask="98000",
+            bid_size="0.04",
+            ordinal=2,
+        )
+    )
+    assert engine.position_quantity == Decimal("0.06")
+    assert engine.kill_switch == "HALT_NEW"
+    engine.on_clock(
+        now_utc_ns=1_001_000_000, now_utc=datetime(2026, 7, 16, 0, 0, 0, 500_000, tzinfo=UTC)
+    )
+    engine.close()
+    assert engine.position_quantity == Decimal("0.02")
+    switches = [row for row in _ledger(tmp_path / "midnight1") if row["type"] == "kill_switch"]
+    assert [(row["state"], row["reason"]) for row in switches] == [
+        ("HALT_NEW", "daily_loss"),
+        ("NONE", "daily_loss_window_reset"),
+        ("HALT_NEW", "daily_loss"),
+    ]
+
+
+def test_decision_on_a_one_sided_book_is_not_checked_against_the_last_print(
+    tmp_path: Path,
+) -> None:
+    # A one-sided BBO is not the quote the order fills on (it completes
+    # no_touch), so the used-up last print does not reject it as consumed.
+    engine = _engine(
+        tmp_path,
+        "onesided1",
+        strategy=_SilentAfterTargets((Decimal("0.05"), Decimal("0"))),
+    )
+    engine.on_event(_trade(ns=0, price="100000", size="0.05", ordinal=1))
+    assert engine.position_quantity == Decimal("0.05")
+    engine.on_event(_bbo(ns=1_000_000, bid="99999", ask=None, ask_size=None, ordinal=2))
+    engine.close()
+    state = _state(engine)
+    assert [
+        (row["side"], row["status"], row["unfilled_reason"]) for row in _objects(state["orders"])
+    ] == [("BUY", "FILLED", None), ("SELL", "CANCELED", "no_touch")]
+    assert "touch_consumed" not in {row["reason"] for row in _objects(state["risk_rejections"])}
 
 
 def test_zero_latency_order_decided_on_a_trade_waits_for_the_next_quote(

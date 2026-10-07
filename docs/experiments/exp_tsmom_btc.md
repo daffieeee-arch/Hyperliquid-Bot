@@ -63,11 +63,16 @@ separate pre-registration after this one.
     returns.
   - The run refuses any other table, whether a different builder, a broken
     sync or another DuckDB version produced it.
-- **Pre-registered code**: the harness that scores the study, the builder,
-  hist_etl and the locked dependencies are pinned to commit
-  `71b0043755dbbc05544e03a93c1121e7a8d4229c` (#126). The run
-  refuses a checkout whose `src/research` or `uv.lock` differs from it,
-  including untracked files there, and checks this before it syncs anything.
+- **Pre-registered code**: everything under `src` is pinned to commit
+  `71b0043755dbbc05544e03a93c1121e7a8d4229c` (#126), together
+  with `uv.lock`, `pyproject.toml` and `.python-version`. That covers the
+  harness that scores the study, the builder, hist_etl, the locked
+  dependencies and the interpreter.
+  - The run refuses a checkout where any of these differ from that commit,
+    including untracked and ignored files.
+  - `__pycache__` folders are the one exception: Python never imports a
+    cached file there without its source.
+  - The check happens before anything is synced.
 - **Signal**: `trend_score` is the mean sign of the 1-, 4- and 12-week log
   returns (168, 672 and 2016 bars).
   - The lookbacks are fixed in advance and combined, not chosen, as Hurst,
@@ -198,50 +203,32 @@ holdout.
 
 ## Run (after this document is merged)
 
-Run from `main`, after this document is merged. The results record the
-commit. Export three paths, then check the pre-registered code. The check
-steps are chained with `&&`, because bash ignores `set -e` inside a
-subshell whose status feeds `&&`:
+Run from `main`, after this document is merged. The whole run is one
+subshell with `set -euo pipefail`: it stops at the first failure without
+closing your shell, and nothing syncs or runs before the code check passes.
 
 ```bash
 export REPO_ROOT=...            # the repository checkout, on main
 export HIST_ARCHIVES_ROOT=...   # the hist_etl archive root
-export STUDY_DIR=...            # a new directory OUTSIDE the repository
-(
-  cd "$REPO_ROOT" &&
-    git diff --exit-code 71b0043755dbbc05544e03a93c1121e7a8d4229c -- src/research uv.lock &&
-    changed="$(git status --porcelain -- src/research uv.lock)" &&
-    test -z "$changed"
-) && echo "pre-registered code"
-```
-
-Continue only if it printed `pre-registered code`. Then sync the data:
-
-```bash
-cd "$REPO_ROOT"
-PYTHONPATH=src uv run --frozen python -m research.hist_etl sync \
-  --dataset bn-um-btcusdt-klines-1h-2020 --dataset bn-um-btcusdt-klines-1h \
-  --dataset bn-um-btcusdt-funding-2020 --dataset bn-um-btcusdt-funding
-```
-
-`sync` exits 2 whenever it reports a gap. It always reports one while the
-current month is open, so this step is not chained to the next. Read each
-`gap` or `error` line it prints. A gap for a period before 2026-10-01, or any
-error, is a missing or broken archive inside the range: stop and fix it. The
-fingerprint check below is the backstop for anything that slips through.
-
-Then build, check and run. This block stops at the first failure, and it
-repeats the code check:
-
-```bash
+export STUDY_DIR=...            # must not exist yet; outside the repository
 (
   set -euo pipefail
   cd "$REPO_ROOT"
-  git rev-parse HEAD
-  git diff --exit-code 71b0043755dbbc05544e03a93c1121e7a8d4229c -- src/research uv.lock
-  changed="$(git status --porcelain -- src/research uv.lock)"
-  test -z "$changed"
-  mkdir -p "$STUDY_DIR"
+  pin=71b0043755dbbc05544e03a93c1121e7a8d4229c
+  pinned=(src uv.lock pyproject.toml .python-version)
+  # The pre-registered code: no change, tracked, untracked or ignored.
+  git diff --exit-code "$pin" -- "${pinned[@]}"
+  changed="$(git status --porcelain --ignored --untracked-files=all -- "${pinned[@]}")"
+  stray="$(printf '%s\n' "$changed" | grep -v -e '^$' -e '/__pycache__/' || true)"
+  test -z "$stray"
+  mkdir "$STUDY_DIR"
+  git rev-parse HEAD > "$STUDY_DIR/commit.txt"
+  # Exit 2 is normal while the current month is open. Any missing or broken
+  # archive inside the range fails the fingerprint check below.
+  PYTHONPATH=src uv run --frozen python -m research.hist_etl sync \
+    --dataset bn-um-btcusdt-klines-1h-2020 --dataset bn-um-btcusdt-klines-1h \
+    --dataset bn-um-btcusdt-funding-2020 --dataset bn-um-btcusdt-funding \
+    2>&1 | tee "$STUDY_DIR/sync.log" || true
   cp docs/experiments/exp_tsmom_btc.spec.yaml "$STUDY_DIR/spec.yaml"
   PYTHONPATH=src uv run --frozen python -m research.bar_tables trend \
     --symbol BTCUSDT --start 2020-01-01 --end 2026-10-01 \
@@ -262,11 +249,12 @@ sys.exit(0 if found == expected else f"not the pre-registered spec and table: {f
 )
 ```
 
-The study runs only after both checks pass.
+The study runs only after both checks pass. If the fingerprint check fails,
+`sync.log` shows whether an archive inside the range is missing.
 
 The results go into `exp_tsmom_btc.results.md` in a separate PR. That PR
 records:
 
-- the git commit;
+- the commit, from `commit.txt`;
 - the lock file;
 - the benchmarks.

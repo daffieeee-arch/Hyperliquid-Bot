@@ -10,7 +10,15 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Final
 
-from research.harness.benchmark import Benchmark, Window
+from research.harness.benchmark import (
+    ERROR,
+    EVALUATED,
+    NO_FOLDS,
+    SEALED,
+    TOO_SHORT,
+    Benchmark,
+    Window,
+)
 from research.harness.costs import STRESS_MULTIPLIERS, round_trip_cost, stress_key
 from research.harness.data import BarTable
 from research.harness.errors import HarnessError
@@ -331,8 +339,10 @@ def _benchmark_lines(document: dict[str, Json]) -> list[str]:
             lines.append(f"- {window}: block missing")
             continue
         status = values.get("status")
-        if status != "evaluated":
-            lines.append(f"- {window}: {_WINDOW_STATES.get(str(status), str(status))}")
+        if status != EVALUATED:
+            state = _WINDOW_STATES.get(str(status), str(status))
+            note = values.get("note")
+            lines.append(f"- {window}: {state}" + ("" if note is None else f" ({note})"))
             continue
         lines.append(
             (
@@ -351,10 +361,10 @@ def _benchmark_lines(document: dict[str, Json]) -> list[str]:
 
 
 _WINDOW_STATES: Final = {
-    "sealed": "sealed (not evaluated)",
-    "no_folds": "no validation fold",
-    "too_short": "window too short to hold after the fill",
-    "error": "not computed (benchmark error; the label stands)",
+    SEALED: "sealed (not evaluated)",
+    NO_FOLDS: "no validation fold",
+    TOO_SHORT: "window too short to hold after the fill",
+    ERROR: "not computed (benchmark error; the label stands)",
 }
 
 
@@ -447,6 +457,8 @@ def _window_json(window: Window) -> dict[str, Json]:
 
     result = window.result
     if result is None:
+        if window.note is not None:
+            return {"status": window.status, "note": window.note}
         return {"status": window.status}
     return {
         "status": window.status,

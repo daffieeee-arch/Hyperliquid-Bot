@@ -54,6 +54,8 @@ class Window:
 
     status: str
     result: BuyAndHold | None = None
+    # Why an error window has no values.
+    note: str | None = None
 
     def __post_init__(self) -> None:
         if self.status not in _STATUSES or (self.status == EVALUATED) != (self.result is not None):
@@ -86,13 +88,18 @@ def benchmark(costs: CostSpec, table: BarTable, decision: Decision) -> Benchmark
 
 
 def _window(costs: CostSpec, table: BarTable, start: int, end: int) -> Window:
-    # Context must never cost the run its label: a failure here is recorded
-    # on the window, not raised.
+    # A numeric failure is context and must not cost the run its label, so it
+    # is recorded on the window. An out-of-table window is a harness bug that
+    # the strategy's indexes share; that invariant error still fails closed.
     try:
         result = buy_and_hold(costs, table, start, end)
-    except HarnessError:
-        return Window(ERROR)
+    except (ArithmeticError, _NonFinite) as error:
+        return Window(ERROR, note=f"{type(error).__name__}: {error}")
     return Window(TOO_SHORT) if result is None else Window(EVALUATED, result)
+
+
+class _NonFinite(ValueError):
+    pass
 
 
 def buy_and_hold(costs: CostSpec, table: BarTable, start: int, end: int) -> BuyAndHold | None:
@@ -115,7 +122,7 @@ def buy_and_hold(costs: CostSpec, table: BarTable, start: int, end: int) -> BuyA
     constant_notional = (
         None if table.funding is None else -math.fsum(table.funding[entry + 1 : end])
     )
-    return BuyAndHold(
+    result = BuyAndHold(
         start=start,
         end=end,
         bars_held=end - 1 - entry,
@@ -128,6 +135,23 @@ def buy_and_hold(costs: CostSpec, table: BarTable, start: int, end: int) -> BuyA
         stdev_log_return_per_bar=stdev,
         sharpe_per_bar=None if stdev is None or stdev == 0.0 else mean / stdev,
     )
+    _require_finite(result)
+    return result
+
+
+def _require_finite(result: BuyAndHold) -> None:
+    values = [
+        result.gross_return,
+        result.log_return,
+        result.funding,
+        result.funding_constant_notional,
+        *result.net.values(),
+        result.mean_log_return_per_bar,
+        result.stdev_log_return_per_bar,
+        result.sharpe_per_bar,
+    ]
+    if any(value is not None and not math.isfinite(value) for value in values):
+        raise _NonFinite("a benchmark value is not finite")
 
 
 def _sample_stdev(values: list[float], mean: float) -> float | None:

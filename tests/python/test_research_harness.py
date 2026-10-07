@@ -1132,14 +1132,31 @@ def test_a_run_without_folds_says_so_in_the_benchmark(tmp_path: Path) -> None:
     assert "- validation: no validation fold" in markdown
 
 
-def test_a_benchmark_error_is_recorded_on_the_window_not_raised() -> None:
+def test_a_numeric_benchmark_failure_is_recorded_and_an_index_bug_fails_closed() -> None:
     spec = validate_spec(_json(_spec_body(parquet=True)))
-    table = _bar_table(_regime_rows(420))
+    rows = _regime_rows(420)
+    table = _bar_table(rows)
     decision = decide(spec, table)
-    broken = replace(decision, holdout_config_id="real", holdout_end=len(table.prices) + 5)
-    result = benchmark(spec.costs, table, broken)
+    # Finite, positive prices whose ratio overflows: the holdout is context.
+    extreme = BarTable(
+        timestamps=table.timestamps,
+        prices=tuple(
+            1e-300 if index == 400 else 1e300 if index == 401 else price
+            for index, price in enumerate(table.prices)
+        ),
+        features=table.features,
+        availability=table.availability,
+    )
+    opened = replace(decision, holdout_config_id="real")
+    result = benchmark(spec.costs, extreme, opened)
     assert result.validation.status == "evaluated"
     assert (result.holdout.status, result.holdout.result) == ("error", None)
+    assert result.holdout.note is not None
+    # An out-of-table window is a harness bug the strategy shares: fail closed.
+    broken = replace(opened, holdout_end=len(table.prices) + 5)
+    with pytest.raises(HarnessError, match="outside the table") as refused:
+        benchmark(spec.costs, table, broken)
+    assert refused.value.failure_kind == "invariant"
 
 
 def test_a_window_result_exists_exactly_when_evaluated() -> None:

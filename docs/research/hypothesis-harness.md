@@ -198,8 +198,10 @@ buy-and-hold, one unit long, priced like a strategy trade at unit weight.
   sealed, the benchmark does not read it either.
 - **Status**: each window has a `status`: `evaluated` (with the values
   below), `sealed`, `no_folds`, `too_short` (no close left to exit at after
-  the fill), or `error`. A benchmark error is recorded on the window and
-  never fails the run or changes its label.
+  the fill), or `error`. A numeric failure (overflow, a non-finite value)
+  is recorded as `error` with a `note` and never fails the run or changes
+  its label. A window outside the table is a harness bug that the
+  strategy's indexes share, so it still fails the run closed.
 - **Trade**: decided at the window's first close and filled `latency_bars`
   later, like a strategy trade, then held to the window's last close.
   `bars_held` counts the bars from the fill to the exit. `gross_return` is

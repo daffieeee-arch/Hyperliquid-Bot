@@ -1017,7 +1017,7 @@ def test_locked_duckdb_keeps_catalog_sql(tmp_path: Path, monkeypatch: MonkeyPatc
 
     monkeypatch.setattr("research.hist_etl.catalog.duckdb.connect", locked)
     with raises(HistEtlError) as caught:
-        refresh_catalog(root)
+        refresh_catalog(root, hyperliquid_files={})
     assert caught.value.exit_code == 2
     assert "locked" in str(caught.value)
     assert (root / "catalog.sql").read_text(encoding="utf-8") == original

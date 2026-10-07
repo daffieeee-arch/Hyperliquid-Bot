@@ -30,6 +30,7 @@ _VIEW_STMT = re.compile(
 _VIEW_NAME = re.compile(r"[a-z][a-z0-9_]*")
 _BINANCE_FILE = re.compile(r"^([A-Z0-9]+)-\d{4}-\d{2}\.parquet$")
 _KRAKEN_FILE = re.compile(r"^\d{4}-\d{2}\.parquet$")
+_FUNDING_VIEW = re.compile(r"hist_hl_funding_[a-z0-9]+")
 _BEGIN = "-- BEGIN research.hist_etl"
 _END = "-- END research.hist_etl"
 _LOCK_ATTEMPTS = 5
@@ -38,8 +39,8 @@ _LOCK_ATTEMPTS = 5
 def refresh_catalog(
     root: Path,
     *,
+    hyperliquid_files: Mapping[str, Sequence[Path]],
     replace_legacy_views: bool = False,
-    hyperliquid_files: Mapping[str, Sequence[Path]] | None = None,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Write ``catalog.sql`` and create the generated views.
 
@@ -50,19 +51,20 @@ def refresh_catalog(
     ``replace_legacy_views`` copies ``catalog.sql`` to a backup, prints a diff,
     and then lets the generated names replace those statements and relations.
     The SQL file is replaced only after DuckDB accepts the new block.
-    ``hyperliquid_files`` maps a coin to the funding month files the manifest
-    currently selects; see ``hyperliquid.funding_view_files``.
+    ``hyperliquid_files`` maps each manifest coin to the funding month files
+    the manifest selects (see ``hyperliquid.funding_view_files``); it has no
+    default, so no caller drops or keeps funding views by omission.
     """
 
     views = render_statements(
         root,
-        replace_legacy_views=replace_legacy_views,
         hyperliquid_files=hyperliquid_files,
+        replace_legacy_views=replace_legacy_views,
     )
     catalog_path = root / "catalog.sql"
     existing = catalog_path.read_text(encoding="utf-8") if catalog_path.is_file() else ""
     owned = _managed_names(existing)
-    views = (*views, *_emptied_funding_views(hyperliquid_files, owned))
+    views = (*views, *_emptied_funding_views(views, owned))
     live = _live_relations(root)
     # A relation that already exists in DuckDB, and was not emitted by the previous
     # hist_etl block, belongs to the operator. CREATE OR REPLACE would destroy it.
@@ -114,8 +116,8 @@ def refresh_catalog(
 def render_statements(
     root: Path,
     *,
+    hyperliquid_files: Mapping[str, Sequence[Path]],
     replace_legacy_views: bool = False,
-    hyperliquid_files: Mapping[str, Sequence[Path]] | None = None,
 ) -> tuple[tuple[str, str], ...]:
     """Pipeline views. Each one reads only files this pipeline wrote.
 
@@ -152,7 +154,7 @@ def render_statements(
                     replace_legacy=replace_legacy_views,
                 ):
                     views.append((name, _view(name, relative)))
-    for coin, funding_files in sorted((hyperliquid_files or {}).items()):
+    for coin, funding_files in sorted(hyperliquid_files.items()):
         if not funding_files:
             continue
         relative = tuple(_relative(root, path) for path in funding_files)
@@ -162,24 +164,23 @@ def render_statements(
 
 
 def _emptied_funding_views(
-    hyperliquid_files: Mapping[str, Sequence[Path]] | None, owned: set[str]
+    emitted: Sequence[tuple[str, str]], owned: set[str]
 ) -> tuple[tuple[str, str], ...]:
-    """An existing funding view whose files no longer match the manifest.
+    """Funding views of the previous block that have no selected file now.
 
-    Kept as it was, it would go on serving the stale rows; it is replaced by
-    a view with the same columns and no rows until the month is refetched.
+    Kept as they were, they would go on reading month files the manifest no
+    longer selects: a month whose window changed, or a coin whose datasets
+    were removed. Each is replaced by a view with the same columns and no
+    rows; a view that never existed is not created.
     """
 
-    views: list[tuple[str, str]] = []
-    for coin, funding_files in sorted((hyperliquid_files or {}).items()):
-        name = f"hist_hl_funding_{coin.lower()}"
-        if funding_files or name not in owned:
-            continue
-        if not _VIEW_NAME.fullmatch(name):
-            raise HistEtlError(f"unsafe view name {name}", exit_code=2)
-        columns = ", ".join(f"CAST(NULL AS {kind}) AS {column}" for column, kind in FUNDING_COLUMNS)
-        views.append((name, f"CREATE OR REPLACE VIEW {name} AS\nSELECT {columns}\nWHERE false;\n"))
-    return tuple(views)
+    names = {name for name, _statement in emitted}
+    columns = ", ".join(f"CAST(NULL AS {kind}) AS {column}" for column, kind in FUNDING_COLUMNS)
+    return tuple(
+        (name, f"CREATE OR REPLACE VIEW {name} AS\nSELECT {columns}\nWHERE false;\n")
+        for name in sorted(owned - names)
+        if _FUNDING_VIEW.fullmatch(name)
+    )
 
 
 def merge_catalog(

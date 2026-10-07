@@ -165,7 +165,9 @@ the same `.sources.json` rule as the other venues (`sync --rebuild` to
 replace). `.open.json` files are not deleted.
 
 Each raw file and Parquet sidecar records the window it covers (`start_ms`,
-`end_ms`). When the dataset's `start` or `end` changes, a settled month whose
+`end_ms`). A month file whose sidecar does not record it is rewritten from the
+same raw file by the next sync; `verify` reports it as `hyperliquid_sidecar`
+until then. When the dataset's `start` or `end` changes, a settled month whose
 window no longer matches is not overwritten: `sync` and `verify` report
 `hyperliquid_window_changed` and `plan` lists it as `window_changed`, until
 the raw file is moved aside. The next `sync --dataset <id> --rebuild` then
@@ -207,9 +209,10 @@ the month files the manifest selects now: the coin's datasets, and only a
 file whose sidecar covers the month's current window (exactly once settled;
 up to the day it was fetched while provisional). Files of a renamed,
 removed, or re-ranged dataset stay on disk but out of the view, so they
-cannot charge a bar twice. When no file of a coin qualifies, an existing
-view keeps its columns and returns no rows until the months are fetched
-again.
+cannot charge a bar twice. When no file of a coin qualifies, or the coin's
+datasets were removed from the manifest, an existing view keeps its columns
+and returns no rows. The views follow the manifest as of the real UTC date:
+`--today` changes what a sync fetches, not what the views read.
 
 For a harness `role: funding` column on hourly bars stamped at their close,
 the settlement printed at the bar's close belongs to that bar:

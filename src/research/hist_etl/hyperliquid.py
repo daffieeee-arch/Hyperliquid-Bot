@@ -359,7 +359,7 @@ def materialize_funding_month(
     holes = funding_holes(spec, _hole_window(window, covered), rows)
     source = SourceDigest(name=raw_path.name, sha256=cached_sha256(root, raw_path), path=raw_path)
     destination = hyperliquid_parquet_path(root, window)
-    action = _decide(destination, source, rebuild=rebuild)
+    action = _decide(destination, source, covered, rebuild=rebuild)
     if action == "audit":
         return holes
     if action != "write":
@@ -400,12 +400,13 @@ def audit_funding_month(
         return (Gap("hyperliquid_schema", spec.id, str(exc)),)
     # A fresh hash, not the size/mtime cache: verify must see any edit.
     source = SourceDigest(name=raw_path.name, sha256=sha256_file(raw_path), path=raw_path)
-    if _decide(destination, source, rebuild=False) != "audit":
+    if _decide(destination, source, covered, rebuild=False) != "audit":
         return (
             Gap(
                 "hyperliquid_sidecar",
                 spec.id,
-                f"{destination.name} was not built from {raw_path.name}",
+                f"{destination.name} was not built from {raw_path.name} for the window "
+                "it covers; run sync to rewrite it",
             ),
         )
     return (
@@ -521,22 +522,50 @@ def _print_bounds(window: FundingWindow) -> tuple[int, int]:
     return window.start_ms - SLOT_TOLERANCE_MS, window.end_ms - SLOT_TOLERANCE_MS - 1
 
 
-def _decide(destination: Path, source: SourceDigest, *, rebuild: bool) -> str:
-    """A provisional file is always replaced; others follow the sidecar rule."""
+def _decide(
+    destination: Path, source: SourceDigest, covered: FundingWindow, *, rebuild: bool
+) -> str:
+    """A provisional file is always replaced; others follow the sidecar rule.
+
+    A file built from this same raw file is rewritten when its sidecar does not
+    record the window it covers: the view selects month files by that window.
+    """
 
     if destination.is_file() and _is_provisional(destination):
         recorded = decide_output(destination, (source,), rebuild=False)
-        return "audit" if recorded == "audit" else "write"
-    return decide_output(destination, (source,), rebuild=rebuild)
+        action = "audit" if recorded == "audit" else "write"
+    else:
+        action = decide_output(destination, (source,), rebuild=rebuild)
+    if action == "audit" and _recorded_window(destination) != (covered.start_ms, covered.end_ms):
+        return "write"
+    return action
 
 
 def _is_provisional(destination: Path) -> bool:
+    payload = _sidecar_payload(destination)
+    return payload is not None and payload.get("provisional") is True
+
+
+def _recorded_window(destination: Path) -> tuple[int, int] | None:
+    """The ``start_ms`` / ``end_ms`` a month file's sidecar says it covers."""
+
+    payload = _sidecar_payload(destination)
+    if payload is None:
+        return None
+    start_ms = payload.get("start_ms")
+    end_ms = payload.get("end_ms")
+    if type(start_ms) is not int or type(end_ms) is not int:
+        return None
+    return start_ms, end_ms
+
+
+def _sidecar_payload(destination: Path) -> dict[str, object] | None:
     sidecar = destination.with_name(destination.name + ".sources.json")
     try:
         payload = json.loads(sidecar.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return False
-    return isinstance(payload, dict) and payload.get("provisional") is True
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def _write_parquet(
@@ -628,12 +657,12 @@ def _write_parquet(
 def funding_view_files(
     root: Path, specs: Sequence[HyperliquidFundingSpec], today: date
 ) -> dict[str, tuple[Path, ...]]:
-    """Per coin, the month files the manifest selects today, in month order.
+    """Per coin, the month files the manifest selects on ``today``, in month order.
 
     A file is in the view only when its sidecar covers the month the manifest
-    asks for now: a settled month exactly, a provisional one up to the day it
-    was fetched. Files of a renamed, removed, or re-ranged dataset stay on
-    disk but out of the view, so no bar is charged twice.
+    asks for: a settled month exactly, a provisional one up to the day it was
+    fetched. Files of a renamed, removed, or re-ranged dataset stay on disk but
+    out of the view, so no bar is charged twice.
     """
 
     by_coin: dict[str, list[tuple[str, Path]]] = {spec.coin: [] for spec in specs}
@@ -641,24 +670,16 @@ def funding_view_files(
         for window in funding_windows(spec, today):
             path = hyperliquid_parquet_path(root, window)
             if _sidecar_covers(path, window):
-                by_coin.setdefault(spec.coin, []).append((window.month, path))
+                by_coin[spec.coin].append((window.month, path))
     return {coin: tuple(path for _month, path in sorted(items)) for coin, items in by_coin.items()}
 
 
 def _sidecar_covers(path: Path, window: FundingWindow) -> bool:
-    sidecar = path.with_name(path.name + ".sources.json")
-    if not path.is_file():
+    recorded = _recorded_window(path) if path.is_file() else None
+    if recorded is None or recorded[0] != window.start_ms:
         return False
-    try:
-        payload = json.loads(sidecar.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return False
-    if not isinstance(payload, dict) or payload.get("start_ms") != window.start_ms:
-        return False
-    end_ms = payload.get("end_ms")
-    if type(end_ms) is not int:
-        return False
-    if payload.get("provisional") is True:
+    end_ms = recorded[1]
+    if _is_provisional(path):
         return window.start_ms < end_ms <= window.end_ms
     return end_ms == window.end_ms
 

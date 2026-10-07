@@ -166,10 +166,8 @@ def run_sync(
     )
     _applied, foreign = refresh_catalog(
         safe_root,
+        hyperliquid_files=_funding_view_files(safe_root, manifest),
         replace_legacy_views=replace_legacy_views,
-        hyperliquid_files=funding_view_files(
-            safe_root, manifest.hyperliquid, _settled_today(today)
-        ),
     )
     for name in foreign:
         gaps.append(
@@ -238,7 +236,6 @@ def run_catalog(
     dataset_ids: tuple[str, ...] | None,
     env: Mapping[str, str],
     replace_legacy_views: bool = False,
-    today: date | None = None,
 ) -> int:
     manifest, _binance, _kraken, _hyperliquid, safe_root = _context(
         root, manifest_path, dataset_ids, env
@@ -247,17 +244,23 @@ def run_catalog(
         raise HistEtlError(f"archive root does not exist: {safe_root}", exit_code=2)
     names, foreign = refresh_catalog(
         safe_root,
+        hyperliquid_files=_funding_view_files(safe_root, manifest),
         replace_legacy_views=replace_legacy_views,
-        hyperliquid_files=funding_view_files(
-            safe_root,
-            manifest.hyperliquid,
-            _settled_today(today if today is not None else datetime.now(UTC).date()),
-        ),
     )
     print(f"catalog\tviews={len(names)}")
     for name in names:
         print(f"catalog\tview\t{name}")
     return 2 if foreign else 0
+
+
+def _funding_view_files(root: Path, manifest: HistManifest) -> dict[str, tuple[Path, ...]]:
+    """The funding month files the manifest selects as of the real UTC date.
+
+    Not ``--today``: a test run with an earlier cutoff must not hide later
+    months from the shared research views.
+    """
+
+    return funding_view_files(root, manifest.hyperliquid, datetime.now(UTC).date())
 
 
 def _settled_today(today: date) -> date:

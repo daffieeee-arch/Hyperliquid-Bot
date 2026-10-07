@@ -321,17 +321,14 @@ def test_an_open_month_fetched_on_an_earlier_day_is_kept(tmp_path: Path) -> None
     manifest = _manifest(tmp_path, start="2026-09-29")
     poster = FakeFundingPoster(_hourly(start, 24 * 6), page_size=100)
     assert _sync(tmp_path, manifest, poster, date(2026, 10, 2)) == 0
-    # The open month was fetched through 2026-10-01; verify and the catalog
-    # run days later, without a sync in between.
+    # The open month was fetched through 2026-10-01; verify runs days later,
+    # and the catalog on the real date, without a sync in between.
     later = date(2026, 10, 4)
     assert (
         run_verify(root=tmp_path, manifest_path=manifest, today=later, dataset_ids=None, env={})
         == 0
     )
-    assert (
-        run_catalog(root=tmp_path, manifest_path=manifest, dataset_ids=None, env={}, today=later)
-        == 0
-    )
+    assert run_catalog(root=tmp_path, manifest_path=manifest, dataset_ids=None, env={}) == 0
     assert _view_count(tmp_path) == 72
 
 
@@ -342,10 +339,7 @@ def test_a_shortened_range_drops_a_longer_open_month(tmp_path: Path) -> None:
     assert _sync(tmp_path, _manifest(tmp_path, start="2026-09-29"), poster, today) == 0
     assert _view_count(tmp_path) == 96
     shortened = _manifest(tmp_path, start="2026-09-29", end="2026-10-01")
-    assert (
-        run_catalog(root=tmp_path, manifest_path=shortened, dataset_ids=None, env={}, today=today)
-        == 0
-    )
+    assert run_catalog(root=tmp_path, manifest_path=shortened, dataset_ids=None, env={}) == 0
     # The open month ran to 2026-10-03, past the range: out of the view.
     assert _view_count(tmp_path) == 48
     assert (
@@ -489,6 +483,45 @@ def test_view_reads_only_the_files_the_manifest_selects(tmp_path: Path) -> None:
     # One row per settlement: the old file would charge every bar twice.
     assert _view_count(tmp_path) == 24
     assert _view_sources(tmp_path) == {"hl-renamed"}
+    # A coin no longer in the manifest keeps its view, with no rows.
+    other = _manifest(tmp_path, start="2026-09-01", end="2026-09-01", coin="ETH")
+    assert run_catalog(root=tmp_path, manifest_path=other, dataset_ids=None, env={}) == 0
+    assert _view_count(tmp_path) == 0
+
+
+def test_a_sidecar_without_its_window_is_rewritten(tmp_path: Path) -> None:
+    start = datetime(2026, 9, 1, tzinfo=UTC)
+    today = date(2026, 10, 1)
+    manifest = _manifest(tmp_path, start="2026-09-01", end="2026-09-01")
+    poster = FakeFundingPoster(_hourly(start, 24), page_size=100)
+    assert _sync(tmp_path, manifest, poster, today) == 0
+    month = hyperliquid_parquet_path(tmp_path, _window_for(tmp_path, manifest, "2026-09", today))
+    recorded = _sidecar(month)
+    # A sidecar that does not say which window it covers keeps the month out
+    # of the view, so verify reports it.
+    legacy = {key: value for key, value in recorded.items() if key not in ("start_ms", "end_ms")}
+    month.with_name(month.name + ".sources.json").write_text(json.dumps(legacy))
+    assert (
+        run_verify(root=tmp_path, manifest_path=manifest, today=today, dataset_ids=None, env={})
+        == 2
+    )
+    assert _gap_kinds(tmp_path) == ["hyperliquid_sidecar"]
+    # Its raw file is unchanged, so the next sync rewrites it from that file.
+    assert _sync(tmp_path, manifest, poster, today) == 0
+    assert _sidecar(month) == recorded
+    assert _view_count(tmp_path) == 24
+
+
+def test_an_earlier_today_does_not_shrink_the_view(tmp_path: Path) -> None:
+    start = datetime(2026, 9, 29, tzinfo=UTC)
+    manifest = _manifest(tmp_path, start="2026-09-29")
+    poster = FakeFundingPoster(_hourly(start, 24 * 6), page_size=100)
+    assert _sync(tmp_path, manifest, poster, date(2026, 10, 3)) == 0
+    # A test run with an earlier cutoff sees September as the open month. It
+    # does not replace the settled file, and the view keeps every month.
+    assert _sync(tmp_path, manifest, poster, date(2026, 9, 30)) == 2
+    assert _gap_kinds(tmp_path) == ["refused_overwrite"]
+    assert _view_count(tmp_path) == 96
 
 
 def _sync(
@@ -518,6 +551,7 @@ def _manifest(
     end: str = "today",
     extra: str = "",
     dataset_id: str = "hl-test",
+    coin: str = "BTC",
 ) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     path = root / "datasets.toml"
@@ -529,7 +563,7 @@ def _manifest(
         "[[hyperliquid]]\n"
         f'id = "{dataset_id}"\n'
         'dataset = "funding"\n'
-        'coin = "BTC"\n'
+        f'coin = "{coin}"\n'
         f'start = "{start}"\n'
         f'end = "{end}"\n'
         f"{extra}",

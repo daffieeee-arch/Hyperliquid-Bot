@@ -6,8 +6,9 @@ The deflated Sharpe ratio (Bailey and Lopez de Prado, 2014) asks whether the
 Sharpe of the config the run takes forward beats the best Sharpe that as many
 pure-noise trials would show. The probability of backtest overfitting (Bailey,
 Borwein, Lopez de Prado and Zhu, 2017) asks how often the config that ranks
-first on half of the walk-forward blocks ranks at or below the median on the
-other half, ranking by the statistic validation selection uses.
+first on half of the walk-forward blocks, among the configs that meet the
+trade floor there, ranks at or below the median on the other half, ranking
+by the statistic validation selection uses.
 """
 
 from __future__ import annotations
@@ -64,10 +65,10 @@ class BlockStats:
 
 @dataclass(frozen=True, slots=True)
 class Pbo:
-    """PBO with the number of candidate configs and the CSCV split it used."""
+    """PBO with the in-sample trade floor and the CSCV split it used."""
 
     value: float | None
-    configs: int | None
+    in_sample_floor: int | None
     blocks: int | None
     folds_used: int | None
     splits: int | None
@@ -197,26 +198,34 @@ def cscv_blocks(fold_count: int) -> tuple[tuple[int, ...], ...] | None:
     )
 
 
-def probability_of_backtest_overfitting(stats: Sequence[Sequence[BlockStats]]) -> Pbo:
+def probability_of_backtest_overfitting(
+    stats: Sequence[Sequence[BlockStats]], min_trades: int = 1
+) -> Pbo:
     """PBO by combinatorially symmetric cross-validation over ``stats[config][block]``.
 
-    For every choice of half the blocks as in-sample, the config with the best
-    in-sample mean net return per trade (the first one on a tie) is ranked by
-    its out-of-sample mean, ties sharing the average rank. A config without
-    trades in a half earns 0 there. A split where every config ties in-sample
-    selects nothing and is skipped. A split counts as overfit when the pick
-    ranks at or below the median (logit <= 0).
+    For every choice of half the blocks as in-sample, the candidates are the
+    configs with at least ``min_trades`` in-sample trades, so a split selects
+    from in-sample data only. The candidate with the best in-sample mean net
+    return per trade (the first one on a tie) is ranked by its out-of-sample
+    mean among the candidates, ties sharing the average rank; a candidate
+    without out-of-sample trades earns 0 there. A split with fewer than two
+    candidates, or where every candidate ties in-sample, selects nothing and
+    is skipped. A split counts as overfit when the pick ranks at or below the
+    median (logit <= 0).
     """
 
-    configs = len(stats)
-    if configs < 2:
-        return no_pbo("PBO needs at least two configs.", configs=configs)
+    if min_trades < 1:
+        raise ValueError("min_trades must be at least 1.")
+    if len(stats) < 2:
+        return no_pbo("PBO needs at least two configs.", in_sample_floor=min_trades)
     blocks = len(stats[0])
     if any(len(row) != blocks for row in stats):
         raise ValueError("Every config needs the same blocks.")
     if blocks < MIN_CSCV_BLOCKS or blocks % 2:
         return no_pbo(
-            "PBO needs an even number of at least 4 blocks.", configs=configs, blocks=blocks
+            "PBO needs an even number of at least 4 blocks.",
+            in_sample_floor=min_trades,
+            blocks=blocks,
         )
     totals = [
         (sum(block.trades for block in row), math.fsum(block.total for block in row))
@@ -232,31 +241,37 @@ def probability_of_backtest_overfitting(stats: Sequence[Sequence[BlockStats]]) -
             )
             for row in stats
         ]
-        in_perf = [_mean(trades, total) for trades, total in in_sample]
-        if max(in_perf) == min(in_perf):
+        candidates = [
+            index for index, (trades, _total) in enumerate(in_sample) if trades >= min_trades
+        ]
+        in_perf = [_mean(*in_sample[index]) for index in candidates]
+        if len(candidates) < 2 or max(in_perf) == min(in_perf):
             skipped += 1
             continue
         out_perf = [
-            _mean(all_trades - trades, all_total - total)
-            for (all_trades, all_total), (trades, total) in zip(totals, in_sample, strict=True)
+            _mean(totals[index][0] - in_sample[index][0], totals[index][1] - in_sample[index][1])
+            for index in candidates
         ]
-        best = max(range(configs), key=in_perf.__getitem__)
-        omega = _average_rank(out_perf, best) / (configs + 1)
+        best = max(range(len(candidates)), key=in_perf.__getitem__)
+        omega = _average_rank(out_perf, best) / (len(candidates) + 1)
         logits.append(math.log(omega / (1.0 - omega)))
     if not logits:
         return Pbo(
             value=None,
-            configs=configs,
+            in_sample_floor=min_trades,
             blocks=blocks,
             folds_used=None,
             splits=0,
             skipped_splits=skipped,
             median_logit=None,
-            note="No split separates the configs in-sample, so nothing was selected.",
+            note=(
+                "No split has two configs that meet the in-sample trade floor and differ "
+                "in-sample, so nothing was selected."
+            ),
         )
     return Pbo(
         value=sum(1 for logit in logits if logit <= 0.0) / len(logits),
-        configs=configs,
+        in_sample_floor=min_trades,
         blocks=blocks,
         folds_used=None,
         splits=len(logits),
@@ -266,12 +281,12 @@ def probability_of_backtest_overfitting(stats: Sequence[Sequence[BlockStats]]) -
     )
 
 
-def no_pbo(note: str, *, configs: int | None = None, blocks: int | None = None) -> Pbo:
+def no_pbo(note: str, *, in_sample_floor: int | None = None, blocks: int | None = None) -> Pbo:
     """A PBO that was not computed, and why."""
 
     return Pbo(
         value=None,
-        configs=configs,
+        in_sample_floor=in_sample_floor,
         blocks=blocks,
         folds_used=None,
         splits=None,
@@ -282,7 +297,7 @@ def no_pbo(note: str, *, configs: int | None = None, blocks: int | None = None) 
 
 
 def _mean(trades: int, total: float) -> float:
-    """Mean net return per trade; a config that does not trade earns 0."""
+    """Mean net return per trade; a config without trades earns 0."""
 
     return total / trades if trades > 0 else 0.0
 

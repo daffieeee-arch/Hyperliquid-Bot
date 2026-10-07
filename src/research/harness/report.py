@@ -31,8 +31,9 @@ LIMITATIONS: Final[tuple[str, ...]] = (
     "Latency fills at decision_bar + latency_bars. Zero latency requires allow_zero_latency.",
     "The deflated Sharpe ratio and the probability of backtest overfitting are diagnostics "
     "and never change the label. They use net returns at 1.0x and count only the "
-    "pre-registered configs as trials. PBO compares the configs that meet the trade floor "
-    "by mean net per trade and does not re-run the other selection gates.",
+    "pre-registered configs as trials. In each split PBO picks by mean net per trade among "
+    "the configs that meet the trade floor pro-rated to the in-sample folds, and does not "
+    "re-run the other selection gates.",
     "Look-ahead control uses the declared clock. A falsely stamped future value is invisible.",
     "paper_candidate is not LIVE, SHADOW, TESTNET, or an order authorization.",
     "Spot Vision timestamps from 2025-01-01 are microseconds; USD-M examples are milliseconds.",
@@ -267,13 +268,10 @@ def _overfitting_lines(document: dict[str, Json]) -> list[str]:
     if not isinstance(block, dict):
         return ["- overfitting block missing"]
     lines = ["Diagnostics only; they never change the label.", ""]
-    dsr = block.get("deflated_sharpe")
-    which = (
-        "selected"
-        if isinstance(dsr, dict) and dsr.get("selected") is True
-        else "best validation mean, none selected"
-    )
-    if isinstance(dsr, dict) and dsr.get("dsr") is not None:
+    raw_dsr = block.get("deflated_sharpe")
+    dsr = raw_dsr if isinstance(raw_dsr, dict) else {}
+    which = "selected" if dsr.get("selected") is True else "best validation mean, none selected"
+    if dsr.get("dsr") is not None:
         lines.append(
             (
                 "- deflated Sharpe ratio: `{dsr}` for `{config}` ({which}; Sharpe per trade "
@@ -289,26 +287,26 @@ def _overfitting_lines(document: dict[str, Json]) -> list[str]:
             )
         )
     else:
-        note = dsr.get("note") if isinstance(dsr, dict) else None
-        config = dsr.get("config_id") if isinstance(dsr, dict) else None
-        tested = "" if config is None else f" for `{config}`"
-        detail = note if config is None else f"{which}; {note}"
-        lines.append(f"- deflated Sharpe ratio: not computed{tested} ({detail})")
-    pbo = block.get("pbo")
-    if isinstance(pbo, dict) and pbo.get("value") is not None:
+        config = dsr.get("config_id")
+        tested = "" if config is None else f" for `{config}` ({which})"
+        lines.append(f"- deflated Sharpe ratio: not computed{tested}. {dsr.get('note')}")
+    raw_pbo = block.get("pbo")
+    pbo = raw_pbo if isinstance(raw_pbo, dict) else {}
+    if pbo.get("value") is not None:
         lines.append(
-            "- probability of backtest overfitting: `{value}` (CSCV, {configs} configs, "
-            "{blocks} blocks over {folds} folds, {splits} splits)".format(
+            "- probability of backtest overfitting: `{value}` (CSCV, {blocks} blocks over "
+            "{folds} folds, {splits} splits, {skipped} skipped, in-sample trade floor "
+            "{floor})".format(
                 value=pbo.get("value"),
-                configs=pbo.get("configs"),
                 blocks=pbo.get("blocks"),
                 folds=pbo.get("folds_used"),
                 splits=pbo.get("splits"),
+                skipped=pbo.get("skipped_splits"),
+                floor=pbo.get("in_sample_floor"),
             )
         )
     else:
-        note = pbo.get("note") if isinstance(pbo, dict) else None
-        lines.append(f"- probability of backtest overfitting: not computed ({note})")
+        lines.append(f"- probability of backtest overfitting: not computed. {pbo.get('note')}")
     return lines
 
 
@@ -366,7 +364,7 @@ def _overfitting_json(result: Overfitting | None) -> dict[str, Json] | None:
         },
         "pbo": {
             "value": pbo.value,
-            "configs": pbo.configs,
+            "in_sample_floor": pbo.in_sample_floor,
             "blocks": pbo.blocks,
             "folds_used": pbo.folds_used,
             "splits": pbo.splits,

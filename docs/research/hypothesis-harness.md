@@ -162,22 +162,21 @@ done outside the harness is not deflated.
   for example because there is no config to test or its trade returns are
   all equal, it is null and `note` says why.
 - **Probability of backtest overfitting** (Bailey, Borwein, López de Prado
-  and Zhu, 2017), by combinatorially symmetric cross-validation. It compares
-  the configs with at least `sample.min_trades_validation` validation
-  trades, the configs validation selection can pick (`configs` counts them),
-  so it needs at least two of them. Like selection, the floor counts trades
-  over all validation folds, so the candidate set knows how often a config
-  trades out of sample, though not how it performs. The most recent
-  walk-forward test folds are grouped into equal contiguous blocks: the even
-  count from 4 to 16 that leaves out the fewest (oldest) folds, so at least
-  4 folds are needed. For every way to pick half of the blocks, the config
-  with the best mean net per trade at 1.0x on that half (the statistic
-  validation selection ranks by; a config without trades in that half earns
-  0) is ranked on the other half. PBO is the share of splits where it ranks
-  at or below the median. A split where every config ties in-sample selects
-  nothing and is skipped. The other selection gates (significance, stress)
-  are not re-run per split. Near 0 is good; 0.5 means picking the in-sample
-  best is no better than chance.
+  and Zhu, 2017), by combinatorially symmetric cross-validation. The most
+  recent walk-forward test folds are grouped into equal contiguous blocks:
+  the even count from 4 to 16 that leaves out the fewest (oldest) folds, so
+  at least 4 folds are needed. Each way to pick half of the blocks is a
+  split, and it selects as validation does, from its in-sample half only.
+  The candidates are the configs that meet `sample.min_trades_validation`
+  pro-rated to the in-sample folds and rounded up (`in_sample_floor`). The
+  candidate with the best in-sample mean net per trade at 1.0x (the
+  statistic validation selection ranks by) is ranked among the candidates
+  on the other half, where a candidate without trades earns 0. PBO is the
+  share of splits where the pick ranks at or below the median. A split with
+  fewer than two candidates, or where every candidate ties in-sample,
+  selects nothing and is skipped (`skipped_splits`). The other selection
+  gates (significance, stress) are not re-run per split. Near 0 is good;
+  0.5 means picking the in-sample best is no better than chance.
 
 ## Point-in-time checks
 

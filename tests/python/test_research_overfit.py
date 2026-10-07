@@ -102,7 +102,12 @@ def test_pbo_is_zero_when_one_config_dominates_every_block() -> None:
     loser = [BlockStats(5, -5.0)] * 4
     result = probability_of_backtest_overfitting([loser, winner])
     assert result.value == 0.0
-    assert (result.configs, result.blocks, result.splits, result.skipped_splits) == (2, 4, 6, 0)
+    assert (result.in_sample_floor, result.blocks, result.splits, result.skipped_splits) == (
+        1,
+        4,
+        6,
+        0,
+    )
     assert result.median_logit is not None and result.median_logit > 0.0
 
 
@@ -117,24 +122,46 @@ def test_pbo_is_one_when_the_in_sample_best_reverses_out_of_sample() -> None:
 
 
 def test_a_pick_that_only_ties_out_of_sample_counts_as_overfit() -> None:
-    # The first config trades only in block 0; the second never trades. Each
-    # split with block 0 in-sample picks the first, which then ties at the
-    # median out of sample (logit 0).
-    lucky = [BlockStats(5, 5.0), BlockStats(0, 0.0), BlockStats(0, 0.0), BlockStats(0, 0.0)]
-    idle = [BlockStats(0, 0.0)] * 4
-    result = probability_of_backtest_overfitting([lucky, idle])
+    # Both configs trade in every block; only the first earns, in block 0.
+    # Each split with block 0 in-sample picks the first, which then ties the
+    # second at the median out of sample (logit 0). The other splits tie
+    # in-sample and are skipped.
+    lucky = [BlockStats(5, 5.0), BlockStats(5, 0.0), BlockStats(5, 0.0), BlockStats(5, 0.0)]
+    flat = [BlockStats(5, 0.0)] * 4
+    result = probability_of_backtest_overfitting([lucky, flat])
     assert result.value == 1.0
     assert (result.splits, result.skipped_splits) == (3, 3)
+
+
+def test_the_in_sample_floor_keeps_thin_configs_out_of_each_split() -> None:
+    # One lucky trade in block 0, and nothing else.
+    thin = [BlockStats(1, 5.0), BlockStats(0, 0.0), BlockStats(0, 0.0), BlockStats(0, 0.0)]
+    better = [BlockStats(5, 1.0)] * 4
+    worse = [BlockStats(5, 0.5)] * 4
+    # Without a floor, every split with block 0 in-sample picks the thin config,
+    # which earns 0 out of sample and ranks last; the other three pick `better`.
+    loose = probability_of_backtest_overfitting([thin, better, worse])
+    assert loose.value == 0.5
+    assert (loose.in_sample_floor, loose.splits) == (1, 6)
+    # A floor of 3 in-sample trades leaves the thin config out of every split.
+    floored = probability_of_backtest_overfitting([thin, better, worse], min_trades=3)
+    assert floored.value == 0.0
+    assert (floored.in_sample_floor, floored.splits, floored.skipped_splits) == (3, 6, 0)
+    with pytest.raises(ValueError):
+        probability_of_backtest_overfitting([thin, better], min_trades=0)
 
 
 def test_pbo_reports_why_it_has_no_value() -> None:
     idle = [BlockStats(0, 0.0)] * 4
     nothing = probability_of_backtest_overfitting([idle, idle])
     assert nothing.value is None
-    assert (nothing.configs, nothing.splits, nothing.skipped_splits) == (2, 0, 6)
-    assert nothing.note is not None and "separates" in nothing.note
+    assert (nothing.splits, nothing.skipped_splits) == (0, 6)
+    assert nothing.note is not None and "nothing was selected" in nothing.note
+    # A config with trades but no rival above the floor selects nothing either.
+    alone = probability_of_backtest_overfitting([[BlockStats(5, 1.0)] * 4, idle])
+    assert (alone.value, alone.splits, alone.skipped_splits) == (None, 0, 6)
     one = probability_of_backtest_overfitting([idle])
-    assert (one.value, one.configs) == (None, 1)
+    assert (one.value, one.blocks) == (None, None)
     assert one.note is not None and "two configs" in one.note
     odd = probability_of_backtest_overfitting([[BlockStats(1, 1.0)] * 5] * 2)
     assert odd.value is None

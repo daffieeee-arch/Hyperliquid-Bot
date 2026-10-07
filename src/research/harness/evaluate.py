@@ -683,9 +683,9 @@ def _overfitting(
 ) -> Overfitting:
     """The deflated Sharpe ratio and PBO, both on validation net returns at 1.0x.
 
-    They are reported, never gated on. PBO compares only the configs that meet
-    the trade floor, as validation selection does; it does not re-run the
-    other selection gates.
+    They are reported, never gated on. In each CSCV split, PBO selects among
+    the configs that meet the trade floor pro-rated to the in-sample folds; it
+    does not re-run the other selection gates.
     """
 
     floored = _floored_indices(spec, scores)
@@ -694,37 +694,38 @@ def _overfitting(
     )
     groups = cscv_blocks(len(folds))
     if groups is None:
-        pbo = no_pbo(
-            f"PBO needs at least 4 walk-forward test folds; this run has {len(folds)}.",
-            configs=len(floored),
-        )
-    elif len(floored) < 2:
-        pbo = no_pbo(
-            "PBO needs at least two configs that meet the trade floor; "
-            f"this run has {len(floored)}.",
-            configs=len(floored),
-        )
+        pbo = no_pbo(f"PBO needs at least 4 walk-forward test folds; this run has {len(folds)}.")
     else:
+        folds_used = sum(len(group) for group in groups)
         nets_by_fold = [
-            [part.net(spec.costs, 1.0) for part in fold_series_by_config[index]]
-            for index in floored
+            [part.net(spec.costs, 1.0) for part in fold_series]
+            for fold_series in fold_series_by_config
         ]
-        pbo = replace(
-            probability_of_backtest_overfitting(
+        result = probability_of_backtest_overfitting(
+            [
                 [
-                    [
-                        BlockStats(
-                            trades=sum(len(nets[index]) for index in group),
-                            total=math.fsum(value for index in group for value in nets[index]),
-                        )
-                        for group in groups
-                    ]
-                    for nets in nets_by_fold
+                    BlockStats(
+                        trades=sum(len(nets[index]) for index in group),
+                        total=math.fsum(value for index in group for value in nets[index]),
+                    )
+                    for group in groups
                 ]
-            ),
-            folds_used=sum(len(group) for group in groups),
+                for nets in nets_by_fold
+            ],
+            min_trades=_in_sample_floor(spec, folds_used // 2, len(folds)),
         )
+        # A single config is never split, so it uses no folds.
+        pbo = result if result.blocks is None else replace(result, folds_used=folds_used)
     return Overfitting(deflated_sharpe=dsr, pbo=pbo)
+
+
+def _in_sample_floor(spec: HypothesisSpec, in_sample_folds: int, validation_folds: int) -> int:
+    """sample.min_trades_validation pro-rated to a split's in-sample folds, rounded up.
+
+    The floor applies to all validation folds; a CSCV split selects on fewer.
+    """
+
+    return -(-spec.sample.min_trades_validation * in_sample_folds // validation_folds)
 
 
 def _floored_indices(spec: HypothesisSpec, scores: tuple[ConfigScore, ...]) -> list[int]:

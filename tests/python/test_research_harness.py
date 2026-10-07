@@ -24,6 +24,7 @@ from research.harness.evaluate import (
     TradeSeries,
     _build_scores,
     _floored_indices,
+    _in_sample_floor,
     _tested_config,
     collect_trades,
     decide,
@@ -694,15 +695,19 @@ def test_report_carries_overfitting_diagnostics(tmp_path: Path) -> None:
     assert _as_float(dsr["expected_max_sharpe"]) > 0.0
     assert _as_float(dsr["dsr"]) > 0.99
     pbo = _mapping(block["pbo"])
-    # PBO compares the two configs that meet the trade floor, over eight test
-    # folds; the planted horizon is best in and out of sample.
-    assert (pbo["configs"], pbo["blocks"], pbo["folds_used"], pbo["splits"]) == (2, 8, 8, 70)
-    assert pbo["value"] == 0.0
+    # Eight test folds: each in-sample half needs ceil(20 * 4 / 8) = 10 trades,
+    # which the idle config never has. The planted horizon is best in and out
+    # of sample.
+    assert (pbo["in_sample_floor"], pbo["blocks"], pbo["folds_used"]) == (10, 8, 8)
+    assert (pbo["splits"], pbo["skipped_splits"], pbo["value"]) == (70, 0, 0.0)
     assert document["label"] == "passes_h1"
     markdown = (tmp_path / "out" / "result.md").read_text(encoding="utf-8")
     assert "## Overfitting diagnostics" in markdown
     assert "for `real` (selected;" in markdown
-    assert "probability of backtest overfitting: `0.0` (CSCV, 2 configs," in markdown
+    assert (
+        "probability of backtest overfitting: `0.0` (CSCV, 8 blocks over 8 folds, 70 splits, "
+        "0 skipped, in-sample trade floor 10)"
+    ) in markdown
 
 
 def test_without_a_selection_the_best_validation_mean_is_tested(tmp_path: Path) -> None:
@@ -730,8 +735,7 @@ def test_without_a_selection_the_best_validation_mean_is_tested(tmp_path: Path) 
     assert dsr["trials"] == 4
     pbo = _mapping(block["pbo"])
     assert 0.0 <= _as_float(pbo["value"]) <= 1.0
-    # PBO leaves out the idle config, which validation could never select.
-    assert pbo["configs"] == len(means) == 3
+    assert pbo["in_sample_floor"] == 10
 
 
 def test_dsr_tests_the_selection_else_the_best_floored_mean() -> None:
@@ -784,26 +788,39 @@ def test_dsr_tests_the_selection_else_the_best_floored_mean() -> None:
         {"overfitting": _overfitting_json(Overfitting(flat_dsr, no_pbo("not run")))}
     )
     assert any(
-        line.startswith("- deflated Sharpe ratio: not computed for `flat` (selected; The tested")
+        line.startswith("- deflated Sharpe ratio: not computed for `flat` (selected). The tested")
         for line in lines
     )
 
 
+def test_the_in_sample_floor_is_pro_rated_and_rounded_up() -> None:
+    spec = validate_spec(_json(_spec_body(parquet=True)))
+    assert spec.sample.min_trades_validation == 20
+    assert _in_sample_floor(spec, 4, 8) == 10
+    # 31 folds in ten blocks of three: 15 in-sample folds need 20 * 15 / 31 = 9.7.
+    assert _in_sample_floor(spec, 15, 31) == 10
+
+
 def test_overfitting_notes_explain_a_missing_value(tmp_path: Path) -> None:
-    # The idle config cannot meet the trade floor, so one config is left.
+    # The idle config never meets the in-sample trade floor, so no split has
+    # two candidates and nothing is selected.
     document = _run_rows(tmp_path, _regime_rows(420), configs=_two_configs())
     pbo = _mapping(_mapping(document["overfitting"])["pbo"])
-    # Nothing was split, so no folds are reported as used.
-    assert (pbo["value"], pbo["configs"], pbo["folds_used"]) == (None, 1, None)
-    assert "two configs that meet the trade floor; this run has 1" in str(pbo["note"])
+    assert (pbo["value"], pbo["splits"], pbo["skipped_splits"]) == (None, 0, 70)
+    assert "nothing was selected" in str(pbo["note"])
+    # A single config is never split, so no folds are reported as used.
+    (tmp_path / "one").mkdir()
+    one = _run_rows(tmp_path / "one", _regime_rows(420))
+    pbo = _mapping(_mapping(one["overfitting"])["pbo"])
+    assert (pbo["value"], pbo["blocks"], pbo["folds_used"]) == (None, None, None)
+    assert "two configs" in str(pbo["note"])
     (tmp_path / "short").mkdir()
     short = _run_rows(tmp_path / "short", _regime_rows(420), configs=_two_configs(), test_bars=100)
     pbo = _mapping(_mapping(short["overfitting"])["pbo"])
-    # configs still counts the candidates that meet the trade floor.
-    assert (pbo["value"], pbo["configs"]) == (None, 1)
+    assert (pbo["value"], pbo["in_sample_floor"]) == (None, None)
     assert "4 walk-forward test folds" in str(pbo["note"])
     markdown = (tmp_path / "short" / "out" / "result.md").read_text(encoding="utf-8")
-    assert "probability of backtest overfitting: not computed" in markdown
+    assert "probability of backtest overfitting: not computed. PBO needs at least 4" in markdown
 
 
 def test_funding_paid_on_the_position_wipes_a_planted_edge(tmp_path: Path) -> None:

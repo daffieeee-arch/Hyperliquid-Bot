@@ -46,7 +46,7 @@ Job **`regress`** in `ci.yml` is the focused API/browser suite (< ~8 min extra):
 - Playwright Chromium against `next start` + committed COURSE-1 fixtures.
   Public HL routes are stubbed; no live exchange calls.
 
-## Required check names for CoS / branch protection
+## Required check names for merge / branch protection
 
 Existing names (unchanged):
 
@@ -58,7 +58,7 @@ Existing names (unchanged):
 | `secret-scan` | CI |
 | `first-paper-screen` | Cockpit |
 
-New names (add if CoS requires them):
+New names (add if branch protection requires them):
 
 | Check | When it runs | Notes |
 |---|---|---|

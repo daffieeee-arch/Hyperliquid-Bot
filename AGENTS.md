@@ -67,24 +67,36 @@ repository change):
     fix the real ones on the same branch, push, and re-run the review when
     the diff changed materially. Report findings you judge not to be bugs,
     with the reason. Agents that cannot run `/code-review` themselves (Cursor,
-    Codex) ask the operator to run it in a Claude Code session; the PR is not
-    Ready until it has run. Skip only for trivial docs/chore PRs unless the
+    Codex) leave it to Claude Code, which runs it before it merges; a PR is not
+    merged until it has run. Skip only for trivial docs/chore PRs unless the
     user asks for the review anyway.
 11. For material or high-risk changes (execution, risk, secrets, LIVE gates,
     infra/runtime, non-trivial strategy/data contracts), also obtain any
     additional independent review the user requests before merge.
 12. Resolve blocking review findings on the same branch; re-run the relevant
     tests and CI.
-13. Stop at Ready: do **not** squash-merge feature PRs yourself. Cursor Cloud
-    Agents open PRs and fix CI/review findings only.
-14. **Chief of Staff (CoS / Grok Bot)** reviews feature PRs and squash-merges
-    them when the review is OK, CI is green, and the PR is mergeable.
-    Dependabot PRs may be CoS auto-merged on green CI without a full feature
-    review. LIVE/capital still needs Chupa's explicit approval.
-15. After CoS merge, delete the merged feature branch and any associated
-    worktree only after confirming they hold no uncommitted or unmerged work
-    (ops/CoS), then synchronize the Netcup VPS `main` checkout with
-    `origin/main` when a deploy is needed.
+13. Cursor Cloud Agents and Codex stop at Ready: they open PRs and fix CI and
+    review findings only, and do **not** merge feature PRs.
+14. **Claude Code reviews and merges** (it took over from the Chief of Staff /
+    Grok Bot). It squash-merges a feature PR when:
+    - CI is green on the current head, and the PR is mergeable and not a draft;
+    - `/code-review` ran on the final diff, and every finding is fixed or
+      declined with its reason in the PR;
+    - when PRs merge in a row, the next one still passes format, lint,
+      typecheck and its affected tests on top of the new `main`.
+
+    It asks Chupa first, and merges only after an explicit OK, for changes to
+    order execution or risk limits, secrets, LIVE gates, or infra/runtime and
+    deploys. LIVE or capital changes are never merged without Chupa's explicit
+    approval. Dependabot PRs may be merged on green CI after a look at the
+    changelog and diff. Claude Code acts when a session runs (on request, or on
+    events for PRs it follows); it does not watch the repository on its own.
+15. After a merge, delete the merged feature branch and any associated
+    worktree only after confirming they hold no uncommitted or unmerged work.
+    VPS operations stay with the operator (Chupa) or an agent on the VPS:
+    synchronize the Netcup VPS `main` checkout with `origin/main` when a
+    deploy is needed, and assign capture windows. Older documents that say
+    "CoS assigns" or "CoS runs" a VPS step mean the operator.
 
 Keep the workflow practical: add extra steps, tests, or CI only when the
 nature of the change actually requires them.

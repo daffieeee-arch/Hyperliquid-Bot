@@ -33,10 +33,11 @@ trading authorization.
   null because the harness does not record one yet, on any run.
 - **Sync**: 168 archives ready. The one gap line was for the open month of
   October 2026 in `bn-um-btcusdt-klines-1h`, which is outside the range.
-- **Spec**: sha256
+- **Spec**: the canonical sha256 from `python -m research.harness hash` is
   `2c8def878612ce08cea11171209a26b65034cda84bc4df92039b150dc96c3e31`, as
-  pre-registered. The copy the run used is byte-identical to
-  `exp_tsmom_btc.spec.yaml`.
+  pre-registered. It hashes the parsed spec, not the file. The copy the run
+  used is byte-identical to `exp_tsmom_btc.spec.yaml`, whose file sha256 is
+  `333c9896a893f87b62867caf0b7a5b340a77db893650637759806a50f93eb14a`.
 - **Table**: 57,144 rows. The data fingerprint
   `0553f54a851deae6759cc2a23619670000b07976d677e5fcf604ee9902a7eb09` and the
   Parquet sha256
@@ -50,6 +51,14 @@ trading authorization.
   `1928f613ddb400088437c4009085c1d2bbe14d4b515ebd241aa4a2881a6605cc`.
 - **No earlier run**: before this run, only the table's shape had been
   checked. The harness had not run on this table.
+- **Artifacts kept**: only the lock file and the harness output, committed
+  here.
+  - The rest of `STUDY_DIR` lived in the container and is not kept:
+    `bars.parquet`, `sync.log`, `commit.txt` and `out/result.md`.
+  - `commit.txt` matches `source_commit` in the harness output.
+  - Rebuilding the table and checking it against the data fingerprint
+    reproduces the input exactly, as long as the Binance Vision archives
+    are unchanged.
 
 ## Validation
 
@@ -175,14 +184,22 @@ Not all rules hold, so this family stops on BTC.
 
 ## Benchmark computation
 
-The script below is byte-for-byte the file that produced the output. Its
-sha256 is `c4c159b8206d5e6f4f4bff6b0c5a25f18543f3a1024dd8c3a3ebf8496de795e3`.
-It is not committed as a file. To rerun it, save the block as
-`tsmom_benchmark.py`, check the hash, and run it with the locked
-environment (Python 3.13.15, DuckDB 1.5.5):
+The script below is byte-for-byte the file that produced the output.
+
+- **Hash**: its sha256 is
+  `c4c159b8206d5e6f4f4bff6b0c5a25f18543f3a1024dd8c3a3ebf8496de795e3`.
+- **Written before the run**: it was last modified at 18:35 UTC, before the
+  run started at 18:43 UTC.
+- **Not part of the pin**: it sits outside the harness and outside the code
+  pin, and it is not committed as a file.
+
+To rerun it, save the block as `tsmom_benchmark.py` in `STUDY_DIR`, outside
+the repository, and check the hash. Then run it with the locked
+environment, Python 3.13.15 and DuckDB 1.5.5:
 
 ```bash
-uv run --frozen python -I tsmom_benchmark.py "$STUDY_DIR/bars.parquet"
+uv run --frozen --project "$REPO_ROOT" python -I \
+  "$STUDY_DIR/tsmom_benchmark.py" "$STUDY_DIR/bars.parquet"
 ```
 
 - **Row ranges** count from 0 in `ts` order and are inclusive.

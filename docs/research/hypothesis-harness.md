@@ -37,6 +37,8 @@ fields:
 - one or more configs (`threshold`, `horizon_bars`) — this is the whole grid
 - costs in bps (`fee_bps`, `slippage_bps`, `spread_bps`) and `latency_bars`.
   `spread_bps` is the half-spread per side, not the full quoted spread
+- optional `costs.funding_column` for a perp: see [Funding](#funding)
+- optional `sizing`: `unit` (the default) or `vol_target`, see [Sizing](#sizing)
 - walk-forward `expanding` or `rolling`, plus a final `holdout_bars` suffix
 - sample floors for folds and for validation / holdout trade counts
 
@@ -63,8 +65,13 @@ value is `paper_candidate`: eligible for a later PAPER review, not a trading
 authorization.
 
 Gross and net means are both in `result.json` and `result.md` when the holdout
-was evaluated. Net subtracts the round trip
-`2 * (fee_bps + slippage_bps + spread_bps) / 10000`, multiplied by the stress.
+was evaluated. Gross is the price return. Net subtracts the round trip
+`2 * (fee_bps + slippage_bps + spread_bps) / 10000`, multiplied by the stress,
+and adds the funding cashflow when a funding column is declared. With a
+position weight `w` (1 unless `sizing` says otherwise), a trade's net return
+is `w * (price_return - round_trip * stress - paid * stress + received / stress)`:
+each funding payment the trade made is multiplied by the stress and each one
+it received is divided by it.
 `spread_bps` is the half-spread per side, so the round trip charges it on
 entry and again on exit. Latency is not a bps add-on. A fill uses the close of
 `decision_bar + latency_bars`, and the exit is `horizon_bars` later. When the
@@ -75,6 +82,64 @@ be at least 1. `latency_bars: 0` is accepted only with
 Each metric block reports the iid one-sided t and a Newey-West HAC t
 (Bartlett kernel, lag `floor(4 * (n / 100) ** (2 / 9))`). Bonferroni, Holm,
 and BH, and the holdout check, use the larger of the two p-values.
+
+## Funding
+
+A perp position pays or receives funding while it is held. Declare one column
+with `role: funding` and name it in `costs.funding_column`. A funding-role
+column that is not named there is refused, so a funding series is never
+silently ignored. Without one, no funding is accrued.
+
+The value at bar `t` is the funding rate a long pays for holding over that
+bar, settled at the bar's timestamp (positive: longs pay, shorts receive). If
+the venue settles more often than once per bar, the ETL sums the rates inside
+the bar; if less often, bars without a settlement carry 0. A trade filled at
+the close of bar `entry` and exited at the close of bar `exit` holds bars
+`entry + 1` through `exit`: it pays each of those rates, on the notional at
+that bar's close (`price[t] / price[entry]` per unit of entry notional), and
+nothing for the entry bar. A short receives the same amount. The realized
+funding is exact in a backtest, but it is a market cashflow that need not
+repeat, so the stresses treat it adversely, payment by payment: at 1.5x and
+2.0x, every bar's funding paid is multiplied by the stress and every bar's
+funding received is divided by it, so payments inside one trade do not net
+each other out first. The stress sees the per-bar values, so with bars coarser
+than the venue's settlement interval the payments inside one bar are netted
+before it; use bars no coarser than the settlement interval when the stress
+matters. An edge that rests on received funding must survive that haircut
+too. Each config and the
+holdout report a separate `funding` block (the realized per-trade funding
+cashflow, at 1.0x) next to gross and net.
+
+Funding is realized, so it needs no availability clock. A signal that uses a
+funding *forecast* is a feature like any other, with its own availability
+clock.
+
+## Sizing
+
+`sizing` is optional. `method: unit` (the default) trades one notional unit.
+`method: vol_target` weights each trade:
+
+```yaml
+sizing:
+  method: vol_target
+  vol_feature: realized_vol   # a declared feature, so its clock is audited
+  target_vol: 0.02
+  max_leverage: 3.0
+```
+
+The weight is `min(max_leverage, target_vol / vol)`, where `vol` is the
+`vol_feature` value at the decision bar, like the signal. The volatility must
+be positive on every row: a zero or negative value anywhere fails the run
+closed (`failure_kind: sizing`), not only where a trade sizes, so trim warm-up
+rows in the ETL instead of zero-filling them. With `latency_bars: 0`, a
+volatility stamped with the bar timestamp needs `allow_zero_latency: true`,
+as the signal does. `target_vol` is in the units of `vol_feature`: if that is
+a per-bar return stdev, so is the target. Gross, costs, and funding all scale
+with the weight, and each config and the holdout report `mean_weight`.
+Volatility scaling changes what the t-test measures (risk-scaled returns per
+trade), which is the point of pre-registering it.
+
+## Point-in-time checks
 
 Point-in-time checks fail closed (no statistical label) for schema mismatch,
 nulls, duplicate or backwards timestamps, gaps above `max_gap`, non-positive
@@ -143,22 +208,27 @@ Sources:
 ### WP4 — funding / carry
 
 The Binance public-data README does not document a funding-rate CSV schema.
-Declare the columns you actually find on the warehouse view. The harness cost
-block is fees, slippage, spread, and latency only. It does not accrue funding.
-If H1 is about carry, put that cashflow into the bar return in the ETL you
-pre-register, and say so in `h1` and `dataset_version`. Stamp
-`available_at_column` at the time the funding print was knowable, which is not
-the start of the interval if the print arrives at the end.
+Declare the columns you actually find on the warehouse view. Put the realized
+funding rate per bar in a `role: funding` column and name it in
+`costs.funding_column` (see [Funding](#funding)); the harness then charges or
+credits it while a trade is held. A carry signal built from funding (for
+example the last settled rate) is a separate feature: stamp its
+`available_at_column` at the time the print was knowable, which is not the
+start of the interval if the print arrives at the end.
 
 ## Reading the artifact
 
-`result.json` is the machine record (`status`, `label`, `promotion_decision`,
-`spec_sha256`, `data_fingerprint`, validation family with Bonferroni, Holm,
-and BH p-values, and holdout gross and net at 1.0 / 1.5 / 2.0 when a config
-was selected). `result.md` is the same conclusion in prose. A `failed_closed`
-status (gap, duplicate, schema, look-ahead, lock, fingerprint mismatch,
-unsafe mode) has `label: null` and `promotion_decision: forbidden`.
+`result.json` is the machine record (`harness_version` 3, `status`, `label`,
+`promotion_decision`, `spec_sha256`, `data_fingerprint`, the `costs` and
+`sizing` blocks, validation family with Bonferroni, Holm, and BH p-values,
+per-config `funding` and `mean_weight`, and holdout gross, funding and net at
+1.0 / 1.5 / 2.0 when a config was selected). `result.md` is the same
+conclusion in prose. A `failed_closed` status (gap, duplicate, schema,
+look-ahead, lock, fingerprint mismatch, unsafe mode, a non-positive sizing
+volatility as `failure_kind: sizing`) has `label: null` and
+`promotion_decision: forbidden`.
 
 Limitations live in every artifact: the conservative t / HAC gate, per-trade
-Sharpe, flat half-spread costs, no funding cashflow, and no detection of a
-leaked feature that was falsely stamped with the bar clock.
+Sharpe, flat half-spread costs, funding only from a declared column (stressed
+adversely), unit sizing unless `vol_target` is declared, and no detection of
+a leaked feature that was falsely stamped with the bar clock.

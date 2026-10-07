@@ -40,6 +40,9 @@ _TOP_KEYS = frozenset(
         "configs",
     }
 )
+_OPTIONAL_TOP_KEYS = frozenset({"sizing"})
+_SIZING_METHODS = frozenset({"unit", "vol_target"})
+_MAX_LEVERAGE_CAP = 100.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +73,27 @@ class CostSpec:
     spread_bps: float
     latency_bars: int
     allow_zero_latency: bool
+    # A funding-role column: the rate a long pays over each bar, settled at
+    # the bar's timestamp. None means no funding is accrued.
+    funding_column: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SizingSpec:
+    """Position weight per trade. ``unit`` is one notional unit per trade.
+
+    ``vol_target`` weights a trade by ``target_vol / vol`` at the decision bar,
+    capped at ``max_leverage``. ``vol_feature`` is a declared feature, so its
+    availability clock is audited like the signal's.
+    """
+
+    method: str
+    vol_feature: str | None = None
+    target_vol: float | None = None
+    max_leverage: float | None = None
+
+
+UNIT_SIZING = SizingSpec(method="unit")
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +140,7 @@ class HypothesisSpec:
     data: DataSpec
     features: tuple[FeatureSpec, ...]
     configs: tuple[ConfigSpec, ...]
+    sizing: SizingSpec = UNIT_SIZING
 
 
 def load_document(path: Path) -> dict[str, Json]:
@@ -161,7 +186,7 @@ def spec_sha256(document: dict[str, Json]) -> str:
 def validate_spec(document: dict[str, Json]) -> HypothesisSpec:
     """Reject unknown keys and build the typed spec. Does not read market data."""
 
-    _exact(document, _TOP_KEYS, "spec")
+    _exact_with_optional(document, _TOP_KEYS, _OPTIONAL_TOP_KEYS, "spec")
     hypothesis_id = _identifier(
         _require_str(document["hypothesis_id"], "hypothesis_id", 81),
         _HYPOTHESIS_ID,
@@ -193,7 +218,16 @@ def validate_spec(document: dict[str, Json]) -> HypothesisSpec:
     configs = _parse_configs(document["configs"])
     if signal_feature not in {feature.name for feature in features}:
         raise SpecError("signal_feature must name a declared feature.")
-    _require_latency_floor(costs, features, data, signal_feature)
+    _require_funding_column(costs, data)
+    sizing = (
+        _parse_sizing(_require_mapping(document["sizing"], "sizing"), features)
+        if "sizing" in document
+        else UNIT_SIZING
+    )
+    decision_features = (signal_feature,) + (
+        () if sizing.vol_feature is None else (sizing.vol_feature,)
+    )
+    _require_latency_floor(costs, features, data, decision_features)
     return HypothesisSpec(
         hypothesis_id=hypothesis_id,
         universe=universe,
@@ -210,6 +244,7 @@ def validate_spec(document: dict[str, Json]) -> HypothesisSpec:
         data=data,
         features=features,
         configs=configs,
+        sizing=sizing,
     )
 
 
@@ -267,13 +302,12 @@ def verify_lock(spec_path: Path, document: dict[str, Json], digest: str) -> dict
 
 
 def _parse_costs(raw: dict[str, Json]) -> CostSpec:
-    required = {"fee_bps", "slippage_bps", "spread_bps", "latency_bars"}
-    optional = {"allow_zero_latency"}
-    keys = set(raw)
-    if not required <= keys or keys - required - optional:
-        missing = sorted(required - keys)
-        extra = sorted(keys - required - optional)
-        raise SpecError(f"costs keys mismatch; missing={missing} extra={extra}.")
+    _exact_with_optional(
+        raw,
+        frozenset({"fee_bps", "slippage_bps", "spread_bps", "latency_bars"}),
+        frozenset({"allow_zero_latency", "funding_column"}),
+        "costs",
+    )
     fee_bps = _non_negative(_require_number(raw["fee_bps"], "costs.fee_bps"), "costs.fee_bps")
     slippage_bps = _non_negative(
         _require_number(raw["slippage_bps"], "costs.slippage_bps"),
@@ -288,12 +322,64 @@ def _parse_costs(raw: dict[str, Json]) -> CostSpec:
     allow_zero_latency = False
     if "allow_zero_latency" in raw:
         allow_zero_latency = _require_bool(raw["allow_zero_latency"], "costs.allow_zero_latency")
+    funding_column = None
+    if "funding_column" in raw:
+        funding_column = _identifier(
+            _require_str(raw["funding_column"], "costs.funding_column", 64),
+            _COLUMN_NAME,
+            "costs.funding_column",
+        )
     return CostSpec(
         fee_bps=fee_bps,
         slippage_bps=slippage_bps,
         spread_bps=spread_bps,
         latency_bars=latency_bars,
         allow_zero_latency=allow_zero_latency,
+        funding_column=funding_column,
+    )
+
+
+def _require_funding_column(costs: CostSpec, data: DataSpec) -> None:
+    """A funding column is accrued only when named, and a named one must exist."""
+
+    declared = [column.name for column in data.columns if column.role == "funding"]
+    if costs.funding_column is None:
+        if declared:
+            raise SpecError(
+                "A funding-role column is declared; name it in costs.funding_column "
+                "so the cashflow is not silently ignored."
+            )
+        return
+    if declared != [costs.funding_column]:
+        raise SpecError("costs.funding_column must name the one declared funding-role column.")
+
+
+def _parse_sizing(raw: dict[str, Json], features: tuple[FeatureSpec, ...]) -> SizingSpec:
+    method = _require_str(raw.get("method"), "sizing.method", 16)
+    if method not in _SIZING_METHODS:
+        raise SpecError("sizing.method must be unit or vol_target.")
+    if method == "unit":
+        _exact(raw, {"method"}, "sizing")
+        return UNIT_SIZING
+    _exact(raw, {"method", "vol_feature", "target_vol", "max_leverage"}, "sizing")
+    vol_feature = _identifier(
+        _require_str(raw["vol_feature"], "sizing.vol_feature", 41),
+        _FEATURE_NAME,
+        "sizing.vol_feature",
+    )
+    if vol_feature not in {feature.name for feature in features}:
+        raise SpecError("sizing.vol_feature must name a declared feature.")
+    target_vol = _require_number(raw["target_vol"], "sizing.target_vol")
+    if target_vol <= 0.0:
+        raise SpecError("sizing.target_vol must be > 0.")
+    max_leverage = _require_number(raw["max_leverage"], "sizing.max_leverage")
+    if not 0.0 < max_leverage <= _MAX_LEVERAGE_CAP:
+        raise SpecError(f"sizing.max_leverage must lie in (0, {_MAX_LEVERAGE_CAP:g}].")
+    return SizingSpec(
+        method=method,
+        vol_feature=vol_feature,
+        target_vol=target_vol,
+        max_leverage=max_leverage,
     )
 
 
@@ -301,19 +387,24 @@ def _require_latency_floor(
     costs: CostSpec,
     features: tuple[FeatureSpec, ...],
     data: DataSpec,
-    signal_feature: str,
+    decision_features: tuple[str, ...],
 ) -> None:
-    """Bar-timestamp clocks fill on a later bar unless zero latency is explicit."""
+    """Bar-timestamp clocks fill on a later bar unless zero latency is explicit.
+
+    Every feature read at the decision bar counts: the signal, and the sizing
+    volatility, which would otherwise size a fill with that bar's own close.
+    """
 
     if costs.latency_bars >= 1 or costs.allow_zero_latency:
         return
-    signal = next(feature for feature in features if feature.name == signal_feature)
-    if signal.available_at_column != data.timestamp_column:
-        return
-    raise SpecError(
-        "costs.latency_bars must be >= 1 when the signal clock is the bar timestamp. "
-        "latency_bars 0 requires costs.allow_zero_latency: true."
-    )
+    for feature in features:
+        if feature.name in decision_features and (
+            feature.available_at_column == data.timestamp_column
+        ):
+            raise SpecError(
+                f"costs.latency_bars must be >= 1 when the {feature.name} clock is the bar "
+                "timestamp. latency_bars 0 requires costs.allow_zero_latency: true."
+            )
 
 
 def _parse_split(raw: dict[str, Json]) -> SplitSpec:
@@ -423,13 +514,14 @@ def _parse_columns(raw: Json, timestamp_column: str, price_column: str) -> tuple
         role = _require_str(body["role"], f"data.columns.{column_name}.role", 16)
         if dtype not in {"int64", "float64"}:
             raise SpecError(f"data.columns.{column_name}.dtype must be int64 or float64.")
-        if role not in {"timestamp", "price", "feature", "availability"}:
+        if role not in {"timestamp", "price", "feature", "availability", "funding"}:
             raise SpecError(
-                f"Column {column_name} role must be timestamp, price, feature, or availability."
+                f"Column {column_name} role must be timestamp, price, feature, availability, "
+                "or funding."
             )
         if role in {"timestamp", "availability"} and dtype != "int64":
             raise SpecError(f"data.columns.{column_name} must be int64.")
-        if role in {"price", "feature"} and dtype != "float64":
+        if role in {"price", "feature", "funding"} and dtype != "float64":
             raise SpecError(f"data.columns.{column_name} must be float64.")
         columns.append(ColumnSpec(name=column_name, dtype=dtype, role=role))
     names = [column.name for column in columns]
@@ -597,6 +689,19 @@ def _identifier(value: str, pattern: re.Pattern[str], label: str) -> str:
     if pattern.fullmatch(value) is None:
         raise SpecError(f"{label} has an illegal identifier {value!r}.")
     return value
+
+
+def _exact_with_optional(
+    data: dict[str, Json],
+    required: frozenset[str],
+    optional: frozenset[str],
+    label: str,
+) -> None:
+    keys = set(data)
+    if not required <= keys or keys - required - optional:
+        missing = sorted(required - keys)
+        extra = sorted(keys - required - optional)
+        raise SpecError(f"{label} keys mismatch; missing={missing} extra={extra}.")
 
 
 def _exact(data: dict[str, Json], required: frozenset[str] | set[str], label: str) -> None:

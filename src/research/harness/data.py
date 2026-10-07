@@ -42,6 +42,8 @@ class BarTable:
     prices: tuple[float, ...]
     features: dict[str, tuple[float, ...]]
     availability: dict[str, tuple[int, ...]]
+    # The funding rate a long pays over each bar, when costs.funding_column is set.
+    funding: tuple[float, ...] | None = None
 
 
 def fingerprint_inputs(spec: HypothesisSpec, spec_dir: Path) -> dict[str, Json]:
@@ -284,6 +286,8 @@ def _table_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Ba
     availability_values: dict[str, list[int]] = {
         column.name: [] for column in data.columns if column.role == "availability"
     }
+    funding_column = spec.costs.funding_column
+    funding_values: list[float] = []
     for row_index, row in enumerate(rows):
         if len(row) != len(data.columns):
             raise IntegrityError("schema", f"Row {row_index} does not match the declared width.")
@@ -301,6 +305,10 @@ def _table_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Ba
             feature_bucket.append(_as_float(row[index_by_name[name]], name, row_index))
         for name, clock_bucket in availability_values.items():
             clock_bucket.append(_as_int(row[index_by_name[name]], name, row_index))
+        if funding_column is not None:
+            funding_values.append(
+                _as_float(row[index_by_name[funding_column]], funding_column, row_index)
+            )
     _audit_clock(timestamps, data.max_gap)
     _audit_prices(prices)
     availability = {name: tuple(values) for name, values in availability_values.items()}
@@ -309,6 +317,7 @@ def _table_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Ba
         prices=tuple(prices),
         features={name: tuple(values) for name, values in feature_values.items()},
         availability=availability,
+        funding=None if funding_column is None else tuple(funding_values),
     )
     _audit_lookahead(spec.features, table)
     return table

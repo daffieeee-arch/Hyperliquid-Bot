@@ -17,10 +17,27 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from research.harness.errors import HarnessError
-from research.harness.evaluate import collect_gross_returns, summarize
+from research.harness.data import BarTable
+from research.harness.errors import HarnessError, IntegrityError, SpecError
+from research.harness.evaluate import (
+    Trade,
+    collect_trades,
+    decide,
+    position_weight,
+    summarize,
+    trade_series,
+)
 from research.harness.run import execute, lock_spec
-from research.harness.spec import Json, SplitSpec, load_document, spec_sha256, validate_spec
+from research.harness.spec import (
+    UNIT_SIZING,
+    CostSpec,
+    Json,
+    SizingSpec,
+    SplitSpec,
+    load_document,
+    spec_sha256,
+    validate_spec,
+)
 from research.harness.splits import walk_forward
 from research.harness.stats import (
     benjamini_hochberg,
@@ -92,9 +109,8 @@ def test_validation_window_does_not_read_holdout_prices() -> None:
     prices = [100.0 + index for index in range(12)]
     prices[8:] = [0.0] * 4
     feature = [1.0] * 12
-    returns = collect_gross_returns(
+    trades = collect_trades(
         feature,
-        prices,
         threshold=0.0,
         horizon_bars=2,
         latency_bars=1,
@@ -102,7 +118,9 @@ def test_validation_window_does_not_read_holdout_prices() -> None:
         start=0,
         end=8,
     )
-    assert returns
+    assert trades
+    assert all(trade.exit < 8 for trade in trades)
+    returns = trade_series(trades, prices, funding=None, sizing=UNIT_SIZING, vol=None).gross
     assert all(math.isfinite(value) for value in returns)
 
 
@@ -446,6 +464,396 @@ def test_harness_source_does_not_reference_order_entry() -> None:
         text = path.read_text(encoding="utf-8")
         for token in banned:
             assert token not in text
+
+
+def test_funding_is_charged_over_the_bars_a_trade_is_held() -> None:
+    # Held bars are entry+1..exit; bars 0 and 4 carry a rate that must not count.
+    prices = (100.0, 100.0, 110.0, 110.0, 100.0)
+    funding = (9.0, 0.001, 0.002, 0.003, 9.0)
+    trades = (
+        Trade(decision=0, entry=1, exit=3, side=1),
+        Trade(decision=0, entry=1, exit=3, side=-1),
+    )
+    series = trade_series(trades, prices, funding=funding, sizing=UNIT_SIZING, vol=None)
+    # Each rate is charged on the notional at that bar's close: 110 / 100.
+    paid = 0.002 * 1.1 + 0.003 * 1.1
+    assert series.gross == pytest.approx((0.1, -0.1))
+    assert series.funding == pytest.approx((-paid, paid))
+    assert series.funding_paid == pytest.approx((paid, 0.0))
+    assert series.funding_received == pytest.approx((0.0, paid))
+    assert series.weights == (1.0, 1.0)
+    costs = _costs(fee_bps=5.0)  # a 0.001 round trip at 1.0x
+    assert series.net(costs, 1.0) == pytest.approx((0.1 - 0.001 - paid, -0.1 - 0.001 + paid))
+    # Under stress, funding paid grows and funding received shrinks.
+    assert series.net(costs, 2.0) == pytest.approx(
+        (0.1 - 0.002 - 2.0 * paid, -0.1 - 0.002 + paid / 2.0)
+    )
+    no_funding = trade_series(trades, prices, funding=None, sizing=UNIT_SIZING, vol=None)
+    assert no_funding.funding == (0.0, 0.0)
+
+
+def test_funding_stress_applies_to_each_payment_not_the_trade_net() -> None:
+    # A long pays 0.01 over four bars and receives 0.009 over four more. Its
+    # realized funding is -0.001, but at 2.0x every payment is stressed:
+    # -0.02 paid + 0.0045 received, not 2 * -0.001.
+    prices = (100.0,) * 10
+    funding = (0.0, 0.0, 0.0025, 0.0025, 0.0025, 0.0025, -0.00225, -0.00225, -0.00225, -0.00225)
+    trade = Trade(decision=0, entry=1, exit=9, side=1)
+    series = trade_series((trade,), prices, funding=funding, sizing=UNIT_SIZING, vol=None)
+    assert series.funding == pytest.approx((-0.001,))
+    zero_costs = _costs(fee_bps=0.0)
+    assert series.net(zero_costs, 1.0) == pytest.approx((-0.001,))
+    assert series.net(zero_costs, 2.0) == pytest.approx((-0.02 + 0.0045,))
+
+
+def test_vol_target_weight_reads_the_decision_bar_and_is_capped() -> None:
+    sizing = SizingSpec(method="vol_target", vol_feature="vol", target_vol=0.02, max_leverage=3.0)
+    vol = (0.01, 0.04, 0.001, 0.0, -0.01)
+    assert position_weight(sizing, vol, 0) == pytest.approx(2.0)
+    assert position_weight(sizing, vol, 1) == pytest.approx(0.5)
+    assert position_weight(sizing, vol, 2) == 3.0
+    # A zero, negative or non-finite volatility never takes the leverage cap.
+    for decision in (3, 4):
+        with pytest.raises(IntegrityError, match="not positive"):
+            position_weight(sizing, vol, decision)
+    for bad in (math.nan, math.inf):
+        with pytest.raises(IntegrityError, match="not positive"):
+            position_weight(sizing, (bad,), 0)
+    assert position_weight(UNIT_SIZING, None, 0) == 1.0
+    # Price return, cost and funding all scale with the weight.
+    prices = (100.0, 100.0, 101.0)
+    series = trade_series(
+        (Trade(decision=0, entry=1, exit=2, side=1),),
+        prices,
+        funding=(0.0, 0.0, 0.001),
+        sizing=sizing,
+        vol=vol,
+    )
+    assert series.weights == pytest.approx((2.0,))
+    assert series.net(_costs(fee_bps=10.0), 1.0) == pytest.approx(
+        (2.0 * (0.01 - 0.002 - 0.001 * 1.01),)
+    )
+
+
+def test_spec_validates_funding_and_sizing() -> None:
+    document = _spec_body(parquet=True)
+    assert validate_spec(_json(document)).sizing == UNIT_SIZING
+    assert validate_spec(_json(document)).costs.funding_column is None
+    funded = _funding_body()
+    assert validate_spec(_json(funded)).costs.funding_column == "funding_rate"
+    unnamed = _funding_body()
+    del _mapping(unnamed["costs"])["funding_column"]
+    with pytest.raises(SpecError, match=r"name it in costs\.funding_column"):
+        validate_spec(_json(unnamed))
+    wrong_role = _funding_body()
+    _mapping(wrong_role["costs"])["funding_column"] = "taker_imbalance"
+    with pytest.raises(SpecError, match="funding-role column"):
+        validate_spec(_json(wrong_role))
+    undeclared = _spec_body(parquet=True)
+    _mapping(undeclared["costs"])["funding_column"] = "funding_rate"
+    with pytest.raises(SpecError, match="funding-role column"):
+        validate_spec(_json(undeclared))
+    sized = _sized_body()
+    parsed = validate_spec(_json(sized)).sizing
+    assert (parsed.method, parsed.vol_feature, parsed.target_vol, parsed.max_leverage) == (
+        "vol_target",
+        "realized_vol",
+        0.02,
+        5.0,
+    )
+    for patch, message in (
+        ({"method": "unit", "target_vol": 0.02}, "sizing keys mismatch"),
+        ({"vol_feature": "taker_vol"}, "declared feature"),
+        ({"target_vol": 0.0}, "target_vol"),
+        ({"max_leverage": 101.0}, "max_leverage"),
+        ({"method": "kelly"}, "unit or vol_target"),
+    ):
+        bad = _sized_body()
+        _mapping(bad["sizing"]).update(patch)
+        if patch.get("method") == "unit":
+            for key in ("vol_feature", "max_leverage"):
+                del _mapping(bad["sizing"])[key]
+        with pytest.raises(SpecError, match=message):
+            validate_spec(_json(bad))
+    unit = _spec_body(parquet=True)
+    unit["sizing"] = {"method": "unit"}
+    assert validate_spec(_json(unit)).sizing == UNIT_SIZING
+    unknown = _spec_body(parquet=True)
+    unknown["leverage"] = 2
+    with pytest.raises(SpecError, match="extra"):
+        validate_spec(_json(unknown))
+
+
+def test_latency_floor_covers_the_sizing_volatility() -> None:
+    # The signal has its own clock, but the volatility is stamped at the bar
+    # close: with zero latency it would size a fill with that bar's own close.
+    body = _sized_body()
+    _mapping(body["costs"])["latency_bars"] = 0
+    with pytest.raises(SpecError, match="realized_vol clock is the bar timestamp"):
+        validate_spec(_json(body))
+    _mapping(body["costs"])["allow_zero_latency"] = True
+    assert validate_spec(_json(body)).costs.latency_bars == 0
+
+
+def test_decide_audits_the_whole_volatility_series_of_any_table() -> None:
+    # A table built without load_bars still gets the whole-series check, even
+    # though no trade is decided on the zero row.
+    spec = validate_spec(_json(_sized_body()))
+    rows = 20
+    table = BarTable(
+        timestamps=tuple(range(rows)),
+        prices=tuple(100.0 for _ in range(rows)),
+        features={
+            "taker_imbalance": tuple(0.0 for _ in range(rows)),
+            "realized_vol": tuple(0.0 if index == rows - 1 else 0.01 for index in range(rows)),
+        },
+        availability={"imbalance_available_ts": tuple(range(rows))},
+    )
+    with pytest.raises(IntegrityError, match="must be positive") as refused:
+        decide(spec, table)
+    assert refused.value.failure_kind == "sizing"
+    nan_table = BarTable(
+        timestamps=table.timestamps,
+        prices=table.prices,
+        features={
+            "taker_imbalance": table.features["taker_imbalance"],
+            "realized_vol": tuple(math.nan if index == rows - 1 else 0.01 for index in range(rows)),
+        },
+        availability=table.availability,
+    )
+    with pytest.raises(IntegrityError, match="must be positive"):
+        decide(spec, nan_table)
+
+
+def test_bar_table_without_the_declared_funding_is_refused() -> None:
+    spec = validate_spec(_json(_funding_body()))
+    table = BarTable(
+        timestamps=(0, 1, 2),
+        prices=(100.0, 100.0, 100.0),
+        features={"taker_imbalance": (1.0, 1.0, 1.0)},
+        availability={"imbalance_available_ts": (0, 1, 2)},
+        funding=None,
+    )
+    with pytest.raises(HarnessError, match="funding") as refused:
+        decide(spec, table)
+    assert refused.value.failure_kind == "invariant"
+
+
+def test_any_non_positive_volatility_fails_the_run_closed(tmp_path: Path) -> None:
+    # Only the last row is zero, where no trade is decided: the audit still
+    # refuses the series rather than depending on which configs trade.
+    rows = _regime_rows(420)
+    vol = [0.01] * (len(rows) - 1) + [0.0]
+    document = _run_extended(
+        tmp_path,
+        rows,
+        vol=vol,
+        sizing={
+            "method": "vol_target",
+            "vol_feature": "realized_vol",
+            "target_vol": 0.02,
+            "max_leverage": 5.0,
+        },
+    )
+    assert document["status"] == "failed_closed"
+    assert document["failure_kind"] == "sizing"
+    assert document["promotion_decision"] == "forbidden"
+
+
+def test_spec_without_funding_or_sizing_reports_unit_weight(tmp_path: Path) -> None:
+    document = _run_rows(tmp_path, _regime_rows(420), configs=_two_configs())
+    assert document["harness_version"] == "3"
+    assert document["label"] == "passes_h1"
+    assert _mapping(document["costs"])["funding_column"] is None
+    assert _mapping(document["sizing"])["method"] == "unit"
+    configs = _mapping(document["multiple_testing"])["configs"]
+    assert isinstance(configs, list)
+    real = _mapping(configs[1])
+    assert real["funding"] is None
+    assert real["mean_weight"] == 1.0
+    holdout = _mapping(document["holdout"])
+    assert holdout["funding"] is None
+    assert holdout["mean_weight"] == 1.0
+
+
+def test_funding_paid_on_the_position_wipes_a_planted_edge(tmp_path: Path) -> None:
+    # Funding has the sign of each regime, so longs and shorts both pay
+    # 0.5% per bar held: more than the planted 0.4% per bar.
+    rows = _regime_rows(420)
+    funding = [0.005 * feature for _timestamp, _price, feature, _available in rows]
+    document = _run_extended(tmp_path, rows, funding=funding, configs=_two_configs())
+    assert document["status"] == "completed"
+    assert document["label"] == "interesting_but_fragile"
+    assert document["promotion_decision"] == "forbidden"
+    assert document["selected_config_id"] is None
+    assert _mapping(document["costs"])["funding_column"] == "funding_rate"
+    configs = _mapping(document["multiple_testing"])["configs"]
+    assert isinstance(configs, list)
+    real = _mapping(configs[1])
+    assert _as_float(_mapping(real["funding"])["mean_return"]) < 0.0
+    assert _as_float(_mapping(real["gross"])["mean_return"]) > 0.0
+    markdown = (tmp_path / "out" / "result.md").read_text(encoding="utf-8")
+    assert "mean funding" in markdown
+
+
+def test_vol_target_sizing_scales_each_trade(tmp_path: Path) -> None:
+    rows = _regime_rows(420)
+    unit = _run_extended(tmp_path / "unit", rows, configs=_two_configs())
+    sized = _run_extended(
+        tmp_path / "sized",
+        rows,
+        vol=[0.01] * len(rows),
+        sizing={
+            "method": "vol_target",
+            "vol_feature": "realized_vol",
+            "target_vol": 0.02,
+            "max_leverage": 5.0,
+        },
+        configs=_two_configs(),
+    )
+    assert sized["label"] == unit["label"] == "passes_h1"
+    unit_configs = _mapping(unit["multiple_testing"])["configs"]
+    sized_configs = _mapping(sized["multiple_testing"])["configs"]
+    assert isinstance(unit_configs, list) and isinstance(sized_configs, list)
+    unit_real = _mapping(unit_configs[1])
+    sized_real = _mapping(sized_configs[1])
+    assert sized_real["mean_weight"] == pytest.approx(2.0)
+    unit_net = _as_float(_mapping(_mapping(unit_real["net"])["1.0"])["mean_return"])
+    sized_net = _as_float(_mapping(_mapping(sized_real["net"])["1.0"])["mean_return"])
+    assert sized_net == pytest.approx(2.0 * unit_net)
+    assert _mapping(sized["sizing"])["vol_feature"] == "realized_vol"
+    assert _mapping(sized["holdout"])["mean_weight"] == pytest.approx(2.0)
+
+
+def test_vol_feature_from_the_future_fails_closed(tmp_path: Path) -> None:
+    rows = _regime_rows(420)
+    document = _run_extended(
+        tmp_path,
+        rows,
+        vol=[0.01] * len(rows),
+        vol_available=[timestamp + 1 for timestamp, _price, _feature, _available in rows],
+        sizing={
+            "method": "vol_target",
+            "vol_feature": "realized_vol",
+            "target_vol": 0.02,
+            "max_leverage": 5.0,
+        },
+    )
+    assert document["status"] == "failed_closed"
+    assert document["failure_kind"] == "lookahead"
+    assert document["promotion_decision"] == "forbidden"
+
+
+def _run_extended(
+    tmp_path: Path,
+    rows: list[tuple[int, float, float, int]],
+    *,
+    funding: list[float] | None = None,
+    vol: list[float] | None = None,
+    vol_available: list[int] | None = None,
+    sizing: dict[str, object] | None = None,
+    **overrides: object,
+) -> dict[str, Json]:
+    """Run the fixture with optional funding and volatility columns."""
+
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    extra: dict[str, tuple[str, Sequence[object]]] = {}
+    spec = _spec_body(parquet=True)
+    columns = _mapping(_mapping(spec["data"])["columns"])
+    if funding is not None:
+        extra["funding_rate"] = ("DOUBLE", funding)
+        columns["funding_rate"] = {"dtype": "float64", "role": "funding"}
+        _mapping(spec["costs"])["funding_column"] = "funding_rate"
+    if vol is not None:
+        clock = vol_available or [timestamp for timestamp, _p, _f, _a in rows]
+        extra["realized_vol"] = ("DOUBLE", vol)
+        extra["vol_available_ts"] = ("BIGINT", clock)
+        columns["realized_vol"] = {"dtype": "float64", "role": "feature"}
+        columns["vol_available_ts"] = {"dtype": "int64", "role": "availability"}
+        features = spec["features"]
+        assert isinstance(features, list)
+        features.append(
+            {
+                "name": "realized_vol",
+                "column": "realized_vol",
+                "available_at_column": "vol_available_ts",
+            }
+        )
+    if sizing is not None:
+        spec["sizing"] = sizing
+    _apply_overrides(spec, overrides)
+    _write_parquet_with(tmp_path / "bars.parquet", rows, extra)
+    path = tmp_path / "spec.json"
+    path.write_text(json.dumps(spec), encoding="utf-8")
+    lock_spec(path)
+    return execute(path, tmp_path / "out").document
+
+
+def _write_parquet_with(
+    path: Path,
+    rows: Sequence[tuple[int, float, float, int]],
+    extra: dict[str, tuple[str, Sequence[object]]],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    names = ["ts", "close", "taker_imbalance", "imbalance_available_ts", *extra]
+    types = ["BIGINT", "DOUBLE", "DOUBLE", "BIGINT", *(kind for kind, _ in extra.values())]
+    connection = duckdb.connect()
+    connection.execute(
+        "CREATE TABLE bars ("
+        + ", ".join(f"{name} {kind}" for name, kind in zip(names, types, strict=True))
+        + ")"
+    )
+    values = [
+        (*row, *(column[index] for _kind, column in extra.values()))
+        for index, row in enumerate(rows)
+    ]
+    placeholders = ", ".join("?" for _ in names)
+    connection.executemany(f"INSERT INTO bars VALUES ({placeholders})", values)
+    destination = str(path).replace("'", "''")
+    connection.execute(f"COPY bars TO '{destination}' (FORMAT PARQUET)")
+    connection.close()
+
+
+def _funding_body() -> dict[str, object]:
+    body = _spec_body(parquet=True)
+    _mapping(_mapping(body["data"])["columns"])["funding_rate"] = {
+        "dtype": "float64",
+        "role": "funding",
+    }
+    _mapping(body["costs"])["funding_column"] = "funding_rate"
+    return body
+
+
+def _sized_body() -> dict[str, object]:
+    body = _spec_body(parquet=True)
+    columns = _mapping(_mapping(body["data"])["columns"])
+    columns["realized_vol"] = {"dtype": "float64", "role": "feature"}
+    features = body["features"]
+    assert isinstance(features, list)
+    features.append({"name": "realized_vol", "column": "realized_vol", "available_at_column": "ts"})
+    body["sizing"] = {
+        "method": "vol_target",
+        "vol_feature": "realized_vol",
+        "target_vol": 0.02,
+        "max_leverage": 5.0,
+    }
+    return body
+
+
+def _costs(*, fee_bps: float) -> CostSpec:
+    return CostSpec(
+        fee_bps=fee_bps,
+        slippage_bps=0.0,
+        spread_bps=0.0,
+        latency_bars=1,
+        allow_zero_latency=False,
+    )
+
+
+def _json(body: dict[str, object]) -> dict[str, Json]:
+    decoded = json.loads(json.dumps(body))
+    assert isinstance(decoded, dict)
+    return decoded
 
 
 def _run_rows(

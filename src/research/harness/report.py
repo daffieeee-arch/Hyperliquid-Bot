@@ -6,6 +6,7 @@ import json
 import os
 import re
 import subprocess
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Final
 
@@ -38,12 +39,30 @@ LIMITATIONS: Final[tuple[str, ...]] = (
     "per trade among the configs that meet the trade floor pro-rated to the in-sample "
     "folds, and does not re-run the significance and stress gates.",
     "The buy-and-hold benchmark is one unit long over the validation test folds, and over the "
-    "holdout only when a config was selected. It is context and never changes the label.",
+    "holdout only when a config was selected. It fills after latency_bars like a trade, is "
+    "context, and never changes the label.",
     "Look-ahead control uses the declared clock. A falsely stamped future value is invisible.",
     "paper_candidate is not LIVE, SHADOW, TESTNET, or an order authorization.",
     "Spot Vision timestamps from 2025-01-01 are microseconds; USD-M examples are milliseconds.",
     "Kraken OHLCVT omits empty intervals and is USD-quoted, not USDT.",
 )
+
+
+@dataclass(frozen=True, slots=True)
+class Provenance:
+    source_environment: str
+    source_commit: str | None
+    image_digest: str | None
+
+
+def provenance() -> Provenance:
+    """Read the run's provenance once; a malformed environment or digest fails closed."""
+
+    return Provenance(
+        source_environment=source_environment(),
+        source_commit=source_commit(),
+        image_digest=image_digest(),
+    )
 
 
 def source_environment() -> str:
@@ -94,7 +113,10 @@ def failure_document(
     spec_sha256: str | None,
     hypothesis_id: str | None,
     trading_mode: str,
+    origin: Provenance | None,
 ) -> dict[str, Json]:
+    """A fail-closed record. ``origin`` is None when provenance itself was refused."""
+
     return {
         "harness_version": HARNESS_VERSION,
         "status": "failed_closed",
@@ -104,6 +126,7 @@ def failure_document(
         "trading_mode": trading_mode,
         "spec_sha256": spec_sha256,
         "hypothesis_id": hypothesis_id,
+        **_provenance_json(origin),
         "reasons": list(reasons),
         "limitations": list(LIMITATIONS),
         "generated_at_utc": _now(),
@@ -117,6 +140,7 @@ def completed_document(
     decision: Decision,
     data_fingerprint: dict[str, Json],
     benchmark: Benchmark,
+    origin: Provenance,
 ) -> dict[str, Json]:
     timestamps = table.timestamps
     return {
@@ -134,9 +158,7 @@ def completed_document(
         "h1": spec.h1,
         "alpha": spec.alpha,
         "selection_method": spec.selection_method,
-        "source_environment": source_environment(),
-        "source_commit": source_commit(),
-        "image_digest": image_digest(),
+        **_provenance_json(origin),
         "bar_count": len(timestamps),
         "timestamp_min": timestamps[0] if timestamps else None,
         "timestamp_max": timestamps[-1] if timestamps else None,
@@ -298,14 +320,16 @@ def _benchmark_lines(document: dict[str, Json]) -> list[str]:
     if not isinstance(block, dict):
         return ["- benchmark block missing"]
     lines = [
-        "Buy-and-hold: one unit long from the window's first close to its last. "
-        "Context only; it never changes the label.",
+        "Buy-and-hold: one unit long, filled after latency_bars, held to the window's "
+        "last close. Funding is positive when received. Context only; it never changes "
+        "the label.",
         "",
     ]
     for window in ("validation", "holdout"):
         values = block.get(window)
         if not isinstance(values, dict):
-            state = "sealed (not evaluated)" if window == "holdout" else "no window"
+            sealed = window == "holdout" and document.get("holdout") is None
+            state = "sealed (not evaluated)" if sealed else "window too short to hold"
             lines.append(f"- {window}: {state}")
             continue
         lines.append(
@@ -414,11 +438,19 @@ def _buy_and_hold_json(result: BuyAndHold | None) -> dict[str, Json] | None:
         "gross_return": result.gross_return,
         "log_return": result.log_return,
         "funding": result.funding,
-        "funding_rate_sum": result.funding_rate_sum,
+        "funding_constant_notional": result.funding_constant_notional,
         "net": dict(result.net),
         "mean_log_return_per_bar": result.mean_log_return_per_bar,
         "stdev_log_return_per_bar": result.stdev_log_return_per_bar,
         "sharpe_per_bar": result.sharpe_per_bar,
+    }
+
+
+def _provenance_json(origin: Provenance | None) -> dict[str, Json]:
+    return {
+        "source_environment": None if origin is None else origin.source_environment,
+        "source_commit": None if origin is None else origin.source_commit,
+        "image_digest": None if origin is None else origin.image_digest,
     }
 
 

@@ -195,19 +195,23 @@ buy-and-hold, one unit long, priced like a strategy trade at unit weight.
   first fold's `test_start` to the last fold's `test_end`. `holdout` covers
   the holdout, but only when validation selected a config. While the
   holdout is sealed it is `null`, and the benchmark does not read it either.
-- **Trade**: entry at the window's first close and exit at its last close.
-  `bars_held` is the window length minus one. `gross_return` is the price
-  return and `log_return` its log.
-- **Funding**: when a funding column is declared, `funding` is the realized
-  cashflow of a fixed quantity, paid on the notional at each held bar's
-  close, as for a strategy trade. `funding_rate_sum` is the sum of the
-  held bars' rates, which is what a long of constant notional pays. Both
-  are `null` without a funding column.
+- **Trade**: decided at the window's first close and filled `latency_bars`
+  later, like a strategy trade, then held to the window's last close.
+  `bars_held` counts the bars from the fill to the exit. `gross_return` is
+  the price return and `log_return` its log. A window too short to hold
+  after the fill is `null`; `result.md` then says so instead of "sealed".
+- **Funding**: both fields are positive when funding is received, like the
+  strategy's `funding` block. When a funding column is declared, `funding` is
+  the realized cashflow of a fixed quantity, paid on the notional at each
+  held bar's close, as for a strategy trade; `net` uses it.
+  `funding_constant_notional` is the same bars' cashflow at a constant
+  notional: the negated sum of their rates. Both are `null` without a
+  funding column.
 - **Net**: one round trip plus funding, at 1.0x, 1.5x and 2.0x, stressed as
   for a strategy trade.
 - **Per bar**: `mean_log_return_per_bar`, `stdev_log_return_per_bar` and
-  `sharpe_per_bar` use the log returns between consecutive closes in the
-  window. They are not annualized, because the harness does not assume a
+  `sharpe_per_bar` use the log returns between consecutive closes from the
+  fill to the exit. They are not annualized, because the harness does not assume a
   bar length.
 
 The strategy metrics are per trade and risk-scaled; the benchmark is one
@@ -216,13 +220,18 @@ several configs on the same data is not an out-of-sample comparison.
 
 ## Provenance
 
-`source_environment` comes from `RESEARCH_ENV` (`DEV` by default, or `CI` or
-`VPS_RESEARCH`). `source_commit` is `git rev-parse HEAD`, or `null` outside a
-checkout. `image_digest` comes from `RESEARCH_IMAGE_DIGEST` and is `null` when
-that is unset. Once set, it must be `sha256:` followed by 64 lowercase hex
-digits; anything else, including an empty value, fails the run closed with
+The harness reads the provenance once, before the spec. `source_environment`
+comes from `RESEARCH_ENV` (`DEV` by default, or `CI` or `VPS_RESEARCH`).
+`source_commit` is `git rev-parse HEAD`, or `null` outside a checkout. A run
+that fails closed later still records all three; one refused by the
+provenance check itself records them as `null`.
+
+`image_digest` comes from `RESEARCH_IMAGE_DIGEST` and is `null` when that is
+unset. Once set, it must be `sha256:` followed by 64 lowercase hex digits;
+anything else, including an empty value, fails the run closed with
 `failure_kind: data_config`, so a broken image template never records a
-wrong digest.
+wrong digest. No image build sets it yet: runs from a checkout record
+`null`.
 
 ## Point-in-time checks
 

@@ -10,8 +10,10 @@ trading authorization.
   `forbidden`.
 - **Selection**: no config passes Holm at alpha 0.05. The strongest,
   `all-1w`, has p = 0.0196, which Holm adjusts to 0.0783.
-- **Holdout**: sealed. Validation selected no config, so the harness did not
-  read it. No strategy return from 2025-01-01 onwards was computed.
+- **Holdout**: sealed for the strategy. Validation selected no config, so
+  the harness did not read it, and no strategy return from 2025-01-01
+  onwards was computed. The pre-registered buy-and-hold benchmark does read
+  the holdout's prices and funding; see Benchmarks.
 - **Decision**: the committed decision rules are not met. This family stops
   on BTC, and its lookbacks, thresholds and horizons are not re-tuned on
   this data.
@@ -66,11 +68,11 @@ The validation period is 17 walk-forward folds, from 2020-09-21 to 2024-11-28.
 
 The same configs, net at 1.0×:
 
-| config | mean weight | Sharpe per trade | annualized Sharpe | win rate | max drawdown | gross t (HAC p) |
+| config | mean weight | Sharpe per trade | annualized Sharpe | win rate | max drawdown | gross iid t (p) |
 | --- | --- | --- | --- | --- | --- | --- |
 | `any-1w` | 0.95 | −0.024 | −0.17 | 49.5% | 198% | 0.08 (0.468) |
 | `any-2w` | 0.98 | 0.060 | 0.30 | 58.8% | 162% | 0.90 (0.220) |
-| `all-1w` | 0.92 | 0.166 | 1.02 | 53.5% | 58% | 2.55 (0.003) |
+| `all-1w` | 0.92 | 0.166 | 1.02 | 53.5% | 58% | 2.55 (0.006) |
 | `all-2w` | 0.93 | 0.011 | 0.05 | 51.2% | 145% | 0.44 (0.340) |
 
 - **Annualized Sharpe**: descriptive and not a decision input. It is
@@ -78,6 +80,8 @@ The same configs, net at 1.0×:
   length in years (36,720 / 8,760). This mirrors decision rule 2.
 - **Max drawdown**: the harness sums simple per-trade returns without
   compounding.
+- **Gross p**: the larger of the iid and HAC p-values, as in the first
+  table.
 
 ## Overfitting diagnostics
 
@@ -88,6 +92,9 @@ The same configs, net at 1.0×:
     0.084.
   - The rules ask for at least 0.95.
 - **PBO**: 0.334, by CSCV over 16 blocks of one fold each.
+  - CSCV needs equal blocks, so, as pre-registered, PBO leaves out the
+    oldest of the 17 folds (2020-09-21 to 2020-12-19). Every other metric
+    uses all 17.
   - 12,763 of the 12,870 splits were used and 107 were skipped.
   - The in-sample trade floor was 19.
   - The rules ask for at most 0.5.
@@ -106,14 +113,15 @@ Buy-and-hold of the BTCUSDT perp, computed from the same `bars.parquet`.
 | Funding a constant long pays (sum of rates) | 58.1% | 7.3% |
 
 - **Zero**: cash returns 0.
-- **The holdout column** is buy-and-hold BTC price history over those dates,
-  which is public. It is not the strategy's holdout result.
-- **Not on the same scale**: the strategy rows are per-trade means of
-  risk-scaled positions, while buy-and-hold is unscaled and hourly.
-  - `all-1w`'s descriptive annualized Sharpe of 1.02 is above buy-and-hold's
-    0.82, before funding.
-  - `all-1w` is the best of four configs on this same data, so this is not
-    an out-of-sample comparison.
+- **The holdout column** is buy-and-hold BTC over those dates. The
+  pre-registration asked for it. It reads the holdout's prices and
+  funding, which are public market history, but not the strategy's holdout
+  returns. It does tell a later spec what the 2025–2026 market did, which is
+  one more reason a new variant needs data from after 2026-09-30.
+- **Not comparable with the strategy**: the strategy rows are net per-trade
+  means of risk-scaled positions, while buy-and-hold is unscaled, hourly and
+  before funding. `all-1w` is also the best of four configs on this same
+  data. This document therefore does not compare their Sharpe ratios.
 
 ## Decision rules
 
@@ -129,7 +137,7 @@ Not all rules hold, so this family stops on BTC.
 ## Reading
 
 - **One config with gross edge**: only `all-1w` shows one, with a gross
-  t of 2.55 and a HAC p of 0.003. It trades when all three lookbacks agree
+  iid t of 2.55 and a p of 0.006. It trades when all three lookbacks agree
   and holds for one week. The majority-sign rule has no gross edge at one
   week, and a weak one at two.
 - **Multiple testing decides it**: with four configs, Holm multiplies
@@ -159,9 +167,15 @@ Not all rules hold, so this family stops on BTC.
 
 ## Benchmark computation
 
-Run with the Python environment from `uv.lock`, as
-`python tsmom_benchmark.py "$STUDY_DIR/bars.parquet"`. Row ranges count from
-0 in `ts` order.
+The script below is verbatim what produced the output. It is not
+committed as a file: save it as `tsmom_benchmark.py` and run
+`python tsmom_benchmark.py "$STUDY_DIR/bars.parquet"` with the environment
+from `uv.lock` (Python 3.13.15, DuckDB 1.5.5).
+
+- **Row ranges** count from 0 in `ts` order and are inclusive.
+- **Validation**: `4320..41039` is `test_start` of fold 0 to `test_end - 1`
+  of fold 16 in `split` of `exp_tsmom_btc.result.json`.
+- **Holdout**: `41832..57143` is `holdout_start` to `holdout_end - 1`.
 
 ```python
 import sys

@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Final
 
 from research.harness.costs import STRESS_MULTIPLIERS, round_trip_cost, stress_key
 from research.harness.data import BarTable
 from research.harness.errors import HarnessError, IntegrityError
 from research.harness.overfit import (
+    MIN_CSCV_BLOCKS,
     BlockStats,
     ConfigUnderTest,
     Overfitting,
@@ -405,10 +406,7 @@ def _validation_label(
             ),
             None,
         )
-    if all(
-        score.validation_net["1.0"].trade_count < spec.sample.min_trades_validation
-        for score in scores
-    ):
+    if not _floored_indices(spec, scores):
         return (
             LABEL_NOT_ENOUGH_DATA,
             ("Every config has fewer validation trades than sample.min_trades_validation.",),
@@ -458,7 +456,7 @@ def _survives_validation(spec: HypothesisSpec, score: ConfigScore) -> bool:
 def _fragile_validation(spec: HypothesisSpec, score: ConfigScore) -> bool:
     gross = score.validation_gross
     net = score.validation_net["1.0"]
-    if gross.trade_count < spec.sample.min_trades_validation:
+    if not _meets_trade_floor(spec, gross):
         return False
     gross_significant = (
         gross.mean_return is not None
@@ -469,7 +467,7 @@ def _fragile_validation(spec: HypothesisSpec, score: ConfigScore) -> bool:
     if gross_significant and not _mean_positive(net):
         return True
     unadjusted = (
-        net.trade_count >= spec.sample.min_trades_validation
+        _meets_trade_floor(spec, net)
         and _mean_positive(net)
         and net.p_value is not None
         and net.p_value <= spec.alpha
@@ -488,7 +486,7 @@ def _significant(spec: HypothesisSpec, block: MetricBlock) -> bool:
 
 
 def _net_block_passes(spec: HypothesisSpec, block: MetricBlock) -> bool:
-    return block.trade_count >= spec.sample.min_trades_validation and _significant(spec, block)
+    return _meets_trade_floor(spec, block) and _significant(spec, block)
 
 
 def _mean_positive(block: MetricBlock) -> bool:
@@ -576,7 +574,7 @@ def _copy_score(score: ConfigScore, *, selected: bool) -> ConfigScore:
 def _family_p_value(spec: HypothesisSpec, net: MetricBlock) -> float:
     """Underpowered configs stay in the family with p=1 so they cannot shrink m."""
 
-    if net.trade_count < spec.sample.min_trades_validation:
+    if not _meets_trade_floor(spec, net):
         return 1.0
     if net.p_value is None:
         return 1.0
@@ -692,16 +690,20 @@ def _overfitting(
     dsr = deflated_sharpe(
         len(spec.configs), _tested_config(spec, scores, series_by_config, floored, selected_index)
     )
-    groups = cscv_blocks(len(folds))
+    # A run below sample.min_folds is not_enough_data, so PBO is not shown for it.
+    required = max(MIN_CSCV_BLOCKS, spec.sample.min_folds)
+    groups = cscv_blocks(len(folds)) if len(folds) >= required else None
     if groups is None:
-        pbo = no_pbo(f"PBO needs at least 4 walk-forward test folds; this run has {len(folds)}.")
+        pbo = no_pbo(
+            f"PBO needs at least {required} walk-forward test folds; this run has {len(folds)}."
+        )
     else:
         folds_used = sum(len(group) for group in groups)
         nets_by_fold = [
             [part.net(spec.costs, 1.0) for part in fold_series]
             for fold_series in fold_series_by_config
         ]
-        result = probability_of_backtest_overfitting(
+        pbo = probability_of_backtest_overfitting(
             [
                 [
                     BlockStats(
@@ -713,9 +715,8 @@ def _overfitting(
                 for nets in nets_by_fold
             ],
             min_trades=_in_sample_floor(spec, folds_used // 2, len(folds)),
+            folds_used=folds_used,
         )
-        # A single config is never split, so it uses no folds.
-        pbo = result if result.blocks is None else replace(result, folds_used=folds_used)
     return Overfitting(deflated_sharpe=dsr, pbo=pbo)
 
 
@@ -729,13 +730,19 @@ def _in_sample_floor(spec: HypothesisSpec, in_sample_folds: int, validation_fold
 
 
 def _floored_indices(spec: HypothesisSpec, scores: tuple[ConfigScore, ...]) -> list[int]:
-    """The configs with at least sample.min_trades_validation validation trades."""
+    """The configs whose 1.0x validation net meets the trade floor."""
 
     return [
         index
         for index, score in enumerate(scores)
-        if score.validation_net["1.0"].trade_count >= spec.sample.min_trades_validation
+        if _meets_trade_floor(spec, score.validation_net["1.0"])
     ]
+
+
+def _meets_trade_floor(spec: HypothesisSpec, block: MetricBlock) -> bool:
+    """The one validation trade-floor rule that selection and the diagnostics share."""
+
+    return block.trade_count >= spec.sample.min_trades_validation
 
 
 def _tested_config(

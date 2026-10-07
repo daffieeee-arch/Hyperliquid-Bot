@@ -133,6 +133,17 @@ def test_a_pick_that_only_ties_out_of_sample_counts_as_overfit() -> None:
     assert (result.splits, result.skipped_splits) == (3, 3)
 
 
+def test_equal_out_of_sample_blocks_tie_exactly() -> None:
+    # Same shape, decimal returns. Taking a half as the total minus the other
+    # half would round 0.2 + 0.2 differently for the two configs (0.4 against
+    # 0.39999999999999997) and break the out-of-sample tie.
+    pick = [BlockStats(5, 0.1), BlockStats(5, 0.2), BlockStats(5, 0.2), BlockStats(5, 0.2)]
+    rival = [BlockStats(5, 0.01), BlockStats(5, 0.2), BlockStats(5, 0.2), BlockStats(5, 0.2)]
+    result = probability_of_backtest_overfitting([pick, rival])
+    assert result.value == 1.0
+    assert (result.splits, result.skipped_splits, result.median_logit) == (3, 3, 0.0)
+
+
 def test_the_in_sample_floor_keeps_thin_configs_out_of_each_split() -> None:
     # One lucky trade in block 0, and nothing else.
     thin = [BlockStats(1, 5.0), BlockStats(0, 0.0), BlockStats(0, 0.0), BlockStats(0, 0.0)]

@@ -199,7 +199,9 @@ def cscv_blocks(fold_count: int) -> tuple[tuple[int, ...], ...] | None:
 
 
 def probability_of_backtest_overfitting(
-    stats: Sequence[Sequence[BlockStats]], min_trades: int = 1
+    stats: Sequence[Sequence[BlockStats]],
+    min_trades: int = 1,
+    folds_used: int | None = None,
 ) -> Pbo:
     """PBO by combinatorially symmetric cross-validation over ``stats[config][block]``.
 
@@ -212,6 +214,11 @@ def probability_of_backtest_overfitting(
     candidates, or where every candidate ties in-sample, selects nothing and
     is skipped. A split counts as overfit when the pick ranks at or below the
     median (logit <= 0).
+
+    Each half is summed from its own blocks, never as the total minus the
+    other half, so configs with the same out-of-sample blocks tie exactly.
+    ``folds_used``, the walk-forward folds the caller grouped into the blocks,
+    is reported once the blocks are split.
     """
 
     if min_trades < 1:
@@ -222,45 +229,27 @@ def probability_of_backtest_overfitting(
     if any(len(row) != blocks for row in stats):
         raise ValueError("Every config needs the same blocks.")
     if blocks < MIN_CSCV_BLOCKS or blocks % 2:
-        return no_pbo(
-            "PBO needs an even number of at least 4 blocks.",
-            in_sample_floor=min_trades,
-            blocks=blocks,
-        )
-    totals = [
-        (sum(block.trades for block in row), math.fsum(block.total for block in row))
-        for row in stats
-    ]
+        return no_pbo("PBO needs an even number of at least 4 blocks.", in_sample_floor=min_trades)
     logits: list[float] = []
     skipped = 0
-    for chosen in combinations(range(blocks), blocks // 2):
-        in_sample = [
-            (
-                sum(row[block].trades for block in chosen),
-                math.fsum(row[block].total for block in chosen),
-            )
-            for row in stats
-        ]
-        candidates = [
-            index for index, (trades, _total) in enumerate(in_sample) if trades >= min_trades
-        ]
-        in_perf = [_mean(*in_sample[index]) for index in candidates]
-        if len(candidates) < 2 or max(in_perf) == min(in_perf):
-            skipped += 1
-            continue
-        out_perf = [
-            _mean(totals[index][0] - in_sample[index][0], totals[index][1] - in_sample[index][1])
-            for index in candidates
-        ]
-        best = max(range(len(candidates)), key=in_perf.__getitem__)
-        omega = _average_rank(out_perf, best) / (len(candidates) + 1)
-        logits.append(math.log(omega / (1.0 - omega)))
+    # A split and its mirror swap the two halves, so one pair of sums serves both.
+    for rest in combinations(range(1, blocks), blocks // 2 - 1):
+        first = (0, *rest)
+        second = tuple(block for block in range(1, blocks) if block not in rest)
+        first_sums = [_half_sums(row, first) for row in stats]
+        second_sums = [_half_sums(row, second) for row in stats]
+        for in_sample, out_of_sample in ((first_sums, second_sums), (second_sums, first_sums)):
+            logit = _split_logit(in_sample, out_of_sample, min_trades)
+            if logit is None:
+                skipped += 1
+            else:
+                logits.append(logit)
     if not logits:
         return Pbo(
             value=None,
             in_sample_floor=min_trades,
             blocks=blocks,
-            folds_used=None,
+            folds_used=folds_used,
             splits=0,
             skipped_splits=skipped,
             median_logit=None,
@@ -273,7 +262,7 @@ def probability_of_backtest_overfitting(
         value=sum(1 for logit in logits if logit <= 0.0) / len(logits),
         in_sample_floor=min_trades,
         blocks=blocks,
-        folds_used=None,
+        folds_used=folds_used,
         splits=len(logits),
         skipped_splits=skipped,
         median_logit=statistics.median(logits),
@@ -281,19 +270,42 @@ def probability_of_backtest_overfitting(
     )
 
 
-def no_pbo(note: str, *, in_sample_floor: int | None = None, blocks: int | None = None) -> Pbo:
+def no_pbo(note: str, *, in_sample_floor: int | None = None) -> Pbo:
     """A PBO that was not computed, and why."""
 
     return Pbo(
         value=None,
         in_sample_floor=in_sample_floor,
-        blocks=blocks,
+        blocks=None,
         folds_used=None,
         splits=None,
         skipped_splits=None,
         median_logit=None,
         note=note,
     )
+
+
+def _half_sums(row: Sequence[BlockStats], half: Sequence[int]) -> tuple[int, float]:
+    """One config's trades and summed net return over the blocks of one half."""
+
+    return sum(row[block].trades for block in half), math.fsum(row[block].total for block in half)
+
+
+def _split_logit(
+    in_sample: Sequence[tuple[int, float]],
+    out_of_sample: Sequence[tuple[int, float]],
+    min_trades: int,
+) -> float | None:
+    """The logit of the in-sample pick's out-of-sample rank; None when nothing is picked."""
+
+    candidates = [index for index, (trades, _total) in enumerate(in_sample) if trades >= min_trades]
+    in_perf = [_mean(*in_sample[index]) for index in candidates]
+    if len(candidates) < 2 or max(in_perf) == min(in_perf):
+        return None
+    out_perf = [_mean(*out_of_sample[index]) for index in candidates]
+    best = max(range(len(candidates)), key=in_perf.__getitem__)
+    omega = _average_rank(out_perf, best) / (len(candidates) + 1)
+    return math.log(omega / (1.0 - omega))
 
 
 def _mean(trades: int, total: float) -> float:

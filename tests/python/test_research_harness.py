@@ -25,6 +25,7 @@ from research.harness.evaluate import (
     _build_scores,
     _floored_indices,
     _in_sample_floor,
+    _meets_trade_floor,
     _tested_config,
     collect_trades,
     decide,
@@ -793,6 +794,23 @@ def test_dsr_tests_the_selection_else_the_best_floored_mean() -> None:
     )
 
 
+def test_the_trade_floor_includes_its_boundary() -> None:
+    spec = validate_spec(_json(_spec_body(parquet=True)))
+    floor = spec.sample.min_trades_validation
+    assert _meets_trade_floor(spec, summarize([0.01] * floor))
+    assert not _meets_trade_floor(spec, summarize([0.01] * (floor - 1)))
+
+
+def test_every_config_under_the_trade_floor_is_not_enough_data(tmp_path: Path) -> None:
+    document = _run_rows(
+        tmp_path, _regime_rows(420), configs=_two_configs(), min_trades_validation=1000
+    )
+    assert document["label"] == "not_enough_data"
+    reasons = document["reasons"]
+    assert isinstance(reasons, list)
+    assert any("fewer validation trades" in str(reason) for reason in reasons)
+
+
 def test_the_in_sample_floor_is_pro_rated_and_rounded_up() -> None:
     spec = validate_spec(_json(_spec_body(parquet=True)))
     assert spec.sample.min_trades_validation == 20
@@ -821,6 +839,17 @@ def test_overfitting_notes_explain_a_missing_value(tmp_path: Path) -> None:
     assert "4 walk-forward test folds" in str(pbo["note"])
     markdown = (tmp_path / "short" / "out" / "result.md").read_text(encoding="utf-8")
     assert "probability of backtest overfitting: not computed. PBO needs at least 4" in markdown
+
+
+def test_pbo_waits_for_sample_min_folds(tmp_path: Path) -> None:
+    # Eight folds are enough for CSCV, but the spec asks for ten, so the run
+    # is not_enough_data and PBO is not shown.
+    configs = [*_two_configs(), {"id": "short", "threshold": 0.0, "horizon_bars": 2}]
+    document = _run_rows(tmp_path, _regime_rows(420), configs=configs, min_folds=10)
+    assert document["label"] == "not_enough_data"
+    pbo = _mapping(_mapping(document["overfitting"])["pbo"])
+    assert pbo["value"] is None
+    assert "at least 10 walk-forward test folds; this run has 8" in str(pbo["note"])
 
 
 def test_funding_paid_on_the_position_wipes_a_planted_edge(tmp_path: Path) -> None:

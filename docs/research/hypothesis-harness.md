@@ -164,8 +164,9 @@ done outside the harness is not deflated.
 - **Probability of backtest overfitting** (Bailey, Borwein, López de Prado
   and Zhu, 2017), by combinatorially symmetric cross-validation. The most
   recent walk-forward test folds are grouped into equal contiguous blocks:
-  the even count from 4 to 16 that leaves out the fewest (oldest) folds, so
-  at least 4 folds are needed. Each way to pick half of the blocks is a
+  the even count from 4 to 16 that leaves out the fewest (oldest) folds. It
+  needs at least 4 folds, and no fewer than `sample.min_folds`, below which
+  the run is `not_enough_data`. Each way to pick half of the blocks is a
   split, and it selects as validation does, from its in-sample half only.
   The candidates are the configs that meet `sample.min_trades_validation`
   pro-rated to the in-sample folds and rounded up (`in_sample_floor`). The

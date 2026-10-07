@@ -69,8 +69,9 @@ was evaluated. Gross is the price return. Net subtracts the round trip
 `2 * (fee_bps + slippage_bps + spread_bps) / 10000`, multiplied by the stress,
 and adds the funding cashflow when a funding column is declared. With a
 position weight `w` (1 unless `sizing` says otherwise), a trade's net return
-is `w * (price_return - round_trip * stress + stressed_funding)`, where funding
-paid is multiplied by the stress and funding received divided by it.
+is `w * (price_return - round_trip * stress - paid * stress + received / stress)`:
+each funding payment the trade made is multiplied by the stress and each one
+it received is divided by it.
 `spread_bps` is the half-spread per side, so the round trip charges it on
 entry and again on exit. Latency is not a bps add-on. A fill uses the close of
 `decision_bar + latency_bars`, and the exit is `horizon_bars` later. When the
@@ -98,9 +99,11 @@ the close of bar `entry` and exited at the close of bar `exit` holds bars
 that bar's close (`price[t] / price[entry]` per unit of entry notional), and
 nothing for the entry bar. A short receives the same amount. The realized
 funding is exact in a backtest, but it is a market cashflow that need not
-repeat, so the stresses treat it adversely: at 1.5x and 2.0x, funding paid is
-multiplied by the stress and funding received is divided by it. An edge that
-rests on received funding must survive that haircut too. Each config and the
+repeat, so the stresses treat it adversely, payment by payment: at 1.5x and
+2.0x, every bar's funding paid is multiplied by the stress and every bar's
+funding received is divided by it, so payments inside one trade do not net
+each other out first. An edge that rests on received funding must survive
+that haircut too. Each config and the
 holdout report a separate `funding` block (the realized per-trade funding
 cashflow, at 1.0x) next to gross and net.
 
@@ -217,9 +220,10 @@ start of the interval if the print arrives at the end.
 `sizing` blocks, validation family with Bonferroni, Holm, and BH p-values,
 per-config `funding` and `mean_weight`, and holdout gross, funding and net at
 1.0 / 1.5 / 2.0 when a config was selected). `result.md` is the same
-conclusion in prose. A `failed_closed`
-status (gap, duplicate, schema, look-ahead, lock, fingerprint mismatch,
-unsafe mode) has `label: null` and `promotion_decision: forbidden`.
+conclusion in prose. A `failed_closed` status (gap, duplicate, schema,
+look-ahead, lock, fingerprint mismatch, unsafe mode, a non-positive sizing
+volatility as `failure_kind: sizing`) has `label: null` and
+`promotion_decision: forbidden`.
 
 Limitations live in every artifact: the conservative t / HAC gate, per-trade
 Sharpe, flat half-spread costs, funding only from a declared column (stressed

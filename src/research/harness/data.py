@@ -311,11 +311,6 @@ def _table_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Ba
             )
     _audit_clock(timestamps, data.max_gap)
     _audit_prices(prices)
-    if spec.sizing.vol_feature is not None:
-        column = next(
-            feature.column for feature in spec.features if feature.name == spec.sizing.vol_feature
-        )
-        _audit_volatility(feature_values[column], spec.sizing.vol_feature)
     availability = {name: tuple(values) for name, values in availability_values.items()}
     table = BarTable(
         timestamps=tuple(timestamps),
@@ -346,21 +341,6 @@ def _audit_prices(prices: list[float]) -> None:
     for index, price in enumerate(prices):
         if not math.isfinite(price) or price <= 0.0:
             raise IntegrityError("price", f"Price at row {index} must be finite and positive.")
-
-
-def _audit_volatility(values: list[float], name: str) -> None:
-    """A sizing volatility must be positive on every row, not only where a trade sizes.
-
-    Zero or negative values (warm-up, a zero-filled gap) would size a trade at
-    max leverage or fail only when a config happens to trade there. Trim
-    warm-up rows in the ETL instead.
-    """
-
-    for index, value in enumerate(values):
-        if value <= 0.0:
-            raise IntegrityError(
-                "sizing", f"Volatility feature {name} at row {index} must be positive."
-            )
 
 
 def _audit_lookahead(features: tuple[FeatureSpec, ...], table: BarTable) -> None:

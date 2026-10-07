@@ -24,13 +24,13 @@ from research.harness.evaluate import (
     collect_trades,
     decide,
     position_weight,
-    stressed_funding,
     summarize,
     trade_series,
 )
 from research.harness.run import execute, lock_spec
 from research.harness.spec import (
     UNIT_SIZING,
+    CostSpec,
     Json,
     SizingSpec,
     SplitSpec,
@@ -479,17 +479,31 @@ def test_funding_is_charged_over_the_bars_a_trade_is_held() -> None:
     paid = 0.002 * 1.1 + 0.003 * 1.1
     assert series.gross == pytest.approx((0.1, -0.1))
     assert series.funding == pytest.approx((-paid, paid))
+    assert series.funding_paid == pytest.approx((paid, 0.0))
+    assert series.funding_received == pytest.approx((0.0, paid))
     assert series.weights == (1.0, 1.0)
-    assert series.net(0.001, 1.0) == pytest.approx((0.1 - 0.001 - paid, -0.1 - 0.001 + paid))
+    costs = _costs(fee_bps=5.0)  # a 0.001 round trip at 1.0x
+    assert series.net(costs, 1.0) == pytest.approx((0.1 - 0.001 - paid, -0.1 - 0.001 + paid))
     # Under stress, funding paid grows and funding received shrinks.
-    assert series.net(0.002, 2.0) == pytest.approx(
+    assert series.net(costs, 2.0) == pytest.approx(
         (0.1 - 0.002 - 2.0 * paid, -0.1 - 0.002 + paid / 2.0)
     )
-    assert stressed_funding(-0.01, 1.5) == pytest.approx(-0.015)
-    assert stressed_funding(0.01, 1.5) == pytest.approx(0.01 / 1.5)
-    assert stressed_funding(0.01, 1.0) == 0.01
     no_funding = trade_series(trades, prices, funding=None, sizing=UNIT_SIZING, vol=None)
     assert no_funding.funding == (0.0, 0.0)
+
+
+def test_funding_stress_applies_to_each_payment_not_the_trade_net() -> None:
+    # A long pays 0.01 over four bars and receives 0.009 over four more. Its
+    # realized funding is -0.001, but at 2.0x every payment is stressed:
+    # -0.02 paid + 0.0045 received, not 2 * -0.001.
+    prices = (100.0,) * 10
+    funding = (0.0, 0.0, 0.0025, 0.0025, 0.0025, 0.0025, -0.00225, -0.00225, -0.00225, -0.00225)
+    trade = Trade(decision=0, entry=1, exit=9, side=1)
+    series = trade_series((trade,), prices, funding=funding, sizing=UNIT_SIZING, vol=None)
+    assert series.funding == pytest.approx((-0.001,))
+    zero_costs = _costs(fee_bps=0.0)
+    assert series.net(zero_costs, 1.0) == pytest.approx((-0.001,))
+    assert series.net(zero_costs, 2.0) == pytest.approx((-0.02 + 0.0045,))
 
 
 def test_vol_target_weight_reads_the_decision_bar_and_is_capped() -> None:
@@ -513,7 +527,9 @@ def test_vol_target_weight_reads_the_decision_bar_and_is_capped() -> None:
         vol=vol,
     )
     assert series.weights == pytest.approx((2.0,))
-    assert series.net(0.002, 1.0) == pytest.approx((2.0 * (0.01 - 0.002 - 0.001 * 1.01),))
+    assert series.net(_costs(fee_bps=10.0), 1.0) == pytest.approx(
+        (2.0 * (0.01 - 0.002 - 0.001 * 1.01),)
+    )
 
 
 def test_spec_validates_funding_and_sizing() -> None:
@@ -574,6 +590,25 @@ def test_latency_floor_covers_the_sizing_volatility() -> None:
         validate_spec(_json(body))
     _mapping(body["costs"])["allow_zero_latency"] = True
     assert validate_spec(_json(body)).costs.latency_bars == 0
+
+
+def test_decide_audits_the_whole_volatility_series_of_any_table() -> None:
+    # A table built without load_bars still gets the whole-series check, even
+    # though no trade is decided on the zero row.
+    spec = validate_spec(_json(_sized_body()))
+    rows = 20
+    table = BarTable(
+        timestamps=tuple(range(rows)),
+        prices=tuple(100.0 for _ in range(rows)),
+        features={
+            "taker_imbalance": tuple(0.0 for _ in range(rows)),
+            "realized_vol": tuple(0.0 if index == rows - 1 else 0.01 for index in range(rows)),
+        },
+        availability={"imbalance_available_ts": tuple(range(rows))},
+    )
+    with pytest.raises(IntegrityError, match="must be positive") as refused:
+        decide(spec, table)
+    assert refused.value.failure_kind == "sizing"
 
 
 def test_bar_table_without_the_declared_funding_is_refused() -> None:
@@ -789,6 +824,16 @@ def _sized_body() -> dict[str, object]:
         "max_leverage": 5.0,
     }
     return body
+
+
+def _costs(*, fee_bps: float) -> CostSpec:
+    return CostSpec(
+        fee_bps=fee_bps,
+        slippage_bps=0.0,
+        spread_bps=0.0,
+        latency_bars=1,
+        allow_zero_latency=False,
+    )
 
 
 def _json(body: dict[str, object]) -> dict[str, Json]:

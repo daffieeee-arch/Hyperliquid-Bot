@@ -10,7 +10,7 @@ from typing import Final
 from research.harness.costs import STRESS_MULTIPLIERS, round_trip_cost, stress_key
 from research.harness.data import BarTable
 from research.harness.errors import HarnessError, IntegrityError
-from research.harness.spec import ConfigSpec, HypothesisSpec, SizingSpec
+from research.harness.spec import ConfigSpec, CostSpec, HypothesisSpec, SizingSpec
 from research.harness.splits import Fold, walk_forward
 from research.harness.stats import (
     benjamini_hochberg,
@@ -61,39 +61,51 @@ class Trade:
 class TradeSeries:
     """Per-trade returns at each trade's weight, in units of equity.
 
-    ``gross`` is the price return, ``funding`` the funding cashflow (positive
-    when received), ``weights`` the position weight. Costs scale with weight.
+    ``gross`` is the price return and ``weights`` the position weight; costs
+    scale with the weight. ``funding_paid`` and ``funding_received`` are the
+    funding payments a trade made and received (both >= 0), kept apart so a
+    stress can treat each payment adversely.
     """
 
     gross: tuple[float, ...]
-    funding: tuple[float, ...]
+    funding_paid: tuple[float, ...]
+    funding_received: tuple[float, ...]
     weights: tuple[float, ...]
 
-    def net(self, round_trip: float, stress: float) -> tuple[float, ...]:
-        """Gross minus the weighted round-trip cost, plus the stressed funding cashflow."""
+    @property
+    def funding(self) -> tuple[float, ...]:
+        """The realized funding cashflow per trade (positive when received)."""
 
         return tuple(
-            gross - weight * round_trip + stressed_funding(funding, stress)
-            for gross, funding, weight in zip(self.gross, self.funding, self.weights, strict=True)
+            received - paid
+            for paid, received in zip(self.funding_paid, self.funding_received, strict=True)
+        )
+
+    def net(self, costs: CostSpec, stress: float) -> tuple[float, ...]:
+        """Gross minus the weighted round trip, plus funding, all at one stress.
+
+        Funding paid is multiplied by the stress and funding received divided
+        by it, payment by payment: the realized funding is exact in a backtest
+        but need not repeat, so an edge resting on it must survive a haircut.
+        At 1.0x every value is the realized one.
+        """
+
+        round_trip = round_trip_cost(costs, stress)
+        return tuple(
+            gross - weight * round_trip - paid * stress + received / stress
+            for gross, paid, received, weight in zip(
+                self.gross,
+                self.funding_paid,
+                self.funding_received,
+                self.weights,
+                strict=True,
+            )
         )
 
     def mean_weight(self) -> float | None:
         if not self.weights:
             return None
         return math.fsum(self.weights) / len(self.weights)
-
-
-def stressed_funding(cashflow: float, stress: float) -> float:
-    """Funding paid grows with the stress and funding received shrinks with it.
-
-    The realized funding is exact in a backtest, but it is a market cashflow
-    that need not repeat; an edge that rests on received funding has to
-    survive a haircut, as costs do. At 1.0x the cashflow is unchanged.
-    """
-
-    if cashflow < 0.0:
-        return cashflow * stress
-    return cashflow / stress
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,9 +156,11 @@ def decide(spec: HypothesisSpec, table: BarTable) -> Decision:
 
     if (spec.costs.funding_column is None) != (table.funding is None):
         raise HarnessError("invariant", "The bar table's funding does not match the spec.")
+    # Audited over the whole series first, after load_bars' point-in-time
+    # checks, so every table that reaches a decision gets the same check.
+    vol = _vol_series(spec, table)
     folds, (holdout_start, holdout_end) = walk_forward(len(table.timestamps), spec.split)
     feature = table.features[_feature_column(spec, spec.signal_feature)]
-    vol = _vol_series(spec, table)
     series_by_config = [
         (
             config,
@@ -250,14 +264,22 @@ def trade_series(
     """Weight each trade, then add its funding cashflow next to its price return."""
 
     gross: list[float] = []
-    cashflow: list[float] = []
+    paid: list[float] = []
+    received: list[float] = []
     weights: list[float] = []
     for trade in trades:
         weight = position_weight(sizing, vol, trade.decision)
+        unit_paid, unit_received = _unit_funding(prices, funding, trade)
         gross.append(weight * _unit_return(prices, trade))
-        cashflow.append(weight * _unit_funding(prices, funding, trade))
+        paid.append(weight * unit_paid)
+        received.append(weight * unit_received)
         weights.append(weight)
-    return TradeSeries(gross=tuple(gross), funding=tuple(cashflow), weights=tuple(weights))
+    return TradeSeries(
+        gross=tuple(gross),
+        funding_paid=tuple(paid),
+        funding_received=tuple(received),
+        weights=tuple(weights),
+    )
 
 
 def position_weight(sizing: SizingSpec, vol: Sequence[float] | None, decision: int) -> float:
@@ -274,7 +296,7 @@ def position_weight(sizing: SizingSpec, vol: Sequence[float] | None, decision: i
         raise HarnessError("invariant", "vol_target sizing is missing its inputs.")
     value = vol[decision]
     if value <= 0.0:
-        # The data audit refuses this series; never size from it.
+        # decide() refuses such a series up front; this guards direct callers.
         raise IntegrityError("sizing", f"Volatility feature is not positive at bar {decision}.")
     return min(sizing.max_leverage, sizing.target_vol / value)
 
@@ -503,7 +525,7 @@ def _build_scores(
 
 def _net_blocks(spec: HypothesisSpec, series: TradeSeries) -> dict[str, MetricBlock]:
     return {
-        stress_key(stress): summarize(series.net(round_trip_cost(spec.costs, stress), stress))
+        stress_key(stress): summarize(series.net(spec.costs, stress))
         for stress in STRESS_MULTIPLIERS
     }
 
@@ -554,9 +576,23 @@ def _feature_column(spec: HypothesisSpec, name: str) -> str:
 
 
 def _vol_series(spec: HypothesisSpec, table: BarTable) -> tuple[float, ...] | None:
-    if spec.sizing.vol_feature is None:
+    """The sizing volatility, positive on every row or the run fails closed.
+
+    Checking every row, not only where a trade sizes, keeps the outcome a
+    property of the data rather than of which configs happen to trade. Trim
+    warm-up rows in the ETL instead of zero-filling them.
+    """
+
+    name = spec.sizing.vol_feature
+    if name is None:
         return None
-    return table.features[_feature_column(spec, spec.sizing.vol_feature)]
+    values = table.features[_feature_column(spec, name)]
+    for index, value in enumerate(values):
+        if value <= 0.0:
+            raise IntegrityError(
+                "sizing", f"Volatility feature {name} at row {index} must be positive."
+            )
+    return values
 
 
 def _window_series(
@@ -613,22 +649,28 @@ def _unit_return(prices: Sequence[float], trade: Trade) -> float:
     return trade.side * (prices[trade.exit] - prices[trade.entry]) / prices[trade.entry]
 
 
-def _unit_funding(prices: Sequence[float], funding: Sequence[float] | None, trade: Trade) -> float:
-    """Funding received per unit of entry notional while the trade is held.
+def _unit_funding(
+    prices: Sequence[float], funding: Sequence[float] | None, trade: Trade
+) -> tuple[float, float]:
+    """Funding paid and received per unit of entry notional while the trade is held.
 
     The trade holds bars ``entry + 1`` through ``exit``. Each bar's rate is
     charged on the notional at that bar's close. A long pays a positive rate;
-    a short receives it.
+    a short receives it. Both totals are >= 0.
     """
 
     if funding is None:
-        return 0.0
+        return 0.0, 0.0
     entry_price = prices[trade.entry]
-    paid = math.fsum(
-        funding[index] * prices[index] / entry_price
-        for index in range(trade.entry + 1, trade.exit + 1)
-    )
-    return -trade.side * paid
+    paid: list[float] = []
+    received: list[float] = []
+    for index in range(trade.entry + 1, trade.exit + 1):
+        flow = -trade.side * funding[index] * prices[index] / entry_price
+        if flow < 0.0:
+            paid.append(-flow)
+        else:
+            received.append(flow)
+    return math.fsum(paid), math.fsum(received)
 
 
 def _side(value: float, threshold: float, direction: str) -> int:

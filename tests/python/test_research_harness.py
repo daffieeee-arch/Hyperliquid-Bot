@@ -1137,21 +1137,30 @@ def test_a_numeric_benchmark_failure_is_recorded_and_an_index_bug_fails_closed()
     rows = _regime_rows(420)
     table = _bar_table(rows)
     decision = decide(spec, table)
-    # Finite, positive prices whose ratio overflows: the holdout is context.
-    extreme = BarTable(
-        timestamps=table.timestamps,
-        prices=tuple(
-            1e-300 if index == 400 else 1e300 if index == 401 else price
-            for index, price in enumerate(table.prices)
-        ),
-        features=table.features,
-        availability=table.availability,
-    )
+
+    # Finite, positive prices whose return overflows: the holdout fill
+    # (bar 337, one bar of latency) to its exit (bar 419). It is context.
+    def spiked(entry_price: float, exit_price: float) -> BarTable:
+        prices = list(table.prices)
+        prices[337], prices[419] = entry_price, exit_price
+        return BarTable(
+            timestamps=table.timestamps,
+            prices=tuple(prices),
+            features=table.features,
+            availability=table.availability,
+        )
+
     opened = replace(decision, holdout_config_id="real")
-    result = benchmark(spec.costs, extreme, opened)
+    result = benchmark(spec.costs, spiked(1e-300, 1e300), opened)
     assert result.validation.status == "evaluated"
     assert (result.holdout.status, result.holdout.result) == ("error", None)
     assert result.holdout.note is not None
+    # The reverse jump would underflow a price ratio to 0; log differences
+    # stay finite, so the window is evaluated.
+    fallen = benchmark(spec.costs, spiked(1e300, 1e-300), opened).holdout
+    assert fallen.status == "evaluated"
+    assert fallen.result is not None
+    assert fallen.result.gross_return == pytest.approx(-1.0)
     # An out-of-table window is a harness bug the strategy shares: fail closed.
     broken = replace(opened, holdout_end=len(table.prices) + 5)
     with pytest.raises(HarnessError, match="outside the table") as refused:

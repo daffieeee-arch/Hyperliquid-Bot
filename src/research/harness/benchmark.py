@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from itertools import pairwise
 from dataclasses import asdict, dataclass
 from typing import Final
 
@@ -98,7 +99,7 @@ def _window(costs: CostSpec, table: BarTable, start: int, end: int) -> Window:
     # the strategy's indexes share; that invariant error still fails closed.
     try:
         result = buy_and_hold(costs, table, start, end)
-    except (ArithmeticError, _NonFinite) as error:
+    except (OverflowError, _NonFinite) as error:
         return Window(ERROR, note=f"{type(error).__name__}: {error}")
     return Window(TOO_SHORT) if result is None else Window(EVALUATED, result)
 
@@ -121,7 +122,10 @@ def buy_and_hold(costs: CostSpec, table: BarTable, start: int, end: int) -> BuyA
         return None
     trade = Trade(decision=start, entry=entry, exit=end - 1, side=1)
     series = trade_series((trade,), prices, funding=table.funding, sizing=UNIT_SIZING, vol=None)
-    per_bar = [math.log(prices[index] / prices[index - 1]) for index in range(entry + 1, end)]
+    # A difference of logs stays finite for any finite positive prices, where
+    # a ratio can overflow or underflow to 0 first.
+    logs = [math.log(price) for price in prices[entry:end]]
+    per_bar = [later - earlier for earlier, later in pairwise(logs)]
     log_return = math.fsum(per_bar)
     mean = log_return / len(per_bar)
     stdev = _sample_stdev(per_bar, mean)

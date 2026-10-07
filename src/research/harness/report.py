@@ -12,10 +12,11 @@ from research.harness.costs import STRESS_MULTIPLIERS, round_trip_cost, stress_k
 from research.harness.data import BarTable
 from research.harness.errors import HarnessError
 from research.harness.evaluate import ConfigScore, Decision, MetricBlock
+from research.harness.overfit import Overfitting
 from research.harness.spec import HypothesisSpec, Json
 from research.harness.splits import Fold
 
-HARNESS_VERSION: Final = "3"
+HARNESS_VERSION: Final = "4"
 _ENVIRONMENTS: Final = frozenset({"DEV", "CI", "VPS_RESEARCH"})
 LIMITATIONS: Final[tuple[str, ...]] = (
     "The gate uses the larger of the iid t p-value and a Newey-West HAC t p-value.",
@@ -28,6 +29,11 @@ LIMITATIONS: Final[tuple[str, ...]] = (
     "Sizing is one unit per trade unless sizing.method is vol_target: target_vol / vol at "
     "the decision bar, capped at max_leverage. Costs and funding scale with the weight.",
     "Latency fills at decision_bar + latency_bars. Zero latency requires allow_zero_latency.",
+    "The deflated Sharpe ratio and the probability of backtest overfitting are diagnostics "
+    "and never change the label. They use net returns at 1.0x and count only the "
+    "pre-registered configs as trials. In each split PBO picks the best positive mean net "
+    "per trade among the configs that meet the trade floor pro-rated to the in-sample "
+    "folds, and does not re-run the significance and stress gates.",
     "Look-ahead control uses the declared clock. A falsely stamped future value is invisible.",
     "paper_candidate is not LIVE, SHADOW, TESTNET, or an order authorization.",
     "Spot Vision timestamps from 2025-01-01 are microseconds; USD-M examples are milliseconds.",
@@ -146,6 +152,7 @@ def completed_document(
         "selected_config_id": decision.selected_config_id,
         "primary_config_id": decision.primary_config_id,
         "holdout": _holdout_json(decision),
+        "overfitting": _overfitting_json(decision.overfitting),
         "reasons": list(decision.reasons),
         "limitations": list(LIMITATIONS),
         "generated_at_utc": _now(),
@@ -191,6 +198,8 @@ def render_markdown(document: dict[str, Json]) -> str:
     if status == "completed":
         lines.extend(["", "## Validation", ""])
         lines.extend(_validation_lines(document))
+        lines.extend(["", "## Overfitting diagnostics", ""])
+        lines.extend(_overfitting_lines(document))
         lines.extend(["", "## Holdout", ""])
         if document.get("holdout") is None:
             lines.append("holdout sealed (not evaluated)")
@@ -254,6 +263,53 @@ def _validation_lines(document: dict[str, Json]) -> list[str]:
     return lines
 
 
+def _overfitting_lines(document: dict[str, Json]) -> list[str]:
+    block = document.get("overfitting")
+    if not isinstance(block, dict):
+        return ["- overfitting block missing"]
+    lines = ["Diagnostics only; they never change the label.", ""]
+    raw_dsr = block.get("deflated_sharpe")
+    dsr = raw_dsr if isinstance(raw_dsr, dict) else {}
+    which = "selected" if dsr.get("selected") is True else "best validation mean, none selected"
+    if dsr.get("dsr") is not None:
+        lines.append(
+            (
+                "- deflated Sharpe ratio: `{dsr}` for `{config}` ({which}; Sharpe per trade "
+                "{sharpe}, {trades} trades, {trials} trials, noise maximum {benchmark})"
+            ).format(
+                dsr=dsr.get("dsr"),
+                config=dsr.get("config_id"),
+                which=which,
+                sharpe=dsr.get("sharpe_per_trade"),
+                trades=dsr.get("trades"),
+                trials=dsr.get("trials"),
+                benchmark=dsr.get("expected_max_sharpe"),
+            )
+        )
+    else:
+        config = dsr.get("config_id")
+        tested = "" if config is None else f" for `{config}` ({which})"
+        lines.append(f"- deflated Sharpe ratio: not computed{tested}. {dsr.get('note')}")
+    raw_pbo = block.get("pbo")
+    pbo = raw_pbo if isinstance(raw_pbo, dict) else {}
+    if pbo.get("value") is not None:
+        lines.append(
+            "- probability of backtest overfitting: `{value}` (CSCV, {blocks} blocks over "
+            "{folds} folds, {splits} splits, {skipped} skipped, in-sample trade floor "
+            "{floor})".format(
+                value=pbo.get("value"),
+                blocks=pbo.get("blocks"),
+                folds=pbo.get("folds_used"),
+                splits=pbo.get("splits"),
+                skipped=pbo.get("skipped_splits"),
+                floor=pbo.get("in_sample_floor"),
+            )
+        )
+    else:
+        lines.append(f"- probability of backtest overfitting: not computed. {pbo.get('note')}")
+    return lines
+
+
 def _holdout_lines(document: dict[str, Json]) -> list[str]:
     holdout = document.get("holdout")
     if not isinstance(holdout, dict):
@@ -284,6 +340,36 @@ def _holdout_json(decision: Decision) -> dict[str, Json] | None:
         "net": {key: _metric_json(block) for key, block in decision.holdout_net.items()},
         "funding": _optional_metric_json(decision.holdout_funding),
         "mean_weight": decision.holdout_mean_weight,
+    }
+
+
+def _overfitting_json(result: Overfitting) -> dict[str, Json]:
+    dsr = result.deflated_sharpe
+    pbo = result.pbo
+    return {
+        "deflated_sharpe": {
+            "config_id": dsr.config_id,
+            "selected": dsr.selected,
+            "sharpe_per_trade": dsr.sharpe_per_trade,
+            "trades": dsr.trades,
+            "trials": dsr.trials,
+            "null_sharpe_variance": dsr.null_sharpe_variance,
+            "skewness": dsr.skewness,
+            "kurtosis": dsr.kurtosis,
+            "expected_max_sharpe": dsr.expected_max_sharpe,
+            "dsr": dsr.dsr,
+            "note": dsr.note,
+        },
+        "pbo": {
+            "value": pbo.value,
+            "in_sample_floor": pbo.in_sample_floor,
+            "blocks": pbo.blocks,
+            "folds_used": pbo.folds_used,
+            "splits": pbo.splits,
+            "skipped_splits": pbo.skipped_splits,
+            "median_logit": pbo.median_logit,
+            "note": pbo.note,
+        },
     }
 
 

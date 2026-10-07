@@ -139,6 +139,52 @@ with the weight, and each config and the holdout report `mean_weight`.
 Volatility scaling changes what the t-test measures (risk-scaled returns per
 trade), which is the point of pre-registering it.
 
+## Overfitting diagnostics
+
+`result.json` has an `overfitting` block, summarized in `result.md`. Both
+values are diagnostics: they never change the label or the promotion
+decision. Both count only the pre-registered grid as trials, so exploration
+done outside the harness is not deflated. Neither is computed when
+validation itself is `not_enough_data` (fewer than `sample.min_folds` folds,
+or no config with `sample.min_trades_validation` trades); `note` then gives
+the validation reason. A holdout short of trades leaves them in place, since
+both describe validation.
+
+- **Deflated Sharpe ratio** (Bailey and López de Prado, 2014). It tests the
+  config validation selected, or, when nothing was selected, the config
+  with the highest validation mean net per trade among those with at least
+  `sample.min_trades_validation` trades (`selected` says which). Its
+  validation net Sharpe per trade at 1.0x is set against the highest Sharpe
+  that as many pure-noise trials would show. Every pre-registered config is
+  a trial, as in the multiple-testing family, and under the null each
+  trial's Sharpe has the sampling variance `1 / (T - 1)` of the tested
+  config's `T` trades. `dsr` is the probability that the tested Sharpe beats
+  that noise maximum, corrected for the skewness and kurtosis of its trade
+  returns. Near 1 is good. Around 0.5 or lower, the config cannot be told
+  apart from the best of noise. With one config the noise maximum is 0, and
+  `dsr` is the probabilistic Sharpe ratio. When `dsr` cannot be computed,
+  for example because there is no config to test or its trade returns are
+  all equal, it is null and `note` says why.
+- **Probability of backtest overfitting** (Bailey, Borwein, López de Prado
+  and Zhu, 2017), by combinatorially symmetric cross-validation. The most
+  recent walk-forward test folds are grouped into equal contiguous blocks:
+  the even count from 4 to 16 that leaves out the fewest (oldest) folds, so
+  at least 4 folds are needed. Each way to pick half of the blocks is a
+  split, and it selects as validation does, from its in-sample half only.
+  The candidates are the configs that meet `sample.min_trades_validation`
+  pro-rated to the in-sample folds and rounded up (`in_sample_floor`). The
+  candidate with the best in-sample mean net per trade at 1.0x (the
+  statistic validation selection ranks by) is ranked among the candidates
+  on the other half, where a candidate without trades earns 0. PBO is the
+  share of splits where the pick ranks at or below the median. A split
+  selects nothing and is skipped (`skipped_splits`) when it has fewer than
+  two candidates, when every candidate ties in-sample, or when the best
+  in-sample mean is not positive, as validation would select nothing then.
+  The significance and stress gates are not re-run per split. Near 0 is
+  good; 0.5 means picking the in-sample best is no better than chance. Read
+  `value` together with `splits`: a PBO from a few splits, the rest skipped,
+  says little.
+
 ## Point-in-time checks
 
 Point-in-time checks fail closed (no statistical label) for schema mismatch,
@@ -218,17 +264,18 @@ start of the interval if the print arrives at the end.
 
 ## Reading the artifact
 
-`result.json` is the machine record (`harness_version` 3, `status`, `label`,
+`result.json` is the machine record (`harness_version` 4, `status`, `label`,
 `promotion_decision`, `spec_sha256`, `data_fingerprint`, the `costs` and
 `sizing` blocks, validation family with Bonferroni, Holm, and BH p-values,
 per-config `funding` and `mean_weight`, and holdout gross, funding and net at
-1.0 / 1.5 / 2.0 when a config was selected). `result.md` is the same
-conclusion in prose. A `failed_closed` status (gap, duplicate, schema,
-look-ahead, lock, fingerprint mismatch, unsafe mode, a non-positive sizing
-volatility as `failure_kind: sizing`) has `label: null` and
-`promotion_decision: forbidden`.
+1.0 / 1.5 / 2.0 when a config was selected, and the `overfitting`
+diagnostics). `result.md` is the same conclusion in prose. A `failed_closed`
+status (gap, duplicate, schema, look-ahead, lock, fingerprint mismatch,
+unsafe mode, a non-positive sizing volatility as `failure_kind: sizing`) has
+`label: null` and `promotion_decision: forbidden`.
 
 Limitations live in every artifact: the conservative t / HAC gate, per-trade
 Sharpe, flat half-spread costs, funding only from a declared column (stressed
-adversely), unit sizing unless `vol_target` is declared, and no detection of
-a leaked feature that was falsely stamped with the bar clock.
+adversely), unit sizing unless `vol_target` is declared, overfitting
+diagnostics that never gate, and no detection of a leaked feature that was
+falsely stamped with the bar clock.

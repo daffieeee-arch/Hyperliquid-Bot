@@ -10,6 +10,17 @@ from typing import Final
 from research.harness.costs import STRESS_MULTIPLIERS, round_trip_cost, stress_key
 from research.harness.data import BarTable
 from research.harness.errors import HarnessError, IntegrityError
+from research.harness.overfit import (
+    MIN_CSCV_BLOCKS,
+    BlockStats,
+    ConfigUnderTest,
+    Overfitting,
+    cscv_blocks,
+    deflated_sharpe,
+    no_dsr,
+    no_pbo,
+    probability_of_backtest_overfitting,
+)
 from research.harness.spec import ConfigSpec, CostSpec, HypothesisSpec, SizingSpec
 from research.harness.splits import Fold, walk_forward
 from research.harness.stats import (
@@ -137,6 +148,8 @@ class Decision:
     holdout_config_id: str | None
     holdout_gross: MetricBlock | None
     holdout_net: dict[str, MetricBlock] | None
+    # Diagnostics only: they never change the label.
+    overfitting: Overfitting
     holdout_funding: MetricBlock | None = None
     holdout_mean_weight: float | None = None
 
@@ -161,12 +174,13 @@ def decide(spec: HypothesisSpec, table: BarTable) -> Decision:
     vol = _vol_series(spec, table)
     folds, (holdout_start, holdout_end) = walk_forward(len(table.timestamps), spec.split)
     feature = table.features[_feature_column(spec, spec.signal_feature)]
-    series_by_config = [
-        (
-            config,
-            _pooled_series(spec, feature, table, vol, config=config, folds=folds),
-        )
+    fold_series_by_config = [
+        _fold_series(spec, feature, table, vol, config=config, folds=folds)
         for config in spec.configs
+    ]
+    series_by_config = [
+        (config, _concat_series(fold_series))
+        for config, fold_series in zip(spec.configs, fold_series_by_config, strict=True)
     ]
     nets_by_config = [_net_blocks(spec, series) for _, series in series_by_config]
     family_p = [_family_p_value(spec, nets["1.0"]) for nets in nets_by_config]
@@ -177,6 +191,15 @@ def decide(spec: HypothesisSpec, table: BarTable) -> Decision:
     }
     scores = _build_scores(spec, series_by_config, nets_by_config, family_p, adjusted)
     label, reasons, selected_index = _validation_label(spec, scores, folds)
+    # Validation without enough data compared nothing, so neither diagnostic
+    # applies. A thin holdout later does not change them: they describe validation.
+    if label == LABEL_NOT_ENOUGH_DATA:
+        note = " ".join(reasons)
+        overfitting = Overfitting(no_dsr(len(spec.configs), note), no_pbo(note))
+    else:
+        overfitting = _overfitting(
+            spec, scores, series_by_config, fold_series_by_config, folds, selected_index
+        )
     holdout_config_id: str | None = None
     holdout: _HoldoutResult | None = None
     if selected_index is None:
@@ -213,6 +236,7 @@ def decide(spec: HypothesisSpec, table: BarTable) -> Decision:
         holdout_net=None if holdout is None else holdout.net,
         holdout_funding=None if holdout is None else holdout.funding,
         holdout_mean_weight=None if holdout is None else holdout.mean_weight,
+        overfitting=overfitting,
     )
     _assert_promotion_invariant(decision)
     return decision
@@ -390,10 +414,7 @@ def _validation_label(
             ),
             None,
         )
-    if all(
-        score.validation_net["1.0"].trade_count < spec.sample.min_trades_validation
-        for score in scores
-    ):
+    if not _floored_indices(spec, scores):
         return (
             LABEL_NOT_ENOUGH_DATA,
             ("Every config has fewer validation trades than sample.min_trades_validation.",),
@@ -443,7 +464,7 @@ def _survives_validation(spec: HypothesisSpec, score: ConfigScore) -> bool:
 def _fragile_validation(spec: HypothesisSpec, score: ConfigScore) -> bool:
     gross = score.validation_gross
     net = score.validation_net["1.0"]
-    if gross.trade_count < spec.sample.min_trades_validation:
+    if not _meets_trade_floor(spec, gross):
         return False
     gross_significant = (
         gross.mean_return is not None
@@ -454,7 +475,7 @@ def _fragile_validation(spec: HypothesisSpec, score: ConfigScore) -> bool:
     if gross_significant and not _mean_positive(net):
         return True
     unadjusted = (
-        net.trade_count >= spec.sample.min_trades_validation
+        _meets_trade_floor(spec, net)
         and _mean_positive(net)
         and net.p_value is not None
         and net.p_value <= spec.alpha
@@ -473,7 +494,7 @@ def _significant(spec: HypothesisSpec, block: MetricBlock) -> bool:
 
 
 def _net_block_passes(spec: HypothesisSpec, block: MetricBlock) -> bool:
-    return block.trade_count >= spec.sample.min_trades_validation and _significant(spec, block)
+    return _meets_trade_floor(spec, block) and _significant(spec, block)
 
 
 def _mean_positive(block: MetricBlock) -> bool:
@@ -561,7 +582,7 @@ def _copy_score(score: ConfigScore, *, selected: bool) -> ConfigScore:
 def _family_p_value(spec: HypothesisSpec, net: MetricBlock) -> float:
     """Underpowered configs stay in the family with p=1 so they cannot shrink m."""
 
-    if net.trade_count < spec.sample.min_trades_validation:
+    if not _meets_trade_floor(spec, net):
         return 1.0
     if net.p_value is None:
         return 1.0
@@ -628,7 +649,7 @@ def _window_trades(
     )
 
 
-def _pooled_series(
+def _fold_series(
     spec: HypothesisSpec,
     feature: Sequence[float],
     table: BarTable,
@@ -636,13 +657,127 @@ def _pooled_series(
     *,
     config: ConfigSpec,
     folds: tuple[Fold, ...],
-) -> TradeSeries:
-    trades: list[Trade] = []
-    for fold in folds:
-        trades.extend(
-            _window_trades(spec, feature, config=config, start=fold.test_start, end=fold.test_end)
+) -> tuple[TradeSeries, ...]:
+    """One config's trades per walk-forward test fold, in fold order."""
+
+    return tuple(
+        _window_series(
+            spec, feature, table, vol, config=config, start=fold.test_start, end=fold.test_end
         )
-    return trade_series(trades, table.prices, funding=table.funding, sizing=spec.sizing, vol=vol)
+        for fold in folds
+    )
+
+
+def _concat_series(parts: Sequence[TradeSeries]) -> TradeSeries:
+    """The folds' trades pooled in order, as one validation series."""
+
+    return TradeSeries(
+        gross=tuple(value for part in parts for value in part.gross),
+        funding_paid=tuple(value for part in parts for value in part.funding_paid),
+        funding_received=tuple(value for part in parts for value in part.funding_received),
+        weights=tuple(value for part in parts for value in part.weights),
+    )
+
+
+def _overfitting(
+    spec: HypothesisSpec,
+    scores: tuple[ConfigScore, ...],
+    series_by_config: Sequence[tuple[ConfigSpec, TradeSeries]],
+    fold_series_by_config: Sequence[tuple[TradeSeries, ...]],
+    folds: tuple[Fold, ...],
+    selected_index: int | None,
+) -> Overfitting:
+    """The deflated Sharpe ratio and PBO, both on validation net returns at 1.0x.
+
+    They are reported, never gated on. In each CSCV split, PBO picks the best
+    positive mean among the configs that meet the trade floor pro-rated to the
+    in-sample folds; it does not re-run the significance and stress gates.
+    """
+
+    floored = _floored_indices(spec, scores)
+    dsr = deflated_sharpe(
+        len(spec.configs), _tested_config(spec, scores, series_by_config, floored, selected_index)
+    )
+    groups = cscv_blocks(len(folds))
+    if groups is None:
+        pbo = no_pbo(
+            f"PBO needs at least {MIN_CSCV_BLOCKS} walk-forward test folds; "
+            f"this run has {len(folds)}."
+        )
+    else:
+        folds_used = sum(len(group) for group in groups)
+        nets_by_fold = [
+            [part.net(spec.costs, 1.0) for part in fold_series]
+            for fold_series in fold_series_by_config
+        ]
+        pbo = probability_of_backtest_overfitting(
+            [
+                [
+                    BlockStats(
+                        trades=sum(len(nets[index]) for index in group),
+                        total=math.fsum(value for index in group for value in nets[index]),
+                    )
+                    for group in groups
+                ]
+                for nets in nets_by_fold
+            ],
+            min_trades=_in_sample_floor(spec, folds_used // 2, len(folds)),
+            folds_used=folds_used,
+        )
+    return Overfitting(deflated_sharpe=dsr, pbo=pbo)
+
+
+def _in_sample_floor(spec: HypothesisSpec, in_sample_folds: int, validation_folds: int) -> int:
+    """sample.min_trades_validation pro-rated to a split's in-sample folds, rounded up.
+
+    The floor applies to all validation folds; a CSCV split selects on fewer.
+    """
+
+    return -(-spec.sample.min_trades_validation * in_sample_folds // validation_folds)
+
+
+def _floored_indices(spec: HypothesisSpec, scores: tuple[ConfigScore, ...]) -> list[int]:
+    """The configs whose 1.0x validation net meets the trade floor."""
+
+    return [
+        index
+        for index, score in enumerate(scores)
+        if _meets_trade_floor(spec, score.validation_net["1.0"])
+    ]
+
+
+def _meets_trade_floor(spec: HypothesisSpec, block: MetricBlock) -> bool:
+    """The one validation trade-floor rule that selection and the diagnostics share."""
+
+    return block.trade_count >= spec.sample.min_trades_validation
+
+
+def _tested_config(
+    spec: HypothesisSpec,
+    scores: tuple[ConfigScore, ...],
+    series_by_config: Sequence[tuple[ConfigSpec, TradeSeries]],
+    floored: list[int],
+    selected_index: int | None,
+) -> ConfigUnderTest | None:
+    """The config validation selected, else the best validation mean among ``floored``.
+
+    The fallback uses validation selection's own ranking, so the diagnostic
+    stays on the config the run takes forward or comes closest to.
+    """
+
+    if selected_index is not None:
+        index = selected_index
+    elif floored:
+        index = _best_index(scores, floored)
+    else:
+        return None
+    config, series = series_by_config[index]
+    return ConfigUnderTest(
+        config_id=config.id,
+        sharpe=scores[index].validation_net["1.0"].sharpe_per_trade,
+        returns=series.net(spec.costs, 1.0),
+        selected=selected_index is not None,
+    )
 
 
 def _unit_return(prices: Sequence[float], trade: Trade) -> float:

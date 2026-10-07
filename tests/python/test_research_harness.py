@@ -21,15 +21,24 @@ from research.harness.data import BarTable
 from research.harness.errors import HarnessError, IntegrityError, SpecError
 from research.harness.evaluate import (
     Trade,
+    TradeSeries,
+    _build_scores,
+    _floored_indices,
+    _in_sample_floor,
+    _meets_trade_floor,
+    _tested_config,
     collect_trades,
     decide,
     position_weight,
     summarize,
     trade_series,
 )
+from research.harness.overfit import Overfitting, deflated_sharpe, no_pbo
+from research.harness.report import _overfitting_json, _overfitting_lines
 from research.harness.run import execute, lock_spec
 from research.harness.spec import (
     UNIT_SIZING,
+    ConfigSpec,
     CostSpec,
     Json,
     SizingSpec,
@@ -662,7 +671,7 @@ def test_any_non_positive_volatility_fails_the_run_closed(tmp_path: Path) -> Non
 
 def test_spec_without_funding_or_sizing_reports_unit_weight(tmp_path: Path) -> None:
     document = _run_rows(tmp_path, _regime_rows(420), configs=_two_configs())
-    assert document["harness_version"] == "3"
+    assert document["harness_version"] == "4"
     assert document["label"] == "passes_h1"
     assert _mapping(document["costs"])["funding_column"] is None
     assert _mapping(document["sizing"])["method"] == "unit"
@@ -674,6 +683,203 @@ def test_spec_without_funding_or_sizing_reports_unit_weight(tmp_path: Path) -> N
     holdout = _mapping(document["holdout"])
     assert holdout["funding"] is None
     assert holdout["mean_weight"] == 1.0
+
+
+def test_report_carries_overfitting_diagnostics(tmp_path: Path) -> None:
+    configs = [*_two_configs(), {"id": "short", "threshold": 0.0, "horizon_bars": 2}]
+    document = _run_rows(tmp_path, _regime_rows(420), configs=configs)
+    block = _mapping(document["overfitting"])
+    dsr = _mapping(block["deflated_sharpe"])
+    # The selected config is tested; the idle one still counts as a trial.
+    assert document["selected_config_id"] == "real"
+    assert (dsr["config_id"], dsr["selected"], dsr["trials"]) == ("real", True, 3)
+    assert _as_float(dsr["expected_max_sharpe"]) > 0.0
+    assert _as_float(dsr["dsr"]) > 0.99
+    pbo = _mapping(block["pbo"])
+    # Eight test folds: each in-sample half needs ceil(20 * 4 / 8) = 10 trades,
+    # which the idle config never has. The planted horizon is best in and out
+    # of sample.
+    assert (pbo["in_sample_floor"], pbo["blocks"], pbo["folds_used"]) == (10, 8, 8)
+    assert (pbo["splits"], pbo["skipped_splits"], pbo["value"]) == (70, 0, 0.0)
+    assert document["label"] == "passes_h1"
+    markdown = (tmp_path / "out" / "result.md").read_text(encoding="utf-8")
+    assert "## Overfitting diagnostics" in markdown
+    assert "for `real` (selected;" in markdown
+    assert (
+        "probability of backtest overfitting: `0.0` (CSCV, 8 blocks over 8 folds, 70 splits, "
+        "0 skipped, in-sample trade floor 10)"
+    ) in markdown
+
+
+def test_without_a_selection_the_best_validation_mean_is_tested(tmp_path: Path) -> None:
+    configs = [
+        {"id": "idle", "threshold": 10.0, "horizon_bars": 4},
+        {"id": "h2", "threshold": 0.0, "horizon_bars": 2},
+        {"id": "h4", "threshold": 0.0, "horizon_bars": 4},
+        {"id": "h8", "threshold": 0.0, "horizon_bars": 8},
+    ]
+    document = _run_rows(tmp_path, _random_walk_rows(420, seed=7), configs=configs)
+    assert document["selected_config_id"] is None
+    scores = _mapping(document["multiple_testing"])["configs"]
+    assert isinstance(scores, list)
+    floor = 20
+    means = {
+        _mapping(score)["id"]: _mapping(_mapping(_mapping(score)["net"])["1.0"])["mean_return"]
+        for score in scores
+        if _as_float(_mapping(_mapping(_mapping(score)["net"])["1.0"])["trade_count"]) >= floor
+    }
+    best = max(means, key=lambda name: _as_float(means[name]))
+    block = _mapping(document["overfitting"])
+    dsr = _mapping(block["deflated_sharpe"])
+    assert (dsr["config_id"], dsr["selected"]) == (best, False)
+    # Every pre-registered config is a trial, the idle one included.
+    assert dsr["trials"] == 4
+    pbo = _mapping(block["pbo"])
+    # After costs no config earns in-sample in any split, so, as in
+    # validation, no split selects anything.
+    assert (pbo["value"], pbo["splits"], pbo["skipped_splits"]) == (None, 0, 70)
+    assert pbo["in_sample_floor"] == 10
+
+
+def test_dsr_tests_the_selection_else_the_best_floored_mean() -> None:
+    spec = validate_spec(_json(_spec_body(parquet=True)))
+    floor = spec.sample.min_trades_validation
+    steady = [0.010, 0.012] * floor
+    noisy = [0.20, -0.08] * floor
+    lucky = [0.5, 0.6]
+    # Eight equal trades: a power-of-two count keeps the mean exact, so the
+    # spread is exactly 0 and the Sharpe is None.
+    flat = [0.002] * 8
+    series_by_config = [
+        (ConfigSpec(name, 0.0, 4), _plain_series(values))
+        for name, values in (
+            ("steady", steady),
+            ("noisy", noisy),
+            ("lucky", lucky),
+            ("flat", flat),
+        )
+    ]
+    nets_by_config = [
+        {"1.0": summarize(series.net(spec.costs, 1.0))} for _config, series in series_by_config
+    ]
+    neutral = [1.0] * len(series_by_config)
+    scores = _build_scores(
+        spec,
+        series_by_config,
+        nets_by_config,
+        neutral,
+        {method: neutral for method in ("bonferroni", "holm", "bh")},
+    )
+    floored = _floored_indices(spec, scores)
+    # The two lucky trades and the eight flat ones are under the trade floor.
+    assert floored == [0, 1]
+    selected = _tested_config(spec, scores, series_by_config, floored, 0)
+    assert selected is not None
+    assert (selected.config_id, selected.selected) == ("steady", True)
+    # Nothing selected: the best mean that meets the trade floor, as validation
+    # selection ranks, not the best Sharpe; the two lucky trades are ignored.
+    fallback = _tested_config(spec, scores, series_by_config, floored, None)
+    assert fallback is not None
+    assert (fallback.config_id, fallback.selected) == ("noisy", False)
+    assert _tested_config(spec, scores, series_by_config, [], None) is None
+    # A selected config without a Sharpe (equal returns) is still the one tested.
+    no_spread = _tested_config(spec, scores, series_by_config, floored, 3)
+    assert no_spread is not None
+    assert (no_spread.config_id, no_spread.selected, no_spread.sharpe) == ("flat", True, None)
+    flat_dsr = deflated_sharpe(len(series_by_config), no_spread)
+    lines = _overfitting_lines(
+        {"overfitting": _overfitting_json(Overfitting(flat_dsr, no_pbo("not run")))}
+    )
+    assert any(
+        line.startswith("- deflated Sharpe ratio: not computed for `flat` (selected). The tested")
+        for line in lines
+    )
+
+
+def test_the_trade_floor_includes_its_boundary() -> None:
+    spec = validate_spec(_json(_spec_body(parquet=True)))
+    floor = spec.sample.min_trades_validation
+    assert _meets_trade_floor(spec, summarize([0.01] * floor))
+    assert not _meets_trade_floor(spec, summarize([0.01] * (floor - 1)))
+
+
+def test_every_config_under_the_trade_floor_is_not_enough_data(tmp_path: Path) -> None:
+    document = _run_rows(
+        tmp_path, _regime_rows(420), configs=_two_configs(), min_trades_validation=1000
+    )
+    assert document["label"] == "not_enough_data"
+    reasons = document["reasons"]
+    assert isinstance(reasons, list)
+    assert any("fewer validation trades" in str(reason) for reason in reasons)
+    # Validation compared nothing, so neither diagnostic is computed.
+    block = _mapping(document["overfitting"])
+    for name, field in (("deflated_sharpe", "dsr"), ("pbo", "value")):
+        diagnostic = _mapping(block[name])
+        assert diagnostic[field] is None
+        assert "fewer validation trades" in str(diagnostic["note"])
+
+
+def test_the_in_sample_floor_is_pro_rated_and_rounded_up() -> None:
+    spec = validate_spec(_json(_spec_body(parquet=True)))
+    assert spec.sample.min_trades_validation == 20
+    assert _in_sample_floor(spec, 4, 8) == 10
+    # 31 folds in ten blocks of three: 15 in-sample folds need 20 * 15 / 31 = 9.7.
+    assert _in_sample_floor(spec, 15, 31) == 10
+
+
+def test_overfitting_notes_explain_a_missing_value(tmp_path: Path) -> None:
+    # The idle config never meets the in-sample trade floor, so no split has
+    # two candidates and nothing is selected.
+    document = _run_rows(tmp_path, _regime_rows(420), configs=_two_configs())
+    pbo = _mapping(_mapping(document["overfitting"])["pbo"])
+    assert (pbo["value"], pbo["splits"], pbo["skipped_splits"]) == (None, 0, 70)
+    assert "No split selected a config" in str(pbo["note"])
+    # A single config is never split, so no folds are reported as used.
+    (tmp_path / "one").mkdir()
+    one = _run_rows(tmp_path / "one", _regime_rows(420))
+    pbo = _mapping(_mapping(one["overfitting"])["pbo"])
+    assert (pbo["value"], pbo["blocks"], pbo["folds_used"]) == (None, None, None)
+    assert "two configs" in str(pbo["note"])
+    (tmp_path / "short").mkdir()
+    short = _run_rows(tmp_path / "short", _regime_rows(420), configs=_two_configs(), test_bars=100)
+    pbo = _mapping(_mapping(short["overfitting"])["pbo"])
+    assert (pbo["value"], pbo["in_sample_floor"]) == (None, None)
+    assert "4 walk-forward test folds" in str(pbo["note"])
+    markdown = (tmp_path / "short" / "out" / "result.md").read_text(encoding="utf-8")
+    assert "probability of backtest overfitting: not computed. PBO needs at least 4" in markdown
+
+
+def test_diagnostics_wait_for_sample_min_folds(tmp_path: Path) -> None:
+    # Eight folds are enough for CSCV, but the spec asks for ten, so the run
+    # is not_enough_data and neither diagnostic is shown.
+    configs = [*_two_configs(), {"id": "short", "threshold": 0.0, "horizon_bars": 2}]
+    document = _run_rows(tmp_path, _regime_rows(420), configs=configs, min_folds=10)
+    assert document["label"] == "not_enough_data"
+    block = _mapping(document["overfitting"])
+    dsr = _mapping(block["deflated_sharpe"])
+    pbo = _mapping(block["pbo"])
+    assert (dsr["dsr"], dsr["config_id"], dsr["trials"], pbo["value"]) == (None, None, 3, None)
+    for note in (dsr["note"], pbo["note"]):
+        assert "8 test folds; sample.min_folds is 10" in str(note)
+    markdown = (tmp_path / "out" / "result.md").read_text(encoding="utf-8")
+    assert "- deflated Sharpe ratio: not computed. Walk-forward produced 8 test folds" in markdown
+
+
+def test_a_thin_holdout_keeps_the_validation_diagnostics(tmp_path: Path) -> None:
+    # Validation selects the 8-bar horizon, but its holdout has too few trades.
+    configs = [*_two_configs(), {"id": "long", "threshold": 0.0, "horizon_bars": 8}]
+    document = _run_rows(tmp_path, _regime_rows(420), configs=configs)
+    assert (document["label"], document["selected_config_id"]) == ("not_enough_data", "long")
+    reasons = document["reasons"]
+    assert isinstance(reasons, list)
+    assert any("sample.min_trades_holdout" in str(reason) for reason in reasons)
+    block = _mapping(document["overfitting"])
+    dsr = _mapping(block["deflated_sharpe"])
+    pbo = _mapping(block["pbo"])
+    assert (dsr["config_id"], dsr["selected"], dsr["note"]) == ("long", True, None)
+    assert _as_float(dsr["dsr"]) > 0.0
+    assert (pbo["note"], pbo["splits"]) == (None, 70)
+    assert pbo["value"] is not None
 
 
 def test_funding_paid_on_the_position_wipes_a_planted_edge(tmp_path: Path) -> None:
@@ -838,6 +1044,16 @@ def _sized_body() -> dict[str, object]:
         "max_leverage": 5.0,
     }
     return body
+
+
+def _plain_series(gross: list[float]) -> TradeSeries:
+    zeros = tuple(0.0 for _ in gross)
+    return TradeSeries(
+        gross=tuple(gross),
+        funding_paid=zeros,
+        funding_received=zeros,
+        weights=tuple(1.0 for _ in gross),
+    )
 
 
 def _costs(*, fee_bps: float) -> CostSpec:

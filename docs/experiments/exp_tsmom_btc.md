@@ -64,9 +64,10 @@ separate pre-registration after this one.
   - The run refuses any other table, whether a different builder, a broken
     sync or another DuckDB version produced it.
 - **Pre-registered code**: the harness that scores the study, the builder,
-  hist_etl and the locked dependencies are pinned to commit `71b0043`. The
-  run refuses a checkout whose `src/research` or `uv.lock` differs from it,
-  including untracked files there.
+  hist_etl and the locked dependencies are pinned to commit
+  `71b0043755dbbc05544e03a93c1121e7a8d4229c` (#126). The run
+  refuses a checkout whose `src/research` or `uv.lock` differs from it,
+  including untracked files there, and checks this before it syncs anything.
 - **Signal**: `trend_score` is the mean sign of the 1-, 4- and 12-week log
   returns (168, 672 and 2016 bars).
   - The lookbacks are fixed in advance and combined, not chosen, as Hurst,
@@ -197,15 +198,24 @@ holdout.
 
 ## Run (after this document is merged)
 
-Export three paths:
+Run from `main`, after this document is merged. The results record the
+commit. Export three paths, then check the pre-registered code. The check
+steps are chained with `&&`, because bash ignores `set -e` inside a
+subshell whose status feeds `&&`:
 
 ```bash
-export REPO_ROOT=...            # the repository checkout
+export REPO_ROOT=...            # the repository checkout, on main
 export HIST_ARCHIVES_ROOT=...   # the hist_etl archive root
 export STUDY_DIR=...            # a new directory OUTSIDE the repository
+(
+  cd "$REPO_ROOT" &&
+    git diff --exit-code 71b0043755dbbc05544e03a93c1121e7a8d4229c -- src/research uv.lock &&
+    changed="$(git status --porcelain -- src/research uv.lock)" &&
+    test -z "$changed"
+) && echo "pre-registered code"
 ```
 
-Sync the data:
+Continue only if it printed `pre-registered code`. Then sync the data:
 
 ```bash
 cd "$REPO_ROOT"
@@ -220,18 +230,17 @@ current month is open, so this step is not chained to the next. Read each
 error, is a missing or broken archive inside the range: stop and fix it. The
 fingerprint check below is the backstop for anything that slips through.
 
-Then build, check and run. The block runs in a subshell, so its
-`set -euo pipefail` stops the block at the first failure without closing
-your shell:
+Then build, check and run. This block stops at the first failure, and it
+repeats the code check:
 
 ```bash
 (
   set -euo pipefail
   cd "$REPO_ROOT"
   git rev-parse HEAD
-  # The pre-registered code: no change, tracked or not, since 71b0043.
-  git diff --exit-code 71b0043 -- src/research uv.lock
-  test -z "$(git status --porcelain -- src/research uv.lock)"
+  git diff --exit-code 71b0043755dbbc05544e03a93c1121e7a8d4229c -- src/research uv.lock
+  changed="$(git status --porcelain -- src/research uv.lock)"
+  test -z "$changed"
   mkdir -p "$STUDY_DIR"
   cp docs/experiments/exp_tsmom_btc.spec.yaml "$STUDY_DIR/spec.yaml"
   PYTHONPATH=src uv run --frozen python -m research.bar_tables trend \
@@ -241,7 +250,7 @@ your shell:
   PYTHONPATH=src uv run --frozen python -c '
 import json, sys
 lock = json.load(open(sys.argv[1]))
-found = (lock.get("spec_sha256"), lock.get("data_fingerprint", {}).get("fingerprint_sha256"))
+found = (lock.get("spec_sha256"), (lock.get("data_fingerprint") or {}).get("fingerprint_sha256"))
 expected = (
     "2c8def878612ce08cea11171209a26b65034cda84bc4df92039b150dc96c3e31",
     "0553f54a851deae6759cc2a23619670000b07976d677e5fcf604ee9902a7eb09",

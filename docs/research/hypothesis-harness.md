@@ -102,8 +102,11 @@ funding is exact in a backtest, but it is a market cashflow that need not
 repeat, so the stresses treat it adversely, payment by payment: at 1.5x and
 2.0x, every bar's funding paid is multiplied by the stress and every bar's
 funding received is divided by it, so payments inside one trade do not net
-each other out first. An edge that rests on received funding must survive
-that haircut too. Each config and the
+each other out first. The stress sees the per-bar values, so with bars coarser
+than the venue's settlement interval the payments inside one bar are netted
+before it; use bars no coarser than the settlement interval when the stress
+matters. An edge that rests on received funding must survive that haircut
+too. Each config and the
 holdout report a separate `funding` block (the realized per-trade funding
 cashflow, at 1.0x) next to gross and net.
 

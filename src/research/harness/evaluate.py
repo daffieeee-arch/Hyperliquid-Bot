@@ -295,7 +295,7 @@ def position_weight(sizing: SizingSpec, vol: Sequence[float] | None, decision: i
     if vol is None or sizing.target_vol is None or sizing.max_leverage is None:
         raise HarnessError("invariant", "vol_target sizing is missing its inputs.")
     value = vol[decision]
-    if value <= 0.0:
+    if not (math.isfinite(value) and value > 0.0):
         # decide() refuses such a series up front; this guards direct callers.
         raise IntegrityError("sizing", f"Volatility feature is not positive at bar {decision}.")
     return min(sizing.max_leverage, sizing.target_vol / value)
@@ -588,7 +588,7 @@ def _vol_series(spec: HypothesisSpec, table: BarTable) -> tuple[float, ...] | No
         return None
     values = table.features[_feature_column(spec, name)]
     for index, value in enumerate(values):
-        if value <= 0.0:
+        if not (math.isfinite(value) and value > 0.0):
             raise IntegrityError(
                 "sizing", f"Volatility feature {name} at row {index} must be positive."
             )

@@ -512,10 +512,13 @@ def test_vol_target_weight_reads_the_decision_bar_and_is_capped() -> None:
     assert position_weight(sizing, vol, 0) == pytest.approx(2.0)
     assert position_weight(sizing, vol, 1) == pytest.approx(0.5)
     assert position_weight(sizing, vol, 2) == 3.0
-    # A zero or negative volatility never takes the leverage cap.
+    # A zero, negative or non-finite volatility never takes the leverage cap.
     for decision in (3, 4):
         with pytest.raises(IntegrityError, match="not positive"):
             position_weight(sizing, vol, decision)
+    for bad in (math.nan, math.inf):
+        with pytest.raises(IntegrityError, match="not positive"):
+            position_weight(sizing, (bad,), 0)
     assert position_weight(UNIT_SIZING, None, 0) == 1.0
     # Price return, cost and funding all scale with the weight.
     prices = (100.0, 100.0, 101.0)
@@ -609,6 +612,17 @@ def test_decide_audits_the_whole_volatility_series_of_any_table() -> None:
     with pytest.raises(IntegrityError, match="must be positive") as refused:
         decide(spec, table)
     assert refused.value.failure_kind == "sizing"
+    nan_table = BarTable(
+        timestamps=table.timestamps,
+        prices=table.prices,
+        features={
+            "taker_imbalance": table.features["taker_imbalance"],
+            "realized_vol": tuple(math.nan if index == rows - 1 else 0.01 for index in range(rows)),
+        },
+        availability=table.availability,
+    )
+    with pytest.raises(IntegrityError, match="must be positive"):
+        decide(spec, nan_table)
 
 
 def test_bar_table_without_the_declared_funding_is_refused() -> None:

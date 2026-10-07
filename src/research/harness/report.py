@@ -22,8 +22,9 @@ LIMITATIONS: Final[tuple[str, ...]] = (
     "Sharpe is per trade, not annualized. Drawdown sums simple returns.",
     "spread_bps is the half-spread per side. Costs are flat bps at 1.0x, 1.5x, and 2.0x.",
     "Funding accrues only from a declared costs.funding_column, per bar held, on the "
-    "notional at each bar close. Under stress, funding paid is multiplied and funding "
-    "received divided by the multiplier.",
+    "notional at each bar close. Under stress, each bar's funding paid is multiplied and "
+    "each bar's funding received divided by the multiplier; payments inside one bar are "
+    "netted first.",
     "Sizing is one unit per trade unless sizing.method is vol_target: target_vol / vol at "
     "the decision bar, capped at max_leverage. Costs and funding scale with the weight.",
     "Latency fills at decision_bar + latency_bars. Zero latency requires allow_zero_latency.",

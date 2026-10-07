@@ -6,7 +6,7 @@ import json
 import os
 import re
 import subprocess
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Final
 
@@ -460,20 +460,9 @@ def _window_json(window: Window) -> dict[str, Json]:
         if window.note is not None:
             return {"status": window.status, "note": window.note}
         return {"status": window.status}
-    return {
-        "status": window.status,
-        "start": result.start,
-        "end": result.end,
-        "bars_held": result.bars_held,
-        "gross_return": result.gross_return,
-        "log_return": result.log_return,
-        "funding": result.funding,
-        "funding_constant_notional": result.funding_constant_notional,
-        "net": dict(result.net),
-        "mean_log_return_per_bar": result.mean_log_return_per_bar,
-        "stdev_log_return_per_bar": result.stdev_log_return_per_bar,
-        "sharpe_per_bar": result.sharpe_per_bar,
-    }
+    values: dict[str, Json] = {"status": window.status}
+    values.update(asdict(result))
+    return values
 
 
 def _provenance_json(origin: Provenance | None) -> dict[str, Json]:

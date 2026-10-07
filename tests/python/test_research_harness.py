@@ -1165,6 +1165,11 @@ def test_a_window_result_exists_exactly_when_evaluated() -> None:
         Window("evaluated")
     with pytest.raises(HarnessError, match="invalid"):
         Window("unknown")
+    with pytest.raises(HarnessError, match="invalid"):
+        Window("error")
+    with pytest.raises(HarnessError, match="invalid"):
+        Window("sealed", note="why")
+    assert Window("error", note="why").note == "why"
 
 
 def _bar_table(rows: Sequence[tuple[int, float, float, int]]) -> BarTable:

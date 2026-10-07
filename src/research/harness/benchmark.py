@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Final
 
 from research.harness.costs import STRESS_MULTIPLIERS, stress_key
@@ -58,7 +58,12 @@ class Window:
     note: str | None = None
 
     def __post_init__(self) -> None:
-        if self.status not in _STATUSES or (self.status == EVALUATED) != (self.result is not None):
+        valid = (
+            self.status in _STATUSES
+            and (self.status == EVALUATED) == (self.result is not None)
+            and (self.status == ERROR) == (self.note is not None)
+        )
+        if not valid:
             raise HarnessError("invariant", f"Benchmark window status {self.status!r} is invalid.")
 
 
@@ -117,7 +122,8 @@ def buy_and_hold(costs: CostSpec, table: BarTable, start: int, end: int) -> BuyA
     trade = Trade(decision=start, entry=entry, exit=end - 1, side=1)
     series = trade_series((trade,), prices, funding=table.funding, sizing=UNIT_SIZING, vol=None)
     per_bar = [math.log(prices[index] / prices[index - 1]) for index in range(entry + 1, end)]
-    mean = math.fsum(per_bar) / len(per_bar)
+    log_return = math.fsum(per_bar)
+    mean = log_return / len(per_bar)
     stdev = _sample_stdev(per_bar, mean)
     constant_notional = (
         None if table.funding is None else -math.fsum(table.funding[entry + 1 : end])
@@ -127,7 +133,7 @@ def buy_and_hold(costs: CostSpec, table: BarTable, start: int, end: int) -> BuyA
         end=end,
         bars_held=end - 1 - entry,
         gross_return=series.gross[0],
-        log_return=math.fsum(per_bar),
+        log_return=log_return,
         funding=None if table.funding is None else series.funding[0],
         funding_constant_notional=constant_notional,
         net={stress_key(stress): series.net(costs, stress)[0] for stress in STRESS_MULTIPLIERS},
@@ -140,18 +146,11 @@ def buy_and_hold(costs: CostSpec, table: BarTable, start: int, end: int) -> BuyA
 
 
 def _require_finite(result: BuyAndHold) -> None:
-    values = [
-        result.gross_return,
-        result.log_return,
-        result.funding,
-        result.funding_constant_notional,
-        *result.net.values(),
-        result.mean_log_return_per_bar,
-        result.stdev_log_return_per_bar,
-        result.sharpe_per_bar,
-    ]
-    if any(value is not None and not math.isfinite(value) for value in values):
-        raise _NonFinite("a benchmark value is not finite")
+    # Every float the record carries, so a new field cannot skip the check.
+    for value in asdict(result).values():
+        numbers = value.values() if isinstance(value, dict) else (value,)
+        if any(isinstance(number, float) and not math.isfinite(number) for number in numbers):
+            raise _NonFinite("a benchmark value is not finite")
 
 
 def _sample_stdev(values: list[float], mean: float) -> float | None:

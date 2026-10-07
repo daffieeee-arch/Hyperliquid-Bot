@@ -15,12 +15,16 @@ from research.harness.evaluate import ConfigScore, Decision, MetricBlock
 from research.harness.spec import HypothesisSpec, Json
 from research.harness.splits import Fold
 
-HARNESS_VERSION: Final = "2"
+HARNESS_VERSION: Final = "3"
 _ENVIRONMENTS: Final = frozenset({"DEV", "CI", "VPS_RESEARCH"})
 LIMITATIONS: Final[tuple[str, ...]] = (
     "The gate uses the larger of the iid t p-value and a Newey-West HAC t p-value.",
     "Sharpe is per trade, not annualized. Drawdown sums simple returns.",
     "spread_bps is the half-spread per side. Costs are flat bps at 1.0x, 1.5x, and 2.0x.",
+    "Funding accrues only from a declared costs.funding_column, per bar held, on the "
+    "notional at each bar close. It is not stressed.",
+    "Sizing is one unit per trade unless sizing.method is vol_target: target_vol / vol at "
+    "the decision bar, capped at max_leverage. Costs and funding scale with the weight.",
     "Latency fills at decision_bar + latency_bars. Zero latency requires allow_zero_latency.",
     "Look-ahead control uses the declared clock. A falsely stamped future value is invisible.",
     "paper_candidate is not LIVE, SHADOW, TESTNET, or an order authorization.",
@@ -112,10 +116,17 @@ def completed_document(
             "spread_bps": spec.costs.spread_bps,
             "latency_bars": spec.costs.latency_bars,
             "allow_zero_latency": spec.costs.allow_zero_latency,
+            "funding_column": spec.costs.funding_column,
             "round_trip_cost": {
                 stress_key(stress): round_trip_cost(spec.costs, stress)
                 for stress in STRESS_MULTIPLIERS
             },
+        },
+        "sizing": {
+            "method": spec.sizing.method,
+            "vol_feature": spec.sizing.vol_feature,
+            "target_vol": spec.sizing.target_vol,
+            "max_leverage": spec.sizing.max_leverage,
         },
         "split": {
             "method": spec.split.method,
@@ -206,10 +217,10 @@ def _validation_lines(document: dict[str, Json]) -> list[str]:
         return ["- validation configs missing"]
     lines = [
         (
-            "| config | trades | mean gross | mean net 1.0 | mean net 2.0 "
-            "| p | bonferroni | holm | bh | selected |"
+            "| config | trades | mean gross | mean funding | mean net 1.0 | mean net 2.0 "
+            "| mean weight | p | bonferroni | holm | bh | selected |"
         ),
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for config in configs:
         if not isinstance(config, dict):
@@ -219,14 +230,16 @@ def _validation_lines(document: dict[str, Json]) -> list[str]:
         adjusted = config.get("adjusted_p")
         lines.append(
             (
-                "| {id} | {trades} | {gross} | {net1} | {net2} "
-                "| {p_value} | {bonf} | {holm} | {bh} | {selected} |"
+                "| {id} | {trades} | {gross} | {funding} | {net1} | {net2} "
+                "| {weight} | {p_value} | {bonf} | {holm} | {bh} | {selected} |"
             ).format(
                 id=config.get("id"),
                 trades=_metric_field(gross, "trade_count"),
                 gross=_metric_field(gross, "mean_return"),
+                funding=_metric_field(config.get("funding"), "mean_return"),
                 net1=_nested_metric(net, "1.0", "mean_return"),
                 net2=_nested_metric(net, "2.0", "mean_return"),
+                weight=config.get("mean_weight"),
                 p_value=config.get("family_p_value"),
                 bonf=_mapping_field(adjusted, "bonferroni"),
                 holm=_mapping_field(adjusted, "holm"),
@@ -248,6 +261,8 @@ def _holdout_lines(document: dict[str, Json]) -> list[str]:
     net = holdout.get("net")
     lines.append(f"- gross mean: `{_metric_field(gross, 'mean_return')}`")
     lines.append(f"- gross trades: `{_metric_field(gross, 'trade_count')}`")
+    lines.append(f"- funding mean: `{_metric_field(holdout.get('funding'), 'mean_return')}`")
+    lines.append(f"- mean weight: `{holdout.get('mean_weight')}`")
     if isinstance(net, dict):
         for key in ("1.0", "1.5", "2.0"):
             lines.append(f"- net {key} mean: `{_metric_field(net.get(key), 'mean_return')}`")
@@ -265,6 +280,8 @@ def _holdout_json(decision: Decision) -> dict[str, Json] | None:
         "config_id": decision.holdout_config_id,
         "gross": _metric_json(decision.holdout_gross),
         "net": {key: _metric_json(block) for key, block in decision.holdout_net.items()},
+        "funding": _optional_metric_json(decision.holdout_funding),
+        "mean_weight": decision.holdout_mean_weight,
     }
 
 
@@ -288,7 +305,13 @@ def _score_json(score: ConfigScore) -> dict[str, Json]:
         "adjusted_p": dict(score.adjusted_p),
         "gross": _metric_json(score.validation_gross),
         "net": {key: _metric_json(block) for key, block in score.validation_net.items()},
+        "funding": _optional_metric_json(score.validation_funding),
+        "mean_weight": score.mean_weight,
     }
+
+
+def _optional_metric_json(block: MetricBlock | None) -> dict[str, Json] | None:
+    return None if block is None else _metric_json(block)
 
 
 def _metric_json(block: MetricBlock) -> dict[str, Json]:

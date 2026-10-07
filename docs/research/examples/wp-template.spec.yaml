@@ -16,6 +16,15 @@ costs:
   slippage_bps: 1.0
   spread_bps: 1.0
   latency_bars: 1
+  # Perp funding while a trade is held: declare a role: funding column (the
+  # rate a long pays over each bar) and name it here.
+  #   funding_column: funding_rate
+# Optional position weight per trade. Omitted means one unit per trade.
+#   sizing:
+#     method: vol_target
+#     vol_feature: realized_vol
+#     target_vol: 0.02
+#     max_leverage: 3.0
 split:
   method: expanding
   train_bars: 2160

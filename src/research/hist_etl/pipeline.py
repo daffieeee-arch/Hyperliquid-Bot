@@ -27,11 +27,12 @@ from research.hist_etl.hyperliquid import (
     audit_funding_month,
     build_poster,
     fetch_funding,
+    funding_view_files,
     funding_windows,
     hyperliquid_rate,
     materialize_funding_month,
-    raw_end_ms,
     raw_funding_path,
+    raw_status,
     ready_to_settle,
     render_raw,
     write_raw,
@@ -163,7 +164,13 @@ def run_sync(
         gaps,
         rebuild=rebuild,
     )
-    _applied, foreign = refresh_catalog(safe_root, replace_legacy_views=replace_legacy_views)
+    _applied, foreign = refresh_catalog(
+        safe_root,
+        replace_legacy_views=replace_legacy_views,
+        hyperliquid_files=funding_view_files(
+            safe_root, manifest.hyperliquid, _settled_today(today)
+        ),
+    )
     for name in foreign:
         gaps.append(
             Gap(
@@ -231,13 +238,22 @@ def run_catalog(
     dataset_ids: tuple[str, ...] | None,
     env: Mapping[str, str],
     replace_legacy_views: bool = False,
+    today: date | None = None,
 ) -> int:
-    _manifest, _binance, _kraken, _hyperliquid, safe_root = _context(
+    manifest, _binance, _kraken, _hyperliquid, safe_root = _context(
         root, manifest_path, dataset_ids, env
     )
     if not safe_root.is_dir():
         raise HistEtlError(f"archive root does not exist: {safe_root}", exit_code=2)
-    names, foreign = refresh_catalog(safe_root, replace_legacy_views=replace_legacy_views)
+    names, foreign = refresh_catalog(
+        safe_root,
+        replace_legacy_views=replace_legacy_views,
+        hyperliquid_files=funding_view_files(
+            safe_root,
+            manifest.hyperliquid,
+            _settled_today(today if today is not None else datetime.now(UTC).date()),
+        ),
+    )
     print(f"catalog\tviews={len(names)}")
     for name in names:
         print(f"catalog\tview\t{name}")
@@ -264,7 +280,8 @@ def _describe_hyperliquid(
         for window in funding_windows(spec, _settled_today(today)):
             settled = raw_funding_path(root, window, settled=True)
             if window.complete and settled.is_file():
-                action, raw = "present", settled
+                status = raw_status(settled, window, settled=True)
+                action, raw = ("present" if status == "match" else status), settled
             elif window.complete:
                 action, raw = "download", settled
             else:
@@ -288,18 +305,8 @@ def _sync_hyperliquid(
         for window in funding_windows(spec, _settled_today(today)):
             settled = raw_funding_path(root, window, settled=True)
             if window.complete and settled.is_file():
-                if raw_end_ms(settled) != window.end_ms:
-                    # The dataset's range changed after this month settled.
-                    # A settled file is never overwritten; the operator moves it.
-                    gaps.append(
-                        Gap(
-                            "hyperliquid_window_changed",
-                            spec.id,
-                            f"{settled.name} was settled for a different window; "
-                            "move it aside to refetch the month",
-                        )
-                    )
-                    continue
+                # Never overwritten. If the dataset's range changed since, the
+                # load reports hyperliquid_window_changed until it is moved.
                 raw, provisional = settled, False
             else:
                 # Any month that is not settled yet is fetched again: the open
@@ -319,14 +326,11 @@ def _sync_hyperliquid(
                         raise
                     gaps.append(Gap("hyperliquid_fetch_failed", spec.id, str(exc)))
                     continue
-                text = render_raw(window, rows)
-                open_raw = raw_funding_path(root, window, settled=False)
-                repeated = open_raw.is_file() and open_raw.read_text(encoding="utf-8") == text
-                if ready_to_settle(spec, window, rows, same_as_last_fetch=repeated):
+                if ready_to_settle(spec, window, rows):
                     raw, provisional = settled, False
                 else:
-                    raw, provisional = open_raw, True
-                write_raw(raw, text)
+                    raw, provisional = raw_funding_path(root, window, settled=False), True
+                write_raw(raw, render_raw(window, rows))
             gaps.extend(
                 materialize_funding_month(
                     spec, window, raw, root=root, rebuild=rebuild, provisional=provisional

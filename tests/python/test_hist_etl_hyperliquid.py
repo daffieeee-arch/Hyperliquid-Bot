@@ -13,6 +13,7 @@ from pytest import CaptureFixture
 from research.hist_etl.errors import HistEtlError
 from research.hist_etl.http import RateLimiter
 from research.hist_etl.hyperliquid import (
+    FUNDING_COLUMNS,
     RATE_LIMIT_WAIT_SECONDS,
     SLOT_TOLERANCE_MS,
     FundingWindow,
@@ -26,7 +27,13 @@ from research.hist_etl.hyperliquid import (
 )
 from research.hist_etl.manifest import assert_known_ids, load_manifest
 from research.hist_etl.models import HYPERLIQUID_INFO_URL, HyperliquidFundingSpec
-from research.hist_etl.pipeline import _settled_today, run_plan, run_sync, run_verify
+from research.hist_etl.pipeline import (
+    _settled_today,
+    run_catalog,
+    run_plan,
+    run_sync,
+    run_verify,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 HOUR_MS = 3_600_000
@@ -176,8 +183,7 @@ def test_sync_writes_months_reuses_settled_ones_and_grows_the_open_one(tmp_path:
     assert _sidecar(settled)["provisional"] is False
     assert _sidecar(hyperliquid_parquet_path(tmp_path, october))["provisional"] is True
     assert _view_count(tmp_path) == 72
-    columns = _columns(settled)
-    assert {"ts", "slot_start", "funding_rate", "funding_rate_text", "premium"} <= columns
+    assert _parquet_schema(settled) == list(FUNDING_COLUMNS)
     settled_mtime = settled.stat().st_mtime_ns
     raw_bytes = raw_funding_path(tmp_path, september, settled=True).read_bytes()
 
@@ -237,6 +243,8 @@ def test_two_prints_in_one_slot_refuse_the_month(tmp_path: Path) -> None:
     assert [gap["kind"] for gap in report["gaps"]] == ["funding_conflict"]
     window = _window_for(tmp_path, manifest, "2026-09", date(2026, 10, 1))
     assert not hyperliquid_parquet_path(tmp_path, window).exists()
+    # With no month published, the catalog does not create an empty view.
+    assert _query(tmp_path, "SELECT view_name FROM duckdb_views() WHERE NOT internal") == []
 
 
 def test_verify_sees_an_edited_raw_file(tmp_path: Path) -> None:
@@ -308,18 +316,46 @@ def test_today_after_the_real_date_cannot_settle_the_running_month() -> None:
     assert _settled_today(date(2026, 9, 1)) == date(2026, 9, 1)
 
 
-def test_verify_accepts_an_open_month_fetched_on_an_earlier_day(tmp_path: Path) -> None:
+def test_an_open_month_fetched_on_an_earlier_day_is_kept(tmp_path: Path) -> None:
     start = datetime(2026, 9, 29, tzinfo=UTC)
     manifest = _manifest(tmp_path, start="2026-09-29")
     poster = FakeFundingPoster(_hourly(start, 24 * 6), page_size=100)
     assert _sync(tmp_path, manifest, poster, date(2026, 10, 2)) == 0
-    # The open month was fetched through 2026-10-01; verify runs days later.
+    # The open month was fetched through 2026-10-01; verify and the catalog
+    # run days later, without a sync in between.
+    later = date(2026, 10, 4)
     assert (
-        run_verify(
-            root=tmp_path, manifest_path=manifest, today=date(2026, 10, 4), dataset_ids=None, env={}
-        )
+        run_verify(root=tmp_path, manifest_path=manifest, today=later, dataset_ids=None, env={})
         == 0
     )
+    assert (
+        run_catalog(root=tmp_path, manifest_path=manifest, dataset_ids=None, env={}, today=later)
+        == 0
+    )
+    assert _view_count(tmp_path) == 72
+
+
+def test_a_shortened_range_drops_a_longer_open_month(tmp_path: Path) -> None:
+    start = datetime(2026, 9, 29, tzinfo=UTC)
+    today = date(2026, 10, 3)
+    poster = FakeFundingPoster(_hourly(start, 24 * 6), page_size=100)
+    assert _sync(tmp_path, _manifest(tmp_path, start="2026-09-29"), poster, today) == 0
+    assert _view_count(tmp_path) == 96
+    shortened = _manifest(tmp_path, start="2026-09-29", end="2026-10-01")
+    assert (
+        run_catalog(root=tmp_path, manifest_path=shortened, dataset_ids=None, env={}, today=today)
+        == 0
+    )
+    # The open month ran to 2026-10-03, past the range: out of the view.
+    assert _view_count(tmp_path) == 48
+    assert (
+        run_verify(root=tmp_path, manifest_path=shortened, today=today, dataset_ids=None, env={})
+        == 2
+    )
+    assert _gap_kinds(tmp_path) == ["hyperliquid_window_changed"]
+    # It was never settled, so the next sync fetches the shorter month.
+    assert _sync(tmp_path, shortened, poster, today) == 0
+    assert _view_count(tmp_path) == 72
 
 
 def test_a_truncated_settled_month_stays_provisional_until_complete(tmp_path: Path) -> None:
@@ -352,23 +388,45 @@ def test_a_print_just_before_its_slot_belongs_to_that_slot(tmp_path: Path) -> No
     assert _view_count(tmp_path) == 24
 
 
-def test_a_settled_file_for_a_changed_window_is_reported(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("first_start", "first_end", "days"),
+    [("2026-09-01", "2026-09-15", 15), ("2026-09-10", "2026-09-30", 21)],
+)
+def test_a_settled_file_for_a_changed_window_is_reported(
+    tmp_path: Path, capsys: CaptureFixture[str], first_start: str, first_end: str, days: int
+) -> None:
     start = datetime(2026, 9, 1, tzinfo=UTC)
-    poster = FakeFundingPoster(_hourly(start, 24 * 30), page_size=1000)
-    first = _manifest(tmp_path, start="2026-09-01", end="2026-09-15")
-    assert _sync(tmp_path, first, poster, date(2026, 10, 1)) == 0
-    # The operator extends the range; the settled half month is not trusted.
-    extended = _manifest(tmp_path, start="2026-09-01", end="2026-09-30")
-    assert _sync(tmp_path, extended, poster, date(2026, 10, 1)) == 2
-    report = json.loads((tmp_path / "logs" / "gap_report.json").read_text())
-    assert [gap["kind"] for gap in report["gaps"]] == ["hyperliquid_window_changed"]
     today = date(2026, 10, 1)
+    poster = FakeFundingPoster(_hourly(start, 24 * 30), page_size=1000)
+    first = _manifest(tmp_path, start=first_start, end=first_end)
+    assert _sync(tmp_path, first, poster, today) == 0
+    assert _view_count(tmp_path) == days * 24
+    schema = _view_schema(tmp_path)
+    # The operator widens the range; the settled part month is not trusted.
+    extended = _manifest(tmp_path, start="2026-09-01", end="2026-09-30")
+    assert _sync(tmp_path, extended, poster, today) == 2
+    assert _gap_kinds(tmp_path) == ["hyperliquid_window_changed"]
+    # It does not stand in for the whole month: the view keeps its columns
+    # and has no rows until the month is fetched again.
+    assert _view_count(tmp_path) == 0
+    assert _view_schema(tmp_path) == schema
     assert (
         run_verify(root=tmp_path, manifest_path=extended, today=today, dataset_ids=None, env={})
         == 2
     )
-    report = json.loads((tmp_path / "logs" / "gap_report.json").read_text())
-    assert [gap["kind"] for gap in report["gaps"]] == ["hyperliquid_schema"]
+    assert _gap_kinds(tmp_path) == ["hyperliquid_window_changed"]
+    capsys.readouterr()
+    run_plan(root=tmp_path, manifest_path=extended, today=today, dataset_ids=None, env={})
+    lines = [line for line in capsys.readouterr().out.splitlines() if "hl-test" in line]
+    assert [line.split("\t")[1] for line in lines] == ["window_changed"]
+    # Moved aside, the month is fetched again; --rebuild replaces its Parquet.
+    window = _window_for(tmp_path, extended, "2026-09", today)
+    settled = raw_funding_path(tmp_path, window, settled=True)
+    settled.rename(settled.with_name(settled.name + ".old"))
+    assert _sync(tmp_path, extended, poster, today) == 2
+    assert _gap_kinds(tmp_path) == ["refused_overwrite"]
+    assert _sync(tmp_path, extended, poster, today, rebuild=True) == 0
+    assert _view_count(tmp_path) == 30 * 24
 
 
 def test_verify_judges_an_ended_month_over_all_its_slots(tmp_path: Path) -> None:
@@ -389,42 +447,58 @@ def test_verify_judges_an_ended_month_over_all_its_slots(tmp_path: Path) -> None
     assert september[0]["detail"].startswith("384 settlement slots")
 
 
-def test_a_repeated_answer_with_a_venue_hole_settles(tmp_path: Path) -> None:
+def test_an_unacknowledged_hole_keeps_the_month_provisional(tmp_path: Path) -> None:
     start = datetime(2026, 9, 1, tzinfo=UTC)
+    today = date(2026, 10, 1)
     times = _hourly(start, 24)
     del times[7]
     manifest = _manifest(tmp_path, start="2026-09-01", end="2026-09-01")
-    window = _window_for(tmp_path, manifest, "2026-09", date(2026, 10, 1))
+    window = _window_for(tmp_path, manifest, "2026-09", today)
     poster = FakeFundingPoster(times, page_size=100)
-    assert _sync(tmp_path, manifest, poster, date(2026, 10, 1)) == 2
+    assert _sync(tmp_path, manifest, poster, today) == 2
+    # The same answer again does not settle it: a truncated answer can repeat,
+    # so the month is fetched on every sync until the hole is acknowledged.
+    poster.requests.clear()
+    assert _sync(tmp_path, manifest, poster, today) == 2
+    assert poster.requests[0]["startTime"] == window.start_ms - SLOT_TOLERANCE_MS
     assert not raw_funding_path(tmp_path, window, settled=True).exists()
-    # The same answer again: the hole is the venue's, so the month settles,
-    # and the hole stays in the gap report until it is acknowledged.
-    assert _sync(tmp_path, manifest, poster, date(2026, 10, 1)) == 2
+    assert _sidecar(hyperliquid_parquet_path(tmp_path, window))["provisional"] is True
+    assert _view_count(tmp_path) == 23
+    hole = datetime(2026, 9, 1, 7, tzinfo=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    acknowledged = _manifest(
+        tmp_path, start="2026-09-01", end="2026-09-01", extra=f'known_holes = ["{hole}"]\n'
+    )
+    assert _sync(tmp_path, acknowledged, poster, today) == 0
     assert raw_funding_path(tmp_path, window, settled=True).is_file()
     assert _sidecar(hyperliquid_parquet_path(tmp_path, window))["provisional"] is False
     poster.requests.clear()
-    assert _sync(tmp_path, manifest, poster, date(2026, 10, 1)) == 2
+    assert _sync(tmp_path, acknowledged, poster, today) == 0
     assert poster.requests == []
 
 
-def test_view_keeps_one_row_per_settlement(tmp_path: Path) -> None:
+def test_view_reads_only_the_files_the_manifest_selects(tmp_path: Path) -> None:
     start = datetime(2026, 9, 1, tzinfo=UTC)
-    manifest = _manifest(tmp_path, start="2026-09-01", end="2026-09-01")
-    assert _sync(tmp_path, manifest, FakeFundingPoster(_hourly(start, 24)), date(2026, 10, 1)) == 0
-    window = _window_for(tmp_path, manifest, "2026-09", date(2026, 10, 1))
-    month = hyperliquid_parquet_path(tmp_path, window)
-    # A dataset renamed by the operator leaves its old month file behind.
-    stale = month.with_name("2026-09.hl-renamed.parquet")
-    stale.write_bytes(month.read_bytes())
-    stale.with_name(stale.name + ".sources.json").write_bytes(
-        month.with_name(month.name + ".sources.json").read_bytes()
-    )
-    assert _sync(tmp_path, manifest, FakeFundingPoster(_hourly(start, 24)), date(2026, 10, 1)) == 0
+    today = date(2026, 10, 1)
+    first = _manifest(tmp_path, start="2026-09-01", end="2026-09-01")
+    assert _sync(tmp_path, first, FakeFundingPoster(_hourly(start, 24)), today) == 0
+    old = hyperliquid_parquet_path(tmp_path, _window_for(tmp_path, first, "2026-09", today))
+    # The operator renames the dataset; the old month file stays on disk.
+    renamed = _manifest(tmp_path, start="2026-09-01", end="2026-09-01", dataset_id="hl-renamed")
+    assert _sync(tmp_path, renamed, FakeFundingPoster(_hourly(start, 24)), today) == 0
+    assert old.is_file()
+    # One row per settlement: the old file would charge every bar twice.
     assert _view_count(tmp_path) == 24
+    assert _view_sources(tmp_path) == {"hl-renamed"}
 
 
-def _sync(root: Path, manifest: Path, poster: FakeFundingPoster, today: date) -> int:
+def _sync(
+    root: Path,
+    manifest: Path,
+    poster: FakeFundingPoster,
+    today: date,
+    *,
+    rebuild: bool = False,
+) -> int:
     return run_sync(
         root=root,
         manifest_path=manifest,
@@ -432,11 +506,19 @@ def _sync(root: Path, manifest: Path, poster: FakeFundingPoster, today: date) ->
         dataset_ids=None,
         env={},
         dry_run=False,
+        rebuild=rebuild,
         poster=poster,
     )
 
 
-def _manifest(root: Path, *, start: str, end: str = "today", extra: str = "") -> Path:
+def _manifest(
+    root: Path,
+    *,
+    start: str,
+    end: str = "today",
+    extra: str = "",
+    dataset_id: str = "hl-test",
+) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     path = root / "datasets.toml"
     path.write_text(
@@ -445,7 +527,7 @@ def _manifest(root: Path, *, start: str, end: str = "today", extra: str = "") ->
         "max_retries = 3\n"
         "timeout_seconds = 5\n"
         "[[hyperliquid]]\n"
-        'id = "hl-test"\n'
+        f'id = "{dataset_id}"\n'
         'dataset = "funding"\n'
         'coin = "BTC"\n'
         f'start = "{start}"\n'
@@ -515,21 +597,44 @@ def _sidecar(parquet: Path) -> dict[str, object]:
 
 
 def _view_count(root: Path) -> int:
+    (count,) = _query(root, "SELECT count(*) FROM hist_hl_funding_btc")[0]
+    assert isinstance(count, int)
+    return count
+
+
+def _view_schema(root: Path) -> list[tuple[str, str]]:
+    rows = _query(
+        root,
+        "SELECT column_name, data_type FROM information_schema.columns "
+        "WHERE table_name = 'hist_hl_funding_btc' ORDER BY ordinal_position",
+    )
+    return [(str(name), str(kind)) for name, kind in rows]
+
+
+def _view_sources(root: Path) -> set[str]:
+    rows = _query(root, "SELECT DISTINCT dataset_id FROM hist_hl_funding_btc")
+    return {str(row[0]) for row in rows}
+
+
+def _query(root: Path, sql: str) -> list[tuple[object, ...]]:
     connection = duckdb.connect(str(root / "research.duckdb"), read_only=True)
     try:
-        row = connection.execute("SELECT count(*) FROM hist_hl_funding_btc").fetchone()
+        return connection.execute(sql).fetchall()
     finally:
         connection.close()
-    assert row is not None
-    return int(row[0])
 
 
-def _columns(parquet: Path) -> set[str]:
+def _gap_kinds(root: Path) -> list[str]:
+    report = json.loads((root / "logs" / "gap_report.json").read_text())
+    return [str(gap["kind"]) for gap in report["gaps"]]
+
+
+def _parquet_schema(parquet: Path) -> list[tuple[str, str]]:
     connection = duckdb.connect()
     try:
-        rows = connection.execute(
-            "SELECT name FROM parquet_schema(?) WHERE name <> 'duckdb_schema'", [str(parquet)]
-        ).fetchall()
+        connection.execute("SELECT * FROM read_parquet(?)", [str(parquet)])
+        description = connection.description
     finally:
         connection.close()
-    return {str(row[0]) for row in rows}
+    assert description is not None
+    return [(str(column[0]), str(column[1])) for column in description]

@@ -67,6 +67,7 @@ def _dispatch(args: argparse.Namespace, env: Mapping[str, str]) -> int:
             dataset_ids=dataset_ids,
             env=env,
             replace_legacy_views=bool(args.replace_legacy_views),
+            today=today,
         )
     raise HistEtlError(f"unknown command {command}")
 

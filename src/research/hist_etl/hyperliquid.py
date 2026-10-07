@@ -7,11 +7,12 @@ https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint
 
 The ETL reads one UTC month at a time. A month that has ended settles into
 an immutable raw JSON file once its fetch has a print in every settlement
-slot (or only acknowledged holes), or once two syncs got the same answer, so
-a re-run reads the same bytes. Until then, and for the current month, it is
-fetched again on every sync and written as provisional output, so a
-truncated response is never frozen. One Parquet file per month follows the
-``.sources.json`` sidecar contract of the other venues.
+slot (or only acknowledged holes), so a re-run reads the same bytes. Until
+then, and for the current month, it is fetched again on every sync and
+written as provisional output, so a truncated response is never frozen; a
+real venue hole is acknowledged in the manifest (``known_holes``). One
+Parquet file per month follows the ``.sources.json`` sidecar contract of the
+other venues.
 
 Settlement times jitter by about a second, and a late settlement can land
 minutes into its slot, so completeness is judged per settlement slot (the
@@ -51,12 +52,34 @@ from research.hist_etl.models import (
 )
 
 SLOT_TOLERANCE_MS = 60_000
+# The published Parquet schema, in column order. A view with no current file
+# keeps this schema and returns no rows (see catalog).
+FUNDING_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("ts", "TIMESTAMP"),
+    ("slot_start", "TIMESTAMP"),
+    ("funding_time_ms", "BIGINT"),
+    ("coin", "VARCHAR"),
+    ("funding_rate", "DOUBLE"),
+    ("funding_rate_text", "VARCHAR"),
+    ("premium", "DOUBLE"),
+    ("premium_text", "VARCHAR"),
+    ("funding_interval_hours", "INTEGER"),
+    ("dataset_id", "VARCHAR"),
+    ("source_name", "VARCHAR"),
+)
 # The venue limit is a weight budget per minute: after a 429, wait one window.
 RATE_LIMIT_WAIT_SECONDS = 60.0
 _MS_PER_HOUR = 3_600_000
 _SOURCE = "hyperliquid-info-fundingHistory"
 _ROW_KEYS = ("coin", "fundingRate", "premium", "time")
 _GAP_SAMPLES = 20
+
+
+class RawWindowChanged(HistEtlError):
+    """A raw file was written for another window: the dataset's range changed."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, exit_code=2)
 
 
 class JsonPoster(Protocol):
@@ -282,37 +305,31 @@ def render_raw(window: FundingWindow, rows: Sequence[FundingRow]) -> str:
     return json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
 
 
-def raw_end_ms(raw_path: Path) -> int | None:
-    """The ``end_ms`` a raw file was written for, or None when it cannot be read."""
+def raw_status(raw_path: Path, window: FundingWindow, *, settled: bool) -> str:
+    """``match``, ``window_changed`` or ``invalid``, read by ``load_raw`` itself."""
 
     try:
-        payload = json.loads(raw_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    end_ms = payload.get("end_ms") if isinstance(payload, dict) else None
-    return end_ms if type(end_ms) is int else None
+        load_raw(raw_path, window, settled=settled)
+    except RawWindowChanged:
+        return "window_changed"
+    except HistEtlError:
+        return "invalid"
+    return "match"
 
 
 def ready_to_settle(
-    spec: HyperliquidFundingSpec,
-    window: FundingWindow,
-    rows: Sequence[FundingRow],
-    *,
-    same_as_last_fetch: bool,
+    spec: HyperliquidFundingSpec, window: FundingWindow, rows: Sequence[FundingRow]
 ) -> bool:
-    """A month is frozen once it has ended and its answer can be trusted.
+    """A month is frozen only when it has ended and every slot is accounted for.
 
-    Every slot accounted for is trusted at once. A month with a hole the
-    manifest does not acknowledge is trusted when the previous sync got the
-    same bytes: a truncated response from a lagging node is unlikely to repeat
-    exactly, and a real venue hole should not be fetched again forever. The
-    hole stays in the gap report until it is acknowledged. A conflict never
-    settles.
+    Anything else stays provisional and is fetched again on the next sync, so
+    a truncated answer is never kept as an immutable file. A real venue hole
+    costs a request or two per sync until it is listed in ``known_holes``.
     """
 
-    if not window.complete or slot_conflicts(spec, rows):
-        return False
-    return same_as_last_fetch or not funding_holes(spec, window, rows)
+    return (
+        window.complete and not slot_conflicts(spec, rows) and not funding_holes(spec, window, rows)
+    )
 
 
 def materialize_funding_month(
@@ -332,6 +349,8 @@ def materialize_funding_month(
 
     try:
         rows, covered = load_raw(raw_path, window, settled=not provisional)
+    except RawWindowChanged as exc:
+        return (Gap("hyperliquid_window_changed", spec.id, str(exc)),)
     except HistEtlError as exc:
         return (Gap("hyperliquid_schema", spec.id, str(exc)),)
     conflicts = slot_conflicts(spec, rows)
@@ -352,7 +371,7 @@ def materialize_funding_month(
         detail = f"refusing to overwrite {destination.name}: {reason}; pass --rebuild to replace it"
         warn(detail)
         return (Gap("refused_overwrite", spec.id, detail), *holes)
-    _write_parquet(destination, spec, rows, source, provisional=provisional)
+    _write_parquet(destination, spec, covered, rows, source, provisional=provisional)
     return holes
 
 
@@ -375,6 +394,8 @@ def audit_funding_month(
         return (Gap("missing_parquet", spec.id, destination.name),)
     try:
         rows, covered = load_raw(raw_path, window, settled=use_settled)
+    except RawWindowChanged as exc:
+        return (Gap("hyperliquid_window_changed", spec.id, str(exc)),)
     except HistEtlError as exc:
         return (Gap("hyperliquid_schema", spec.id, str(exc)),)
     # A fresh hash, not the size/mtime cache: verify must see any edit.
@@ -411,17 +432,18 @@ def load_raw(
         not isinstance(payload, dict)
         or payload.get("source") != _SOURCE
         or payload.get("coin") != window.coin
-        or payload.get("start_ms") != window.start_ms
+        or type(payload.get("start_ms")) is not int
+        or type(payload.get("end_ms")) is not int
         or not isinstance(payload.get("rows"), list)
     ):
-        raise HistEtlError(f"{raw_path.name} does not describe this window", exit_code=2)
-    end_ms = payload.get("end_ms")
-    if type(end_ms) is not int or not window.start_ms < end_ms <= window.end_ms:
-        raise HistEtlError(f"{raw_path.name} covers slots outside this window", exit_code=2)
-    if settled and end_ms != window.end_ms:
-        raise HistEtlError(
-            f"{raw_path.name} was settled for a different window; move it aside to refetch",
-            exit_code=2,
+        raise HistEtlError(f"{raw_path.name} is not a fundingHistory month file", exit_code=2)
+    start_ms = payload["start_ms"]
+    end_ms = payload["end_ms"]
+    fits = end_ms == window.end_ms if settled else window.start_ms < end_ms <= window.end_ms
+    if start_ms != window.start_ms or not fits:
+        raise RawWindowChanged(
+            f"{raw_path.name} covers another window than the manifest now asks for; "
+            "move it aside to refetch the month"
         )
     covered = replace(window, end_ms=end_ms)
     by_time: dict[int, FundingRow] = {}
@@ -520,6 +542,7 @@ def _is_provisional(destination: Path) -> bool:
 def _write_parquet(
     destination: Path,
     spec: HyperliquidFundingSpec,
+    covered: FundingWindow,
     rows: Sequence[FundingRow],
     source: SourceDigest,
     *,
@@ -596,8 +619,48 @@ def _write_parquet(
             "sources": [{"name": source.name, "sha256": source.sha256}],
             "provisional": provisional,
             "funding_interval_hours": spec.funding_interval_hours,
+            "start_ms": covered.start_ms,
+            "end_ms": covered.end_ms,
         },
     )
+
+
+def funding_view_files(
+    root: Path, specs: Sequence[HyperliquidFundingSpec], today: date
+) -> dict[str, tuple[Path, ...]]:
+    """Per coin, the month files the manifest selects today, in month order.
+
+    A file is in the view only when its sidecar covers the month the manifest
+    asks for now: a settled month exactly, a provisional one up to the day it
+    was fetched. Files of a renamed, removed, or re-ranged dataset stay on
+    disk but out of the view, so no bar is charged twice.
+    """
+
+    by_coin: dict[str, list[tuple[str, Path]]] = {spec.coin: [] for spec in specs}
+    for spec in specs:
+        for window in funding_windows(spec, today):
+            path = hyperliquid_parquet_path(root, window)
+            if _sidecar_covers(path, window):
+                by_coin.setdefault(spec.coin, []).append((window.month, path))
+    return {coin: tuple(path for _month, path in sorted(items)) for coin, items in by_coin.items()}
+
+
+def _sidecar_covers(path: Path, window: FundingWindow) -> bool:
+    sidecar = path.with_name(path.name + ".sources.json")
+    if not path.is_file():
+        return False
+    try:
+        payload = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, dict) or payload.get("start_ms") != window.start_ms:
+        return False
+    end_ms = payload.get("end_ms")
+    if type(end_ms) is not int:
+        return False
+    if payload.get("provisional") is True:
+        return window.start_ms < end_ms <= window.end_ms
+    return end_ms == window.end_ms
 
 
 def _decode_page(body: bytes, window: FundingWindow) -> list[FundingRow]:

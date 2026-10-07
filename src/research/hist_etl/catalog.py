@@ -5,7 +5,7 @@ from __future__ import annotations
 import difflib
 import re
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -13,6 +13,7 @@ import duckdb
 
 from research.hist_etl.errors import HistEtlError
 from research.hist_etl.files import atomic_write_text, warn
+from research.hist_etl.hyperliquid import FUNDING_COLUMNS
 
 _BLOCK = re.compile(
     r"-- BEGIN research\.hist_etl\n.*?-- END research\.hist_etl\n?",
@@ -29,15 +30,16 @@ _VIEW_STMT = re.compile(
 _VIEW_NAME = re.compile(r"[a-z][a-z0-9_]*")
 _BINANCE_FILE = re.compile(r"^([A-Z0-9]+)-\d{4}-\d{2}\.parquet$")
 _KRAKEN_FILE = re.compile(r"^\d{4}-\d{2}\.parquet$")
-_HYPERLIQUID_FILE = re.compile(r"^\d{4}-\d{2}\.[a-z0-9][a-z0-9-]*\.parquet$")
-_COIN_DIR = re.compile(r"^[A-Z0-9]{1,20}$")
 _BEGIN = "-- BEGIN research.hist_etl"
 _END = "-- END research.hist_etl"
 _LOCK_ATTEMPTS = 5
 
 
 def refresh_catalog(
-    root: Path, *, replace_legacy_views: bool = False
+    root: Path,
+    *,
+    replace_legacy_views: bool = False,
+    hyperliquid_files: Mapping[str, Sequence[Path]] | None = None,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Write ``catalog.sql`` and create the generated views.
 
@@ -48,12 +50,19 @@ def refresh_catalog(
     ``replace_legacy_views`` copies ``catalog.sql`` to a backup, prints a diff,
     and then lets the generated names replace those statements and relations.
     The SQL file is replaced only after DuckDB accepts the new block.
+    ``hyperliquid_files`` maps a coin to the funding month files the manifest
+    currently selects; see ``hyperliquid.funding_view_files``.
     """
 
-    views = render_statements(root, replace_legacy_views=replace_legacy_views)
+    views = render_statements(
+        root,
+        replace_legacy_views=replace_legacy_views,
+        hyperliquid_files=hyperliquid_files,
+    )
     catalog_path = root / "catalog.sql"
     existing = catalog_path.read_text(encoding="utf-8") if catalog_path.is_file() else ""
     owned = _managed_names(existing)
+    views = (*views, *_emptied_funding_views(hyperliquid_files, owned))
     live = _live_relations(root)
     # A relation that already exists in DuckDB, and was not emitted by the previous
     # hist_etl block, belongs to the operator. CREATE OR REPLACE would destroy it.
@@ -103,9 +112,17 @@ def refresh_catalog(
 
 
 def render_statements(
-    root: Path, *, replace_legacy_views: bool = False
+    root: Path,
+    *,
+    replace_legacy_views: bool = False,
+    hyperliquid_files: Mapping[str, Sequence[Path]] | None = None,
 ) -> tuple[tuple[str, str], ...]:
-    """Pipeline views. Each one reads only files this pipeline wrote."""
+    """Pipeline views. Each one reads only files this pipeline wrote.
+
+    Hyperliquid funding files come from the manifest, not a directory scan:
+    a file left behind by a renamed or re-ranged dataset would otherwise be
+    unioned with the current one and charge a bar's funding twice.
+    """
 
     views: list[tuple[str, str]] = []
     binance = root / "parquet" / "hist_etl" / "binance"
@@ -135,17 +152,33 @@ def render_statements(
                     replace_legacy=replace_legacy_views,
                 ):
                     views.append((name, _view(name, relative)))
-    hyperliquid = root / "parquet" / "hist_etl" / "hyperliquid" / "funding"
-    if hyperliquid.is_dir():
-        for coin_dir in sorted(path for path in hyperliquid.iterdir() if path.is_dir()):
-            if _COIN_DIR.fullmatch(coin_dir.name) is None:
-                continue
-            funding_files = _hyperliquid_files(coin_dir)
-            if not funding_files:
-                continue
-            relative = tuple(_relative(root, path) for path in funding_files)
-            name = f"hist_hl_funding_{coin_dir.name.lower()}"
-            views.append((name, _one_row_per_settlement(name, relative)))
+    for coin, funding_files in sorted((hyperliquid_files or {}).items()):
+        if not funding_files:
+            continue
+        relative = tuple(_relative(root, path) for path in funding_files)
+        name = f"hist_hl_funding_{coin.lower()}"
+        views.append((name, _view(name, relative)))
+    return tuple(views)
+
+
+def _emptied_funding_views(
+    hyperliquid_files: Mapping[str, Sequence[Path]] | None, owned: set[str]
+) -> tuple[tuple[str, str], ...]:
+    """An existing funding view whose files no longer match the manifest.
+
+    Kept as it was, it would go on serving the stale rows; it is replaced by
+    a view with the same columns and no rows until the month is refetched.
+    """
+
+    views: list[tuple[str, str]] = []
+    for coin, funding_files in sorted((hyperliquid_files or {}).items()):
+        name = f"hist_hl_funding_{coin.lower()}"
+        if funding_files or name not in owned:
+            continue
+        if not _VIEW_NAME.fullmatch(name):
+            raise HistEtlError(f"unsafe view name {name}", exit_code=2)
+        columns = ", ".join(f"CAST(NULL AS {kind}) AS {column}" for column, kind in FUNDING_COLUMNS)
+        views.append((name, f"CREATE OR REPLACE VIEW {name} AS\nSELECT {columns}\nWHERE false;\n"))
     return tuple(views)
 
 
@@ -289,18 +322,6 @@ def _kraken_files(directory: Path) -> tuple[Path, ...]:
     return tuple(files)
 
 
-def _hyperliquid_files(directory: Path) -> tuple[Path, ...]:
-    """Month files of every dataset for one coin; the manifest keeps their days apart."""
-
-    files: list[Path] = []
-    for path in sorted(directory.glob("*.parquet")):
-        sidecar = path.with_name(path.name + ".sources.json")
-        if _HYPERLIQUID_FILE.fullmatch(path.name) is None or not sidecar.is_file():
-            continue
-        files.append(path)
-    return tuple(files)
-
-
 def _binance_names(market: str, symbol: str, slug: str, *, replace_legacy: bool) -> tuple[str, ...]:
     primary = f"hist_bn_{market}_{symbol.lower()}_{slug}"
     if replace_legacy and symbol == "BTCUSDT":
@@ -328,42 +349,12 @@ def _relative(root: Path, path: Path) -> str:
 
 
 def _view(name: str, relative_paths: tuple[str, ...]) -> str:
-    _require_view_inputs(name, relative_paths)
-    return f"CREATE OR REPLACE VIEW {name} AS\nSELECT * FROM {_parquet_list(relative_paths)};\n"
-
-
-def _require_view_inputs(name: str, relative_paths: tuple[str, ...]) -> None:
     if not _VIEW_NAME.fullmatch(name):
         raise HistEtlError(f"unsafe view name {name}", exit_code=2)
     if not relative_paths:
         raise HistEtlError(f"{name} has no parquet files", exit_code=2)
-
-
-def _parquet_list(relative_paths: tuple[str, ...]) -> str:
     listed = ",\n".join(f"    '__HIST__/{path}'" for path in relative_paths)
-    return f"read_parquet([\n{listed}\n])"
-
-
-def _one_row_per_settlement(name: str, relative_paths: tuple[str, ...]) -> str:
-    """A funding view with one row per settlement slot.
-
-    Files left behind by a renamed or re-ranged dataset stay on disk with their
-    sidecars; one row per slot, preferring a settled source over a provisional
-    one, stops a harness join on ``slot_start`` from charging a bar twice.
-    """
-
-    _require_view_inputs(name, relative_paths)
-    return (
-        f"CREATE OR REPLACE VIEW {name} AS\n"
-        "SELECT * EXCLUDE (settlement_rank) FROM (\n"
-        "  SELECT *, row_number() OVER (\n"
-        "    PARTITION BY slot_start\n"
-        "    ORDER BY source_name LIKE '%.open.json', dataset_id, source_name\n"
-        "  ) AS settlement_rank\n"
-        f"  FROM {_parquet_list(relative_paths)}\n"
-        ")\n"
-        "WHERE settlement_rank = 1;\n"
-    )
+    return f"CREATE OR REPLACE VIEW {name} AS\nSELECT * FROM read_parquet([\n{listed}\n]);\n"
 
 
 def _strip_views(sql: str, names: set[str]) -> str:

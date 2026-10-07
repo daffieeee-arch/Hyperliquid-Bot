@@ -150,23 +150,28 @@ hyperliquid-api/funding/{dataset_id}/{COIN}-funding-YYYY-MM.open.json  # current
 parquet/hist_etl/hyperliquid/funding/{COIN}/YYYY-MM.{dataset_id}.parquet
 ```
 
-A month settles once it has ended and its fetch has a print in every
-settlement slot apart from `known_holes`, or once two syncs got the same
-bytes for it (the hole is then the venue's, and it stays in the gap report
-until it is acknowledged). A month with a conflict never settles. A settled
-raw file is canonical JSON of the rows as published, so two fetches of the
-same month have the same bytes, and it is reused, not fetched again (delete
-or move it to refetch a month). Every other month, the current one or an
-ended month that has not settled, is fetched again on every sync and written
-to `.open.json`, so a truncated answer from a lagging node is never frozen.
-Its Parquet sidecar says `"provisional": true`, and that file is replaced on
-each sync until the month settles. Settled month files follow the same
-`.sources.json` rule as the other venues (`sync --rebuild` to replace).
-`.open.json` files are not deleted. A settled file whose window no longer
-matches the manifest (the dataset's range changed) is not overwritten: it is
-reported as `hyperliquid_window_changed` until it is moved aside. `--today`
-can move the cutoff back for a test, never past the real UTC date. `verify`
-judges an ended month over all its slots, whatever its file covers.
+A month settles only once it has ended and its fetch has a print in every
+settlement slot apart from `known_holes`. A month with a hole the manifest
+does not list, or with a conflict, never settles: a lagging node can return
+the same truncated answer twice. A settled raw file is canonical JSON of the
+rows as published, and it is reused, not fetched again (move it aside to
+refetch a month). Every other month, the current one or an ended month that
+has not settled, is fetched again on every sync and written to `.open.json`,
+so a truncated answer is never frozen. A real venue hole therefore costs one
+or two requests per sync until it is added to `known_holes`. The Parquet
+sidecar of such a month says `"provisional": true`, and that file is
+replaced on each sync until the month settles. Settled month files follow
+the same `.sources.json` rule as the other venues (`sync --rebuild` to
+replace). `.open.json` files are not deleted.
+
+Each raw file and Parquet sidecar records the window it covers (`start_ms`,
+`end_ms`). When the dataset's `start` or `end` changes, a settled month whose
+window no longer matches is not overwritten: `sync` and `verify` report
+`hyperliquid_window_changed` and `plan` lists it as `window_changed`, until
+the raw file is moved aside. The next `sync --dataset <id> --rebuild` then
+fetches the month and replaces its Parquet file. `--today` can move the
+cutoff back for a test, never past the real UTC date. `verify` judges an
+ended month over all its slots, whatever its file covers.
 
 Columns: `ts` (the settlement time, UTC; the rate is known and charged then),
 `slot_start` (the start of the settlement slot the print belongs to),
@@ -197,10 +202,14 @@ PYTHONPATH=src uv run --frozen python -m research.hist_etl sync --dataset hl-per
 ```
 
 Datasets for one coin may not cover the same day. Both write to the same coin
-directory and to the one view `hist_hl_funding_{coin}`. The view keeps one row
-per settlement slot, preferring a settled file over a provisional one, so
-month files left behind by a renamed or re-ranged dataset cannot charge a bar
-twice.
+directory and to the one view `hist_hl_funding_{coin}`. The view reads only
+the month files the manifest selects now: the coin's datasets, and only a
+file whose sidecar covers the month's current window (exactly once settled;
+up to the day it was fetched while provisional). Files of a renamed,
+removed, or re-ranged dataset stay on disk but out of the view, so they
+cannot charge a bar twice. When no file of a coin qualifies, an existing
+view keeps its columns and returns no rows until the months are fetched
+again.
 
 For a harness `role: funding` column on hourly bars stamped at their close,
 the settlement printed at the bar's close belongs to that bar:

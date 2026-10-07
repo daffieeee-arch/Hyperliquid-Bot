@@ -72,10 +72,14 @@ def test_deflated_sharpe_says_why_it_was_not_computed() -> None:
     missing = deflated_sharpe(3, None)
     assert missing.dsr is None
     assert missing.trials == 3
+    assert missing.config_id is None
     assert missing.note is not None and "trade floor" in missing.note
-    flat = deflated_sharpe(3, ConfigUnderTest("flat", 1.0, (0.01, 0.01, 0.01), selected=False))
+    # A selected config whose returns are all equal has no Sharpe; the note
+    # names the real reason and the result still names the config.
+    flat = deflated_sharpe(3, ConfigUnderTest("flat", None, (0.01, 0.01, 0.01), selected=True))
     assert flat.dsr is None
-    assert flat.note is not None
+    assert (flat.config_id, flat.selected, flat.trades) == ("flat", True, 3)
+    assert flat.note is not None and "no spread" in flat.note
 
 
 def test_cscv_uses_equal_blocks_of_the_most_recent_folds() -> None:

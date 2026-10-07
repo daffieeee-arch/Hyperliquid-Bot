@@ -732,9 +732,17 @@ def test_dsr_tests_the_selection_else_the_best_floored_mean() -> None:
     steady = [0.010, 0.012] * floor
     noisy = [0.20, -0.08] * floor
     lucky = [0.5, 0.6]
+    # Eight equal trades: a power-of-two count keeps the mean exact, so the
+    # spread is exactly 0 and the Sharpe is None.
+    flat = [0.002] * 8
     series_by_config = [
         (ConfigSpec(name, 0.0, 4), _plain_series(values))
-        for name, values in (("steady", steady), ("noisy", noisy), ("lucky", lucky))
+        for name, values in (
+            ("steady", steady),
+            ("noisy", noisy),
+            ("lucky", lucky),
+            ("flat", flat),
+        )
     ]
     nets_by_config = [
         {"1.0": summarize(series.net(spec.costs, 1.0))} for _config, series in series_by_config
@@ -747,6 +755,10 @@ def test_dsr_tests_the_selection_else_the_best_floored_mean() -> None:
     fallback = _tested_config(spec, series_by_config, nets_by_config, None)
     assert fallback is not None
     assert (fallback.config_id, fallback.selected) == ("noisy", False)
+    # A selected config without a Sharpe (equal returns) is still the one tested.
+    no_spread = _tested_config(spec, series_by_config, nets_by_config, 3)
+    assert no_spread is not None
+    assert (no_spread.config_id, no_spread.selected, no_spread.sharpe) == ("flat", True, None)
 
 
 def test_overfitting_notes_explain_a_missing_value(tmp_path: Path) -> None:

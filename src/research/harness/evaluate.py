@@ -747,13 +747,10 @@ def _tested_config(
         index = max(means, key=lambda item: item[1])[0]
     else:
         index = selected_index
-    sharpe = nets_by_config[index]["1.0"].sharpe_per_trade
-    if sharpe is None:
-        return None
     config, series = series_by_config[index]
     return ConfigUnderTest(
         config_id=config.id,
-        sharpe=sharpe,
+        sharpe=nets_by_config[index]["1.0"].sharpe_per_trade,
         returns=series.net(spec.costs, 1.0),
         selected=selected_index is not None,
     )

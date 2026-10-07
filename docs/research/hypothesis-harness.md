@@ -158,7 +158,8 @@ done outside the harness is not deflated.
   that noise maximum, corrected for the skewness and kurtosis of its trade
   returns. Near 1 is good. Around 0.5 or lower, the config cannot be told
   apart from the best of noise. With one config the noise maximum is 0, and
-  `dsr` is the probabilistic Sharpe ratio.
+  `dsr` is the probabilistic Sharpe ratio. When there is no config to test,
+  or its trade returns are all equal, `dsr` is null and `note` says why.
 - **Probability of backtest overfitting** (Bailey, Borwein, López de Prado
   and Zhu, 2017), by combinatorially symmetric cross-validation. The most
   recent walk-forward test folds are grouped into equal contiguous blocks:

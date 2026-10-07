@@ -28,10 +28,13 @@ _NORMAL: Final = NormalDist()
 
 @dataclass(frozen=True, slots=True)
 class ConfigUnderTest:
-    """The config the deflated Sharpe ratio tests, with its validation net returns."""
+    """The config the deflated Sharpe ratio tests, with its validation net returns.
+
+    ``sharpe`` is None when the returns have no spread.
+    """
 
     config_id: str
-    sharpe: float
+    sharpe: float | None
     returns: tuple[float, ...]
     selected: bool
 
@@ -141,11 +144,15 @@ def deflated_sharpe(trials: int, tested: ConfigUnderTest | None) -> DeflatedShar
     """
 
     if tested is None:
-        return _no_dsr(trials, "No config meets the trade floor with a validation Sharpe.")
+        return _no_dsr(
+            trials, "No config to test: none was selected and none meets the trade floor."
+        )
     observations = len(tested.returns)
     moments = sample_moments(tested.returns)
-    if observations < 2 or moments is None:
-        return _no_dsr(trials, "The tested config's trade returns have no spread.")
+    if tested.sharpe is None or observations < 2 or moments is None:
+        return _no_dsr(
+            trials, "The tested config's validation trade returns have no spread.", tested
+        )
     variance = 1.0 / (observations - 1)
     benchmark = expected_max_sharpe(trials, variance)
     skewness, kurtosis = moments
@@ -269,12 +276,12 @@ def _average_rank(values: Sequence[float], index: int) -> float:
     return below + (equal + 1) / 2.0
 
 
-def _no_dsr(trials: int, note: str) -> DeflatedSharpe:
+def _no_dsr(trials: int, note: str, tested: ConfigUnderTest | None = None) -> DeflatedSharpe:
     return DeflatedSharpe(
-        config_id=None,
-        selected=None,
+        config_id=None if tested is None else tested.config_id,
+        selected=None if tested is None else tested.selected,
         sharpe_per_trade=None,
-        trades=None,
+        trades=None if tested is None else len(tested.returns),
         trials=trials,
         null_sharpe_variance=None,
         skewness=None,

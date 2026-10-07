@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import math
-import statistics
 from statistics import NormalDist
 
 import pytest
 
 from research.harness.overfit import (
     BlockStats,
-    SharpeTrial,
+    ConfigUnderTest,
     cscv_blocks,
     deflated_sharpe,
     expected_max_sharpe,
@@ -18,7 +17,8 @@ from research.harness.overfit import (
     probability_of_backtest_overfitting,
     sample_moments,
 )
-from research.harness.overfit import _block_sharpe as block_sharpe
+
+_RETURNS = (0.02, -0.01, 0.03, 0.0, 0.01, -0.02, 0.04, 0.01, 0.02, -0.01, 0.0)
 
 
 def test_deflated_sharpe_matches_the_published_example() -> None:
@@ -37,14 +37,6 @@ def test_probabilistic_sharpe_uses_n_minus_one_and_plain_kurtosis() -> None:
     expected = NormalDist().cdf(0.5 * 2.0 / math.sqrt(1.0 + 0.5 * 0.25))
     assert probabilistic_sharpe(0.5, 0.0, 5, 0.0, 3.0) == pytest.approx(expected)
     assert probabilistic_sharpe(0.5, 0.0, 1, 0.0, 3.0) is None
-
-
-def test_more_trials_raise_the_noise_maximum() -> None:
-    assert expected_max_sharpe(1, 0.04) == 0.0
-    assert expected_max_sharpe(10, 0.0) == 0.0
-    maxima = [expected_max_sharpe(trials, 0.04) for trials in (2, 10, 100)]
-    assert maxima == sorted(maxima)
-    assert maxima[0] > 0.0
     # Fatter tails and negative skew widen the estimate's error.
     normal = probabilistic_sharpe(0.2, 0.0, 100, 0.0, 3.0)
     skewed = probabilistic_sharpe(0.2, 0.0, 100, -2.0, 9.0)
@@ -61,86 +53,86 @@ def test_sample_moments_use_population_moments() -> None:
     assert kurtosis == pytest.approx(1.7)
 
 
-def test_deflated_sharpe_tests_the_best_floored_trial_against_every_trial() -> None:
-    returns = (0.02, -0.01, 0.03, 0.0, 0.01, -0.02, 0.04, 0.01)
-    lucky = SharpeTrial("lucky", 3.0, (0.1, 0.11), meets_trade_floor=False)
-    real = SharpeTrial("real", 0.5, returns, meets_trade_floor=True)
-    weak = SharpeTrial("weak", 0.1, returns, meets_trade_floor=True)
-    result = deflated_sharpe([lucky, real, weak])
-    # Too few trades to be the config under test, but still a trial.
-    assert result.config_id == "real"
-    assert result.trials == 3
-    assert result.trades == len(returns)
-    assert result.trial_sharpe_variance == pytest.approx(statistics.variance([3.0, 0.5, 0.1]))
-    alone = deflated_sharpe([real])
+def test_the_noise_bar_uses_every_trial_and_the_null_sampling_variance() -> None:
+    tested = ConfigUnderTest("real", 0.4, _RETURNS, selected=True)
+    alone = deflated_sharpe(1, tested)
     assert alone.expected_max_sharpe == 0.0
-    assert alone.trial_sharpe_variance is None
-    assert result.dsr is not None and alone.dsr is not None
-    assert result.dsr < alone.dsr
+    grid = deflated_sharpe(20, tested)
+    # Each noise Sharpe has the sampling variance of the tested config's trades.
+    variance = 1.0 / (len(_RETURNS) - 1)
+    assert grid.null_sharpe_variance == pytest.approx(variance)
+    assert grid.expected_max_sharpe == pytest.approx(expected_max_sharpe(20, variance))
+    assert grid.trials == 20
+    assert grid.config_id == "real" and grid.selected is True
+    assert alone.dsr is not None and grid.dsr is not None
+    assert grid.dsr < alone.dsr
 
 
 def test_deflated_sharpe_says_why_it_was_not_computed() -> None:
-    assert deflated_sharpe([]).note is not None
-    unfloored = deflated_sharpe([SharpeTrial("a", 1.0, (0.1, 0.2), meets_trade_floor=False)])
-    assert unfloored.dsr is None
-    assert unfloored.trials == 1
-    assert unfloored.note is not None and "trade floor" in unfloored.note
+    missing = deflated_sharpe(3, None)
+    assert missing.dsr is None
+    assert missing.trials == 3
+    assert missing.note is not None and "trade floor" in missing.note
+    flat = deflated_sharpe(3, ConfigUnderTest("flat", 1.0, (0.01, 0.01, 0.01), selected=False))
+    assert flat.dsr is None
+    assert flat.note is not None
 
 
-def test_cscv_groups_folds_into_even_contiguous_blocks() -> None:
+def test_cscv_uses_equal_blocks_of_the_most_recent_folds() -> None:
     assert cscv_blocks(3) is None
-    assert cscv_blocks(4) == ((0,), (1,), (2,), (3,))
-    seven = cscv_blocks(7)
-    assert seven is not None
-    assert [len(group) for group in seven] == [2, 1, 1, 1, 1, 1]
+    assert cscv_blocks(8) == tuple((index,) for index in range(8))
+    # Seven folds: six blocks, the oldest fold left out.
+    assert cscv_blocks(7) == tuple((index,) for index in range(1, 7))
     forty = cscv_blocks(40)
     assert forty is not None
-    assert len(forty) == 16
-    assert [index for group in forty for index in group] == list(range(40))
-
-
-def test_block_sharpe_is_mean_over_sample_stdev_of_per_bar_pnl() -> None:
-    values = [1.0, 0.0] * 5
-    expected = statistics.mean(values) / statistics.stdev(values)
-    assert block_sharpe([_stats(values)], [0]) == pytest.approx(expected)
-    assert block_sharpe([_stats([0.0] * 10)], [0]) == 0.0
+    assert [len(group) for group in forty] == [4] * 10
+    thirty_one = cscv_blocks(31)
+    assert thirty_one is not None
+    assert [len(group) for group in thirty_one] == [3] * 10
+    assert thirty_one[0][0] == 1
+    assert [index for group in thirty_one for index in group] == list(range(1, 31))
 
 
 def test_pbo_is_zero_when_one_config_dominates_every_block() -> None:
-    winner = [_stats([1.0, 0.0] * 5) for _ in range(4)]
-    loser = [_stats([-1.0, 0.0] * 5) for _ in range(4)]
+    winner = [BlockStats(5, 5.0)] * 4
+    loser = [BlockStats(5, -5.0)] * 4
     result = probability_of_backtest_overfitting([loser, winner])
     assert result.value == 0.0
-    assert (result.blocks, result.combinations) == (4, 6)
+    assert (result.blocks, result.splits, result.skipped_splits) == (4, 6, 0)
     assert result.median_logit is not None and result.median_logit > 0.0
 
 
 def test_pbo_is_one_when_the_in_sample_best_reverses_out_of_sample() -> None:
-    up = _stats([1.0, 0.0] * 5)
-    down = _stats([-1.0, 0.0] * 5)
-    first = [up, down, up, down]
-    second = [down, up, down, up]
-    result = probability_of_backtest_overfitting([first, second])
-    # Two splits pick the config that then loses; the four tied splits rank
-    # the in-sample pick at the median, which also counts as overfit.
+    up = BlockStats(5, 5.0)
+    down = BlockStats(5, -5.0)
+    result = probability_of_backtest_overfitting([[up, down, up, down], [down, up, down, up]])
+    # Two splits pick the config that then loses; in the four others both
+    # configs tie in-sample, nothing is selected, and the split is skipped.
     assert result.value == 1.0
-    assert result.median_logit is not None and result.median_logit <= 0.0
+    assert (result.splits, result.skipped_splits) == (2, 4)
 
 
-def test_pbo_needs_two_configs_and_an_even_block_count() -> None:
-    block = _stats([1.0, 0.0, -0.5])
-    one = probability_of_backtest_overfitting([[block] * 4])
+def test_a_pick_that_only_ties_out_of_sample_counts_as_overfit() -> None:
+    # The first config trades only in block 0; the second never trades. Each
+    # split with block 0 in-sample picks the first, which then ties at the
+    # median out of sample (logit 0).
+    lucky = [BlockStats(5, 5.0), BlockStats(0, 0.0), BlockStats(0, 0.0), BlockStats(0, 0.0)]
+    idle = [BlockStats(0, 0.0)] * 4
+    result = probability_of_backtest_overfitting([lucky, idle])
+    assert result.value == 1.0
+    assert (result.splits, result.skipped_splits) == (3, 3)
+
+
+def test_pbo_reports_why_it_has_no_value() -> None:
+    idle = [BlockStats(0, 0.0)] * 4
+    nothing = probability_of_backtest_overfitting([idle, idle])
+    assert nothing.value is None
+    assert nothing.splits == 0
+    assert nothing.note is not None and "separates" in nothing.note
+    one = probability_of_backtest_overfitting([idle])
     assert one.value is None
     assert one.note is not None and "two configs" in one.note
-    odd = probability_of_backtest_overfitting([[block] * 5, [block] * 5])
+    odd = probability_of_backtest_overfitting([[BlockStats(1, 1.0)] * 5] * 2)
     assert odd.value is None
     with pytest.raises(ValueError):
-        probability_of_backtest_overfitting([[block] * 4, [block] * 6])
-
-
-def _stats(values: list[float]) -> BlockStats:
-    return BlockStats(
-        bars=len(values),
-        total=math.fsum(values),
-        total_squares=math.fsum(value * value for value in values),
-    )
+        probability_of_backtest_overfitting([idle, [BlockStats(0, 0.0)] * 6])

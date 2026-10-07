@@ -146,25 +146,31 @@ values are diagnostics: they never change the label or the promotion
 decision. Both count only the pre-registered grid as trials, so exploration
 done outside the harness is not deflated.
 
-- **Deflated Sharpe ratio** (Bailey and López de Prado, 2014). Every config
-  with a validation Sharpe (at least two trades with spread) is a trial.
-  Among the trials with at least `sample.min_trades_validation` trades, the
-  one with the highest validation net Sharpe per trade at 1.0x is tested
-  against the highest Sharpe that as many pure-noise trials would show,
-  given the variance of the trials' Sharpes. `dsr` is the probability that
-  its true Sharpe beats that noise maximum, corrected for the skewness and
-  kurtosis of its trade returns. Near 1 is good. Around 0.5 or lower, the
-  best config cannot be told apart from the best of noise. With one trial
-  the noise maximum is 0, and `dsr` is the probabilistic Sharpe ratio.
+- **Deflated Sharpe ratio** (Bailey and López de Prado, 2014). It tests the
+  config validation selected, or, when nothing was selected, the config
+  with the highest validation mean net per trade among those with at least
+  `sample.min_trades_validation` trades (`selected` says which). Its
+  validation net Sharpe per trade at 1.0x is set against the highest Sharpe
+  that as many pure-noise trials would show. Every pre-registered config is
+  a trial, as in the multiple-testing family, and under the null each
+  trial's Sharpe has the sampling variance `1 / (T - 1)` of the tested
+  config's `T` trades. `dsr` is the probability that the tested Sharpe beats
+  that noise maximum, corrected for the skewness and kurtosis of its trade
+  returns. Near 1 is good. Around 0.5 or lower, the config cannot be told
+  apart from the best of noise. With one config the noise maximum is 0, and
+  `dsr` is the probabilistic Sharpe ratio.
 - **Probability of backtest overfitting** (Bailey, Borwein, López de Prado
-  and Zhu, 2017), by combinatorially symmetric cross-validation. The
-  walk-forward test folds are grouped into an even number of contiguous
-  blocks (at most 16, so at least 4 folds are needed). For every way to pick
-  half of the blocks, the config with the best Sharpe of per-bar net P&L at
-  1.0x on that half (each trade booked on its exit bar, 0 elsewhere) is
-  ranked on the other half. PBO is the share of splits where it ranks at or
-  below the median. Near 0 is good; 0.5 means picking the in-sample best is
-  no better than chance. It needs at least two configs.
+  and Zhu, 2017), by combinatorially symmetric cross-validation. The most
+  recent walk-forward test folds are grouped into equal contiguous blocks:
+  the even count from 4 to 16 that leaves out the fewest (oldest) folds, so
+  at least 4 folds are needed. For every way to pick half of the blocks, the
+  config with the best mean net per trade at 1.0x on that half (the
+  statistic validation selection ranks by; a config without trades earns 0)
+  is ranked on the other half. PBO is the share of splits where it ranks at
+  or below the median. A split where every config ties in-sample selects
+  nothing and is skipped. The selection gates (significance, stress) are
+  not re-run per split. Near 0 is good; 0.5 means picking the in-sample best
+  is no better than chance. It needs at least two configs.
 
 ## Point-in-time checks
 
@@ -250,10 +256,10 @@ start of the interval if the print arrives at the end.
 `sizing` blocks, validation family with Bonferroni, Holm, and BH p-values,
 per-config `funding` and `mean_weight`, and holdout gross, funding and net at
 1.0 / 1.5 / 2.0 when a config was selected, and the `overfitting`
-diagnostics). `result.md` is the same conclusion in prose. A `failed_closed` status (gap, duplicate, schema,
-look-ahead, lock, fingerprint mismatch, unsafe mode, a non-positive sizing
-volatility as `failure_kind: sizing`) has `label: null` and
-`promotion_decision: forbidden`.
+diagnostics). `result.md` is the same conclusion in prose. A `failed_closed`
+status (gap, duplicate, schema, look-ahead, lock, fingerprint mismatch,
+unsafe mode, a non-positive sizing volatility as `failure_kind: sizing`) has
+`label: null` and `promotion_decision: forbidden`.
 
 Limitations live in every artifact: the conservative t / HAC gate, per-trade
 Sharpe, flat half-spread costs, funding only from a declared column (stressed

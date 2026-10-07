@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Final
 
 from research.harness.costs import STRESS_MULTIPLIERS, round_trip_cost, stress_key
@@ -12,9 +12,9 @@ from research.harness.data import BarTable
 from research.harness.errors import HarnessError, IntegrityError
 from research.harness.overfit import (
     BlockStats,
+    ConfigUnderTest,
     Overfitting,
     Pbo,
-    SharpeTrial,
     cscv_blocks,
     deflated_sharpe,
     probability_of_backtest_overfitting,
@@ -226,7 +226,7 @@ def decide(spec: HypothesisSpec, table: BarTable) -> Decision:
         holdout_funding=None if holdout is None else holdout.funding,
         holdout_mean_weight=None if holdout is None else holdout.mean_weight,
         overfitting=_overfitting(
-            spec, series_by_config, nets_by_config, fold_series_by_config, folds
+            spec, series_by_config, nets_by_config, fold_series_by_config, folds, selected_index
         ),
     )
     _assert_promotion_invariant(decision)
@@ -679,25 +679,16 @@ def _overfitting(
     nets_by_config: Sequence[dict[str, MetricBlock]],
     fold_series_by_config: Sequence[tuple[TradeSeries, ...]],
     folds: tuple[Fold, ...],
+    selected_index: int | None,
 ) -> Overfitting:
-    """Deflated Sharpe over the configs' validation Sharpes; PBO over test-fold blocks.
+    """The deflated Sharpe ratio and PBO, both on validation net returns at 1.0x.
 
-    Both use net returns at 1.0x. They are reported, not gated on.
+    They are reported, never gated on.
     """
 
-    trials: list[SharpeTrial] = []
-    for (config, series), nets in zip(series_by_config, nets_by_config, strict=True):
-        base = nets["1.0"]
-        if base.sharpe_per_trade is None:
-            continue
-        trials.append(
-            SharpeTrial(
-                config_id=config.id,
-                sharpe=base.sharpe_per_trade,
-                returns=series.net(spec.costs, 1.0),
-                meets_trade_floor=base.trade_count >= spec.sample.min_trades_validation,
-            )
-        )
+    dsr = deflated_sharpe(
+        len(spec.configs), _tested_config(spec, series_by_config, nets_by_config, selected_index)
+    )
     groups = cscv_blocks(len(folds))
     if groups is None:
         pbo = Pbo(
@@ -705,31 +696,66 @@ def _overfitting(
             None,
             None,
             None,
+            None,
+            None,
             f"PBO needs at least 4 walk-forward test folds; this run has {len(folds)}.",
         )
     else:
-        pbo = probability_of_backtest_overfitting(
-            [
-                [_block_stats(spec, fold_series, folds, group) for group in groups]
-                for fold_series in fold_series_by_config
-            ]
+        nets_by_fold = [
+            [part.net(spec.costs, 1.0) for part in fold_series]
+            for fold_series in fold_series_by_config
+        ]
+        pbo = replace(
+            probability_of_backtest_overfitting(
+                [
+                    [
+                        BlockStats(
+                            trades=sum(len(nets[index]) for index in group),
+                            total=math.fsum(value for index in group for value in nets[index]),
+                        )
+                        for group in groups
+                    ]
+                    for nets in nets_by_fold
+                ]
+            ),
+            folds_used=sum(len(group) for group in groups),
         )
-    return Overfitting(deflated_sharpe=deflated_sharpe(trials), pbo=pbo)
+    return Overfitting(deflated_sharpe=dsr, pbo=pbo)
 
 
-def _block_stats(
+def _tested_config(
     spec: HypothesisSpec,
-    fold_series: Sequence[TradeSeries],
-    folds: tuple[Fold, ...],
-    group: Sequence[int],
-) -> BlockStats:
-    """Per-bar net P&L over a block of folds: each trade on its exit bar, 0 elsewhere."""
+    series_by_config: Sequence[tuple[ConfigSpec, TradeSeries]],
+    nets_by_config: Sequence[dict[str, MetricBlock]],
+    selected_index: int | None,
+) -> ConfigUnderTest | None:
+    """The config validation selected, else the best validation mean that meets the floor.
 
-    nets = [value for index in group for value in fold_series[index].net(spec.costs, 1.0)]
-    return BlockStats(
-        bars=sum(folds[index].test_end - folds[index].test_start for index in group),
-        total=math.fsum(nets),
-        total_squares=math.fsum(value * value for value in nets),
+    Ranking by mean net per trade, as validation selection does, keeps the
+    diagnostic on the config the run takes forward or comes closest to.
+    """
+
+    if selected_index is None:
+        ranked = [
+            (index, nets["1.0"].mean_return)
+            for index, nets in enumerate(nets_by_config)
+            if nets["1.0"].trade_count >= spec.sample.min_trades_validation
+        ]
+        means = [(index, mean) for index, mean in ranked if mean is not None]
+        if not means:
+            return None
+        index = max(means, key=lambda item: item[1])[0]
+    else:
+        index = selected_index
+    sharpe = nets_by_config[index]["1.0"].sharpe_per_trade
+    if sharpe is None:
+        return None
+    config, series = series_by_config[index]
+    return ConfigUnderTest(
+        config_id=config.id,
+        sharpe=sharpe,
+        returns=series.net(spec.costs, 1.0),
+        selected=selected_index is not None,
     )
 
 

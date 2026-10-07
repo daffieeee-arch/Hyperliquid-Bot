@@ -3,11 +3,11 @@
 Both are reported next to the label and never change it.
 
 The deflated Sharpe ratio (Bailey and Lopez de Prado, 2014) asks whether the
-best validation Sharpe among the pre-registered configs beats the best Sharpe
-that as many pure-noise trials would show. The probability of backtest
-overfitting (Bailey, Borwein, Lopez de Prado and Zhu, 2017) asks how often the
-config that looks best on half of the walk-forward blocks ranks at or below
-the median on the other half.
+Sharpe of the config the run takes forward beats the best Sharpe that as many
+pure-noise trials would show. The probability of backtest overfitting (Bailey,
+Borwein, Lopez de Prado and Zhu, 2017) asks how often the config that ranks
+first on half of the walk-forward blocks ranks at or below the median on the
+other half, ranking by the statistic validation selection uses.
 """
 
 from __future__ import annotations
@@ -27,22 +27,23 @@ _NORMAL: Final = NormalDist()
 
 
 @dataclass(frozen=True, slots=True)
-class SharpeTrial:
-    """One config's validation net Sharpe per trade and the returns behind it."""
+class ConfigUnderTest:
+    """The config the deflated Sharpe ratio tests, with its validation net returns."""
 
     config_id: str
     sharpe: float
     returns: tuple[float, ...]
-    meets_trade_floor: bool
+    selected: bool
 
 
 @dataclass(frozen=True, slots=True)
 class DeflatedSharpe:
     config_id: str | None
+    selected: bool | None
     sharpe_per_trade: float | None
     trades: int | None
     trials: int
-    trial_sharpe_variance: float | None
+    null_sharpe_variance: float | None
     skewness: float | None
     kurtosis: float | None
     expected_max_sharpe: float | None
@@ -52,18 +53,19 @@ class DeflatedSharpe:
 
 @dataclass(frozen=True, slots=True)
 class BlockStats:
-    """Per-bar net P&L of one config over one CSCV block; bars without an exit are 0."""
+    """One config's trades in one CSCV block: their count and summed net return."""
 
-    bars: int
+    trades: int
     total: float
-    total_squares: float
 
 
 @dataclass(frozen=True, slots=True)
 class Pbo:
     value: float | None
     blocks: int | None
-    combinations: int | None
+    folds_used: int | None
+    splits: int | None
+    skipped_splits: int | None
     median_logit: float | None
     note: str | None
 
@@ -77,8 +79,8 @@ class Overfitting:
 def expected_max_sharpe(trials: int, trial_variance: float) -> float:
     """The expected highest of ``trials`` Sharpe estimates that are pure noise.
 
-    Each noise Sharpe is drawn with the observed variance across trials. One
-    trial, or no spread between trials, leaves nothing to deflate against.
+    Each noise Sharpe has variance ``trial_variance``. One trial, or no
+    variance, leaves nothing to deflate against.
     """
 
     if trials < 1:
@@ -128,37 +130,33 @@ def sample_moments(values: Sequence[float]) -> tuple[float, float] | None:
     return third / second**1.5, fourth / (second * second)
 
 
-def deflated_sharpe(trials: Sequence[SharpeTrial]) -> DeflatedSharpe:
-    """Deflate the best Sharpe that meets the trade floor by all trials' spread.
+def deflated_sharpe(trials: int, tested: ConfigUnderTest | None) -> DeflatedSharpe:
+    """Deflate the tested config's Sharpe by the noise maximum of ``trials`` trials.
 
-    Every config with a validation Sharpe is a trial. The best one must also
-    meet ``sample.min_trades_validation``, so a handful of lucky trades cannot
-    be the config under test.
+    Every pre-registered config is a trial, as in the multiple-testing family,
+    so configs that hardly trade cannot shrink the bar. Under the null each
+    trial's Sharpe estimate has the sampling variance 1 / (T - 1) of the
+    tested config's T trades, so configs with other horizons or trade counts
+    do not distort the bar.
     """
 
-    count = len(trials)
-    if count == 0:
-        return _no_dsr(0, "No config has a validation Sharpe (at least two trades with spread).")
-    variance = statistics.variance([trial.sharpe for trial in trials]) if count >= 2 else None
-    floored = [trial for trial in trials if trial.meets_trade_floor]
-    if not floored:
-        return _no_dsr(count, "No config with a validation Sharpe meets the trade floor.")
-    best = floored[0]
-    for trial in floored[1:]:
-        if trial.sharpe > best.sharpe:
-            best = trial
-    benchmark = expected_max_sharpe(count, 0.0 if variance is None else variance)
-    moments = sample_moments(best.returns)
-    if moments is None:
-        return _no_dsr(count, "The best config's trade returns have no spread.")
+    if tested is None:
+        return _no_dsr(trials, "No config meets the trade floor with a validation Sharpe.")
+    observations = len(tested.returns)
+    moments = sample_moments(tested.returns)
+    if observations < 2 or moments is None:
+        return _no_dsr(trials, "The tested config's trade returns have no spread.")
+    variance = 1.0 / (observations - 1)
+    benchmark = expected_max_sharpe(trials, variance)
     skewness, kurtosis = moments
-    dsr = probabilistic_sharpe(best.sharpe, benchmark, len(best.returns), skewness, kurtosis)
+    dsr = probabilistic_sharpe(tested.sharpe, benchmark, observations, skewness, kurtosis)
     return DeflatedSharpe(
-        config_id=best.config_id,
-        sharpe_per_trade=best.sharpe,
-        trades=len(best.returns),
-        trials=count,
-        trial_sharpe_variance=variance,
+        config_id=tested.config_id,
+        selected=tested.selected,
+        sharpe_per_trade=tested.sharpe,
+        trades=observations,
+        trials=trials,
+        null_sharpe_variance=variance,
         skewness=skewness,
         kurtosis=kurtosis,
         expected_max_sharpe=benchmark,
@@ -168,77 +166,98 @@ def deflated_sharpe(trials: Sequence[SharpeTrial]) -> DeflatedSharpe:
 
 
 def cscv_blocks(fold_count: int) -> tuple[tuple[int, ...], ...] | None:
-    """Group walk-forward folds into an even number of contiguous blocks.
+    """Equal contiguous blocks of the most recent walk-forward folds.
 
-    At most ``MAX_CSCV_BLOCKS`` blocks, as even in size as possible, with the
-    earlier blocks taking any extra fold. None when fewer than
-    ``MIN_CSCV_BLOCKS`` blocks are possible.
+    The even block count in [MIN_CSCV_BLOCKS, MAX_CSCV_BLOCKS] that leaves out
+    the fewest folds wins, the larger count on a tie. Equal blocks keep the
+    in-sample and out-of-sample halves the same length; the oldest left-over
+    folds are not used. None when fewer than MIN_CSCV_BLOCKS folds exist.
     """
 
-    blocks = min(fold_count - fold_count % 2, MAX_CSCV_BLOCKS)
-    if blocks < MIN_CSCV_BLOCKS:
+    counts = [
+        count for count in range(MIN_CSCV_BLOCKS, MAX_CSCV_BLOCKS + 1, 2) if count <= fold_count
+    ]
+    if not counts:
         return None
-    base, extra = divmod(fold_count, blocks)
-    groups: list[tuple[int, ...]] = []
-    start = 0
-    for index in range(blocks):
-        size = base + (1 if index < extra else 0)
-        groups.append(tuple(range(start, start + size)))
-        start += size
-    return tuple(groups)
+    blocks = min(counts, key=lambda count: (fold_count % count, -count))
+    size = fold_count // blocks
+    first = fold_count - blocks * size
+    return tuple(
+        tuple(range(first + index * size, first + (index + 1) * size)) for index in range(blocks)
+    )
 
 
 def probability_of_backtest_overfitting(stats: Sequence[Sequence[BlockStats]]) -> Pbo:
     """PBO by combinatorially symmetric cross-validation over ``stats[config][block]``.
 
     For every choice of half the blocks as in-sample, the config with the best
-    in-sample Sharpe of per-bar P&L (the first one on a tie) is ranked by its
-    out-of-sample Sharpe, ties sharing the average rank. A split counts as
-    overfit when that rank is at or below the median (logit <= 0).
+    in-sample mean net return per trade (the first one on a tie) is ranked by
+    its out-of-sample mean, ties sharing the average rank. A config without
+    trades in a half earns 0 there. A split where every config ties in-sample
+    selects nothing and is skipped. A split counts as overfit when the pick
+    ranks at or below the median (logit <= 0).
     """
 
     configs = len(stats)
     if configs < 2:
-        return Pbo(None, None, None, None, "PBO needs at least two configs.")
+        return Pbo(None, None, None, None, None, None, "PBO needs at least two configs.")
     blocks = len(stats[0])
     if any(len(row) != blocks for row in stats):
         raise ValueError("Every config needs the same blocks.")
     if blocks < MIN_CSCV_BLOCKS or blocks % 2:
-        return Pbo(None, blocks, None, None, "PBO needs an even number of at least four blocks.")
+        return Pbo(
+            None, blocks, None, None, None, None, "PBO needs an even number of at least 4 blocks."
+        )
+    totals = [
+        (sum(block.trades for block in row), math.fsum(block.total for block in row))
+        for row in stats
+    ]
     logits: list[float] = []
+    skipped = 0
     for chosen in combinations(range(blocks), blocks // 2):
-        in_sample = set(chosen)
-        out_of_sample = [block for block in range(blocks) if block not in in_sample]
-        in_perf = [_block_sharpe(row, chosen) for row in stats]
-        out_perf = [_block_sharpe(row, out_of_sample) for row in stats]
-        best = 0
-        for index in range(1, configs):
-            if in_perf[index] > in_perf[best]:
-                best = index
+        in_sample = [
+            (
+                sum(row[block].trades for block in chosen),
+                math.fsum(row[block].total for block in chosen),
+            )
+            for row in stats
+        ]
+        in_perf = [_mean(trades, total) for trades, total in in_sample]
+        if max(in_perf) == min(in_perf):
+            skipped += 1
+            continue
+        out_perf = [
+            _mean(all_trades - trades, all_total - total)
+            for (all_trades, all_total), (trades, total) in zip(totals, in_sample, strict=True)
+        ]
+        best = max(range(configs), key=in_perf.__getitem__)
         omega = _average_rank(out_perf, best) / (configs + 1)
         logits.append(math.log(omega / (1.0 - omega)))
-    overfit = sum(1 for logit in logits if logit <= 0.0)
+    if not logits:
+        return Pbo(
+            None,
+            blocks,
+            None,
+            0,
+            skipped,
+            None,
+            "No split separates the configs in-sample, so nothing was selected.",
+        )
     return Pbo(
-        value=overfit / len(logits),
+        value=sum(1 for logit in logits if logit <= 0.0) / len(logits),
         blocks=blocks,
-        combinations=len(logits),
+        folds_used=None,
+        splits=len(logits),
+        skipped_splits=skipped,
         median_logit=statistics.median(logits),
         note=None,
     )
 
 
-def _block_sharpe(row: Sequence[BlockStats], blocks: Sequence[int]) -> float:
-    """Mean over sample stdev of per-bar P&L; a flat series scores 0."""
+def _mean(trades: int, total: float) -> float:
+    """Mean net return per trade; a config that does not trade earns 0."""
 
-    bars = sum(row[block].bars for block in blocks)
-    if bars < 2:
-        return 0.0
-    total = math.fsum(row[block].total for block in blocks)
-    squares = math.fsum(row[block].total_squares for block in blocks)
-    variance = (squares - total * total / bars) / (bars - 1)
-    if not variance > 0.0:
-        return 0.0
-    return (total / bars) / math.sqrt(variance)
+    return total / trades if trades > 0 else 0.0
 
 
 def _average_rank(values: Sequence[float], index: int) -> float:
@@ -253,10 +272,11 @@ def _average_rank(values: Sequence[float], index: int) -> float:
 def _no_dsr(trials: int, note: str) -> DeflatedSharpe:
     return DeflatedSharpe(
         config_id=None,
+        selected=None,
         sharpe_per_trade=None,
         trades=None,
         trials=trials,
-        trial_sharpe_variance=None,
+        null_sharpe_variance=None,
         skewness=None,
         kurtosis=None,
         expected_max_sharpe=None,

@@ -21,6 +21,8 @@ from research.harness.data import BarTable
 from research.harness.errors import HarnessError, IntegrityError, SpecError
 from research.harness.evaluate import (
     Trade,
+    TradeSeries,
+    _tested_config,
     collect_trades,
     decide,
     position_weight,
@@ -30,6 +32,7 @@ from research.harness.evaluate import (
 from research.harness.run import execute, lock_spec
 from research.harness.spec import (
     UNIT_SIZING,
+    ConfigSpec,
     CostSpec,
     Json,
     SizingSpec,
@@ -680,36 +683,70 @@ def test_report_carries_overfitting_diagnostics(tmp_path: Path) -> None:
     document = _run_rows(tmp_path, _regime_rows(420), configs=_two_configs())
     block = _mapping(document["overfitting"])
     dsr = _mapping(block["deflated_sharpe"])
-    # The dead config never trades, so the planted one is the only trial.
-    assert dsr["config_id"] == "real"
-    assert dsr["trials"] == 1
-    assert dsr["expected_max_sharpe"] == 0.0
-    assert dsr["dsr"] is None or 0.0 <= _as_float(dsr["dsr"]) <= 1.0
+    # The selected config is tested; the idle one still counts as a trial.
+    assert document["selected_config_id"] == "real"
+    assert (dsr["config_id"], dsr["selected"], dsr["trials"]) == ("real", True, 2)
+    assert _as_float(dsr["expected_max_sharpe"]) > 0.0
+    assert _as_float(dsr["dsr"]) > 0.99
     pbo = _mapping(block["pbo"])
     # Eight test folds; the planted config is best in and out of sample.
-    assert (pbo["blocks"], pbo["combinations"]) == (8, 70)
+    assert (pbo["blocks"], pbo["folds_used"], pbo["splits"]) == (8, 8, 70)
     assert pbo["value"] == 0.0
     assert document["label"] == "passes_h1"
     markdown = (tmp_path / "out" / "result.md").read_text(encoding="utf-8")
     assert "## Overfitting diagnostics" in markdown
+    assert "for `real` (selected;" in markdown
     assert "probability of backtest overfitting: `0.0`" in markdown
 
 
-def test_every_config_with_a_sharpe_is_a_trial(tmp_path: Path) -> None:
+def test_without_a_selection_the_best_validation_mean_is_tested(tmp_path: Path) -> None:
     configs = [
+        {"id": "idle", "threshold": 10.0, "horizon_bars": 4},
         {"id": "h2", "threshold": 0.0, "horizon_bars": 2},
         {"id": "h4", "threshold": 0.0, "horizon_bars": 4},
         {"id": "h8", "threshold": 0.0, "horizon_bars": 8},
     ]
     document = _run_rows(tmp_path, _random_walk_rows(420, seed=7), configs=configs)
+    assert document["selected_config_id"] is None
+    scores = _mapping(document["multiple_testing"])["configs"]
+    assert isinstance(scores, list)
+    floor = 20
+    means = {
+        _mapping(score)["id"]: _mapping(_mapping(_mapping(score)["net"])["1.0"])["mean_return"]
+        for score in scores
+        if _as_float(_mapping(_mapping(_mapping(score)["net"])["1.0"])["trade_count"]) >= floor
+    }
+    best = max(means, key=lambda name: _as_float(means[name]))
     block = _mapping(document["overfitting"])
     dsr = _mapping(block["deflated_sharpe"])
-    assert dsr["trials"] == 3
-    assert dsr["trial_sharpe_variance"] is not None
+    assert (dsr["config_id"], dsr["selected"]) == (best, False)
+    # Every pre-registered config is a trial, the idle one included.
+    assert dsr["trials"] == 4
     pbo = _mapping(block["pbo"])
     assert 0.0 <= _as_float(pbo["value"]) <= 1.0
-    # Diagnostics never touch the decision.
-    assert document["label"] in {"no_edge", "interesting_but_fragile", "not_enough_data"}
+
+
+def test_dsr_tests_the_selection_else_the_best_floored_mean() -> None:
+    spec = validate_spec(_json(_spec_body(parquet=True)))
+    floor = spec.sample.min_trades_validation
+    steady = [0.010, 0.012] * floor
+    noisy = [0.20, -0.08] * floor
+    lucky = [0.5, 0.6]
+    series_by_config = [
+        (ConfigSpec(name, 0.0, 4), _plain_series(values))
+        for name, values in (("steady", steady), ("noisy", noisy), ("lucky", lucky))
+    ]
+    nets_by_config = [
+        {"1.0": summarize(series.net(spec.costs, 1.0))} for _config, series in series_by_config
+    ]
+    selected = _tested_config(spec, series_by_config, nets_by_config, 0)
+    assert selected is not None
+    assert (selected.config_id, selected.selected) == ("steady", True)
+    # Nothing selected: the best mean that meets the trade floor, as validation
+    # selection ranks, not the best Sharpe; the two lucky trades are ignored.
+    fallback = _tested_config(spec, series_by_config, nets_by_config, None)
+    assert fallback is not None
+    assert (fallback.config_id, fallback.selected) == ("noisy", False)
 
 
 def test_overfitting_notes_explain_a_missing_value(tmp_path: Path) -> None:
@@ -888,6 +925,16 @@ def _sized_body() -> dict[str, object]:
         "max_leverage": 5.0,
     }
     return body
+
+
+def _plain_series(gross: list[float]) -> TradeSeries:
+    zeros = tuple(0.0 for _ in gross)
+    return TradeSeries(
+        gross=tuple(gross),
+        funding_paid=zeros,
+        funding_received=zeros,
+        weights=tuple(1.0 for _ in gross),
+    )
 
 
 def _costs(*, fee_bps: float) -> CostSpec:

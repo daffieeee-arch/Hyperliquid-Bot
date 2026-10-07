@@ -16,6 +16,7 @@ import argparse
 import csv
 import os
 import sys
+import tempfile
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -40,7 +41,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.interval not in INTERVAL_SECONDS:
             raise BarTableError(f"Unknown interval {args.interval}.")
         closes = _read_closes(root, args.market, args.symbol, args.interval, start_ms, end_ms)
-        funding = _read_funding(root, args.market, args.symbol)
+        funding = _read_funding(root, args.market, args.symbol, start_ms, end_ms)
         rows = build_trend_rows(
             closes,
             funding,
@@ -71,8 +72,11 @@ def write_trend_parquet(rows: Sequence[TrendRow], lookbacks: Sequence[int], out:
         f"'{name}': '{'BIGINT' if name in {'ts', 'available_ts'} else 'DOUBLE'}'" for name in names
     )
     out.parent.mkdir(parents=True, exist_ok=True)
-    partial = out.with_name(out.name + ".partial")
-    staged = out.with_name(out.name + ".partial.csv")
+    # Unique scratch names, so two builds to one output cannot share a file.
+    descriptor, name = tempfile.mkstemp(dir=out.parent, prefix=f".{out.name}.", suffix=".csv")
+    os.close(descriptor)
+    staged = Path(name)
+    partial = staged.with_suffix(".parquet")
     try:
         with staged.open("w", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
@@ -100,6 +104,7 @@ def write_trend_parquet(rows: Sequence[TrendRow], lookbacks: Sequence[int], out:
         partial.replace(out)
     finally:
         staged.unlink(missing_ok=True)
+        partial.unlink(missing_ok=True)
 
 
 def _literal(path: Path) -> str:
@@ -114,18 +119,21 @@ def _read_closes(
     files = _files(root, market, parquet_slug("klines", interval), symbol)
     rows = _query(
         "SELECT epoch_ms(ts), CAST(close AS DOUBLE) FROM read_parquet(?) "
-        "WHERE epoch_ms(ts) >= ? AND epoch_ms(ts) < ? ORDER BY ts",
-        [files, start_ms, end_ms],
+        "WHERE ts >= make_timestamp(?) AND ts < make_timestamp(?) ORDER BY ts",
+        [files, start_ms * 1000, end_ms * 1000],
     )
     return [(_int(ts), _float(close)) for ts, close in rows]
 
 
-def _read_funding(root: Path, market: str, symbol: str) -> list[tuple[int, float]]:
+def _read_funding(
+    root: Path, market: str, symbol: str, start_ms: int, end_ms: int
+) -> list[tuple[int, float]]:
     files = _files(root, market, parquet_slug("fundingRate", None), symbol)
     rows = _query(
-        "SELECT epoch_ms(calc_time), CAST(last_funding_rate AS DOUBLE) "
-        "FROM read_parquet(?) ORDER BY calc_time",
-        [files],
+        "SELECT epoch_ms(calc_time), CAST(last_funding_rate AS DOUBLE) FROM read_parquet(?) "
+        "WHERE calc_time >= make_timestamp(?) AND calc_time < make_timestamp(?) "
+        "ORDER BY calc_time",
+        [files, start_ms * 1000, end_ms * 1000],
     )
     return [(_int(ts), _float(rate)) for ts, rate in rows]
 
@@ -187,7 +195,12 @@ def _parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     trend = sub.add_parser("trend", help="Close, trend score, realized vol, and funding.")
     trend.add_argument("--root", help="Archive root. Defaults to HIST_ARCHIVES_ROOT.")
-    trend.add_argument("--market", default="um", help="Binance market (default um).")
+    trend.add_argument(
+        "--market",
+        default="um",
+        choices=["um"],
+        help="Binance USD-M perps; funding is required, so spot is not offered.",
+    )
     trend.add_argument("--symbol", required=True)
     trend.add_argument("--interval", default="1h")
     trend.add_argument("--start", required=True, help="First bar close date, UTC.")

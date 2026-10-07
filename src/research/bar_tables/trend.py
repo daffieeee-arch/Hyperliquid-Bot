@@ -56,20 +56,19 @@ def build_trend_rows(
     if len(closes) <= warmup:
         raise BarTableError(f"Need more than {warmup} bars for the warm-up; got {len(closes)}.")
     _check_bars(closes, bar_ms)
-    _check_funding(funding, closes[warmup - 1][0], closes[-1][0], max_funding_gap_ms)
+    # Only settlements inside the output bars' funding intervals are used or checked.
+    settled = [entry for entry in funding if closes[warmup - 1][0] < entry[0] <= closes[-1][0]]
+    _check_funding(settled, closes[warmup - 1][0], closes[-1][0], max_funding_gap_ms)
     prices = [close for _ts, close in closes]
     one_bar = [math.log(prices[index] / prices[index - 1]) for index in range(1, len(prices))]
-    squares = [value * value for value in one_bar]
-    per_bar = _bucket_funding(funding, [ts for ts, _close in closes], start=warmup)
+    per_bar = _bucket_funding(settled, [ts for ts, _close in closes], start=warmup)
     rows: list[TrendRow] = []
     for index in range(warmup, len(closes)):
         returns = tuple(
             math.log(prices[index] / prices[index - lookback]) for lookback in lookbacks
         )
         # one_bar[k] is the return into bar k + 1, so these end at bar ``index``.
-        vol = _sample_stdev(
-            one_bar[index - vol_window : index], squares[index - vol_window : index]
-        )
+        vol = _sample_stdev(one_bar[index - vol_window : index])
         if not vol > 0.0:
             raise BarTableError(f"Realized vol is not positive at {closes[index][0]}.")
         rows.append(
@@ -110,21 +109,20 @@ def _check_bars(closes: Sequence[tuple[int, float]], bar_ms: int) -> None:
 
 
 def _check_funding(
-    funding: Sequence[tuple[int, float]], first_open: int, last_close: int, max_gap: int
+    settled: Sequence[tuple[int, float]], first_open: int, last_close: int, max_gap: int
 ) -> None:
-    """Settlements must cover ``(first_open, last_close]`` with no gap above ``max_gap``.
+    """The settlements in ``(first_open, last_close]`` leave no gap above ``max_gap``.
 
     ``first_open`` is the close of the last warm-up bar, where the first
     output bar's funding interval starts.
     """
 
-    covered = [ts for ts, _rate in funding if first_open < ts <= last_close]
-    for ts, rate in funding:
+    for ts, rate in settled:
         if not math.isfinite(rate):
             raise BarTableError(f"Funding rate at {ts} is not a finite number.")
-    if any(later <= earlier for earlier, later in pairwise(funding)):
+    if any(later[0] <= earlier[0] for earlier, later in pairwise(settled)):
         raise BarTableError("Funding settlements must be strictly increasing in time.")
-    edges = [first_open, *covered, last_close]
+    edges = [first_open, *(ts for ts, _rate in settled), last_close]
     for earlier, later in pairwise(edges):
         if later - earlier > max_gap:
             raise BarTableError(
@@ -134,27 +132,23 @@ def _check_funding(
 
 
 def _bucket_funding(
-    funding: Sequence[tuple[int, float]], closes: Sequence[int], *, start: int
+    settled: Sequence[tuple[int, float]], closes: Sequence[int], *, start: int
 ) -> list[float]:
-    """Sum each settlement into the bar whose ``(previous close, close]`` holds it."""
+    """Sum each ordered settlement into the bar whose ``(previous close, close]`` holds it."""
 
     totals: list[list[float]] = [[] for _ in range(start, len(closes))]
     pointer = 0
-    for ts, rate in funding:
-        if ts <= closes[start - 1] or ts > closes[-1]:
-            continue
+    for ts, rate in settled:
         while closes[start + pointer] < ts:
             pointer += 1
         totals[pointer].append(rate)
     return [math.fsum(values) for values in totals]
 
 
-def _sample_stdev(values: Sequence[float], squares: Sequence[float]) -> float:
-    # Exact sums of the values and their squares keep this one pass per window.
-    count = len(values)
-    total = math.fsum(values)
-    variance = (math.fsum(squares) - total * total / count) / (count - 1)
-    return math.sqrt(variance) if variance > 0.0 else 0.0
+def _sample_stdev(values: Sequence[float]) -> float:
+    # Two passes, so a near-constant window cannot cancel to a negative variance.
+    mean = math.fsum(values) / len(values)
+    return math.sqrt(math.fsum((value - mean) ** 2 for value in values) / (len(values) - 1))
 
 
 def _sign(value: float) -> float:

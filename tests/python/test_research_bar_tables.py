@@ -12,7 +12,7 @@ from research.bar_tables.cli import main
 from research.bar_tables.trend import BarTableError, TrendRow, build_trend_rows
 
 _HOUR = 3_600_000
-_START = 1_577_836_799_999  # 2020-01-01 00:59:59.999 UTC, a kline close time
+_START = 1_577_836_799_999  # 2019-12-31 23:59:59.999 UTC, a kline close time
 
 
 def _closes(prices: list[float]) -> list[tuple[int, float]]:
@@ -134,6 +134,12 @@ def test_bad_inputs_are_refused() -> None:
     unordered = [(closes[5][0], 0.0), (closes[4][0], 0.0)]
     with pytest.raises(BarTableError, match="strictly increasing"):
         _build([100.0 + index for index in range(8)], unordered)
+    # Only settlements inside the output bars' intervals are read or checked.
+    prices = [100.0 + index for index in range(8)]
+    valid = _hourly_funding(_closes(prices), 0.0001)
+    assert _build(prices, [(_START - 1, math.nan), *valid])
+    with pytest.raises(BarTableError, match="finite"):
+        _build(prices, [*valid[:5], (valid[5][0], math.nan), *valid[6:]])
 
 
 def test_the_cli_writes_a_harness_ready_table(tmp_path: Path) -> None:
@@ -211,7 +217,8 @@ def test_the_cli_writes_a_harness_ready_table(tmp_path: Path) -> None:
     # Jan 1 08:00 and 16:00, Jan 2 00:00, 08:00 and 16:00 fall inside the output bars;
     # Jan 1 00:00 is before the first one and Jan 3 00:00 after the last close.
     assert stats[3] == pytest.approx(0.0005)
-    assert not (tmp_path / "bars.parquet.partial").exists()
+    # The scratch CSV and Parquet are gone; only the table and the input root remain.
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["bars.parquet", "root"]
 
 
 def test_the_cli_reports_a_failure_and_writes_nothing(tmp_path: Path) -> None:

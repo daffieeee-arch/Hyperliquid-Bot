@@ -1622,6 +1622,15 @@ def test_parquet_replay_dedup_window_is_an_lru_like_the_collector(
     ]
 
 
+def test_parquet_replay_refuses_a_print_without_a_coin(tmp_path: Path) -> None:
+    parquet_dir = tmp_path / "tape"
+    _write_hyperliquid_parquet(
+        parquet_dir, extra_rows=(_trade_row(4, 1_600_000_000, tid=12, coin=None),)
+    )
+    with pytest.raises(PaperTapeError, match="coin"):
+        load_hyperliquid_parquet_tape((parquet_dir,))
+
+
 def test_parquet_replay_refuses_one_trade_id_with_two_prints(tmp_path: Path) -> None:
     parquet_dir = tmp_path / "tape"
     _write_hyperliquid_parquet(
@@ -1798,27 +1807,20 @@ def _trade_row(
     tid: int,
     price: str = "100000",
     time_ms: int = 1_784_000_001_500,
+    coin: str | None = "BTC",
 ) -> tuple[object, ...]:
     """A ``trades`` message with one print, stamped as in the base tape."""
 
-    return _raw_row(
-        ordinal,
-        received_utc_ns,
-        "trades",
-        {
-            "channel": "trades",
-            "data": [
-                {
-                    "coin": "BTC",
-                    "side": "A",
-                    "px": price,
-                    "sz": "0.01",
-                    "time": time_ms,
-                    "tid": tid,
-                }
-            ],
-        },
-    )
+    trade: dict[str, object] = {
+        "side": "A",
+        "px": price,
+        "sz": "0.01",
+        "time": time_ms,
+        "tid": tid,
+    }
+    if coin is not None:
+        trade["coin"] = coin
+    return _raw_row(ordinal, received_utc_ns, "trades", {"channel": "trades", "data": [trade]})
 
 
 def _raw_row(

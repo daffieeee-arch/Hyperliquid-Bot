@@ -5,7 +5,10 @@ The SQL paths match the DATA-1A research views in
 Partial files are ignored. Rows are ordered by receipt time, then message
 ordinal, then event index. The same ``PaperEngine.on_event`` path consumes
 this tape and a live public feed. A trade print re-sent after a reconnect
-(same time, coin and trade id) is kept once, as the live collector does.
+(same time, coin and trade id) is kept once, like the live collector's
+dedup. That is an approximation of the live path, not a copy: the live
+cache is per collector process (empty after a restart) and shared by all of
+its instruments, while the replay keeps one window per tape and product.
 """
 
 from __future__ import annotations
@@ -29,9 +32,10 @@ from hyperliquid_bot.paper_engine.events import (
     utc_from_epoch_ms,
 )
 
-# The live trades collector's dedup window (HyperliquidTradesCollectorConfig
-# .dedup_capacity). The replay keeps the same window so both paths drop the
-# same re-sent prints.
+# The live trades collector's default dedup window
+# (HyperliquidTradesCollectorConfig.dedup_capacity, not overridden in this
+# repository). The replay uses the same size; see load_hyperliquid_parquet_tape
+# for where the two windows can still differ.
 TRADE_DEDUP_CAPACITY: Final = 10_000
 
 _HYPERLIQUID_BUY: str = "B"
@@ -156,7 +160,7 @@ def _load_trades(
     # A reconnect re-sends recent prints. Like the live collector, keep one
     # copy per source identity (time, coin, tid) within the same LRU window.
     # The same identity with a different print is a corrupt tape.
-    seen: OrderedDict[tuple[int, object, str], tuple[object, ...]] = OrderedDict()
+    seen: OrderedDict[tuple[int, str, str], tuple[object, ...]] = OrderedDict()
     for row in rows:
         message_ordinal = _require_int(row[0], field_name="message_ordinal")
         received_utc_ns = _require_int(row[1], field_name="received_utc_ns")
@@ -166,7 +170,8 @@ def _load_trades(
         quantity = _require_decimal(_require_text(row[5], field_name="size"), field_name="size")
         event_time_ms = _require_int(row[6], field_name="event_time_ms")
         trade_id = _require_text(row[7], field_name="trade_id")
-        identity = (event_time_ms, row[8], trade_id)
+        coin = _require_text(row[8], field_name="coin")
+        identity = (event_time_ms, coin, trade_id)
         fingerprint = (side, price, quantity, row[9], row[10])
         known = seen.get(identity)
         if known is not None:

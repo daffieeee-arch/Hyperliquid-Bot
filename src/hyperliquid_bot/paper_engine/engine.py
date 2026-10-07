@@ -836,7 +836,8 @@ class PaperEngine:
         if fills_on_decision_quote and self._touch_used_up(desired.side, received_ns):
             # The order would fill on this very quote, which PAPER already
             # took: one recorded block, not an accepted-then-cancelled IOC on
-            # every event. Otherwise it is checked on the quote it fills on.
+            # every event. Any other order meets the depletion check when it
+            # is filled.
             self._reject(
                 reason="touch_consumed",
                 detail=reason,

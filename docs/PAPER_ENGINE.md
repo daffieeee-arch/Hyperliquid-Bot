@@ -94,8 +94,10 @@ A buy fills the ask and a sell fills the bid, worsened by the configured
 slippage fraction, then rounded to that grid. Quantity is capped by the
 displayed size (or the trade size when the book is not complete). The
 unfilled remainder is cancelled (IOC). Latency waits for a later event
-before that touch is eligible. Every order is an IOC limit around the touch
-at decision time: entries use `entry_price_band_fraction`, exits
+before the order may fill. An eligible order that meets a one-sided or
+crossed BBO completes `CANCELED` with `unfilled_reason: no_touch`; with no
+complete book, a trade print fills it. Every order is an IOC limit around
+the touch at decision time: entries use `entry_price_band_fraction`, exits
 `exit_price_band_fraction`, and the limit is rounded so it never widens the
 band. A fill beyond the limit does not happen; the order completes as
 `CANCELED` with `unfilled_reason: price_band` (other reasons: `no_touch`,
@@ -186,9 +188,12 @@ PnL stays null until a venue mark or a complete two-sided book exists.
 with the same JSON paths as the `trades`, `bbo`, and `activeAssetCtx`
 research views. `PaperEngine.run_parquet` and `PaperEngine.on_event` are the
 same strategy, risk, and fill path. A trade print re-sent after a reconnect
-is kept once, as the live trades collector does: same source identity (time,
-coin, trade id) within the same 10,000-id LRU window. The same identity with a
-different print raises `PaperTapeError`.
+is kept once, like the live trades collector's dedup: same source identity
+(time, coin, trade id) within a 10,000-id LRU window. This approximates the
+live path rather than copying it: the live cache is per collector process
+(empty after a restart) and shared by all its instruments, while the replay
+keeps one window per tape and product. The same identity with a different
+print raises `PaperTapeError`; a corrupt tape stops the replay.
 
 ## Residual limits
 

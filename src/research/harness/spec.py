@@ -218,13 +218,16 @@ def validate_spec(document: dict[str, Json]) -> HypothesisSpec:
     configs = _parse_configs(document["configs"])
     if signal_feature not in {feature.name for feature in features}:
         raise SpecError("signal_feature must name a declared feature.")
-    _require_latency_floor(costs, features, data, signal_feature)
     _require_funding_column(costs, data)
     sizing = (
         _parse_sizing(_require_mapping(document["sizing"], "sizing"), features)
         if "sizing" in document
         else UNIT_SIZING
     )
+    decision_features = (signal_feature,) + (
+        () if sizing.vol_feature is None else (sizing.vol_feature,)
+    )
+    _require_latency_floor(costs, features, data, decision_features)
     return HypothesisSpec(
         hypothesis_id=hypothesis_id,
         universe=universe,
@@ -299,13 +302,12 @@ def verify_lock(spec_path: Path, document: dict[str, Json], digest: str) -> dict
 
 
 def _parse_costs(raw: dict[str, Json]) -> CostSpec:
-    required = {"fee_bps", "slippage_bps", "spread_bps", "latency_bars"}
-    optional = {"allow_zero_latency", "funding_column"}
-    keys = set(raw)
-    if not required <= keys or keys - required - optional:
-        missing = sorted(required - keys)
-        extra = sorted(keys - required - optional)
-        raise SpecError(f"costs keys mismatch; missing={missing} extra={extra}.")
+    _exact_with_optional(
+        raw,
+        frozenset({"fee_bps", "slippage_bps", "spread_bps", "latency_bars"}),
+        frozenset({"allow_zero_latency", "funding_column"}),
+        "costs",
+    )
     fee_bps = _non_negative(_require_number(raw["fee_bps"], "costs.fee_bps"), "costs.fee_bps")
     slippage_bps = _non_negative(
         _require_number(raw["slippage_bps"], "costs.slippage_bps"),
@@ -385,19 +387,24 @@ def _require_latency_floor(
     costs: CostSpec,
     features: tuple[FeatureSpec, ...],
     data: DataSpec,
-    signal_feature: str,
+    decision_features: tuple[str, ...],
 ) -> None:
-    """Bar-timestamp clocks fill on a later bar unless zero latency is explicit."""
+    """Bar-timestamp clocks fill on a later bar unless zero latency is explicit.
+
+    Every feature read at the decision bar counts: the signal, and the sizing
+    volatility, which would otherwise size a fill with that bar's own close.
+    """
 
     if costs.latency_bars >= 1 or costs.allow_zero_latency:
         return
-    signal = next(feature for feature in features if feature.name == signal_feature)
-    if signal.available_at_column != data.timestamp_column:
-        return
-    raise SpecError(
-        "costs.latency_bars must be >= 1 when the signal clock is the bar timestamp. "
-        "latency_bars 0 requires costs.allow_zero_latency: true."
-    )
+    for feature in features:
+        if feature.name in decision_features and (
+            feature.available_at_column == data.timestamp_column
+        ):
+            raise SpecError(
+                f"costs.latency_bars must be >= 1 when the {feature.name} clock is the bar "
+                "timestamp. latency_bars 0 requires costs.allow_zero_latency: true."
+            )
 
 
 def _parse_split(raw: dict[str, Json]) -> SplitSpec:

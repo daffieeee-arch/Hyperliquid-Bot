@@ -17,11 +17,14 @@ from pathlib import Path
 import duckdb
 import pytest
 
+from research.harness.data import BarTable
 from research.harness.errors import HarnessError, IntegrityError, SpecError
 from research.harness.evaluate import (
     Trade,
-    collect_gross_returns,
+    collect_trades,
+    decide,
     position_weight,
+    stressed_funding,
     summarize,
     trade_series,
 )
@@ -106,9 +109,8 @@ def test_validation_window_does_not_read_holdout_prices() -> None:
     prices = [100.0 + index for index in range(12)]
     prices[8:] = [0.0] * 4
     feature = [1.0] * 12
-    returns = collect_gross_returns(
+    trades = collect_trades(
         feature,
-        prices,
         threshold=0.0,
         horizon_bars=2,
         latency_bars=1,
@@ -116,7 +118,9 @@ def test_validation_window_does_not_read_holdout_prices() -> None:
         start=0,
         end=8,
     )
-    assert returns
+    assert trades
+    assert all(trade.exit < 8 for trade in trades)
+    returns = trade_series(trades, prices, funding=None, sizing=UNIT_SIZING, vol=None).gross
     assert all(math.isfinite(value) for value in returns)
 
 
@@ -476,20 +480,28 @@ def test_funding_is_charged_over_the_bars_a_trade_is_held() -> None:
     assert series.gross == pytest.approx((0.1, -0.1))
     assert series.funding == pytest.approx((-paid, paid))
     assert series.weights == (1.0, 1.0)
-    assert series.net(0.001) == pytest.approx((0.1 - 0.001 - paid, -0.1 - 0.001 + paid))
+    assert series.net(0.001, 1.0) == pytest.approx((0.1 - 0.001 - paid, -0.1 - 0.001 + paid))
+    # Under stress, funding paid grows and funding received shrinks.
+    assert series.net(0.002, 2.0) == pytest.approx(
+        (0.1 - 0.002 - 2.0 * paid, -0.1 - 0.002 + paid / 2.0)
+    )
+    assert stressed_funding(-0.01, 1.5) == pytest.approx(-0.015)
+    assert stressed_funding(0.01, 1.5) == pytest.approx(0.01 / 1.5)
+    assert stressed_funding(0.01, 1.0) == 0.01
     no_funding = trade_series(trades, prices, funding=None, sizing=UNIT_SIZING, vol=None)
     assert no_funding.funding == (0.0, 0.0)
 
 
 def test_vol_target_weight_reads_the_decision_bar_and_is_capped() -> None:
     sizing = SizingSpec(method="vol_target", vol_feature="vol", target_vol=0.02, max_leverage=3.0)
-    vol = (0.01, 0.04, 0.0, 0.001, -0.01)
+    vol = (0.01, 0.04, 0.001, 0.0, -0.01)
     assert position_weight(sizing, vol, 0) == pytest.approx(2.0)
     assert position_weight(sizing, vol, 1) == pytest.approx(0.5)
     assert position_weight(sizing, vol, 2) == 3.0
-    assert position_weight(sizing, vol, 3) == 3.0
-    with pytest.raises(IntegrityError, match="negative"):
-        position_weight(sizing, vol, 4)
+    # A zero or negative volatility never takes the leverage cap.
+    for decision in (3, 4):
+        with pytest.raises(IntegrityError, match="not positive"):
+            position_weight(sizing, vol, decision)
     assert position_weight(UNIT_SIZING, None, 0) == 1.0
     # Price return, cost and funding all scale with the weight.
     prices = (100.0, 100.0, 101.0)
@@ -501,7 +513,7 @@ def test_vol_target_weight_reads_the_decision_bar_and_is_capped() -> None:
         vol=vol,
     )
     assert series.weights == pytest.approx((2.0,))
-    assert series.net(0.002) == pytest.approx((2.0 * (0.01 - 0.002 - 0.001 * 1.01),))
+    assert series.net(0.002, 1.0) == pytest.approx((2.0 * (0.01 - 0.002 - 0.001 * 1.01),))
 
 
 def test_spec_validates_funding_and_sizing() -> None:
@@ -551,6 +563,52 @@ def test_spec_validates_funding_and_sizing() -> None:
     unknown["leverage"] = 2
     with pytest.raises(SpecError, match="extra"):
         validate_spec(_json(unknown))
+
+
+def test_latency_floor_covers_the_sizing_volatility() -> None:
+    # The signal has its own clock, but the volatility is stamped at the bar
+    # close: with zero latency it would size a fill with that bar's own close.
+    body = _sized_body()
+    _mapping(body["costs"])["latency_bars"] = 0
+    with pytest.raises(SpecError, match="realized_vol clock is the bar timestamp"):
+        validate_spec(_json(body))
+    _mapping(body["costs"])["allow_zero_latency"] = True
+    assert validate_spec(_json(body)).costs.latency_bars == 0
+
+
+def test_bar_table_without_the_declared_funding_is_refused() -> None:
+    spec = validate_spec(_json(_funding_body()))
+    table = BarTable(
+        timestamps=(0, 1, 2),
+        prices=(100.0, 100.0, 100.0),
+        features={"taker_imbalance": (1.0, 1.0, 1.0)},
+        availability={"imbalance_available_ts": (0, 1, 2)},
+        funding=None,
+    )
+    with pytest.raises(HarnessError, match="funding") as refused:
+        decide(spec, table)
+    assert refused.value.failure_kind == "invariant"
+
+
+def test_any_non_positive_volatility_fails_the_run_closed(tmp_path: Path) -> None:
+    # Only the last row is zero, where no trade is decided: the audit still
+    # refuses the series rather than depending on which configs trade.
+    rows = _regime_rows(420)
+    vol = [0.01] * (len(rows) - 1) + [0.0]
+    document = _run_extended(
+        tmp_path,
+        rows,
+        vol=vol,
+        sizing={
+            "method": "vol_target",
+            "vol_feature": "realized_vol",
+            "target_vol": 0.02,
+            "max_leverage": 5.0,
+        },
+    )
+    assert document["status"] == "failed_closed"
+    assert document["failure_kind"] == "sizing"
+    assert document["promotion_decision"] == "forbidden"
 
 
 def test_spec_without_funding_or_sizing_reports_unit_weight(tmp_path: Path) -> None:

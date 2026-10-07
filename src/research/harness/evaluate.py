@@ -69,11 +69,11 @@ class TradeSeries:
     funding: tuple[float, ...]
     weights: tuple[float, ...]
 
-    def net(self, round_trip: float) -> tuple[float, ...]:
-        """Gross minus the weighted round-trip cost, plus the funding cashflow."""
+    def net(self, round_trip: float, stress: float) -> tuple[float, ...]:
+        """Gross minus the weighted round-trip cost, plus the stressed funding cashflow."""
 
         return tuple(
-            gross - weight * round_trip + funding
+            gross - weight * round_trip + stressed_funding(funding, stress)
             for gross, funding, weight in zip(self.gross, self.funding, self.weights, strict=True)
         )
 
@@ -81,6 +81,19 @@ class TradeSeries:
         if not self.weights:
             return None
         return math.fsum(self.weights) / len(self.weights)
+
+
+def stressed_funding(cashflow: float, stress: float) -> float:
+    """Funding paid grows with the stress and funding received shrinks with it.
+
+    The realized funding is exact in a backtest, but it is a market cashflow
+    that need not repeat; an edge that rests on received funding has to
+    survive a haircut, as costs do. At 1.0x the cashflow is unchanged.
+    """
+
+    if cashflow < 0.0:
+        return cashflow * stress
+    return cashflow / stress
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +142,8 @@ class _HoldoutResult:
 def decide(spec: HypothesisSpec, table: BarTable) -> Decision:
     """Label the pre-registered family. Promotion stays forbidden unless H1 passes OOS."""
 
+    if (spec.costs.funding_column is None) != (table.funding is None):
+        raise HarnessError("invariant", "The bar table's funding does not match the spec.")
     folds, (holdout_start, holdout_end) = walk_forward(len(table.timestamps), spec.split)
     feature = table.features[_feature_column(spec, spec.signal_feature)]
     vol = _vol_series(spec, table)
@@ -139,16 +154,14 @@ def decide(spec: HypothesisSpec, table: BarTable) -> Decision:
         )
         for config in spec.configs
     ]
-    family_p = [
-        _family_p_value(spec, series.net(round_trip_cost(spec.costs, 1.0)))
-        for _, series in series_by_config
-    ]
+    nets_by_config = [_net_blocks(spec, series) for _, series in series_by_config]
+    family_p = [_family_p_value(spec, nets["1.0"]) for nets in nets_by_config]
     adjusted = {
         "bonferroni": bonferroni(family_p),
         "holm": holm(family_p),
         "bh": benjamini_hochberg(family_p),
     }
-    scores = _build_scores(spec, series_by_config, family_p, adjusted)
+    scores = _build_scores(spec, series_by_config, nets_by_config, family_p, adjusted)
     label, reasons, selected_index = _validation_label(spec, scores, folds)
     holdout_config_id: str | None = None
     holdout: _HoldoutResult | None = None
@@ -251,7 +264,8 @@ def position_weight(sizing: SizingSpec, vol: Sequence[float] | None, decision: i
     """One unit, or ``target_vol / vol`` at the decision bar capped at ``max_leverage``.
 
     The vol value is read at the decision bar only, like the signal, so its
-    declared availability clock bounds what the weight can know.
+    declared availability clock bounds what the weight can know. A
+    non-positive vol fails closed rather than taking the leverage cap.
     """
 
     if sizing.method == "unit":
@@ -259,41 +273,10 @@ def position_weight(sizing: SizingSpec, vol: Sequence[float] | None, decision: i
     if vol is None or sizing.target_vol is None or sizing.max_leverage is None:
         raise HarnessError("invariant", "vol_target sizing is missing its inputs.")
     value = vol[decision]
-    if value < 0.0:
-        raise IntegrityError("sizing", f"Volatility feature is negative at bar {decision}.")
-    if value == 0.0:
-        return sizing.max_leverage
+    if value <= 0.0:
+        # The data audit refuses this series; never size from it.
+        raise IntegrityError("sizing", f"Volatility feature is not positive at bar {decision}.")
     return min(sizing.max_leverage, sizing.target_vol / value)
-
-
-def collect_gross_returns(
-    feature: Sequence[float],
-    prices: Sequence[float],
-    *,
-    threshold: float,
-    horizon_bars: int,
-    latency_bars: int,
-    direction: str,
-    start: int,
-    end: int,
-) -> tuple[float, ...]:
-    """Non-overlapping close-to-close returns inside [start, end).
-
-    The fill is the close of bar `decision + latency`. Exit is `horizon_bars`
-    after that fill. Both indexes must stay strictly inside the window, so a
-    validation trade cannot read a holdout price.
-    """
-
-    trades = collect_trades(
-        feature,
-        threshold=threshold,
-        horizon_bars=horizon_bars,
-        latency_bars=latency_bars,
-        direction=direction,
-        start=start,
-        end=end,
-    )
-    return tuple(_unit_return(prices, trade) for trade in trades)
 
 
 def summarize(values: Sequence[float]) -> MetricBlock:
@@ -340,11 +323,8 @@ def _confirm_holdout(
         spec, feature, table, vol, config=config, start=holdout_start, end=holdout_end
     )
     gross_block = summarize(series.gross)
-    net = {
-        stress_key(stress): summarize(series.net(round_trip_cost(spec.costs, stress)))
-        for stress in STRESS_MULTIPLIERS
-    }
-    funding = None if table.funding is None else summarize(series.funding)
+    net = _net_blocks(spec, series)
+    funding = _funding_block(spec, series)
     base = net["1.0"]
     if base.trade_count < spec.sample.min_trades_holdout:
         label = LABEL_NOT_ENOUGH_DATA
@@ -496,6 +476,7 @@ def _best_index(scores: tuple[ConfigScore, ...], eligible: list[int]) -> int:
 def _build_scores(
     spec: HypothesisSpec,
     series_by_config: list[tuple[ConfigSpec, TradeSeries]],
+    nets_by_config: list[dict[str, MetricBlock]],
     family_p: list[float],
     adjusted: dict[str, list[float]],
 ) -> tuple[ConfigScore, ...]:
@@ -507,22 +488,30 @@ def _build_scores(
                 threshold=config.threshold,
                 horizon_bars=config.horizon_bars,
                 validation_gross=summarize(series.gross),
-                validation_net={
-                    stress_key(stress): summarize(series.net(round_trip_cost(spec.costs, stress)))
-                    for stress in STRESS_MULTIPLIERS
-                },
+                validation_net=nets_by_config[index],
                 family_p_value=family_p[index],
                 adjusted_p={
                     method: adjusted[method][index] for method in ("bonferroni", "holm", "bh")
                 },
                 selected=False,
-                validation_funding=(
-                    None if spec.costs.funding_column is None else summarize(series.funding)
-                ),
+                validation_funding=_funding_block(spec, series),
                 mean_weight=series.mean_weight(),
             )
         )
     return tuple(scores)
+
+
+def _net_blocks(spec: HypothesisSpec, series: TradeSeries) -> dict[str, MetricBlock]:
+    return {
+        stress_key(stress): summarize(series.net(round_trip_cost(spec.costs, stress), stress))
+        for stress in STRESS_MULTIPLIERS
+    }
+
+
+def _funding_block(spec: HypothesisSpec, series: TradeSeries) -> MetricBlock | None:
+    """The realized (1.0x) funding cashflow, or None when no funding is declared."""
+
+    return None if spec.costs.funding_column is None else summarize(series.funding)
 
 
 def _mark_selected(scores: tuple[ConfigScore, ...], selected_index: int) -> tuple[ConfigScore, ...]:
@@ -547,15 +536,14 @@ def _copy_score(score: ConfigScore, *, selected: bool) -> ConfigScore:
     )
 
 
-def _family_p_value(spec: HypothesisSpec, net: Sequence[float]) -> float:
+def _family_p_value(spec: HypothesisSpec, net: MetricBlock) -> float:
     """Underpowered configs stay in the family with p=1 so they cannot shrink m."""
 
-    if len(net) < spec.sample.min_trades_validation:
+    if net.trade_count < spec.sample.min_trades_validation:
         return 1.0
-    p_value = summarize(net).p_value
-    if p_value is None:
+    if net.p_value is None:
         return 1.0
-    return p_value
+    return net.p_value
 
 
 def _feature_column(spec: HypothesisSpec, name: str) -> str:
@@ -581,7 +569,19 @@ def _window_series(
     start: int,
     end: int,
 ) -> TradeSeries:
-    trades = collect_trades(
+    trades = _window_trades(spec, feature, config=config, start=start, end=end)
+    return trade_series(trades, table.prices, funding=table.funding, sizing=spec.sizing, vol=vol)
+
+
+def _window_trades(
+    spec: HypothesisSpec,
+    feature: Sequence[float],
+    *,
+    config: ConfigSpec,
+    start: int,
+    end: int,
+) -> tuple[Trade, ...]:
+    return collect_trades(
         feature,
         threshold=config.threshold,
         horizon_bars=config.horizon_bars,
@@ -590,7 +590,6 @@ def _window_series(
         start=start,
         end=end,
     )
-    return trade_series(trades, table.prices, funding=table.funding, sizing=spec.sizing, vol=vol)
 
 
 def _pooled_series(
@@ -602,17 +601,12 @@ def _pooled_series(
     config: ConfigSpec,
     folds: tuple[Fold, ...],
 ) -> TradeSeries:
-    gross: list[float] = []
-    funding: list[float] = []
-    weights: list[float] = []
+    trades: list[Trade] = []
     for fold in folds:
-        series = _window_series(
-            spec, feature, table, vol, config=config, start=fold.test_start, end=fold.test_end
+        trades.extend(
+            _window_trades(spec, feature, config=config, start=fold.test_start, end=fold.test_end)
         )
-        gross.extend(series.gross)
-        funding.extend(series.funding)
-        weights.extend(series.weights)
-    return TradeSeries(gross=tuple(gross), funding=tuple(funding), weights=tuple(weights))
+    return trade_series(trades, table.prices, funding=table.funding, sizing=spec.sizing, vol=vol)
 
 
 def _unit_return(prices: Sequence[float], trade: Trade) -> float:

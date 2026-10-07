@@ -69,7 +69,8 @@ was evaluated. Gross is the price return. Net subtracts the round trip
 `2 * (fee_bps + slippage_bps + spread_bps) / 10000`, multiplied by the stress,
 and adds the funding cashflow when a funding column is declared. With a
 position weight `w` (1 unless `sizing` says otherwise), a trade's net return
-is `w * (price_return - round_trip * stress + funding_cashflow)`.
+is `w * (price_return - round_trip * stress + stressed_funding)`, where funding
+paid is multiplied by the stress and funding received divided by it.
 `spread_bps` is the half-spread per side, so the round trip charges it on
 entry and again on exit. Latency is not a bps add-on. A fill uses the close of
 `decision_bar + latency_bars`, and the exit is `horizon_bars` later. When the
@@ -95,10 +96,13 @@ the bar; if less often, bars without a settlement carry 0. A trade filled at
 the close of bar `entry` and exited at the close of bar `exit` holds bars
 `entry + 1` through `exit`: it pays each of those rates, on the notional at
 that bar's close (`price[t] / price[entry]` per unit of entry notional), and
-nothing for the entry bar. A short receives the same amount. Funding is a
-cashflow, not an execution cost, so the 1.5x and 2.0x stresses do not scale
-it. Each config and the holdout report a separate `funding` block (the per
-trade funding cashflow) next to gross and net.
+nothing for the entry bar. A short receives the same amount. The realized
+funding is exact in a backtest, but it is a market cashflow that need not
+repeat, so the stresses treat it adversely: at 1.5x and 2.0x, funding paid is
+multiplied by the stress and funding received is divided by it. An edge that
+rests on received funding must survive that haircut too. Each config and the
+holdout report a separate `funding` block (the realized per-trade funding
+cashflow, at 1.0x) next to gross and net.
 
 Funding is realized, so it needs no availability clock. A signal that uses a
 funding *forecast* is a feature like any other, with its own availability
@@ -118,13 +122,16 @@ sizing:
 ```
 
 The weight is `min(max_leverage, target_vol / vol)`, where `vol` is the
-`vol_feature` value at the decision bar, like the signal. A volatility of zero
-gets `max_leverage`; a negative one fails the run closed. `target_vol` is in
-the units of `vol_feature`: if that is a per-bar return stdev, so is the
-target. Gross, costs, and funding all scale with the weight, and each config
-and the holdout report `mean_weight`. Volatility scaling changes what the
-t-test measures (risk-scaled returns per trade), which is the point of
-pre-registering it.
+`vol_feature` value at the decision bar, like the signal. The volatility must
+be positive on every row: a zero or negative value anywhere fails the run
+closed (`failure_kind: sizing`), not only where a trade sizes, so trim warm-up
+rows in the ETL instead of zero-filling them. With `latency_bars: 0`, a
+volatility stamped with the bar timestamp needs `allow_zero_latency: true`,
+as the signal does. `target_vol` is in the units of `vol_feature`: if that is
+a per-bar return stdev, so is the target. Gross, costs, and funding all scale
+with the weight, and each config and the holdout report `mean_weight`.
+Volatility scaling changes what the t-test measures (risk-scaled returns per
+trade), which is the point of pre-registering it.
 
 ## Point-in-time checks
 
@@ -215,6 +222,6 @@ status (gap, duplicate, schema, look-ahead, lock, fingerprint mismatch,
 unsafe mode) has `label: null` and `promotion_decision: forbidden`.
 
 Limitations live in every artifact: the conservative t / HAC gate, per-trade
-Sharpe, flat half-spread costs, funding only from a declared column and not
-stressed, unit sizing unless `vol_target` is declared, and no detection of a
-leaked feature that was falsely stamped with the bar clock.
+Sharpe, flat half-spread costs, funding only from a declared column (stressed
+adversely), unit sizing unless `vol_target` is declared, and no detection of
+a leaked feature that was falsely stamped with the bar clock.

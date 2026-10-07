@@ -142,6 +142,67 @@ def test_bad_inputs_are_refused() -> None:
         _build(prices, [*valid[:5], (valid[5][0], math.nan), *valid[6:]])
 
 
+def test_funding_tilts_read_only_settlements_known_at_the_close() -> None:
+    prices = [100.0 + index for index in range(12)]
+    closes = _closes(prices)
+    # Settlements every 2 bars, the first at the very first close.
+    rates = [0.0001, 0.0003, -0.0002, 0.0005, 0.0004, 0.0009]
+    funding = [(closes[2 * index][0], rate) for index, rate in enumerate(rates)]
+    funding.append((closes[11][0] + 1, 9.0))  # after the last close: never read
+    rows = build_trend_rows(
+        closes,
+        funding,
+        lookbacks=(4,),
+        vol_window=3,
+        bar_ms=_HOUR,
+        max_funding_gap_ms=3 * _HOUR,
+        funding_means=(1, 3),
+        funding_baseline=0.0001,
+    )
+    # Rows are bars 4..11. Bar 4 knows the settlements at bars 0, 2 and 4;
+    # bar 5 still only those, and bar 6 adds the one at its own close.
+    by_bar = {(row.ts - _START) // _HOUR: row.funding_tilts for row in rows}
+    assert by_bar[4] == pytest.approx((0.0001 + 0.0002, 0.0001 - 0.0002 / 3))
+    assert by_bar[5] == by_bar[4]
+    assert by_bar[6] == pytest.approx((0.0001 - 0.0005, 0.0001 - 0.0006 / 3))
+    assert by_bar[11] == pytest.approx((0.0001 - 0.0009, 0.0001 - 0.0018 / 3))
+    # The default adds no tilt, and the per-bar funding is unchanged.
+    plain = build_trend_rows(
+        closes, funding, lookbacks=(4,), vol_window=3, bar_ms=_HOUR, max_funding_gap_ms=3 * _HOUR
+    )
+    assert all(row.funding_tilts == () for row in plain)
+    assert [row.funding_rate for row in plain] == [row.funding_rate for row in rows]
+
+
+def test_funding_tilts_fail_closed_without_enough_or_continuous_settlements() -> None:
+    prices = [100.0 + index for index in range(12)]
+    closes = _closes(prices)
+    funding = [(closes[2 * index][0], 0.0001) for index in range(6)]
+
+    def build(entries: list[tuple[int, float]], means: tuple[int, ...]) -> list[TrendRow]:
+        return build_trend_rows(
+            closes,
+            entries,
+            lookbacks=(4,),
+            vol_window=3,
+            bar_ms=_HOUR,
+            max_funding_gap_ms=3 * _HOUR,
+            funding_means=means,
+            funding_baseline=0.0,
+        )
+
+    # Bar 4 knows three settlements; a mean over four cannot be formed yet.
+    with pytest.raises(BarTableError, match="Only 3 funding settlements"):
+        build(funding, (4,))
+    # A gap before the first output bar matters to a tilt, not to funding_rate.
+    with pytest.raises(BarTableError, match="No funding settlement"):
+        build([entry for entry in funding if entry != funding[1]], (1,))
+    with pytest.raises(BarTableError, match="must not repeat"):
+        build(funding, (2, 2))
+    with pytest.raises(BarTableError, match="positive settlement counts"):
+        build(funding, (0,))
+
+
 def test_the_cli_writes_a_harness_ready_table(tmp_path: Path) -> None:
     root = tmp_path / "root"
     klines = root / "parquet" / "hist_etl" / "binance" / "um" / "klines_1h"
@@ -244,3 +305,52 @@ def test_the_cli_reports_a_failure_and_writes_nothing(tmp_path: Path) -> None:
     )
     assert code == 2
     assert not out.exists()
+
+
+def test_the_cli_adds_funding_tilt_columns_only_when_asked(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    klines = root / "parquet" / "hist_etl" / "binance" / "um" / "klines_1h"
+    funding = root / "parquet" / "hist_etl" / "binance" / "um" / "funding"
+    klines.mkdir(parents=True)
+    funding.mkdir(parents=True)
+    connection = duckdb.connect()
+    try:
+        connection.execute(
+            "COPY (SELECT make_timestamp(1577836800000000 + i * 3600000000 + 3599999000) AS ts, "
+            "100.0 + i + (i % 3) AS close FROM range(48) t(i)) TO ? (FORMAT PARQUET)",
+            [str(klines / "BTCUSDT-2020-01.parquet")],
+        )
+        connection.execute(
+            "COPY (SELECT make_timestamp(1577836800000000 + i * 28800000000) AS calc_time, "
+            "0.0001 * i AS last_funding_rate FROM range(7) t(i)) TO ? (FORMAT PARQUET)",
+            [str(funding / "BTCUSDT-2020-01.parquet")],
+        )
+    finally:
+        connection.close()
+    base = ["trend", "--root", str(root), "--symbol", "BTCUSDT", "--start", "2020-01-01"]
+    base += ["--end", "2020-01-03", "--lookbacks", "4,8", "--vol-window", "6"]
+    out = tmp_path / "tilted.parquet"
+    tilt = ["--funding-means", "1,2", "--funding-baseline", "0.0001"]
+    assert main([*base, *tilt, "--out", str(out)]) == 0
+    connection = duckdb.connect()
+    try:
+        columns = [
+            row[0]
+            for row in connection.execute(
+                "DESCRIBE SELECT * FROM read_parquet(?)", [str(out)]
+            ).fetchall()
+        ]
+        first = connection.execute(
+            "SELECT funding_tilt_1, funding_tilt_2 FROM read_parquet(?) ORDER BY ts LIMIT 1",
+            [str(out)],
+        ).fetchone()
+    finally:
+        connection.close()
+    assert columns[-3:] == ["funding_rate", "funding_tilt_1", "funding_tilt_2"]
+    # The first row closes at 08:59:59.999 and knows the 00:00 (0) and 08:00
+    # (0.0001) settlements.
+    assert first == pytest.approx((0.0001 - 0.0001, 0.0001 - 0.00005))
+    # The two options go together.
+    lone = tmp_path / "lone.parquet"
+    assert main([*base, "--funding-means", "1", "--out", str(lone)]) == 2
+    assert not lone.exists()

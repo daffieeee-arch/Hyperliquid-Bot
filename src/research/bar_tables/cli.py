@@ -5,6 +5,10 @@
         --start 2020-01-01 --end 2026-10-01 \
         --lookbacks 168,672,2016 --vol-window 168 --out bars.parquet
 
+``--funding-means 3,21 --funding-baseline 0.0001`` adds a
+``funding_tilt_<K>`` column per count: the baseline minus the mean of the
+last ``K`` funding settlements known at the bar's close.
+
 Bars with a close time in ``[start, end)`` are read; the first output bar
 follows the warm-up (the longest lookback or the vol window, whichever is
 longer). Nothing is written when the inputs fail a point-in-time check.
@@ -34,6 +38,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         root = _root(args.root)
         lookbacks = _lookbacks(args.lookbacks)
+        funding_means, funding_baseline = _funding_tilt_options(
+            args.funding_means, args.funding_baseline
+        )
         start_ms = _date_ms(args.start, "--start")
         end_ms = _date_ms(args.end, "--end")
         if end_ms <= start_ms:
@@ -49,8 +56,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             vol_window=args.vol_window,
             bar_ms=INTERVAL_SECONDS[args.interval] * 1000,
             max_funding_gap_ms=args.max_funding_gap_hours * _HOUR_MS,
+            funding_means=funding_means,
+            funding_baseline=funding_baseline,
         )
-        write_trend_parquet(rows, lookbacks, Path(args.out))
+        write_trend_parquet(rows, lookbacks, Path(args.out), funding_means)
     except (BarTableError, duckdb.Error, OSError) as exc:
         print(f"bar_tables: {exc}", file=sys.stderr)
         return 2
@@ -58,7 +67,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
-def write_trend_parquet(rows: Sequence[TrendRow], lookbacks: Sequence[int], out: Path) -> None:
+def write_trend_parquet(
+    rows: Sequence[TrendRow],
+    lookbacks: Sequence[int],
+    out: Path,
+    funding_means: Sequence[int] = (),
+) -> None:
     """Write the rows; ``available_ts`` equals ``ts``, the close the values were known at.
 
     The rows go through a CSV of shortest round-trip floats, which DuckDB reads
@@ -68,6 +82,7 @@ def write_trend_parquet(rows: Sequence[TrendRow], lookbacks: Sequence[int], out:
 
     names = ["ts", "available_ts", "close", *(f"ret_{lookback}" for lookback in lookbacks)]
     names += ["trend_score", "realized_vol", "funding_rate"]
+    names += [f"funding_tilt_{count}" for count in funding_means]
     types = ", ".join(
         f"'{name}': '{'BIGINT' if name in {'ts', 'available_ts'} else 'DOUBLE'}'" for name in names
     )
@@ -93,6 +108,7 @@ def write_trend_parquet(rows: Sequence[TrendRow], lookbacks: Sequence[int], out:
                         repr(row.trend_score),
                         repr(row.realized_vol),
                         repr(row.funding_rate),
+                        *(repr(value) for value in row.funding_tilts),
                     ]
                 )
         connection = duckdb.connect()
@@ -182,6 +198,20 @@ def _lookbacks(value: str) -> tuple[int, ...]:
         raise BarTableError(f"--lookbacks must be comma-separated bar counts: {value}") from exc
 
 
+def _funding_tilt_options(
+    means: str | None, baseline: float | None
+) -> tuple[tuple[int, ...], float]:
+    if means is None and baseline is None:
+        return (), 0.0
+    if means is None or baseline is None:
+        raise BarTableError("--funding-means and --funding-baseline go together.")
+    try:
+        counts = tuple(int(token) for token in means.split(","))
+    except ValueError as exc:
+        raise BarTableError(f"--funding-means must be comma-separated counts: {means}") from exc
+    return counts, baseline
+
+
 def _date_ms(value: str, flag: str) -> int:
     try:
         day = date.fromisoformat(value)
@@ -214,6 +244,15 @@ def _parser() -> argparse.ArgumentParser:
         type=int,
         default=9,
         help="Longest allowed time without a funding settlement (default 9).",
+    )
+    trend.add_argument(
+        "--funding-means",
+        help="Comma-separated settlement counts K; adds funding_tilt_<K> columns.",
+    )
+    trend.add_argument(
+        "--funding-baseline",
+        type=float,
+        help="The rate each funding_tilt_<K> is measured from (baseline - mean).",
     )
     trend.add_argument("--out", required=True, help="Output Parquet path.")
     return parser

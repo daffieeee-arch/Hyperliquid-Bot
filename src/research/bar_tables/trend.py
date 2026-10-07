@@ -6,6 +6,11 @@ harness spec reading it needs ``latency_bars >= 1``. Warm-up bars without a
 full lookback are dropped, never zero-filled. A missing bar fails closed,
 because a return over ``L`` bars must span exactly ``L`` bars, and so does a
 missing funding settlement, because funding must never read as a silent 0.
+
+Optional funding tilts summarize the funding already settled at a bar's
+close: ``baseline - mean`` of the last ``K`` settlements, positive when longs
+paid less than the baseline (a contrarian long signal under the harness's
+signed direction).
 """
 
 from __future__ import annotations
@@ -30,6 +35,8 @@ class TrendRow:
     trend_score: float
     realized_vol: float
     funding_rate: float
+    # baseline - mean of the last K settlements at or before ``ts``, per K given.
+    funding_tilts: tuple[float, ...] = ()
 
 
 def build_trend_rows(
@@ -40,6 +47,8 @@ def build_trend_rows(
     vol_window: int,
     bar_ms: int,
     max_funding_gap_ms: int,
+    funding_means: Sequence[int] = (),
+    funding_baseline: float = 0.0,
 ) -> list[TrendRow]:
     """Rows from ``(close_ts_ms, close)`` bars and ``(settle_ts_ms, rate)`` funding.
 
@@ -49,9 +58,14 @@ def build_trend_rows(
       returns, in per-bar units.
     - ``funding_rate``: the sum of the settlements in ``(previous close, close]``,
       the rate a long pays for holding over the bar (harness convention).
+    - ``funding_tilts``: for each ``K`` in ``funding_means``,
+      ``funding_baseline`` minus the mean of the last ``K`` settlements at or
+      before the bar's close. Settlements before the first output bar count,
+      so the funding read must reach back ``K`` settlements without a gap.
     """
 
     _check_parameters(lookbacks, vol_window, bar_ms, max_funding_gap_ms)
+    _check_funding_means(funding_means, funding_baseline)
     warmup = max(max(lookbacks), vol_window)
     if len(closes) <= warmup:
         raise BarTableError(f"Need more than {warmup} bars for the warm-up; got {len(closes)}.")
@@ -62,6 +76,13 @@ def build_trend_rows(
     prices = [close for _ts, close in closes]
     one_bar = [math.log(prices[index] / prices[index - 1]) for index in range(1, len(prices))]
     per_bar = _bucket_funding(settled, [ts for ts, _close in closes], start=warmup)
+    tilts = _funding_tilts(
+        funding,
+        [ts for ts, _close in closes[warmup:]],
+        funding_means,
+        funding_baseline,
+        max_funding_gap_ms,
+    )
     rows: list[TrendRow] = []
     for index in range(warmup, len(closes)):
         returns = tuple(
@@ -79,9 +100,62 @@ def build_trend_rows(
                 trend_score=math.fsum(_sign(value) for value in returns) / len(returns),
                 realized_vol=vol,
                 funding_rate=per_bar[index - warmup],
+                funding_tilts=tilts[index - warmup],
             )
         )
     return rows
+
+
+def _check_funding_means(funding_means: Sequence[int], baseline: float) -> None:
+    if any(count < 1 for count in funding_means):
+        raise BarTableError("Funding mean counts must be positive settlement counts.")
+    if len(set(funding_means)) != len(funding_means):
+        raise BarTableError("Funding mean counts must not repeat.")
+    if not math.isfinite(baseline):
+        raise BarTableError("The funding baseline must be a finite rate.")
+
+
+def _funding_tilts(
+    funding: Sequence[tuple[int, float]],
+    closes: Sequence[int],
+    funding_means: Sequence[int],
+    baseline: float,
+    max_gap: int,
+) -> list[tuple[float, ...]]:
+    """``baseline - mean`` of the last ``K`` settlements at or before each close."""
+
+    if not funding_means:
+        return [() for _ in closes]
+    known = [entry for entry in funding if entry[0] <= closes[-1]]
+    for ts, rate in known:
+        if not math.isfinite(rate):
+            raise BarTableError(f"Funding rate at {ts} is not a finite number.")
+    if any(later[0] <= earlier[0] for earlier, later in pairwise(known)):
+        raise BarTableError("Funding settlements must be strictly increasing in time.")
+    edges = [ts for ts, _rate in known] + [closes[-1]]
+    for earlier, later in pairwise(edges):
+        if later - earlier > max_gap:
+            raise BarTableError(
+                f"No funding settlement between {earlier} and {later}; "
+                f"the gap exceeds {max_gap} ms."
+            )
+    rates = [rate for _ts, rate in known]
+    tilts: list[tuple[float, ...]] = []
+    count = 0
+    for close in closes:
+        while count < len(known) and known[count][0] <= close:
+            count += 1
+        if count < max(funding_means):
+            raise BarTableError(
+                f"Only {count} funding settlements at or before {close}; "
+                f"a mean over {max(funding_means)} needs that many."
+            )
+        tilts.append(
+            tuple(
+                baseline - math.fsum(rates[count - size : count]) / size for size in funding_means
+            )
+        )
+    return tilts
 
 
 def _check_parameters(

@@ -2,8 +2,8 @@
 # Paths come from --root / HIST_ARCHIVES_ROOT. This file names no host.
 #
 # `end = "today"` keeps the daily tail incremental.
-# Disabled entries are the extra bundle (funding from 2020, older 1m klines,
-# mark/index/premium 1m, USD-M metrics). Select them explicitly:
+# Disabled entries are the extra bundle (funding from 2020, older 1m and 1h
+# klines, mark/index/premium 1m, USD-M metrics). Select them explicitly:
 #   python -m research.hist_etl sync --dataset bn-um-btcusdt-funding-2020
 
 min_free_bytes = 10737418240
@@ -81,6 +81,18 @@ interval = "1h"
 start = "2025-09-01"
 end = "today"
 granularity = "monthly_with_daily_tail"
+
+# History for exp_tsmom_btc: the 1h USD-M klines before the default range.
+[[binance]]
+id = "bn-um-btcusdt-klines-1h-2020"
+market = "um"
+dataset = "klines"
+symbol = "BTCUSDT"
+interval = "1h"
+start = "2020-01-01"
+end = "2025-08-31"
+granularity = "monthly_with_daily_tail"
+enabled = false
 
 [[binance]]
 id = "bn-um-btcusdt-aggtrades"

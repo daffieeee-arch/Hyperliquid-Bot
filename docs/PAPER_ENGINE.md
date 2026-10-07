@@ -93,7 +93,10 @@ PAPER defaults that are assumptions, not venue facts:
 A buy fills the ask and a sell fills the bid, worsened by the configured
 slippage fraction, then rounded to that grid. Quantity is capped by the
 displayed size (or the trade size when the book is not complete). The
-unfilled remainder is cancelled (IOC). Latency waits for a later event
+unfilled remainder is cancelled (IOC). An order is priced, checked and
+filled on the touch: a complete BBO, or the last trade print while the book
+is not complete. A one-sided or crossed BBO is not a touch, so a working
+order waits for one instead of cancelling. Latency waits for a later event
 before that touch is eligible. Every order is an IOC limit around the touch
 at decision time: entries use `entry_price_band_fraction`, exits
 `exit_price_band_fraction`, and the limit is rounded so it never widens the
@@ -119,9 +122,9 @@ decision quote also the fill quote; then such an order is rejected with
 kill flatten on a used-up level waits for new size, a new price, or the
 refill, cancels a strategy order meanwhile, and `health.json` shows
 `exit_waiting_for_quote: true`. The BBO feed only pushes changes, so
-`on_clock` retries such a waiting exit. It first rolls the loss windows to
-the clock's time, so a fill after midnight counts in the new day, and after
-a fill applies the loss limits at once. A band or a missing touch is not
+`on_clock` retries such a waiting exit, and after a fill applies the loss
+limits at once in the last event's window: loss windows roll on venue event
+time only, never on the caller's clock. A band or a missing touch is not
 retried on the clock; it needs a new quote.
 
 While an order waits, the same target from the strategy keeps it working,
@@ -153,14 +156,14 @@ PnL stays null until a venue mark or a complete two-sided book exists.
   set triggers it. Venue times are not compared on purpose: any time filter
   either lets a re-delivered print through or lets one skewed or mis-stamped
   print hide a real stop. Failing safe, a re-delivered old print may exit
-  early but never hides the stop; drop re-delivered prints by trade id in
-  the feed adapter. That is an exit trigger only, and equity still treats
-  the price as missing. The config refuses a stop distance not wider than
-  `slippage_fraction`, which would stop out every fill at once. Choose it
-  wider than half the spread plus slippage as well; the spread cannot be
-  checked up front, and a narrower stop fires on the first mark after a
-  fill. A gap fills at the touch, beyond the stop: the loss is then larger
-  than the risk budget.
+  early but never hides the stop. The WS client and the Parquet replay drop
+  a re-sent print by trade id before it reaches the engine. That is an exit
+  trigger only, and equity still treats the price as missing. The config
+  refuses a stop distance not wider than `slippage_fraction`, which would
+  stop out every fill at once. Choose it wider than half the spread plus
+  slippage as well; the spread cannot be checked up front, and a narrower
+  stop fires on the first mark after a fill. A gap fills at the touch,
+  beyond the stop: the loss is then larger than the risk budget.
 - After a stop-out the strategy cannot re-open the same direction
   (`stop_lockout`, recorded once) until its target goes flat or reverses
   (`stop_lockout_cleared`). A stop-out does not halt the engine.
@@ -185,7 +188,9 @@ PnL stays null until a venue mark or a complete two-sided book exists.
 `load_hyperliquid_parquet_tape` reads completed DATA-1A raw Parquet parts
 with the same JSON paths as the `trades`, `bbo`, and `activeAssetCtx`
 research views. `PaperEngine.run_parquet` and `PaperEngine.on_event` are the
-same strategy, risk, and fill path.
+same strategy, risk, and fill path. A trade print re-sent after a reconnect
+(same trade id) is kept once, as the live WS client does; the same id with a
+different print raises `PaperTapeError`.
 
 ## Residual limits
 
@@ -196,7 +201,8 @@ same strategy, risk, and fill path.
 - Depletion is a fixed refill time at the touch only. The book behind the
   touch is not modelled: an exit on a used-up level waits instead of walking
   to the next level, and a refill is assumed, not observed.
-- The engine does not deduplicate trade prints. A feed that re-delivers old
-  prints after a reconnect should drop them by trade id before the engine.
+- The engine itself does not deduplicate trade prints. The WS client and
+  the Parquet replay drop a print re-sent after a reconnect by trade id;
+  any other feed must do the same.
 - A create-only run does not recover an open position after a process restart.
 - Paper fills are not evidence of edge, capacity, or LIVE readiness.

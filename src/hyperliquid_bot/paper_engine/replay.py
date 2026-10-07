@@ -4,7 +4,8 @@ The SQL paths match the DATA-1A research views in
 ``hyperliquid_bot.parquet_research`` (trades, bbo, activeAssetCtx mark).
 Partial files are ignored. Rows are ordered by receipt time, then message
 ordinal, then event index. The same ``PaperEngine.on_event`` path consumes
-this tape and a live public feed.
+this tape and a live public feed. A trade print re-sent after a reconnect
+(same trade id) is kept once, as the live client does.
 """
 
 from __future__ import annotations
@@ -142,6 +143,10 @@ def _load_trades(
         [product],
     ).fetchall()
     events: list[TradeEvent] = []
+    # A reconnect re-sends recent prints. The live client drops them by trade
+    # id, so the replay keeps the first copy too. The same id with a different
+    # print is a corrupt tape, not a duplicate.
+    seen: dict[str, tuple[str, Decimal, Decimal, int]] = {}
     for row in rows:
         message_ordinal = _require_int(row[0], field_name="message_ordinal")
         received_utc_ns = _require_int(row[1], field_name="received_utc_ns")
@@ -149,8 +154,16 @@ def _load_trades(
         side = _aggressor_side(_require_text(row[3], field_name="side"))
         price = _require_decimal(_require_text(row[4], field_name="price"), field_name="price")
         quantity = _require_decimal(_require_text(row[5], field_name="size"), field_name="size")
-        event_time = utc_from_epoch_ms(_require_int(row[6], field_name="event_time_ms"))
+        event_time_ms = _require_int(row[6], field_name="event_time_ms")
         trade_id = _require_text(row[7], field_name="trade_id")
+        fingerprint = (side, price, quantity, event_time_ms)
+        known = seen.get(trade_id)
+        if known is not None:
+            if known != fingerprint:
+                raise PaperTapeError(f"trade id {trade_id} appears with different prints.")
+            continue
+        seen[trade_id] = fingerprint
+        event_time = utc_from_epoch_ms(event_time_ms)
         events.append(
             TradeEvent(
                 venue=venue,

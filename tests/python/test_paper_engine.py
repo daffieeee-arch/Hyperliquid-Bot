@@ -38,7 +38,7 @@ from hyperliquid_bot.paper_engine.engine import (
     DEFAULT_PAPER_LATENCY_NS,
     DEFAULT_TOUCH_REFILL_NS,
 )
-from hyperliquid_bot.paper_engine.errors import PaperEngineError
+from hyperliquid_bot.paper_engine.errors import PaperEngineError, PaperTapeError
 from hyperliquid_bot.paper_engine.execution import FillQuote, PositionState, apply_fill
 from hyperliquid_bot.paper_engine.precision import adverse_price, protective_price
 from hyperliquid_bot.paper_risk import PaperRiskLimits
@@ -1141,10 +1141,10 @@ def test_clock_exit_fill_applies_the_loss_limits(tmp_path: Path) -> None:
     engine.close()
 
 
-def test_clock_fill_after_midnight_counts_in_the_new_day(tmp_path: Path) -> None:
-    # The stop event is the old day's last; its loss halts that day. The clock
-    # passes midnight, so the window rolls (lifting the halt) before the
-    # waiting exit fills, and that fill's loss is charged to the new day.
+def test_clock_never_rolls_the_loss_windows(tmp_path: Path) -> None:
+    # Windows roll on venue event time only. A clock past midnight fills the
+    # waiting exit but does not lift the old day's halt; the next venue event
+    # of the new day does.
     engine = _engine(
         tmp_path,
         "midnight1",
@@ -1168,21 +1168,21 @@ def test_clock_fill_after_midnight_counts_in_the_new_day(tmp_path: Path) -> None
     engine.on_clock(
         now_utc_ns=1_001_000_000, now_utc=datetime(2026, 7, 16, 0, 0, 0, 500_000, tzinfo=UTC)
     )
-    engine.close()
     assert engine.position_quantity == Decimal("0.02")
+    assert engine.kill_switch == "HALT_NEW"
+    next_day = datetime(2026, 7, 16, 0, 0, 1, tzinfo=UTC)
+    engine.on_event(_bbo_at(ns=2_000_000, event_time=next_day, bid="96990", ask="98000", ordinal=3))
+    engine.close()
     switches = [row for row in _ledger(tmp_path / "midnight1") if row["type"] == "kill_switch"]
     assert [(row["state"], row["reason"]) for row in switches] == [
         ("HALT_NEW", "daily_loss"),
         ("NONE", "daily_loss_window_reset"),
-        ("HALT_NEW", "daily_loss"),
     ]
 
 
-def test_decision_on_a_one_sided_book_is_not_checked_against_the_last_print(
-    tmp_path: Path,
-) -> None:
-    # A one-sided BBO is not the quote the order fills on (it completes
-    # no_touch), so the used-up last print does not reject it as consumed.
+def test_order_on_a_one_sided_book_waits_for_the_next_touch(tmp_path: Path) -> None:
+    # A one-sided BBO is not the quote the order is priced on (the last print
+    # is), so it neither fills nor cancels the order: the next print fills it.
     engine = _engine(
         tmp_path,
         "onesided1",
@@ -1191,11 +1191,15 @@ def test_decision_on_a_one_sided_book_is_not_checked_against_the_last_print(
     engine.on_event(_trade(ns=0, price="100000", size="0.05", ordinal=1))
     assert engine.position_quantity == Decimal("0.05")
     engine.on_event(_bbo(ns=1_000_000, bid="99999", ask=None, ask_size=None, ordinal=2))
+    assert _state(engine)["open_order"] is not None
+    engine.on_event(_trade(ns=2_000_000, price="99990", size="0.5", ordinal=3))
     engine.close()
     state = _state(engine)
-    assert [
-        (row["side"], row["status"], row["unfilled_reason"]) for row in _objects(state["orders"])
-    ] == [("BUY", "FILLED", None), ("SELL", "CANCELED", "no_touch")]
+    assert engine.position_quantity == Decimal("0")
+    assert [(row["side"], row["status"]) for row in _objects(state["orders"])] == [
+        ("BUY", "FILLED"),
+        ("SELL", "FILLED"),
+    ]
     assert "touch_consumed" not in {row["reason"] for row in _objects(state["risk_rejections"])}
 
 
@@ -1563,6 +1567,22 @@ def test_parquet_replay_matches_the_in_memory_tape(tmp_path: Path) -> None:
     assert _normalize(_state(memory), "memreplay1") == _normalize(_state(parquet), "pqreplay01")
 
 
+def test_parquet_replay_keeps_a_redelivered_print_once(tmp_path: Path) -> None:
+    parquet_dir = tmp_path / "tape"
+    _write_hyperliquid_parquet(parquet_dir, extra_rows=(_trade_row(4, 1_600_000_000, tid=9),))
+    loaded = load_hyperliquid_parquet_tape((parquet_dir,))
+    assert [type(event) for event in loaded] == [BboEvent, BboEvent, TradeEvent]
+
+
+def test_parquet_replay_refuses_one_trade_id_with_two_prints(tmp_path: Path) -> None:
+    parquet_dir = tmp_path / "tape"
+    _write_hyperliquid_parquet(
+        parquet_dir, extra_rows=(_trade_row(4, 1_600_000_000, tid=9, price="99999"),)
+    )
+    with pytest.raises(PaperTapeError, match="different prints"):
+        load_hyperliquid_parquet_tape((parquet_dir,))
+
+
 def test_package_does_not_import_an_exchange_order_client() -> None:
     import hyperliquid_bot.paper_engine as package
 
@@ -1650,7 +1670,9 @@ def _normalize(state: dict[str, object], run_id: str) -> str:
     return json.dumps(state, sort_keys=True).replace(run_id, "RUN")
 
 
-def _write_hyperliquid_parquet(directory: Path) -> None:
+def _write_hyperliquid_parquet(
+    directory: Path, *, extra_rows: tuple[tuple[object, ...], ...] = ()
+) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     rows = (
         _raw_row(
@@ -1685,24 +1707,8 @@ def _write_hyperliquid_parquet(directory: Path) -> None:
                 },
             },
         ),
-        _raw_row(
-            3,
-            1_500_000_000,
-            "trades",
-            {
-                "channel": "trades",
-                "data": [
-                    {
-                        "coin": "BTC",
-                        "side": "A",
-                        "px": "100000",
-                        "sz": "0.01",
-                        "time": 1_784_000_001_500,
-                        "tid": 9,
-                    }
-                ],
-            },
-        ),
+        _trade_row(3, 1_500_000_000, tid=9),
+        *extra_rows,
     )
     connection = duckdb.connect(":memory:")
     try:
@@ -1735,6 +1741,31 @@ def _write_hyperliquid_parquet(directory: Path) -> None:
         )
     finally:
         connection.close()
+
+
+def _trade_row(
+    ordinal: int, received_utc_ns: int, *, tid: int, price: str = "100000"
+) -> tuple[object, ...]:
+    """A ``trades`` message with one print, stamped as in the base tape."""
+
+    return _raw_row(
+        ordinal,
+        received_utc_ns,
+        "trades",
+        {
+            "channel": "trades",
+            "data": [
+                {
+                    "coin": "BTC",
+                    "side": "A",
+                    "px": price,
+                    "sz": "0.01",
+                    "time": 1_784_000_001_500,
+                    "tid": tid,
+                }
+            ],
+        },
+    )
 
 
 def _raw_row(

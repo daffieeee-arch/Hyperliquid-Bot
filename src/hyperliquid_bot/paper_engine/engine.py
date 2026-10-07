@@ -449,18 +449,15 @@ class PaperEngine:
         clock: a band or a missing touch needs a new quote, not more time.
         """
 
-        # Roll the loss windows to the clock first, so a fill after midnight
-        # counts in the new day against the equity before it. Windows only
-        # roll forward, so a clock behind the last event never rolls one back.
-        self._mark_limits(observed)
         fills_before = self._fill_count
         if self._stop_exit_pending:
             self._check_stop(now_utc_ns)
         self._enforce_flat(now_utc_ns, observed)
-        if self._fill_count != fills_before:
-            # A fill changed realized equity: apply the limits now rather
-            # than at the next event.
-            self._mark_limits(observed)
+        if self._fill_count != fills_before and self._last_event_time is not None:
+            # A fill changed realized equity: apply the limits now rather than
+            # at the next event. Loss windows roll on venue event time only,
+            # never on the caller's clock, so the last event's window is used.
+            self._mark_limits(self._last_event_time)
             self._enforce_flat(now_utc_ns, observed)
 
     def close(self) -> None:
@@ -730,7 +727,10 @@ class PaperEngine:
         self._fill_working_from_book(received_ns)
 
     def _current_touch_event(self) -> BboEvent | TradeEvent | None:
-        """The quote an order is priced against: a complete BBO, else the last trade."""
+        """The quote an order is priced, checked and filled on.
+
+        A complete BBO, else the last trade print.
+        """
 
         if self._bbo is not None and bbo_is_complete(self._bbo):
             return self._bbo
@@ -1071,10 +1071,12 @@ class PaperEngine:
         working = self._working
         if working is None or event.received_utc_ns < working.eligible_received_ns:
             return
-        if isinstance(event, BboEvent) or (
-            isinstance(event, TradeEvent) and not self._book_complete()
-        ):
-            self._fill_against(working, event, received_ns=event.received_utc_ns)
+        touch = self._current_touch_event()
+        # Fill only on the quote the order is priced against: a complete BBO,
+        # or a print while the book is not complete. A one-sided or crossed BBO
+        # is not a touch, so the order waits for one instead of cancelling.
+        if touch is not None and event is touch:
+            self._fill_against(working, touch, received_ns=event.received_utc_ns)
 
     def _fill_working_from_book(self, received_ns: int) -> None:
         working = self._working

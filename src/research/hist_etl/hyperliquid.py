@@ -177,8 +177,11 @@ def raw_funding_path(root: Path, window: FundingWindow, *, settled: bool) -> Pat
 
 
 def hyperliquid_parquet_path(root: Path, window: FundingWindow) -> Path:
-    name = f"{window.month}.{window.dataset_id}.parquet"
-    return root / "parquet" / "hist_etl" / "hyperliquid" / "funding" / window.coin / name
+    return _parquet_dir(root, window.coin) / f"{window.month}.{window.dataset_id}.parquet"
+
+
+def _parquet_dir(root: Path, coin: str) -> Path:
+    return root / "parquet" / "hist_etl" / "hyperliquid" / "funding" / coin
 
 
 def slot_of(time_ms: int, interval_ms: int) -> int:
@@ -307,27 +310,35 @@ def raw_status(raw_path: Path, window: FundingWindow, *, settled: bool) -> str:
 def ahead_of_cutoff(root: Path, window: FundingWindow) -> bool:
     """A month on disk already reaches past this open month's cutoff.
 
-    Only a run whose ``--today`` is before an earlier sync sees this. The month
-    is left as it is: not shrunk to the earlier cutoff, and not judged against
-    it.
+    Only a run whose ``--today`` is before an earlier sync (or a clock that
+    went back) sees this. The month is left as it is: not shrunk to the
+    earlier cutoff, and not judged against it. A file written for another
+    start is a changed window instead, handled by the normal path.
     """
 
     if window.complete:
         return False
     for settled in (True, False):
-        end_ms = _raw_end_ms(raw_funding_path(root, window, settled=settled))
-        if end_ms is not None and end_ms > window.end_ms:
+        written = _raw_window(raw_funding_path(root, window, settled=settled))
+        if written is not None and written[0] == window.start_ms and written[1] > window.end_ms:
             return True
     return False
 
 
-def _raw_end_ms(raw_path: Path) -> int | None:
+def _raw_window(raw_path: Path) -> tuple[int, int] | None:
+    """The ``start_ms`` / ``end_ms`` a raw month file was written for."""
+
     try:
         payload = json.loads(raw_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    end_ms = payload.get("end_ms") if isinstance(payload, dict) else None
-    return end_ms if type(end_ms) is int else None
+    if not isinstance(payload, dict):
+        return None
+    start_ms = payload.get("start_ms")
+    end_ms = payload.get("end_ms")
+    if type(start_ms) is not int or type(end_ms) is not int:
+        return None
+    return start_ms, end_ms
 
 
 def ready_to_settle(
@@ -690,10 +701,9 @@ def funding_view_files(
 
 
 def _months_on_disk(root: Path, spec: HyperliquidFundingSpec) -> list[date]:
-    directory = root / "parquet" / "hist_etl" / "hyperliquid" / "funding" / spec.coin
     suffix = f".{spec.id}.parquet"
     months: list[date] = []
-    for path in directory.glob(f"*{suffix}"):
+    for path in _parquet_dir(root, spec.coin).glob(f"*{suffix}"):
         stamp = _MONTH_STAMP.fullmatch(path.name.removesuffix(suffix))
         if stamp is not None:
             months.append(date(int(stamp.group(1)), int(stamp.group(2)), 1))

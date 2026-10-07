@@ -262,8 +262,8 @@ def _ahead_gap(spec: HyperliquidFundingSpec, window: FundingWindow) -> Gap:
     return Gap(
         "hyperliquid_ahead_of_today",
         spec.id,
-        f"{window.coin} {window.month} on disk reaches past --today; left as is "
-        "(test an earlier cutoff with a scratch --root)",
+        f"{window.coin} {window.month} on disk already reaches past this run's cutoff; "
+        "left as is. Test an earlier --today with a scratch --root, or check the clock",
     )
 
 

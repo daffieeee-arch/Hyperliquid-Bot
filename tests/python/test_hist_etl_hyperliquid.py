@@ -522,16 +522,32 @@ def test_view_reads_only_the_files_the_manifest_selects(tmp_path: Path) -> None:
     assert not _has_view(tmp_path)
 
 
-def test_a_funding_view_the_operator_also_declares_is_not_dropped(tmp_path: Path) -> None:
+def test_an_operator_declaration_does_not_keep_a_stale_view(tmp_path: Path) -> None:
     start = datetime(2026, 9, 1, tzinfo=UTC)
     manifest = _manifest(tmp_path, start="2026-09-01", end="2026-09-01")
     assert _sync(tmp_path, manifest, FakeFundingPoster(_hourly(start, 24)), date(2026, 10, 1)) == 0
     catalog = tmp_path / "catalog.sql"
-    operator = "CREATE OR REPLACE VIEW hist_hl_funding_btc AS SELECT 1 AS x;\n"
-    catalog.write_text(catalog.read_text(encoding="utf-8") + operator, encoding="utf-8")
+    operator = "CREATE OR REPLACE VIEW hist_hl_funding_btc AS SELECT 1 AS x;"
+    catalog.write_text(catalog.read_text(encoding="utf-8") + operator + "\n", encoding="utf-8")
     other = _manifest(tmp_path, start="2026-09-01", end="2026-09-01", coin="ETH")
     assert run_catalog(root=tmp_path, manifest_path=other, dataset_ids=None, env={}) == 0
-    assert _has_view(tmp_path)
+    # The generated view would go on reading files the manifest no longer
+    # selects: it is dropped, and the operator's statement stays in the file.
+    assert not _has_view(tmp_path)
+    assert operator in catalog.read_text(encoding="utf-8")
+
+
+def test_a_moved_start_is_not_mistaken_for_an_earlier_today(tmp_path: Path) -> None:
+    start = datetime(2026, 10, 1, tzinfo=UTC)
+    poster = FakeFundingPoster(_hourly(start, 24 * 6), page_size=100)
+    assert _sync(tmp_path, _manifest(tmp_path, start="2026-10-01"), poster, date(2026, 10, 6)) == 0
+    # The start moves inside the open month and the run uses an earlier cutoff:
+    # the open file covers another window, so the month is fetched again.
+    moved = _manifest(tmp_path, start="2026-10-03")
+    poster.requests.clear()
+    assert _sync(tmp_path, moved, poster, date(2026, 10, 5)) == 0
+    assert poster.requests
+    assert _view_count(tmp_path) == 2 * 24
 
 
 def test_a_sidecar_without_its_window_is_rewritten(tmp_path: Path) -> None:

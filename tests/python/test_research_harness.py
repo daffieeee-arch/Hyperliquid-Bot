@@ -1071,6 +1071,8 @@ def test_image_digest_is_recorded_and_a_malformed_one_fails_closed(
         assert refused["status"] == "failed_closed"
         assert refused["failure_kind"] == "data_config"
         assert refused["promotion_decision"] == "forbidden"
+        # Refused before the spec or the data is read.
+        assert refused["spec_sha256"] is None
 
 
 def _bar_table(rows: Sequence[tuple[int, float, float, int]]) -> BarTable:

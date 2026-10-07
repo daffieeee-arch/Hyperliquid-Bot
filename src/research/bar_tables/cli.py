@@ -77,7 +77,8 @@ def write_trend_parquet(rows: Sequence[TrendRow], lookbacks: Sequence[int], out:
     descriptor, name = tempfile.mkstemp(dir=out.parent, prefix=f"{out.name}.", suffix=".csv")
     os.close(descriptor)
     staged = Path(name)
-    partial = staged.with_suffix(".parquet")
+    # Not *.parquet, so a glob over the output folder never reads a half-written table.
+    partial = staged.with_suffix(".partial")
     try:
         with staged.open("w", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)

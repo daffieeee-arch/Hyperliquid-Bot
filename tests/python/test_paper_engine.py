@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import dataclasses
 import importlib
 import json
 import pkgutil
@@ -14,6 +15,7 @@ from typing import Any
 import duckdb
 import pytest
 
+from hyperliquid_bot.hyperliquid_ws_client import HyperliquidTradesCollectorConfig
 from hyperliquid_bot.local_mode import UnsafeTradingModeError
 from hyperliquid_bot.paper_engine import (
     HYPERLIQUID_PERP_BASE_TAKER_FEE_RATE,
@@ -41,6 +43,7 @@ from hyperliquid_bot.paper_engine.engine import (
 from hyperliquid_bot.paper_engine.errors import PaperEngineError, PaperTapeError
 from hyperliquid_bot.paper_engine.execution import FillQuote, PositionState, apply_fill
 from hyperliquid_bot.paper_engine.precision import adverse_price, protective_price
+from hyperliquid_bot.paper_engine.replay import TRADE_DEDUP_CAPACITY
 from hyperliquid_bot.paper_risk import PaperRiskLimits
 
 CREATED = datetime(2026, 7, 15, 12, 0, tzinfo=UTC)
@@ -1180,9 +1183,12 @@ def test_clock_never_rolls_the_loss_windows(tmp_path: Path) -> None:
     ]
 
 
-def test_order_on_a_one_sided_book_waits_for_the_next_touch(tmp_path: Path) -> None:
-    # A one-sided BBO is not the quote the order is priced on (the last print
-    # is), so it neither fills nor cancels the order: the next print fills it.
+def test_decision_on_a_one_sided_book_is_not_checked_against_the_last_print(
+    tmp_path: Path,
+) -> None:
+    # A one-sided BBO is not the touch the order is priced on (the last print
+    # is), so the used-up last print does not reject it as consumed; the IOC
+    # meets the one-sided book and completes no_touch, as before this check.
     engine = _engine(
         tmp_path,
         "onesided1",
@@ -1191,15 +1197,11 @@ def test_order_on_a_one_sided_book_waits_for_the_next_touch(tmp_path: Path) -> N
     engine.on_event(_trade(ns=0, price="100000", size="0.05", ordinal=1))
     assert engine.position_quantity == Decimal("0.05")
     engine.on_event(_bbo(ns=1_000_000, bid="99999", ask=None, ask_size=None, ordinal=2))
-    assert _state(engine)["open_order"] is not None
-    engine.on_event(_trade(ns=2_000_000, price="99990", size="0.5", ordinal=3))
     engine.close()
     state = _state(engine)
-    assert engine.position_quantity == Decimal("0")
-    assert [(row["side"], row["status"]) for row in _objects(state["orders"])] == [
-        ("BUY", "FILLED"),
-        ("SELL", "FILLED"),
-    ]
+    assert [
+        (row["side"], row["status"], row["unfilled_reason"]) for row in _objects(state["orders"])
+    ] == [("BUY", "FILLED", None), ("SELL", "CANCELED", "no_touch")]
     assert "touch_consumed" not in {row["reason"] for row in _objects(state["risk_rejections"])}
 
 
@@ -1574,6 +1576,52 @@ def test_parquet_replay_keeps_a_redelivered_print_once(tmp_path: Path) -> None:
     assert [type(event) for event in loaded] == [BboEvent, BboEvent, TradeEvent]
 
 
+def test_parquet_replay_keys_prints_like_the_live_collector(tmp_path: Path) -> None:
+    # The live source identity is (time, coin, tid): the same tid at another
+    # time is a different print, and the dedup window is the collector's.
+    parquet_dir = tmp_path / "tape"
+    _write_hyperliquid_parquet(
+        parquet_dir, extra_rows=(_trade_row(4, 1_600_000_000, tid=9, time_ms=1_784_000_001_600),)
+    )
+    loaded = load_hyperliquid_parquet_tape((parquet_dir,))
+    assert [type(event) for event in loaded] == [BboEvent, BboEvent, TradeEvent, TradeEvent]
+    collector_default = {
+        item.name: item.default for item in dataclasses.fields(HyperliquidTradesCollectorConfig)
+    }["dedup_capacity"]
+    assert TRADE_DEDUP_CAPACITY == collector_default
+
+
+def test_parquet_replay_dedup_window_is_an_lru_like_the_collector(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A re-send refreshes its id, and an id pushed out of the window is a new
+    # print again, exactly as in the live collector's LRU cache.
+    monkeypatch.setattr("hyperliquid_bot.paper_engine.replay.TRADE_DEDUP_CAPACITY", 2)
+    parquet_dir = tmp_path / "tape"
+    later = 1_784_000_001_600
+    _write_hyperliquid_parquet(
+        parquet_dir,
+        extra_rows=(
+            _trade_row(4, 1_600_000_000, tid=10, time_ms=later),
+            _trade_row(5, 1_700_000_000, tid=9),
+            _trade_row(6, 1_800_000_000, tid=11, time_ms=later),
+            _trade_row(7, 1_900_000_000, tid=9),
+            _trade_row(8, 2_000_000_000, tid=10, time_ms=later),
+        ),
+    )
+    trades = [
+        event
+        for event in load_hyperliquid_parquet_tape((parquet_dir,))
+        if isinstance(event, TradeEvent)
+    ]
+    assert [event.source_event_id for event in trades] == [
+        "trade-9",
+        "trade-10",
+        "trade-11",
+        "trade-10",
+    ]
+
+
 def test_parquet_replay_refuses_one_trade_id_with_two_prints(tmp_path: Path) -> None:
     parquet_dir = tmp_path / "tape"
     _write_hyperliquid_parquet(
@@ -1744,7 +1792,12 @@ def _write_hyperliquid_parquet(
 
 
 def _trade_row(
-    ordinal: int, received_utc_ns: int, *, tid: int, price: str = "100000"
+    ordinal: int,
+    received_utc_ns: int,
+    *,
+    tid: int,
+    price: str = "100000",
+    time_ms: int = 1_784_000_001_500,
 ) -> tuple[object, ...]:
     """A ``trades`` message with one print, stamped as in the base tape."""
 
@@ -1760,7 +1813,7 @@ def _trade_row(
                     "side": "A",
                     "px": price,
                     "sz": "0.01",
-                    "time": 1_784_000_001_500,
+                    "time": time_ms,
                     "tid": tid,
                 }
             ],

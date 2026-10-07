@@ -93,10 +93,7 @@ PAPER defaults that are assumptions, not venue facts:
 A buy fills the ask and a sell fills the bid, worsened by the configured
 slippage fraction, then rounded to that grid. Quantity is capped by the
 displayed size (or the trade size when the book is not complete). The
-unfilled remainder is cancelled (IOC). An order is priced, checked and
-filled on the touch: a complete BBO, or the last trade print while the book
-is not complete. A one-sided or crossed BBO is not a touch, so a working
-order waits for one instead of cancelling. Latency waits for a later event
+unfilled remainder is cancelled (IOC). Latency waits for a later event
 before that touch is eligible. Every order is an IOC limit around the touch
 at decision time: entries use `entry_price_band_fraction`, exits
 `exit_price_band_fraction`, and the limit is rounded so it never widens the
@@ -189,7 +186,8 @@ PnL stays null until a venue mark or a complete two-sided book exists.
 with the same JSON paths as the `trades`, `bbo`, and `activeAssetCtx`
 research views. `PaperEngine.run_parquet` and `PaperEngine.on_event` are the
 same strategy, risk, and fill path. A trade print re-sent after a reconnect
-(same trade id) is kept once, as the live WS client does; the same id with a
+is kept once, as the live trades collector does: same source identity (time,
+coin, trade id) within the same 10,000-id LRU window. The same identity with a
 different print raises `PaperTapeError`.
 
 ## Residual limits

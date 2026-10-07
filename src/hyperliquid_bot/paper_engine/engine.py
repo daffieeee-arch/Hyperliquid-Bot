@@ -727,10 +727,7 @@ class PaperEngine:
         self._fill_working_from_book(received_ns)
 
     def _current_touch_event(self) -> BboEvent | TradeEvent | None:
-        """The quote an order is priced, checked and filled on.
-
-        A complete BBO, else the last trade print.
-        """
+        """The quote an order is priced against: a complete BBO, else the last trade."""
 
         if self._bbo is not None and bbo_is_complete(self._bbo):
             return self._bbo
@@ -1071,12 +1068,10 @@ class PaperEngine:
         working = self._working
         if working is None or event.received_utc_ns < working.eligible_received_ns:
             return
-        touch = self._current_touch_event()
-        # Fill only on the quote the order is priced against: a complete BBO,
-        # or a print while the book is not complete. A one-sided or crossed BBO
-        # is not a touch, so the order waits for one instead of cancelling.
-        if touch is not None and event is touch:
-            self._fill_against(working, touch, received_ns=event.received_utc_ns)
+        if isinstance(event, BboEvent) or (
+            isinstance(event, TradeEvent) and not self._book_complete()
+        ):
+            self._fill_against(working, event, received_ns=event.received_utc_ns)
 
     def _fill_working_from_book(self, received_ns: int) -> None:
         working = self._working

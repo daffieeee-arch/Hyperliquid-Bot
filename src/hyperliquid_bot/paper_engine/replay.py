@@ -5,15 +5,17 @@ The SQL paths match the DATA-1A research views in
 Partial files are ignored. Rows are ordered by receipt time, then message
 ordinal, then event index. The same ``PaperEngine.on_event`` path consumes
 this tape and a live public feed. A trade print re-sent after a reconnect
-(same trade id) is kept once, as the live client does.
+(same time, coin and trade id) is kept once, as the live collector does.
 """
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from typing import Final
 
 import duckdb
 
@@ -26,6 +28,11 @@ from hyperliquid_bot.paper_engine.events import (
     event_sort_key,
     utc_from_epoch_ms,
 )
+
+# The live trades collector's dedup window (HyperliquidTradesCollectorConfig
+# .dedup_capacity). The replay keeps the same window so both paths drop the
+# same re-sent prints.
+TRADE_DEDUP_CAPACITY: Final = 10_000
 
 _HYPERLIQUID_BUY: str = "B"
 _HYPERLIQUID_SELL: str = "A"
@@ -131,7 +138,10 @@ def _load_trades(
             json_extract_string(trade.value, '$.px') AS price,
             json_extract_string(trade.value, '$.sz') AS size,
             json_extract_string(trade.value, '$.time') AS event_time_ms,
-            json_extract_string(trade.value, '$.tid') AS trade_id
+            json_extract_string(trade.value, '$.tid') AS trade_id,
+            json_extract_string(trade.value, '$.coin') AS coin,
+            json_extract_string(trade.value, '$.hash') AS trade_hash,
+            CAST(json_extract(trade.value, '$.users') AS VARCHAR) AS users
         FROM {relation} AS raw,
              LATERAL json_each(decode(raw.payload_bytes), '$.data') AS trade
         WHERE raw.venue = 'hyperliquid'
@@ -143,10 +153,10 @@ def _load_trades(
         [product],
     ).fetchall()
     events: list[TradeEvent] = []
-    # A reconnect re-sends recent prints. The live client drops them by trade
-    # id, so the replay keeps the first copy too. The same id with a different
-    # print is a corrupt tape, not a duplicate.
-    seen: dict[str, tuple[str, Decimal, Decimal, int]] = {}
+    # A reconnect re-sends recent prints. Like the live collector, keep one
+    # copy per source identity (time, coin, tid) within the same LRU window.
+    # The same identity with a different print is a corrupt tape.
+    seen: OrderedDict[tuple[int, object, str], tuple[object, ...]] = OrderedDict()
     for row in rows:
         message_ordinal = _require_int(row[0], field_name="message_ordinal")
         received_utc_ns = _require_int(row[1], field_name="received_utc_ns")
@@ -156,13 +166,17 @@ def _load_trades(
         quantity = _require_decimal(_require_text(row[5], field_name="size"), field_name="size")
         event_time_ms = _require_int(row[6], field_name="event_time_ms")
         trade_id = _require_text(row[7], field_name="trade_id")
-        fingerprint = (side, price, quantity, event_time_ms)
-        known = seen.get(trade_id)
+        identity = (event_time_ms, row[8], trade_id)
+        fingerprint = (side, price, quantity, row[9], row[10])
+        known = seen.get(identity)
         if known is not None:
             if known != fingerprint:
                 raise PaperTapeError(f"trade id {trade_id} appears with different prints.")
+            seen.move_to_end(identity)
             continue
-        seen[trade_id] = fingerprint
+        seen[identity] = fingerprint
+        while len(seen) > TRADE_DEDUP_CAPACITY:
+            seen.popitem(last=False)
         event_time = utc_from_epoch_ms(event_time_ms)
         events.append(
             TradeEvent(

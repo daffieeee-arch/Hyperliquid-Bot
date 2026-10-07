@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import Final
 
 from research.harness.costs import STRESS_MULTIPLIERS, stress_key
 from research.harness.data import BarTable
 from research.harness.errors import HarnessError
-from research.harness.evaluate import Decision, Trade, _sample_stdev, trade_series
+from research.harness.evaluate import Decision, Trade, summarize, trade_series
 from research.harness.spec import UNIT_SIZING, CostSpec
 
 
@@ -39,13 +40,25 @@ class BuyAndHold:
     sharpe_per_bar: float | None
 
 
+EVALUATED: Final = "evaluated"
+SEALED: Final = "sealed"
+NO_FOLDS: Final = "no_folds"
+TOO_SHORT: Final = "too_short"
+
+
+@dataclass(frozen=True, slots=True)
+class Window:
+    """One benchmark window: ``result`` is set only when ``status`` is evaluated."""
+
+    status: str
+    result: BuyAndHold | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class Benchmark:
-    # None without a validation fold, or when the window is too short to hold.
-    validation: BuyAndHold | None
-    # None while the holdout is sealed (it opens only for a selected config),
-    # or when the opened holdout is too short to hold.
-    holdout: BuyAndHold | None
+    validation: Window
+    # Sealed until validation selects a config, as for the strategy.
+    holdout: Window
 
 
 def benchmark(costs: CostSpec, table: BarTable, decision: Decision) -> Benchmark:
@@ -55,15 +68,20 @@ def benchmark(costs: CostSpec, table: BarTable, decision: Decision) -> Benchmark
     same rule the strategy follows, so a sealed holdout stays unread.
     """
 
-    validation = None
+    validation = Window(NO_FOLDS)
     if decision.folds:
-        validation = buy_and_hold(
+        validation = _window(
             costs, table, decision.folds[0].test_start, decision.folds[-1].test_end
         )
-    holdout = None
+    holdout = Window(SEALED)
     if decision.holdout_config_id is not None:
-        holdout = buy_and_hold(costs, table, decision.holdout_start, decision.holdout_end)
+        holdout = _window(costs, table, decision.holdout_start, decision.holdout_end)
     return Benchmark(validation=validation, holdout=holdout)
+
+
+def _window(costs: CostSpec, table: BarTable, start: int, end: int) -> Window:
+    result = buy_and_hold(costs, table, start, end)
+    return Window(TOO_SHORT) if result is None else Window(EVALUATED, result)
 
 
 def buy_and_hold(costs: CostSpec, table: BarTable, start: int, end: int) -> BuyAndHold | None:
@@ -80,9 +98,9 @@ def buy_and_hold(costs: CostSpec, table: BarTable, start: int, end: int) -> BuyA
         return None
     trade = Trade(decision=start, entry=entry, exit=end - 1, side=1)
     series = trade_series((trade,), prices, funding=table.funding, sizing=UNIT_SIZING, vol=None)
-    log_returns = [math.log(prices[index] / prices[index - 1]) for index in range(entry + 1, end)]
-    mean = math.fsum(log_returns) / len(log_returns)
-    stdev = _sample_stdev(log_returns, mean) if len(log_returns) >= 2 else None
+    per_bar = summarize(
+        [math.log(prices[index] / prices[index - 1]) for index in range(entry + 1, end)]
+    )
     constant_notional = (
         None if table.funding is None else -math.fsum(table.funding[entry + 1 : end])
     )
@@ -95,7 +113,13 @@ def buy_and_hold(costs: CostSpec, table: BarTable, start: int, end: int) -> BuyA
         funding=None if table.funding is None else series.funding[0],
         funding_constant_notional=constant_notional,
         net={stress_key(stress): series.net(costs, stress)[0] for stress in STRESS_MULTIPLIERS},
-        mean_log_return_per_bar=mean,
-        stdev_log_return_per_bar=stdev,
-        sharpe_per_bar=None if stdev is None or stdev == 0.0 else mean / stdev,
+        mean_log_return_per_bar=_number(per_bar.mean_return),
+        stdev_log_return_per_bar=per_bar.stdev,
+        sharpe_per_bar=per_bar.sharpe_per_trade,
     )
+
+
+def _number(value: float | None) -> float:
+    if value is None:
+        raise HarnessError("invariant", "A held benchmark window has at least one bar.")
+    return value

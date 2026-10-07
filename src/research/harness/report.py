@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Final
 
-from research.harness.benchmark import Benchmark, BuyAndHold
+from research.harness.benchmark import Benchmark, Window
 from research.harness.costs import STRESS_MULTIPLIERS, round_trip_cost, stress_key
 from research.harness.data import BarTable
 from research.harness.errors import HarnessError
@@ -199,8 +199,8 @@ def completed_document(
         "holdout": _holdout_json(decision),
         "benchmark": {
             "method": "buy_and_hold",
-            "validation": _buy_and_hold_json(benchmark.validation),
-            "holdout": _buy_and_hold_json(benchmark.holdout),
+            "validation": _window_json(benchmark.validation),
+            "holdout": _window_json(benchmark.holdout),
         },
         "overfitting": _overfitting_json(decision.overfitting),
         "reasons": list(decision.reasons),
@@ -328,9 +328,11 @@ def _benchmark_lines(document: dict[str, Json]) -> list[str]:
     for window in ("validation", "holdout"):
         values = block.get(window)
         if not isinstance(values, dict):
-            sealed = window == "holdout" and document.get("holdout") is None
-            state = "sealed (not evaluated)" if sealed else "window too short to hold"
-            lines.append(f"- {window}: {state}")
+            lines.append(f"- {window}: block missing")
+            continue
+        status = values.get("status")
+        if status != "evaluated":
+            lines.append(f"- {window}: {_WINDOW_STATES.get(str(status), str(status))}")
             continue
         lines.append(
             (
@@ -339,13 +341,24 @@ def _benchmark_lines(document: dict[str, Json]) -> list[str]:
             ).format(
                 window=window,
                 bars=values.get("bars_held"),
-                gross=values.get("gross_return"),
-                funding=values.get("funding"),
-                net=_mapping_field(values.get("net"), "1.0"),
-                sharpe=values.get("sharpe_per_bar"),
+                gross=_shown(values.get("gross_return")),
+                funding=_shown(values.get("funding")),
+                net=_shown(_mapping_field(values.get("net"), "1.0")),
+                sharpe=_shown(values.get("sharpe_per_bar")),
             )
         )
     return lines
+
+
+_WINDOW_STATES: Final = {
+    "sealed": "sealed (not evaluated)",
+    "no_folds": "no validation fold",
+    "too_short": "window too short to hold after the fill",
+}
+
+
+def _shown(value: object) -> object:
+    return "null" if value is None else value
 
 
 def _overfitting_lines(document: dict[str, Json]) -> list[str]:
@@ -428,10 +441,14 @@ def _holdout_json(decision: Decision) -> dict[str, Json] | None:
     }
 
 
-def _buy_and_hold_json(result: BuyAndHold | None) -> dict[str, Json] | None:
+def _window_json(window: Window) -> dict[str, Json]:
+    """``status`` is evaluated, sealed, no_folds or too_short; values only when evaluated."""
+
+    result = window.result
     if result is None:
-        return None
+        return {"status": window.status}
     return {
+        "status": window.status,
         "start": result.start,
         "end": result.end,
         "bars_held": result.bars_held,

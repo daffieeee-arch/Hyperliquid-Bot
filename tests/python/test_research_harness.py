@@ -59,6 +59,16 @@ from research.harness.stats import (
 from research.harness.yaml_subset import loads
 
 _REPO = Path(__file__).resolve().parents[2]
+
+
+@pytest.fixture(autouse=True)
+def _default_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ambient RESEARCH_ENV or RESEARCH_IMAGE_DIGEST must not change a fixture run."""
+
+    monkeypatch.delenv("RESEARCH_ENV", raising=False)
+    monkeypatch.delenv("RESEARCH_IMAGE_DIGEST", raising=False)
+
+
 _EXAMPLE = _REPO / "docs" / "research" / "examples" / "wp-template.spec.yaml"
 
 
@@ -1020,11 +1030,13 @@ def test_a_sealed_holdout_keeps_its_benchmark_unread() -> None:
         assert decision.holdout_config_id is None
         results.append(benchmark(spec.costs, table, decision))
     assert results[0] == results[1]
-    validation = results[0].validation
+    validation = results[0].validation.result
+    assert results[0].validation.status == "evaluated"
     assert validation is not None
     assert (validation.start, validation.end) == (112, 336)
     assert validation.gross_return == 0.0
-    assert results[0].holdout is None
+    assert results[0].holdout.status == "sealed"
+    assert results[0].holdout.result is None
 
 
 def test_report_carries_the_buy_and_hold_benchmark(tmp_path: Path) -> None:
@@ -1034,6 +1046,7 @@ def test_report_carries_the_buy_and_hold_benchmark(tmp_path: Path) -> None:
     assert block["method"] == "buy_and_hold"
     validation = _mapping(block["validation"])
     holdout = _mapping(block["holdout"])
+    assert validation["status"] == holdout["status"] == "evaluated"
     # latency_bars is 1: each window fills one bar after it starts.
     assert (validation["start"], validation["end"], validation["bars_held"]) == (112, 336, 222)
     assert (holdout["start"], holdout["end"], holdout["bars_held"]) == (336, 420, 82)
@@ -1050,9 +1063,12 @@ def test_report_carries_the_buy_and_hold_benchmark(tmp_path: Path) -> None:
         spread_bps=0.0,
     )
     assert sealed["holdout"] is None
-    assert _mapping(sealed["benchmark"])["holdout"] is None
+    assert _mapping(sealed["benchmark"])["holdout"] == {"status": "sealed"}
     markdown = (tmp_path / "sealed" / "out" / "result.md").read_text(encoding="utf-8")
     assert "- holdout: sealed (not evaluated)" in markdown
+    # No funding column: the line says null, not a Python repr.
+    assert "funding `null`" in markdown
+    assert "None" not in markdown.split("## Benchmark")[1].split("##")[0]
 
 
 def test_benchmark_reports_funding_when_the_spec_declares_it(tmp_path: Path) -> None:
@@ -1099,10 +1115,20 @@ def test_an_opened_holdout_too_short_to_hold_is_not_called_sealed(tmp_path: Path
     document = _run_rows(tmp_path, _regime_rows(338), configs=_two_configs(), holdout_bars=2)
     assert document["selected_config_id"] == "real"
     assert document["holdout"] is not None
-    assert _mapping(document["benchmark"])["holdout"] is None
+    assert _mapping(document["benchmark"])["holdout"] == {"status": "too_short"}
     markdown = (tmp_path / "out" / "result.md").read_text(encoding="utf-8")
-    assert "- holdout: window too short to hold" in markdown
+    assert "- holdout: window too short to hold after the fill" in markdown
     assert "- holdout: sealed" not in markdown
+
+
+def test_a_run_without_folds_says_so_in_the_benchmark(tmp_path: Path) -> None:
+    document = _run_rows(tmp_path, _regime_rows(200))
+    assert document["label"] == "not_enough_data"
+    block = _mapping(document["benchmark"])
+    assert block["validation"] == {"status": "no_folds"}
+    assert block["holdout"] == {"status": "sealed"}
+    markdown = (tmp_path / "out" / "result.md").read_text(encoding="utf-8")
+    assert "- validation: no validation fold" in markdown
 
 
 def _bar_table(rows: Sequence[tuple[int, float, float, int]]) -> BarTable:

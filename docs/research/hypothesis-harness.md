@@ -192,14 +192,17 @@ context: it never changes the label or the promotion decision. The method is
 buy-and-hold, one unit long, priced like a strategy trade at unit weight.
 
 - **Windows**: `validation` covers the walk-forward test folds, from the
-  first fold's `test_start` to the last fold's `test_end`. `holdout` covers
-  the holdout, but only when validation selected a config. While the
-  holdout is sealed it is `null`, and the benchmark does not read it either.
+  first fold's `test_start` to the last fold's `test_end`, as one position
+  across fold boundaries, which no strategy trade does. `holdout` covers the
+  holdout, but only when validation selected a config; while the holdout is
+  sealed, the benchmark does not read it either.
+- **Status**: each window has a `status`: `evaluated` (with the values
+  below), `sealed`, `no_folds`, or `too_short` (no close left to exit at
+  after the fill).
 - **Trade**: decided at the window's first close and filled `latency_bars`
   later, like a strategy trade, then held to the window's last close.
   `bars_held` counts the bars from the fill to the exit. `gross_return` is
-  the price return and `log_return` its log. A window too short to hold
-  after the fill is `null`; `result.md` then says so instead of "sealed".
+  the price return and `log_return` its log.
 - **Funding**: both fields are positive when funding is received, like the
   strategy's `funding` block. When a funding column is declared, `funding` is
   the realized cashflow of a fixed quantity, paid on the notional at each

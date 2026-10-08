@@ -16,10 +16,13 @@ round trip on the capital, as each position pays entry and exit on its
 notional. Funding is paid by the long leg and received by the short leg,
 settlement by settlement, so the stress can treat each adversely.
 
-A position whose symbol does not trade on a held day is closed at its last
-traded close, as a holder of a delisted contract is; the period records a
-forced exit. A symbol that does not trade on the fill day is not opened, and
-its leg is spread over the names that filled. A period with a leg short of
+A position is held to the period's exit day whatever happens in between,
+so no exit uses knowledge of a later day. It exits at that day's close when
+the symbol trades then; otherwise at its last traded close at or before the
+exit day, the one price a holder of a halted or delisted contract has, and
+the period records a forced exit. Funding is charged on traded held days
+only. A symbol that does not trade on the fill day is not opened, and its
+leg is spread over the names that filled. A period with a leg short of
 ``min_names_per_leg`` names, at the decision or at the fill, is skipped.
 
 With funding declared, a held day without any rate fails the run closed:
@@ -41,7 +44,7 @@ from fractions import Fraction
 from research.harness.data import PanelTable
 from research.harness.errors import HarnessError, IntegrityError
 from research.harness.evaluate import Decision, TradeSeries, funding_flow, next_period
-from research.harness.spec import ConfigSpec, HypothesisSpec, Json
+from research.harness.spec import ConfigSpec, HypothesisSpec, Json, PortfolioSpec
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,10 +96,12 @@ class PanelSource:
     spec: HypothesisSpec
     panel: PanelTable
     stats: dict[tuple[str, int, int], PeriodStats] = field(default_factory=dict)
+    portfolio: PortfolioSpec = field(init=False)
 
     def __post_init__(self) -> None:
         if self.spec.portfolio is None:
             raise HarnessError("invariant", "PanelSource needs a portfolio spec.")
+        self.portfolio = self.spec.portfolio
         if (self.spec.costs.funding_column is None) != (self.panel.funding is None):
             raise HarnessError("invariant", "The panel's funding does not match the spec.")
         if (self.panel.funding is None) != (self.panel.covered is None):
@@ -170,9 +175,7 @@ class PanelSource:
     def _positions(self, quantile: Fraction, decision: int, entry: int) -> list[_Position] | None:
         """The period's positions, or None when it is skipped."""
 
-        portfolio = self.spec.portfolio
-        if portfolio is None:
-            raise HarnessError("invariant", "PanelSource needs a portfolio spec.")
+        portfolio = self.portfolio
         panel = self.panel
         eligible: list[tuple[float, int]] = []
         for symbol in range(len(panel.symbols)):
@@ -186,10 +189,11 @@ class PanelSource:
             ):
                 continue
             eligible.append((signal, symbol))
-        # Ties go to the symbol that sorts first, so the legs are deterministic.
+        # One ranking, ties by symbol, so the legs are deterministic and
+        # disjoint: the long leg is its top and the short leg its bottom.
         eligible.sort(key=lambda item: (-item[0], panel.symbols[item[1]]))
         names = math.floor(len(eligible) * quantile)
-        if names < max(portfolio.min_names_per_leg, 1):
+        if names < portfolio.min_names_per_leg:
             return None
         long_leg = [symbol for _signal, symbol in eligible[:names]]
         short_leg = (
@@ -215,8 +219,8 @@ class PanelSource:
         """One position's weighted return and funding over its hold.
 
         The position holds days ``entry + 1`` through ``exit_index``, paying
-        each day's funding on the notional at that day's close. A day the
-        symbol does not trade closes it at the previous close.
+        each traded day's funding on the notional at that day's close, and
+        exits at the last traded close at or before ``exit_index``.
         """
 
         panel = self.panel
@@ -227,13 +231,11 @@ class PanelSource:
         paid = 0.0
         received = 0.0
         last = entry
-        forced = 0
         uncovered = 0
         for day in range(entry + 1, exit_index + 1):
             price = prices[day]
             if price is None or panel.traded[position.symbol][day] is not True:
-                forced = 1
-                break
+                continue
             last = day
             if panel.funding is not None and panel.covered is not None:
                 rate = panel.funding[position.symbol][day]
@@ -256,7 +258,7 @@ class PanelSource:
             value=value,
             paid=position.weight * paid,
             received=position.weight * received,
-            forced=forced,
+            forced=0 if last == exit_index else 1,
             uncovered=uncovered,
         )
 
@@ -281,9 +283,7 @@ def portfolio_block(source: PanelSource, decision: Decision) -> dict[str, Json]:
     for the config that was scored on it.
     """
 
-    portfolio = source.spec.portfolio
-    if portfolio is None:
-        raise HarnessError("invariant", "portfolio_block needs a portfolio spec.")
+    portfolio = source.portfolio
     validation = [(fold.test_start, fold.test_end) for fold in decision.folds]
     configs: list[Json] = []
     for config in source.spec.configs:

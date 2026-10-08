@@ -301,10 +301,8 @@ def _fetch_rows(
             "too_many_rows",
             f"Source exceeds max_rows {data.max_rows}. Aggregate to bars before running.",
         )
-    rows: list[tuple[object, ...]] = []
-    for fetched_row in fetched:
-        rows.append(tuple(fetched_row))
-    return rows
+    # DuckDB hands back tuples already; only a foreign row shape is copied.
+    return [row if isinstance(row, tuple) else tuple(row) for row in fetched]
 
 
 def _table_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> BarTable:
@@ -398,26 +396,26 @@ def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Pa
         )
         if name is not None
     ]
-    timestamp_at = index_by_name[data.timestamp_column]
-    symbol_at = index_by_name[str(data.symbol_column)]
-    price_at = index_by_name[data.price_column]
-    traded_at = index_by_name[str(data.traded_column)]
-    rank_at = index_by_name[str(data.rank_column)]
-    signal_at = index_by_name[signal_feature.column]
-    clock_at = {index_by_name[column]: name for column, name in clocks.items()}
-    with_funding = spec.costs.funding_column is not None
-    funding_at = index_by_name[str(spec.costs.funding_column)] if with_funding else -1
-    covered_at = index_by_name[str(data.funding_covered_column)] if with_funding else -1
-    names = (
-        data.timestamp_column,
-        str(data.symbol_column),
-        data.price_column,
-        str(data.traded_column),
-        str(data.rank_column),
-        signal_feature.column,
-        str(spec.costs.funding_column),
-        str(data.funding_covered_column),
+    at = _PanelColumns(
+        timestamp=_role_column(index_by_name, data.timestamp_column),
+        symbol=_role_column(index_by_name, data.symbol_column),
+        price=_role_column(index_by_name, data.price_column),
+        traded=_role_column(index_by_name, data.traded_column),
+        rank=_role_column(index_by_name, data.rank_column),
+        signal=_role_column(index_by_name, signal_feature.column),
+        funding=(
+            None
+            if spec.costs.funding_column is None
+            else _role_column(index_by_name, spec.costs.funding_column)
+        ),
+        covered=(
+            None
+            if data.funding_covered_column is None
+            else _role_column(index_by_name, data.funding_covered_column)
+        ),
     )
+    clock_at = {index_by_name[column]: name for column, name in clocks.items()}
+    with_funding = at.funding is not None and at.covered is not None
     # First pass: the axes and every row-level check; second pass: the series.
     keys: list[tuple[int, str]] = []
     for row_index, row in enumerate(rows):
@@ -428,7 +426,7 @@ def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Pa
                 "schema",
                 f"Row {row_index} has a null timestamp, symbol, price, traded flag or clock.",
             )
-        timestamp = _as_int(row[timestamp_at], names[0], row_index)
+        timestamp = _as_int(row[at.timestamp.index], at.timestamp.name, row_index)
         for index, feature_name in clock_at.items():
             clock = _as_int(row[index], feature_name, row_index)
             if clock > timestamp:
@@ -437,7 +435,7 @@ def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Pa
                     f"Feature {feature_name} row {row_index} is available at {clock}, "
                     f"after bar {timestamp}.",
                 )
-        keys.append((timestamp, _as_str(row[symbol_at], names[1], row_index)))
+        keys.append((timestamp, _as_str(row[at.symbol.index], at.symbol.name, row_index)))
     timestamps = sorted({timestamp for timestamp, _symbol in keys})
     _audit_clock(timestamps, data.max_gap)
     symbols = sorted({symbol for _timestamp, symbol in keys})
@@ -457,25 +455,27 @@ def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Pa
         line = symbol_index[symbol]
         if prices[line][column] is not None:
             raise IntegrityError("duplicate", f"{symbol} appears twice at {timestamp}.")
-        price = _as_float(row[price_at], names[2], row_index)
+        price = _as_float(row[at.price.index], at.price.name, row_index)
         if not math.isfinite(price) or price <= 0.0:
             raise IntegrityError("price", f"Price at row {row_index} must be finite and positive.")
         prices[line][column] = price
-        traded[line][column] = _as_bool(row[traded_at], names[3], row_index)
-        rank_raw = row[rank_at]
-        ranks[line][column] = None if rank_raw is None else _as_int(rank_raw, names[4], row_index)
-        signal_raw = row[signal_at]
-        signals[line][column] = (
-            None if signal_raw is None else _as_float(signal_raw, names[5], row_index)
+        traded[line][column] = _as_bool(row[at.traded.index], at.traded.name, row_index)
+        rank_raw = row[at.rank.index]
+        ranks[line][column] = (
+            None if rank_raw is None else _as_int(rank_raw, at.rank.name, row_index)
         )
-        if with_funding:
-            funding_raw = row[funding_at]
+        signal_raw = row[at.signal.index]
+        signals[line][column] = (
+            None if signal_raw is None else _as_float(signal_raw, at.signal.name, row_index)
+        )
+        if at.funding is not None and at.covered is not None:
+            funding_raw = row[at.funding.index]
             funding[line][column] = (
-                None if funding_raw is None else _as_float(funding_raw, names[6], row_index)
+                None if funding_raw is None else _as_float(funding_raw, at.funding.name, row_index)
             )
-            covered_raw = row[covered_at]
+            covered_raw = row[at.covered.index]
             covered[line][column] = (
-                None if covered_raw is None else _as_bool(covered_raw, names[7], row_index)
+                None if covered_raw is None else _as_bool(covered_raw, at.covered.name, row_index)
             )
     return PanelTable(
         timestamps=tuple(timestamps),
@@ -487,6 +487,32 @@ def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Pa
         funding=tuple(tuple(line) for line in funding) if with_funding else None,
         covered=tuple(tuple(line) for line in covered) if with_funding else None,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class _RoleColumn:
+    """One declared column by its row index and name, for reads and messages."""
+
+    index: int
+    name: str
+
+
+@dataclass(frozen=True, slots=True)
+class _PanelColumns:
+    timestamp: _RoleColumn
+    symbol: _RoleColumn
+    price: _RoleColumn
+    traded: _RoleColumn
+    rank: _RoleColumn
+    signal: _RoleColumn
+    funding: _RoleColumn | None
+    covered: _RoleColumn | None
+
+
+def _role_column(index_by_name: dict[str, int], name: str | None) -> _RoleColumn:
+    if name is None or name not in index_by_name:
+        raise IntegrityError("data_config", f"Panel column {name!r} is not declared.")
+    return _RoleColumn(index_by_name[name], name)
 
 
 def _as_str(value: object, column: str, row_index: int) -> str:

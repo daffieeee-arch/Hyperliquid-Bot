@@ -359,7 +359,7 @@ def test_a_validation_period_never_reads_a_holdout_close(tmp_path: Path) -> None
     spec = _spec(_spec_body())
     panel = load_panel(spec, tmp_path)
     source = PanelSource(spec, panel)
-    decision = decide_source(spec, source)
+    decision = decide_source(source)
     before = [
         source.window(config, fold.test_start, fold.test_end)
         for config in spec.configs
@@ -438,17 +438,38 @@ def test_a_symbol_that_stops_trading_exits_at_its_last_traded_close() -> None:
     assert source.stats[("c", 0, 5)].forced_exits == 1
 
 
-def test_an_untraded_day_also_forces_the_exit() -> None:
-    spec = _four_symbol_spec()
+def test_an_untraded_exit_day_marks_the_position_at_its_last_traded_close() -> None:
+    spec = _four_symbol_spec(funding=True)
     panel = _table(
         symbols=["A", "B"],
         prices=[[100.0] * 5, [100.0, 100.0, 110.0, 150.0, 150.0]],
         traded=[[True] * 5, [True, True, True, False, False]],
         signals=[[-1.0] * 5, [1.0] * 5],
+        funding=[[0.0] * 5, [0.0, 0.0, 0.001, 0.001, 0.001]],
     )
-    series = PanelSource(spec, panel).window(_config(0.5, 3), 0, 5)
-    # Long B exits at 110 on day 2, before the flat untraded bars at 150.
+    source = PanelSource(spec, panel)
+    series = source.window(_config(0.5, 3), 0, 5)
+    # Long B is marked at 110, its last traded close; the flat untraded bars
+    # at 150 and their default funding are not read. Day 2's funding is paid
+    # on that day's notional, 110 per 100 of entry.
     assert series.gross == pytest.approx((0.05,))
+    assert series.funding_paid == pytest.approx((0.5 * 0.001 * 1.1,))
+    assert source.stats[("c", 0, 5)].forced_exits == 1
+
+
+def test_a_halt_that_resumes_before_the_exit_is_held_through() -> None:
+    spec = _four_symbol_spec()
+    panel = _table(
+        symbols=["A", "B"],
+        prices=[[100.0] * 5, [100.0, 100.0, 110.0, 50.0, 90.0]],
+        traded=[[True] * 5, [True, True, True, False, True]],
+        signals=[[-1.0] * 5, [1.0] * 5],
+    )
+    source = PanelSource(spec, panel)
+    series = source.window(_config(0.5, 3), 0, 5)
+    # Long B sits through the halt on day 3 and exits at day 4's close of 90.
+    assert series.gross == pytest.approx((0.5 * -0.10,))
+    assert source.stats[("c", 0, 5)].forced_exits == 0
 
 
 def test_a_symbol_not_trading_on_the_fill_day_is_not_opened() -> None:
@@ -649,7 +670,7 @@ def test_the_portfolio_block_sums_validation_folds_and_names_the_holdout() -> No
         signals=[[1.0] * 200, [-1.0] * 200],
     )
     source = PanelSource(spec, panel)
-    decision = decide_source(spec, source)
+    decision = decide_source(source)
     block = portfolio_block(source, decision)
     config = _first(block["configs"])
     validation = _mapping(config["validation"])

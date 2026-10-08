@@ -52,11 +52,11 @@ LIMITATIONS: Final[tuple[str, ...]] = (
     "context, and never changes the label.",
     "A panel portfolio scores one trade per non-overlapping period: long the top quantile of "
     "the day's universe by the signal and, when signed, short the bottom quantile, equal "
-    "weight within a leg, one round trip on the capital per period. A symbol that stops "
-    "trading while held is closed at its last traded close, which is not the delisting price "
-    "a holder got. A held day whose funding is not whole is charged its recorded sum and "
-    "counted; a held day with no funding fails closed. The buy-and-hold benchmark does not "
-    "apply to a panel.",
+    "weight within a leg, one round trip on the capital per period. A position is held to "
+    "its exit day; a symbol not trading then is marked at its last traded close, which is "
+    "not the delisting price a holder got. A held day whose funding is not whole is charged "
+    "its recorded sum and counted; a held day with no funding fails closed. The buy-and-hold "
+    "benchmark does not apply to a panel.",
     "Look-ahead control uses the declared clock. A falsely stamped future value is invisible.",
     "paper_candidate is not LIVE, SHADOW, TESTNET, or an order authorization.",
     "Spot Vision timestamps from 2025-01-01 are microseconds; USD-M examples are milliseconds.",

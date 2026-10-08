@@ -503,9 +503,8 @@ def _require_reachable_legs(portfolio: PortfolioSpec, configs: tuple[ConfigSpec,
     """Every config must be able to fill a leg from a full universe, or it never trades."""
 
     for config in configs:
-        if config.quantile is None:
-            raise SpecError(f"Config {config.id} needs a quantile on a panel.")
-        names = math.floor(portfolio.universe_size * Fraction(repr(config.quantile)))
+        # Panel configs always carry a quantile (_parse_configs with panel=True).
+        names = math.floor(portfolio.universe_size * Fraction(repr(config.quantile or 0.0)))
         if names < portfolio.min_names_per_leg:
             raise SpecError(
                 f"Config {config.id} fills at most {names} names per leg from a universe of "

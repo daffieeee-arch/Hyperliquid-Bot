@@ -182,7 +182,10 @@ configs:
   funding plays no part in it. Sorted by the signal (ties by symbol), the
   top `quantile` of the universe is the long leg and, under
   `direction: signed`, the bottom `quantile` the short leg; `long_only`
-  holds the long leg alone. Both legs have `floor(universe × quantile)`
+  holds the long leg alone. It is one ranking, so the legs are disjoint:
+  ties go to the symbol that sorts first, which puts the alphabetically
+  first of tied names in the long leg's top and the alphabetically last in
+  the short leg's bottom. Both legs have `floor(universe × quantile)`
   names, with the quantile as written in the spec (100 names at 0.29 give
   29), at least `min_names_per_leg` at the decision and again at the fill,
   or the day is skipped. A config whose quantile cannot fill a leg from a
@@ -210,12 +213,16 @@ configs:
     report counts such position-days per config as
     `uncovered_funding_days`. The error is bounded by one settlement per
     counted day. A pre-registration should say how many it tolerates.
-- **Delisting while held**: a position whose symbol does not trade on a
-  held day (no row, or `traded` false) is closed at its last traded close,
-  and the period counts a forced exit. That is not the price a holder got at
-  the delisting; a study must say what it assumes. A symbol that does not
-  trade on the fill day is not opened, and its leg is spread over the names
-  that filled; a period with an empty leg is skipped.
+- **Halts and delistings while held**: a position is held to the period's
+  exit day whatever happens in between, so no exit uses knowledge of a later
+  day. It exits at that day's close when the symbol trades then; otherwise
+  at its last traded close at or before the exit day (no row, or `traded`
+  false), the one price a holder of a halted or delisted contract has, and
+  the period counts a forced exit. That is not the price a holder got at
+  the delisting; a study must say what it assumes. Funding is charged on
+  traded held days only. A symbol that does not trade on the fill day is
+  not opened, and its leg is spread over the names that filled; a period
+  with a leg below the floor at the fill is skipped.
 - **Report**: `result.json` has a `portfolio` block with the universe rule,
   `symbol_count`, and per config the validation (and, when scored, holdout)
   period count, skipped decisions, mean names per leg, forced exits and
@@ -288,7 +295,8 @@ buy-and-hold, one unit long, priced like a strategy trade at unit weight.
   holdout, but only when validation selected a config; while the holdout is
   sealed, the benchmark does not read it either.
 - **Status**: each window has a `status`: `evaluated` (with the values
-  below), `sealed`, `no_folds`, `too_short` (no close left to exit at after
+  below), `sealed`, `no_folds`, `not_applicable` (a panel portfolio, with a
+  `note`), `too_short` (no close left to exit at after
   the fill), or `error`. A numeric failure (overflow, a non-finite value)
   is recorded as `error` with a `note` and never fails the run or changes
   its label. A window outside the table is a harness bug that the
@@ -455,7 +463,7 @@ start of the interval if the print arrives at the end.
 
 ## Reading the artifact
 
-`result.json` is the machine record (`harness_version` 5, `status`, `label`,
+`result.json` is the machine record (`harness_version` 6, `status`, `label`,
 `promotion_decision`, `spec_sha256`, `data_fingerprint`, the `costs` and
 `sizing` blocks, validation family with Bonferroni, Holm, and BH p-values,
 per-config `funding` and `mean_weight`, and holdout gross, funding and net at

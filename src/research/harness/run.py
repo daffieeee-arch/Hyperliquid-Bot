@@ -81,7 +81,7 @@ def execute(spec_path: Path, output_dir: Path) -> RunOutcome:
         else:
             table = load_panel(spec, spec_path.parent)
             source = PanelSource(spec, table)
-            decision = decide_source(spec, source)
+            decision = decide_source(source)
             context = no_benchmark("Buy-and-hold does not apply to a panel portfolio.")
             portfolio = portfolio_block(source, decision)
         payload = completed_document(

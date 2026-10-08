@@ -122,10 +122,13 @@ class TradeSeries:
 class SeriesSource(Protocol):
     """Where a config's trades come from: a bar series, or a panel portfolio.
 
-    ``length`` is the number of index positions the walk-forward splits, and
-    ``window`` scores one config on ``[start, end)`` without reading a close
-    outside it.
+    ``spec`` is the one spec the run follows, ``length`` the number of index
+    positions the walk-forward splits, and ``window`` scores one config on
+    ``[start, end)`` without reading a close outside it.
     """
+
+    @property
+    def spec(self) -> HypothesisSpec: ...
 
     @property
     def length(self) -> int: ...
@@ -218,12 +221,13 @@ def bar_source(spec: HypothesisSpec, table: BarTable) -> BarSource:
 def decide(spec: HypothesisSpec, table: BarTable) -> Decision:
     """Label the pre-registered family. Promotion stays forbidden unless H1 passes OOS."""
 
-    return decide_source(spec, bar_source(spec, table))
+    return decide_source(bar_source(spec, table))
 
 
-def decide_source(spec: HypothesisSpec, source: SeriesSource) -> Decision:
+def decide_source(source: SeriesSource) -> Decision:
     """Label the family from any ``SeriesSource``. Selection never reads the holdout."""
 
+    spec = source.spec
     folds, (holdout_start, holdout_end) = walk_forward(source.length, spec.split)
     fold_series_by_config = [
         tuple(source.window(config, fold.test_start, fold.test_end) for fold in folds)

@@ -30,6 +30,8 @@ from typing import Final
 from research.bar_tables.trend import SETTLEMENT_SLACK_MS, BarTableError
 
 DAY_MS: Final = 86_400_000
+# Ten years: longer than any archive, and short enough for date arithmetic.
+MAX_WINDOW_DAYS: Final = 3_650
 _HOUR_MS: Final = 3_600_000
 
 
@@ -67,8 +69,10 @@ class PanelSpec:
 
     def __post_init__(self) -> None:
         windows = (*self.lookbacks, self.vol_window, self.volume_window, self.funding_window)
-        if not self.lookbacks or any(window < 1 for window in windows):
-            raise BarTableError("Panel windows must be positive day counts, with a lookback.")
+        if not self.lookbacks or any(not 1 <= window <= MAX_WINDOW_DAYS for window in windows):
+            raise BarTableError(
+                f"Panel windows must be 1 to {MAX_WINDOW_DAYS} days, with a lookback."
+            )
         if self.vol_window < 2:
             raise BarTableError("The vol window needs at least two daily returns.")
         if len(set(self.lookbacks)) != len(self.lookbacks):
@@ -130,10 +134,9 @@ class PanelRow:
         """Rankable with every feature present, a study's usual row filter."""
 
         return (
-            self.traded
+            self.rankable
             and all(value is not None for value in self.returns)
             and self.realized_vol is not None
-            and self.mean_quote_volume is not None
             and self.mean_funding is not None
         )
 
@@ -155,6 +158,8 @@ def build_symbol_rows(
     _check_settlements(symbol, settlements)
     funding = _daily_funding(bars, settlements)
     traded = [bar.traded for bar in bars]
+    # An untraded day counts as zero volume, whatever the bar says.
+    volume = [bar.quote_volume if flag else 0.0 for bar, flag in zip(bars, traded, strict=True)]
     # run_start[i]: index of the first bar of the consecutive-day stretch holding i.
     run_start = _run_starts(bars)
     traded_streak = _streaks(traded, run_start)
@@ -188,9 +193,7 @@ def build_symbol_rows(
                     else None
                 ),
                 mean_quote_volume=(
-                    math.fsum(
-                        bar.quote_volume for bar in bars[index - spec.volume_window + 1 : index + 1]
-                    )
+                    math.fsum(volume[index - spec.volume_window + 1 : index + 1])
                     / spec.volume_window
                     if span >= spec.volume_window
                     else None

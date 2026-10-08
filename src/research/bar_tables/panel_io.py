@@ -64,6 +64,9 @@ class Run:
     late_start: bool
     early_end: bool
     published: bool
+    # The window opens on the run's own first day, which a manifest ``start``
+    # may set: hist_etl drops a settlement stamped just before it.
+    at_spec_start: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,6 +143,7 @@ def _month_files(
                 late_start=spec.open_start and _same_month(first, spec.start),
                 early_end=spec.open_end and spec.end is not None and _same_month(last, spec.end),
                 published=spec.end is None,
+                at_spec_start=first == spec.start,
             )
         )
         month = date(first.year, first.month, 1)
@@ -154,11 +158,14 @@ def _month_files(
                 missing.append(path)
             month = next_month(month)
         if spec.dataset == "fundingRate" and (spec.end is None or month <= spec.end):
-            # The settlement after the window gives the interval at its end;
-            # its month may not be published yet, so it is optional.
+            # The settlement after the window gives the interval at its end.
+            # Inside a closed run that month is published and required; a
+            # still-published run's next month may not be out yet.
             path = binance_parquet_path(root, spec, f"{month.year:04d}-{month.month:02d}")
             if _synced(path):
                 files.append(path)
+            elif spec.end is not None:
+                missing.append(path)
     return tuple(sorted(set(files))), tuple(runs), sorted(set(missing))
 
 
@@ -275,9 +282,14 @@ def _check_funding_runs(
 
 
 def _late_start_ok(run: Run, close: int) -> bool:
-    """Funding may be missing at a run's start only inside its listing month."""
+    """Funding may be missing at a run's start only inside its listing month.
 
-    return run.late_start and close <= _close_ms(_month_end(run.first))
+    The run's own first day may also be partial: hist_etl keeps no
+    settlement stamped before it.
+    """
+
+    in_listing = run.late_start and close <= _close_ms(_month_end(run.first))
+    return in_listing or (run.at_spec_start and close == _close_ms(run.first))
 
 
 def _early_end_ok(run: Run, close: int) -> bool:

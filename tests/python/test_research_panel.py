@@ -228,6 +228,16 @@ def test_a_settlement_stamped_just_before_midnight_opens_the_next_day() -> None:
     ]
 
 
+def test_volume_without_trades_counts_as_zero() -> None:
+    bars = [
+        *_bars([100.0, 101.0]),
+        DailyBar(_FIRST_CLOSE + 2 * DAY_MS, 102.0, 5_000.0, 0),
+    ]
+    rows = _rows(bars)
+    assert rows[2].traded is False
+    assert rows[2].mean_quote_volume == 500.0
+
+
 def test_flat_prices_give_no_realized_vol() -> None:
     rows = _rows(_bars([100.0, 100.0, 100.0, 100.0]))
     assert rows[3].realized_vol is None
@@ -300,6 +310,7 @@ def test_bad_funding_and_specs_are_refused() -> None:
         {"lookbacks": (2, 2)},
         {"vol_window": 1},
         {"funding_window": 0},
+        {"lookbacks": (999_999_999,)},
     ):
         with pytest.raises(BarTableError):
             replace(_SPEC, **kwargs)

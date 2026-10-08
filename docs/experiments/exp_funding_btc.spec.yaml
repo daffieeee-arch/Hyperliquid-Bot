@@ -9,7 +9,7 @@ hypothesis_id: funding-contrarian-btc-1h-w21
 universe: binance-um-btcusdt-perp-1h
 dataset_version: bn-um-btcusdt-klines-1h+funding 2020-01-01..2026-10-01, bar_tables trend 168/672/2016, vol 168, funding tilt 21 vs 0.0001
 h0: Mean net return per trade of the contrarian funding rule is less than or equal to zero after costs and funding.
-h1: Mean net return per trade of the contrarian funding rule is greater than zero after costs and funding on the untouched holdout.
+h1: Mean net return per trade of the contrarian funding rule is greater than zero after costs and funding on the holdout, scored once.
 alpha: 0.05
 selection_method: holm
 direction: signed

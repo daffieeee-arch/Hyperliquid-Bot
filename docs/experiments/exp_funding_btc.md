@@ -9,7 +9,7 @@ seen before it is listed under [Seen before](#seen-before).
 
 - Spec: [`exp_funding_btc.spec.yaml`](exp_funding_btc.spec.yaml).
 - Canonical sha256, from `python -m research.harness hash`:
-  `85d38e7ecc2f1a1dad7080f60f0913dbc4441f4d7cdf16334de1fb890ebb9ed1`.
+  `52eb9a64ff094b80ed6c350a1d51a9ae95c5b33d84cdad907f39bcc2a2ad8d5d`.
 
 Any change to the spec is a new pre-registration with a new hash, not a
 re-run.
@@ -28,7 +28,10 @@ receives the funding the crowd pays.
 - **H0**: the contrarian rule's mean net return per trade is ≤ 0 after costs
   and funding.
 - **H1**: the contrarian rule's mean net return per trade is > 0 after costs
-  and funding, on the untouched holdout.
+  and funding, on the holdout, scored once. The strategy has never been
+  scored there, but the holdout's market has been seen (see
+  [Seen before](#seen-before)), so it is not untouched; the forward test in
+  the decision rules is the untouched out-of-sample check.
 
 The test uses alpha 0.05 with Holm across the grid. Each p-value is the
 larger of the iid t-test's and the Newey-West HAC t-test's.
@@ -96,7 +99,7 @@ The same as `exp_tsmom_btc`:
 | Train (only delays the first fold; nothing is fitted) | 4,320 | 2020-03-25 to 2020-09-20 |
 | Validation: 17 expanding walk-forward test folds of 2,160 bars (90 days) | 36,720 | 2020-09-21 to 2024-11-28 |
 | Unused (a partial fold) | 792 | 2024-11-29 to 2024-12-31 |
-| Untouched holdout | 15,312 | 2025-01-01 to 2026-09-30 |
+| Holdout (strategy unscored; its market seen) | 15,312 | 2025-01-01 to 2026-09-30 |
 
 The holdout is read once, and only if validation selects a config. The
 harness's buy-and-hold benchmark follows the same rule.
@@ -167,6 +170,10 @@ These four configs are the whole family:
   when it is below minus the threshold.
 - **Multiple testing**: Holm across the four configs; the deflated Sharpe
   ratio counts them as four trials.
+- **Which config goes to the holdout**: of the configs that survive
+  validation, the harness takes the one with the highest validation mean net
+  return per trade at 1.0×, not the highest Sharpe. That favours the longer
+  holds, whose trades last longer; rule 2 then tests that config's Sharpe.
 - **Horizons**: three days and a week. The signal is a 7-day mean, so it
   moves slowly; a hold near its own length lets positioning unwind without
   paying a round trip every day for the same position.
@@ -330,7 +337,7 @@ import json, sys
 lock = json.load(open(sys.argv[1]))
 found = (lock.get("spec_sha256"), (lock.get("data_fingerprint") or {}).get("fingerprint_sha256"))
 expected = (
-    "85d38e7ecc2f1a1dad7080f60f0913dbc4441f4d7cdf16334de1fb890ebb9ed1",
+    "52eb9a64ff094b80ed6c350a1d51a9ae95c5b33d84cdad907f39bcc2a2ad8d5d",
     "33d21ae1eea95941c1910d2e137ab9e08cf8171650a90bf2c838434a052dc833",
 )
 sys.exit(0 if found == expected else f"not the pre-registered spec and table: {found}")
@@ -342,6 +349,11 @@ sys.exit(0 if found == expected else f"not the pre-registered spec and table: {f
 
 The study runs only after both checks pass. If the fingerprint check fails,
 `sync.log` shows whether an archive inside the range is missing.
+
+If code under `src` has changed on main since this was merged, the pin check
+refuses the newest main. Then check out the commit that merged this document
+instead: it is on main, it holds this document, and its code is the pinned
+code. Never edit the pin.
 
 The results go into `exp_funding_btc.results.md` in a separate PR. That PR
 records the commit from `commit.txt`, the lock file, and the harness output,

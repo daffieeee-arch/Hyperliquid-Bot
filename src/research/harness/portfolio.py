@@ -10,11 +10,13 @@ day, so periods never overlap, like the bar series' trades.
 
 A period's gross return is the capital-weighted sum of its positions'
 returns: each leg holds half the capital under ``signed`` and the long leg
-all of it under ``long_only``, equal weight within a leg. Its weight, which
-the round trip is charged on, is the gross exposure, so one period pays one
-round trip on the capital, as each position pays entry and exit on its
-notional. Funding is paid by the long leg and received by the short leg,
-settlement by settlement, so the stress can treat each adversely.
+all of it under ``long_only``, equal weight within a leg, sized at the
+decision. Its weight, which the round trip is charged on, is the capital
+deployed: the weights of the names that filled, so one period pays one
+round trip on what it holds, as each position pays entry and exit on its
+notional, and the capital of a name that did not fill sits idle. Funding
+is paid by the long leg and received by the short leg, settlement by
+settlement, so the stress can treat each adversely.
 
 A position is held to the period's exit day whatever happens in between,
 so no exit uses knowledge of a later day. It exits at that day's close when
@@ -31,11 +33,14 @@ days, and the flat archive days a delisted contract keeps pay their
 recorded rate until the exit, which overstates a long's cost and a short's
 income by at most the horizon's worth of that rate; ``forced_exits`` counts
 such positions. A symbol that does not trade on the fill day is not
-opened, and its leg is spread over the names that filled. A period with a
-leg short of ``min_names_per_leg`` names, at the decision or at the fill,
-is skipped. After a skip at the decision the next decision is the next
-day; after a skip at the fill it is the fill day, when the non-fill is
-known, so no decision is placed with a later day's knowledge.
+opened; its capital sits idle, since the other orders were sized before
+its non-fill was known. A period with a leg short of ``min_names_per_leg``
+names at the decision sends no orders and is skipped; one with a leg short
+of them at the fill unwinds the names that did fill at the fill close,
+paying the round trip on them for no return (an unwound period, counted
+apart). After a skip at the decision the next decision is the next day;
+after one at the fill it is the fill day, when the non-fill is known, so
+no decision is placed with a later day's knowledge.
 
 With funding declared, a traded day without any rate that a position could
 hold fails the run closed before any window is scored (the first window
@@ -85,6 +90,8 @@ class PeriodStats:
     uncovered_funding_days: int = 0
     # Held position-days of a halt without any rate, charged nothing.
     unfunded_halt_days: int = 0
+    # Periods whose fills were unwound at the fill close: a leg fell short.
+    unwound_periods: int = 0
 
     def __add__(self, other: PeriodStats) -> PeriodStats:
         # Every counter sums, so a new one cannot be left out here.
@@ -108,18 +115,22 @@ class _Position:
 
 @dataclass(frozen=True, slots=True)
 class _Skipped:
-    """A period not taken: at the decision (no orders sent) or at the fill."""
-
-    at_fill: bool
+    """A period not taken at the decision: no orders were sent."""
 
 
 @dataclass(frozen=True, slots=True)
 class _Opened:
-    """A period's positions and how many names each leg holds."""
+    """A period's filled positions, their stats, and whether a leg fell short.
+
+    ``deployed`` is the capital the fills hold. With ``unwound`` the fills
+    are closed at the fill close: the period pays the round trip on them
+    for no return.
+    """
 
     positions: list[_Position]
-    long_names: int
-    short_names: int
+    stats: PeriodStats
+    deployed: float
+    unwound: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,9 +138,7 @@ class _Held:
     value: float
     paid: float
     received: float
-    forced: int
-    uncovered: int
-    unfunded: int
+    stats: PeriodStats
 
 
 @dataclass
@@ -143,17 +152,16 @@ class PanelSource:
     _ranked: dict[int, list[tuple[float, int]]] = field(default_factory=dict, init=False)
     # The windows whose held days were audited for funding.
     _audited: set[tuple[int, int]] = field(default_factory=set, init=False)
-    _split_audited: bool = field(default=False, init=False)
-    _portfolio: PortfolioSpec = field(init=False)
 
     def __post_init__(self) -> None:
         if self.spec.portfolio is None:
             raise HarnessError("invariant", "PanelSource needs a portfolio spec.")
-        self._portfolio = self.spec.portfolio
         if (self.spec.costs.funding_column is None) != (self.panel.funding is None):
             raise HarnessError("invariant", "The panel's funding does not match the spec.")
         if (self.panel.funding is None) != (self.panel.covered is None):
             raise HarnessError("invariant", "A panel with funding carries its covered flags.")
+        if self.panel.funding is not None:
+            self._audit_split(self.panel.funding)
 
     def _audit_window(
         self, funding: Sequence[Sequence[float | None]], start: int, end: int
@@ -173,6 +181,7 @@ class PanelSource:
         """
 
         panel = self.panel
+        universe_size = self.portfolio.universe_size
         latency = self.spec.costs.latency_bars
         horizons = sorted({config.horizon_bars for config in self.spec.configs}, reverse=True)
         for symbol in range(len(panel.symbols)):
@@ -192,7 +201,7 @@ class PanelSource:
                         "traded day a position could hold; a study's range must not hold "
                         "across one.",
                     )
-                if not self._in_universe(symbol, day):
+                if not self._in_universe(symbol, day, universe_size):
                     continue
                 longest = next((h for h in horizons if day + latency + h < end), None)
                 # A symbol that cannot fill from this day never holds from it.
@@ -209,15 +218,18 @@ class PanelSource:
 
     @property
     def portfolio(self) -> PortfolioSpec:
-        return self._portfolio
+        portfolio = self.spec.portfolio
+        if portfolio is None:
+            raise HarnessError("invariant", "PanelSource needs a portfolio spec.")
+        return portfolio
 
     def _audit_split(self, funding: Sequence[Sequence[float | None]]) -> None:
         """Audit the funding of every window the split will score, before any is.
 
         The folds' test windows and the holdout are the windows a run
-        scores; auditing them all when the first is scored, rather than
-        each as it comes, makes a hole in the holdout fail the run whether
-        or not validation selects a config to score on it.
+        scores; auditing them all when the source is built, rather than
+        each as it is scored, makes a hole in the holdout fail the run
+        whether or not validation scores a config on it.
         """
 
         folds, holdout = walk_forward(self.length, self.spec.split)
@@ -242,14 +254,12 @@ class PanelSource:
             raise HarnessError("invariant", f"Config {config.id} has no quantile.")
         latency = self.spec.costs.latency_bars
         if self.panel.funding is not None:
-            if not self._split_audited:
-                self._split_audited = True
-                self._audit_split(self.panel.funding)
             self._audit_once(self.panel.funding, start, end)
         quantile = exact_quantile(config.quantile)
         gross: list[float] = []
         paid: list[float] = []
         received: list[float] = []
+        weights: list[float] = []
         stats = EMPTY_STATS
         decision = start
         while (period := next_period(decision, latency, config.horizon_bars, end)) is not None:
@@ -257,44 +267,44 @@ class PanelSource:
             opened = self._positions(quantile, decision, entry)
             if isinstance(opened, _Skipped):
                 stats += PeriodStats(skipped_decisions=1)
-                # A non-fill is known on the fill day, not before; the
-                # decision always advances, at zero latency too.
-                decision = max(entry, decision + 1) if opened.at_fill else decision + 1
+                decision += 1
                 continue
+            if opened.unwound:
+                # The fills are closed at the fill close: no return, no
+                # funding, the round trip on the capital they held. The
+                # non-fill is known on the fill day, so the next decision is
+                # there; the decision always advances, at zero latency too.
+                if opened.positions:
+                    gross.append(0.0)
+                    paid.append(0.0)
+                    received.append(0.0)
+                    weights.append(opened.deployed)
+                stats += opened.stats
+                decision = max(entry, decision + 1)
+                continue
+            period_stats = opened.stats
             period_gross = 0.0
             period_paid = 0.0
             period_received = 0.0
-            forced = 0
-            uncovered = 0
-            unfunded = 0
             for position in opened.positions:
                 held = self._hold(position, entry, exit_index)
                 period_gross += held.value
                 period_paid += held.paid
                 period_received += held.received
-                forced += held.forced
-                uncovered += held.uncovered
-                unfunded += held.unfunded
+                period_stats += held.stats
             gross.append(period_gross)
             paid.append(period_paid)
             received.append(period_received)
-            stats += PeriodStats(
-                periods=1,
-                long_names=opened.long_names,
-                short_names=opened.short_names,
-                forced_exits=forced,
-                uncovered_funding_days=uncovered,
-                unfunded_halt_days=unfunded,
-            )
+            # The round trip is charged on the capital the fills hold.
+            weights.append(opened.deployed)
+            stats += period_stats
             decision = exit_index
         self.stats[(config.id, start, end)] = stats
         return TradeSeries(
             gross=tuple(gross),
             funding_paid=tuple(paid),
             funding_received=tuple(received),
-            # Each period deploys the capital: both legs together, or the long
-            # leg alone, so one period pays one round trip on it.
-            weights=(1.0,) * len(gross),
+            weights=tuple(weights),
         )
 
     def _positions(self, quantile: Fraction, decision: int, entry: int) -> _Opened | _Skipped:
@@ -304,7 +314,7 @@ class PanelSource:
         eligible = self._eligible(decision)
         names = leg_size(len(eligible), quantile)
         if names < portfolio.min_names_per_leg:
-            return _Skipped(at_fill=False)
+            return _Skipped()
         if self.spec.direction == "signed" and 2 * names > len(eligible):
             # The spec caps a signed quantile at one half; a wider one would
             # put a name in both legs.
@@ -315,19 +325,23 @@ class PanelSource:
             if self.spec.direction == "signed"
             else []
         )
-        # A symbol that does not trade on the fill day is not opened; a leg
-        # that fills below the floor skips the period, as at the decision.
-        floor = portfolio.min_names_per_leg
+        # Each order is sized at the decision: a leg's capital over its names.
+        # A symbol that does not trade on the fill day is not opened and its
+        # capital sits idle; a leg that fills below the floor unwinds the
+        # period's fills.
+        weight = (0.5 if short_leg else 1.0) / names
         long_filled = [symbol for symbol in long_leg if self._fills(symbol, decision, entry)]
         short_filled = [symbol for symbol in short_leg if self._fills(symbol, decision, entry)]
-        if len(long_filled) < floor or (short_leg and len(short_filled) < floor):
-            return _Skipped(at_fill=True)
-        capital = 0.5 if short_leg else 1.0
-        positions = [_Position(symbol, 1, capital / len(long_filled)) for symbol in long_filled]
-        positions.extend(
-            _Position(symbol, -1, capital / len(short_filled)) for symbol in short_filled
+        positions = [_Position(symbol, 1, weight) for symbol in long_filled]
+        positions.extend(_Position(symbol, -1, weight) for symbol in short_filled)
+        floor = portfolio.min_names_per_leg
+        unwound = len(long_filled) < floor or (bool(short_leg) and len(short_filled) < floor)
+        stats = (
+            PeriodStats(skipped_decisions=1, unwound_periods=1 if positions else 0)
+            if unwound
+            else PeriodStats(periods=1, long_names=len(long_filled), short_names=len(short_filled))
         )
-        return _Opened(positions, len(long_filled), len(short_filled))
+        return _Opened(positions, stats, weight * len(positions), unwound)
 
     def _fills(self, symbol: int, decision: int, entry: int) -> bool:
         """Whether the symbol trades at the fill and had a row on every day since the decision.
@@ -355,7 +369,7 @@ class PanelSource:
             through = day
         return through
 
-    def _in_universe(self, symbol: int, day: int) -> bool:
+    def _in_universe(self, symbol: int, day: int, universe_size: int) -> bool:
         """Whether the symbol can be decided on that day: traded, ranked within the
         universe, signal known. The ranking and the funding audit share this one test."""
 
@@ -364,7 +378,7 @@ class PanelSource:
         return (
             panel.traded[symbol][day] is True
             and rank is not None
-            and rank <= self.portfolio.universe_size
+            and rank <= universe_size
             and panel.signals[symbol][day] is not None
         )
 
@@ -375,9 +389,10 @@ class PanelSource:
         if cached is not None:
             return cached
         panel = self.panel
+        universe_size = self.portfolio.universe_size
         eligible: list[tuple[float, int]] = []
         for symbol in range(len(panel.symbols)):
-            if not self._in_universe(symbol, decision):
+            if not self._in_universe(symbol, decision, universe_size):
                 continue
             signal = panel.signals[symbol][decision]
             if signal is None:
@@ -443,9 +458,11 @@ class PanelSource:
             value=value,
             paid=position.weight * paid,
             received=position.weight * received,
-            forced=0 if last == exit_index else 1,
-            uncovered=uncovered,
-            unfunded=unfunded,
+            stats=PeriodStats(
+                forced_exits=0 if last == exit_index else 1,
+                uncovered_funding_days=uncovered,
+                unfunded_halt_days=unfunded,
+            ),
         )
 
     def window_stats(self, config_id: str, windows: Sequence[tuple[int, int]]) -> PeriodStats:
@@ -504,4 +521,5 @@ def _stats_json(stats: PeriodStats) -> dict[str, Json]:
         "forced_exits": stats.forced_exits,
         "uncovered_funding_days": stats.uncovered_funding_days,
         "unfunded_halt_days": stats.unfunded_halt_days,
+        "unwound_periods": stats.unwound_periods,
     }

@@ -175,7 +175,7 @@ configs:
   days later at that day's close, exited `horizon_bars` days after the fill.
   The next decision is the exit day, so periods do not overlap, like a bar
   series' trades. After a period skipped at the decision the next decision
-  is the next day; after one skipped at the fill it is the fill day, when
+  is the next day; after one unwound at the fill it is the fill day, when
   the non-fill is known. A validation period never reads a holdout close.
   The rank and the traded flag are the decision day's own close, so
   `latency_bars` must be at least 1 unless `allow_zero_latency` is set.
@@ -189,15 +189,21 @@ configs:
   first of tied names in the long leg's top and the alphabetically last in
   the short leg's bottom. Both legs have `floor(universe × quantile)`
   names, with the quantile as written in the spec (100 names at 0.29 give
-  29), at least `min_names_per_leg` at the decision and again at the fill,
-  or the day is skipped. A config whose quantile cannot fill a leg from a
+  29), at least `min_names_per_leg` at the decision, or no orders are sent
+  and the day is skipped. A config whose quantile cannot fill a leg from a
   full universe is refused at validation.
-- **Return and costs**: equal weight within a leg; each leg holds half the
-  capital under `signed`, the long leg all of it under `long_only`. The
-  period's gross return is the capital-weighted sum of its positions'
-  returns and its weight the gross exposure (1.0), so the round trip is
-  charged once on the capital per period, as each position pays entry and
-  exit on its notional. `sizing` must be `unit`.
+- **Return and costs**: equal weight within a leg, sized at the decision
+  (a leg's capital over its names); each leg holds half the capital under
+  `signed`, the long leg all of it under `long_only`. A name that does not
+  trade on the fill day is not opened and its capital sits idle: the other
+  orders were sized before its non-fill was known. The period's gross
+  return is the weighted sum of its positions' returns and its weight the
+  capital the fills hold, so the round trip is charged on what the period
+  holds, as each position pays entry and exit on its notional. A leg that
+  fills below `min_names_per_leg` unwinds the period's fills at the fill
+  close: no return, no funding, the round trip on the capital they held,
+  recorded as a trade and counted as an `unwound_periods` (it is also a
+  skipped decision). `sizing` must be `unit`.
 - **Funding**: the long leg pays each held day's rate on the notional at
   that day's close and the short leg receives it, position by position, so
   the stress treats each payment adversely as for a bar trade. With
@@ -205,8 +211,8 @@ configs:
   `funding_covered`).
   - A **traded** day with **no rate** that a position could hold fails
     the run closed (`failure_kind: funding`) before any window is scored:
-    the first window scored audits every fold's test window and the
-    holdout. For
+    the panel source audits every fold's test window and the holdout when
+    it is built. For
     every decision day of a window the symbol is in the universe (traded,
     rank at most `universe_size`, signal known) and can fill from (rows
     through the fill day, traded on it), the traded days from
@@ -251,12 +257,12 @@ configs:
   case the data cannot tell apart is a relisting whose archive follows the
   old contract's without a missing day; it reads as a halt. A symbol that
   does not trade on the fill day, or whose rows break between the decision
-  and the fill, is not opened, and its leg is spread over the names that
-  filled; a period with a leg below the floor at the fill is skipped.
+  and the fill, is not opened and its capital sits idle; a period with a
+  leg below the floor at the fill unwinds its fills at cost.
 - **Report**: `result.json` has a `portfolio` block with the universe rule,
   `symbol_count`, and per config the validation (and, when scored, holdout)
   period count, skipped decisions, mean names per leg, forced exits,
-  uncovered funding days and unfunded halt days;
+  uncovered funding days, unfunded halt days and unwound periods;
   `result.md` has a Portfolio section. `bar_count`, `timestamp_min` and
   `timestamp_max` describe the date axis (one bar is one day of the panel,
   not one row); the fingerprint's `row_count` is the rows read. Each

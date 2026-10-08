@@ -64,7 +64,8 @@ BAR_LIMITATIONS: Final[tuple[str, ...]] = (
 PANEL_LIMITATIONS: Final[tuple[str, ...]] = (
     "A panel portfolio scores one trade per non-overlapping period: long the top quantile of "
     "the day's universe by the signal and, when signed, short the bottom quantile, equal "
-    "weight within a leg, one round trip on the capital per period. A position is held to "
+    "weight within a leg sized at the decision, one round trip on the capital the fills hold. "
+    "A position is held to "
     "its exit day; a symbol not trading then is marked at its last traded close, which is "
     "not the delisting price a holder got, and pays the recorded funding of its untraded "
     "days to the exit. A held day whose funding is not whole is charged its recorded sum and "
@@ -417,7 +418,8 @@ def _portfolio_lines(document: dict[str, Json]) -> list[str]:
         (
             "Each trade is one period: long the top quantile of the day's universe by the "
             "signal{short}, equal weight within a leg, one round trip on the capital. A symbol "
-            "that stops trading while held exits at its last traded close (a forced exit)."
+            "that stops trading while held exits at its last traded close (a forced exit); a "
+            "period whose leg fell short at the fill unwinds its fills at cost (unwound)."
         ).format(short=" and short the bottom quantile" if block.get("signed") is True else ""),
         "",
         f"- universe: rank at most {block.get('universe_size')}, "
@@ -425,9 +427,10 @@ def _portfolio_lines(document: dict[str, Json]) -> list[str]:
         "",
         (
             "| config | quantile | window | periods | skipped decisions | mean long names "
-            "| mean short names | forced exits | uncovered funding days | unfunded halt days |"
+            "| mean short names | forced exits | uncovered funding days | unfunded halt days "
+            "| unwound periods |"
         ),
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     configs = block.get("configs")
     if not isinstance(configs, list):
@@ -441,7 +444,7 @@ def _portfolio_lines(document: dict[str, Json]) -> list[str]:
                 continue
             lines.append(
                 "| {id} | {quantile} | {window} | {periods} | {skipped} | {long} | {short} "
-                "| {forced} | {uncovered} | {unfunded} |".format(
+                "| {forced} | {uncovered} | {unfunded} | {unwound} |".format(
                     id=config.get("id"),
                     quantile=config.get("quantile"),
                     window=window,
@@ -452,6 +455,7 @@ def _portfolio_lines(document: dict[str, Json]) -> list[str]:
                     forced=stats.get("forced_exits"),
                     uncovered=stats.get("uncovered_funding_days"),
                     unfunded=stats.get("unfunded_halt_days"),
+                    unwound=stats.get("unwound_periods"),
                 )
             )
     return lines

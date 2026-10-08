@@ -593,14 +593,12 @@ def _parse_data(raw: dict[str, Json]) -> DataSpec:
         _require_role_column(columns, "symbol", symbol_column, "data.symbol_column")
         _require_role_column(columns, "traded", traded_column, "data.traded_column")
         _require_role_column(columns, "rank", rank_column, "data.rank_column")
-        covered = [column.name for column in columns if column.role == "covered"]
-        funding = [column.name for column in columns if column.role == "funding"]
-        if len(covered) > 1 or bool(covered) != bool(funding):
+        funding_covered_column = _optional_role_column(columns, "covered")
+        if (funding_covered_column is None) != (_optional_role_column(columns, "funding") is None):
             raise SpecError(
                 "A panel with a funding-role column declares exactly one covered-role column, "
                 "and one without funding declares none."
             )
-        funding_covered_column = covered[0] if covered else None
     return DataSpec(
         backend=str(backend),
         parquet_path=parquet_path,
@@ -643,9 +641,17 @@ def _parse_columns(raw: Json, panel: bool) -> tuple[ColumnSpec, ...]:
 def _require_role_column(
     columns: tuple[ColumnSpec, ...], role: str, name: str | None, label: str
 ) -> None:
-    hits = [column for column in columns if column.role == role]
-    if len(hits) != 1 or hits[0].name != name:
+    if _optional_role_column(columns, role) != name or name is None:
         raise SpecError(f"{label} must be the unique {role}-role column.")
+
+
+def _optional_role_column(columns: tuple[ColumnSpec, ...], role: str) -> str | None:
+    """The name of the one column with the role, or None; two is a spec error."""
+
+    hits = [column.name for column in columns if column.role == role]
+    if len(hits) > 1:
+        raise SpecError(f"At most one column may carry the {role} role.")
+    return hits[0] if hits else None
 
 
 def _parse_features(raw: Json, data: DataSpec) -> tuple[FeatureSpec, ...]:

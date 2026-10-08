@@ -276,7 +276,8 @@ def test_planted_cross_section_passes_h1(tmp_path: Path) -> None:
     markdown = (tmp_path / "out" / "result.md").read_text(encoding="utf-8")
     assert "## Portfolio" in markdown and "rank at most 12, at least 2 names per leg" in markdown
     periods = validation["periods"]
-    assert f"| q25-h4 | 0.25 | validation | {periods} | 0 | 3.0 | 3.0 | 0 | 0 | 0 |" in markdown
+    assert validation["unwound_periods"] == 0
+    assert f"| q25-h4 | 0.25 | validation | {periods} | 0 | 3.0 | 3.0 | 0 | 0 | 0 | 0 |" in markdown
     assert "Buy-and-hold: one unit long" not in markdown
     assert validation["uncovered_funding_days"] == 0
     assert validation["unfunded_halt_days"] == 0
@@ -435,7 +436,7 @@ def test_periods_do_not_overlap_and_the_exit_stays_inside_the_window() -> None:
     series = source.window(_config(0.5, 3), 0, 12)
     # Decisions at 0, 4, 8 (fill +1, exit +3); the one at 8 would exit at 12.
     assert len(series.gross) == 2
-    assert source.stats[("c", 0, 12)] == PeriodStats(2, 0, 2, 2, 0)
+    assert source.stats[("c", 0, 12)] == PeriodStats(periods=2, long_names=2, short_names=2)
 
 
 def test_a_symbol_that_stops_trading_exits_at_its_last_traded_close() -> None:
@@ -510,6 +511,7 @@ def test_a_symbol_whose_rows_break_before_the_fill_is_not_opened() -> None:
     # 300 it trades at on day 2 is another listing. The long leg is C alone
     # and B's later rise is never booked.
     assert series.gross == pytest.approx((0.0,))
+    assert series.weights == pytest.approx((0.75,))
     assert source.stats[("c", 0, 6)].long_names == 1
 
 
@@ -571,9 +573,11 @@ def test_a_symbol_not_trading_on_the_fill_day_is_not_opened() -> None:
     )
     source = PanelSource(spec, panel)
     series = source.window(_config(0.5, 1), 0, 3)
-    # B could not fill, so the long leg is A alone at half the capital.
-    assert series.gross == pytest.approx((0.05,))
-    assert source.stats[("c", 0, 3)] == PeriodStats(1, 0, 1, 2, 0)
+    # B could not fill: A keeps its decision-time quarter of the capital and
+    # B's quarter sits idle, so the period deploys three quarters.
+    assert series.gross == pytest.approx((0.25 * 0.10,))
+    assert series.weights == pytest.approx((0.75,))
+    assert source.stats[("c", 0, 3)] == PeriodStats(periods=1, long_names=1, short_names=2)
 
 
 def test_a_period_is_skipped_when_a_leg_cannot_fill_or_is_too_small() -> None:
@@ -586,9 +590,13 @@ def test_a_period_is_skipped_when_a_leg_cannot_fill_or_is_too_small() -> None:
     )
     source = PanelSource(spec, panel)
     series = source.window(_config(0.5, 1), 0, 4)
-    # Day 0's short leg cannot fill on day 1; day 1's period fills on day 2.
-    assert len(series.gross) == 1
-    assert source.stats[("c", 0, 4)].skipped_decisions == 1
+    # Day 0's short leg cannot fill on day 1, so its long fills (A and B, half
+    # the capital) are unwound at the fill close for no return; the next
+    # decision is day 1, whose period fills on day 2.
+    assert series.gross == pytest.approx((0.0, 0.0))
+    assert series.weights == pytest.approx((0.5, 1.0))
+    stats = source.stats[("c", 0, 4)]
+    assert (stats.periods, stats.skipped_decisions, stats.unwound_periods) == (1, 1, 1)
     # Three eligible names at quantile 0.5 give one per leg, under a floor of two.
     small = _four_symbol_spec(portfolio={"universe_size": 4, "min_names_per_leg": 2})
     three = _table(
@@ -605,7 +613,10 @@ def test_a_period_is_skipped_when_a_leg_cannot_fill_or_is_too_small() -> None:
         traded=[[True] * 3, [True] * 3, [True] * 3, [True, False, True]],
         signals=[[2.0] * 3, [1.0] * 3, [-1.0] * 3, [-2.0] * 3],
     )
-    assert len(PanelSource(floored, thin).window(_config(0.5, 1), 0, 3).gross) == 0
+    # D's non-fill leaves the short leg at one name under a floor of two: the
+    # three fills are unwound, paying the round trip on three quarters.
+    series = PanelSource(floored, thin).window(_config(0.5, 1), 0, 3)
+    assert series.gross == pytest.approx((0.0,)) and series.weights == pytest.approx((0.75,))
 
 
 def test_the_universe_is_read_at_the_decision_day() -> None:
@@ -863,11 +874,12 @@ def test_a_period_skipped_at_the_fill_is_followed_by_a_decision_on_the_fill_day(
     source = PanelSource(spec, panel)
     series = source.window(_config(0.5, 2), 0, 6)
     # Day 0's short leg cannot fill on day 2, which is known on day 2 only:
-    # the next decision is day 2, whose exit (day 6) falls outside the
-    # window, so no period is taken. A decision on day 1 would have been
-    # placed with day 2's knowledge.
-    assert series.gross == ()
-    assert source.stats[("c", 0, 6)].skipped_decisions == 1
+    # the long fills are unwound there and the next decision is day 2,
+    # whose exit (day 6) falls outside the window, so no period is held. A
+    # decision on day 1 would have been placed with day 2's knowledge.
+    assert series.gross == pytest.approx((0.0,)) and series.weights == pytest.approx((0.5,))
+    stats = source.stats[("c", 0, 6)]
+    assert (stats.periods, stats.skipped_decisions, stats.unwound_periods) == (0, 1, 1)
 
 
 def test_a_hole_in_the_holdout_fails_the_run_without_a_selected_config(tmp_path: Path) -> None:

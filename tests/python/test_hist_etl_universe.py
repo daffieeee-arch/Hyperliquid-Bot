@@ -259,6 +259,29 @@ def test_lister_retries_a_spurious_no_such_bucket() -> None:
     assert waits == [0.5, 1.0]
 
 
+class _DroppedBody(BytesResponse):
+    def iter_bytes(self) -> Iterator[bytes]:
+        yield self.body[:10]
+        raise ConnectionResetError("connection dropped")
+
+
+def test_lister_retries_a_body_that_drops() -> None:
+    good = _listing_xml(KLINES, [f"{KLINES}A/"], {f"{KLINES}A/": True}, truncated=False)
+    transport = _Sequence([_DroppedBody(200, good), BytesResponse(200, good)])
+    lister = BucketLister(
+        transport, limiter=RateLimiter(0, lambda _s: None), max_retries=1, sleeper=lambda _s: None
+    )
+    assert lister.list(KLINES) == ((), (f"{KLINES}A/",))
+    assert transport.calls == 2
+    failing = _Sequence([_DroppedBody(200, good) for _ in range(10)])
+    lister = BucketLister(
+        failing, limiter=RateLimiter(0, lambda _s: None), max_retries=1, sleeper=lambda _s: None
+    )
+    with pytest.raises(HistEtlError, match="connection dropped") as caught:
+        lister.list(KLINES)
+    assert caught.value.exit_code == 2
+
+
 def test_lister_does_not_retry_another_404() -> None:
     transport = _Sequence([BytesResponse(404, b"<Error><Code>NoSuchKey</Code></Error>")])
     lister = BucketLister(
@@ -314,6 +337,21 @@ def test_latest_month_follows_the_first_monday_rule() -> None:
     assert latest_published_month(date(2026, 10, 4)) == _m("2026-08")
     assert latest_published_month(date(2026, 10, 5)) == _m("2026-09")
     assert latest_published_month(date(2026, 1, 1)) == _m("2025-11")
+
+
+def test_a_month_published_early_moves_latest_month() -> None:
+    # 2026-10-04 is before the first Monday, but the bucket lists September.
+    universe = discover_universe(
+        _lister(FakeBucket(_bucket_keys())), as_of=date(2026, 10, 4), quote="USDT", interval="1d"
+    )
+    assert universe.latest_month == _m("2026-09")
+    keys = [key for key in _bucket_keys() if "2026-09" not in key]
+    earlier = discover_universe(
+        _lister(FakeBucket(keys)), as_of=date(2026, 10, 4), quote="USDT", interval="1d"
+    )
+    assert earlier.latest_month == _m("2026-08")
+    specs = expand_universe("u", earlier, datasets=("klines",), start=None, enabled=True)
+    assert {spec.symbol: spec.end for spec in specs}["BTCUSDT"] is None
 
 
 def test_render_round_trips_one_line_per_symbol(tmp_path: Path) -> None:
@@ -423,13 +461,13 @@ def test_expansion_start_cuts_runs() -> None:
     specs = {
         spec.id: spec
         for spec in expand_universe(
-            "u", _discovered(), datasets=("klines",), start=date(2026, 1, 15), enabled=True
+            "u", _discovered(), datasets=("klines",), start=date(2026, 2, 1), enabled=True
         )
     }
     assert "u-klines-relusdt" not in specs
     assert "u-funding-btcusdt" not in specs
     cut = specs["u-klines-lunausdt"]
-    assert (cut.start, cut.open_start, cut.open_end) == (date(2026, 1, 15), False, True)
+    assert (cut.start, cut.open_start, cut.open_end) == (date(2026, 2, 1), False, True)
     untouched = specs["u-klines-btcusdt"]
     assert (untouched.start, untouched.open_start) == (date(2026, 6, 1), True)
 
@@ -496,6 +534,7 @@ def test_manifest_expands_and_selects_by_group(tmp_path: Path) -> None:
         ('file = "universe/u.json"\ndatasets = []\n', "datasets must name"),
         ('file = "universe/u.json"\nsymbols = ["BTCUSDT"]\n', "unknown keys"),
         ('file = "universe/missing.json"\n', "does not exist"),
+        ('file = "universe/u.json"\nstart = "2026-01-05"\n', "first day of a month"),
     ],
 )
 def test_manifest_universe_entry_fails_closed(tmp_path: Path, body: str, message: str) -> None:
@@ -554,12 +593,15 @@ def _serve_kline_month(
 class _Archives:
     def __init__(self, files: dict[str, bytes]) -> None:
         self.files = files
+        self.gets: list[str] = []
 
     @contextmanager
     def open(
         self, method: str, url: str, headers: Mapping[str, str] | None = None
     ) -> Iterator[HttpBody]:
         del headers
+        if method == "GET":
+            self.gets.append(url)
         body = self.files.get(url)
         if body is None:
             yield BytesResponse(404, b"")
@@ -567,7 +609,9 @@ class _Archives:
         yield BytesResponse(200, b"" if method == "HEAD" else body)
 
 
-def _sync_luna(tmp_path: Path, february_days: Iterable[int], start: str | None) -> list[str]:
+def _sync_luna(
+    tmp_path: Path, february_days: Iterable[int], start: str | None, months: int = 3
+) -> list[str]:
     universe = Universe(
         market="um",
         quote="USDT",
@@ -601,7 +645,7 @@ def _sync_luna(tmp_path: Path, february_days: Iterable[int], start: str | None) 
     )
     report = json.loads((root / "logs" / "gap_report.json").read_text(encoding="utf-8"))
     assert code == (2 if report["gaps"] else 0)
-    assert len(list((root / "parquet").rglob("LUNAUSDT-*.parquet"))) == 3
+    assert len(list((root / "parquet").rglob("LUNAUSDT-*.parquet"))) == months
     return [f"{gap['kind']} {gap['detail']}" for gap in report["gaps"]]
 
 
@@ -615,9 +659,67 @@ def test_holes_inside_a_listed_run_are_still_gaps(tmp_path: Path) -> None:
 
 
 def test_a_start_cut_inside_a_run_expects_full_coverage(tmp_path: Path) -> None:
-    gaps = _sync_luna(tmp_path, range(1, 29), start="2026-01-05")
+    gaps = _sync_luna(tmp_path, range(3, 29), start="2026-02-01", months=2)
     assert len(gaps) == 1
-    assert gaps[0].startswith("kline_hole coverage 2026-01-10 00:00:00..")
+    assert gaps[0].startswith("kline_hole coverage 2026-02-03 00:00:00..")
+
+
+def test_a_start_cut_on_the_first_month_keeps_its_late_start(tmp_path: Path) -> None:
+    assert _sync_luna(tmp_path, range(1, 29), start="2026-01-01") == []
+
+
+def test_shared_archives_download_once(tmp_path: Path) -> None:
+    universe = Universe(
+        market="um",
+        quote="USDT",
+        interval="1d",
+        as_of=AS_OF,
+        latest_month=_m("2026-09"),
+        symbols=(UniverseSymbol("BTCUSDT", (), (MonthRun(_m("2026-09"), _m("2026-09")),)),),
+        excluded=(),
+    )
+    _write_universe(tmp_path, universe)
+    manifest = _universe_manifest(
+        tmp_path,
+        '[[binance_universe]]\nid = "u"\nfile = "universe/u.json"\nenabled = false\n'
+        '[[binance]]\nid = "legacy"\nmarket = "um"\ndataset = "fundingRate"\n'
+        'symbol = "BTCUSDT"\nstart = "2026-09-01"\nend = "2026-09-30"\n'
+        'granularity = "monthly"\n',
+    )
+    start = datetime(2026, 9, 1, tzinfo=UTC)
+    rows = "".join(
+        f"{int((start + timedelta(hours=8 * step)).timestamp()) * 1000},8,0.0001\n"
+        for step in range(90)
+    )
+    name = "BTCUSDT-fundingRate-2026-09.zip"
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr(
+            name.replace(".zip", ".csv"),
+            "calc_time,funding_interval_hours,last_funding_rate\n" + rows,
+        )
+    payload = buffer.getvalue()
+    url = f"{BINANCE_VISION_BASE}data/futures/um/monthly/fundingRate/BTCUSDT/{name}"
+    archives = _Archives(
+        {
+            url: payload,
+            url + ".CHECKSUM": f"{hashlib.sha256(payload).hexdigest()}  {name}\n".encode(),
+        }
+    )
+    root = tmp_path / "root"
+    code = run_sync(
+        root=root,
+        manifest_path=manifest,
+        today=AS_OF,
+        dataset_ids=("u", "legacy"),
+        env={},
+        dry_run=False,
+        transport=archives,
+    )
+    report = json.loads((root / "logs" / "gap_report.json").read_text(encoding="utf-8"))
+    assert (code, report["gaps"]) == (0, [])
+    assert archives.gets.count(url) == 1
+    assert len(list((root / "parquet").rglob("BTCUSDT-2026-09.parquet"))) == 1
 
 
 def test_cli_writes_a_new_universe_and_never_replaces_one(

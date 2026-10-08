@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -11,6 +12,9 @@ from pathlib import Path
 SPOT_MICROSECOND_START = date(2025, 1, 1)
 MICROSECOND_THRESHOLD = 100_000_000_000_000
 MILLISECOND_THRESHOLD = 100_000_000_000
+
+# A Binance symbol the manifest, paths, and view names can hold.
+SYMBOL_PATTERN = re.compile(r"[A-Z0-9]{2,20}")
 
 KLINE_DATASETS = frozenset({"klines", "markPriceKlines", "indexPriceKlines", "premiumIndexKlines"})
 DAILY_ONLY_DATASETS = frozenset({"metrics"})

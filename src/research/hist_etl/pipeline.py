@@ -466,7 +466,16 @@ def _acquire_binance(
 ) -> tuple[ArchivePlan, ...]:
     index = index_zips(root)
     acquired: list[ArchivePlan] = []
+    # Two datasets can plan one archive (a universe and a single-symbol
+    # dataset of the same series). The index predates this run's downloads,
+    # so the second would try to download over the first one's file.
+    ready: dict[Path, ArchivePlan] = {}
     for plan in (resolve_local(item, index) for item in plan_binance(specs, today, root)):
+        shared = ready.get(plan.canonical_path)
+        if shared is not None:
+            acquired.append(replace(shared, dataset_id=plan.dataset_id))
+            print(f"sync\tready\t{plan.dataset_id}\t{shared.local_path}")
+            continue
         try:
             assert_free(root, manifest.min_free_bytes)
             local = _ensure_archive(plan, root, manifest, transport, limiter)
@@ -486,6 +495,7 @@ def _acquire_binance(
             gaps.append(Gap("missing_archive", plan.dataset_id, plan.filename))
             continue
         acquired.append(local)
+        ready[plan.canonical_path] = local
         print(f"sync\tready\t{plan.dataset_id}\t{local.local_path}")
     return tuple(acquired)
 

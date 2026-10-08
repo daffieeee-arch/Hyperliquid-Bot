@@ -38,21 +38,26 @@ from research.hist_etl.http import (
     build_transport,
     open_with_retries,
 )
-from research.hist_etl.models import BINANCE_VISION_LISTING, INTERVAL_SECONDS, BinanceSpec
+from research.hist_etl.models import (
+    BINANCE_VISION_LISTING,
+    INTERVAL_SECONDS,
+    SYMBOL_PATTERN,
+    BinanceSpec,
+)
 from research.hist_etl.planning import latest_published_month, next_month
 
 FORMAT: Final = 1
 SOURCE: Final = "binance-vision"
 UNIVERSE_DATASETS: Final = frozenset({"klines", "fundingRate"})
 
-_SYMBOL = re.compile(r"[A-Z0-9]{2,20}")
+_SYMBOL = SYMBOL_PATTERN
 _QUOTE = re.compile(r"[A-Z]{3,5}")
 _MONTH = re.compile(r"(\d{4})-(0[1-9]|1[0-2])")
 _S3_NS: Final = "{http://s3.amazonaws.com/doc/2006-03-01/}"
 # A listing page holds at most 1000 entries, well under 1 MiB of XML.
 _MAX_PAGE_BYTES: Final = 4 * 1024 * 1024
 _NO_SUCH_BUCKET: Final = b"<Code>NoSuchBucket</Code>"
-_NO_SUCH_BUCKET_ATTEMPTS: Final = 10
+_TRANSIENT_ATTEMPTS: Final = 10
 _KLINES_ROOT: Final = "data/futures/um/monthly/klines/"
 _FUNDING_ROOT: Final = "data/futures/um/monthly/fundingRate/"
 _TOP_KEYS: Final = frozenset(
@@ -91,8 +96,9 @@ class Universe:
     """Which months of monthly archives exist per symbol, as listed on ``as_of``.
 
     ``latest_month`` is the newest month the planner expects to be published
-    by ``as_of``. A run that reaches it is still published, which does not
-    mean the contract still trades (see the module docstring).
+    by ``as_of``, or a newer month the bucket already lists. A run that
+    reaches it is still published, which does not mean the contract still
+    trades (see the module docstring).
     ``excluded`` names symbols with the quote suffix that the manifest cannot
     hold (for example a non-ASCII name), with the reason.
     """
@@ -155,18 +161,31 @@ class BucketLister:
             query["marker"] = marker
         url = f"{self._base}?{urllib.parse.urlencode(query, quote_via=urllib.parse.quote)}"
         delay = 0.5
-        for attempt in range(1, _NO_SUCH_BUCKET_ATTEMPTS + 1):
-            status, body = self._get(url, prefix)
-            if status == 200:
-                return _parse_page(body, prefix)
-            # The regional endpoint now and then answers NoSuchBucket for this
-            # bucket, which exists: about one listing in eight on 2026-10-08.
-            # That answer is never true, so it is retried; any other is final.
-            if status != 404 or _NO_SUCH_BUCKET not in body or attempt == _NO_SUCH_BUCKET_ATTEMPTS:
-                break
+        for attempt in range(1, _TRANSIENT_ATTEMPTS + 1):
+            last = attempt == _TRANSIENT_ATTEMPTS
+            try:
+                status, body = self._get(url, prefix)
+            except OSError as exc:
+                # open_with_retries retries the connect, not a body read that
+                # drops halfway; one dropped page must not end a long scan.
+                if last:
+                    raise HistEtlError(
+                        f"bucket listing of {prefix} failed: {exc}", exit_code=2
+                    ) from exc
+            else:
+                if status == 200:
+                    return _parse_page(body, prefix)
+                # The regional endpoint now and then answers NoSuchBucket for
+                # this bucket, which exists: about one listing in eight on
+                # 2026-10-08. That answer is never true, so it is retried; any
+                # other is final.
+                if status != 404 or _NO_SUCH_BUCKET not in body or last:
+                    raise HistEtlError(
+                        f"bucket listing of {prefix} returned HTTP {status}", exit_code=2
+                    )
             self._sleeper(delay)
             delay = min(delay * 2, 8.0)
-        raise HistEtlError(f"bucket listing of {prefix} returned HTTP {status}", exit_code=2)
+        raise HistEtlError(f"bucket listing of {prefix} did not finish", exit_code=2)
 
     def _get(self, url: str, prefix: str) -> tuple[int, bytes]:
         with open_with_retries(
@@ -270,10 +289,21 @@ def discover_universe(
         quote=quote,
         interval=interval,
         as_of=as_of,
-        latest_month=latest_published_month(as_of),
+        latest_month=_latest_month(as_of, symbols),
         symbols=tuple(symbols),
         excluded=excluded,
     )
+
+
+def _latest_month(as_of: date, symbols: Iterable[UniverseSymbol]) -> date:
+    """The planner's newest due month, or a newer one the bucket already lists.
+
+    Binance can publish a month before the first Monday. A run that ended a
+    month earlier must not then pass for one that is still published.
+    """
+
+    listed = [runs[-1].last for item in symbols for runs in (item.klines, item.funding) if runs]
+    return max([latest_published_month(as_of), *listed])
 
 
 def _child(prefix: str, parent: str) -> str:
@@ -379,8 +409,6 @@ def load_universe(path: Path) -> Universe:
         raise HistEtlError(f"universe file {path.name} has an unsupported kline_interval")
     as_of = _load_date(payload["as_of"], path)
     latest = _load_month(payload["latest_month"], path)
-    if latest != latest_published_month(as_of):
-        raise HistEtlError(f"universe file {path.name} latest_month does not follow as_of")
     symbols_raw = payload["symbols"]
     excluded_raw = payload["excluded"]
     if not isinstance(symbols_raw, dict) or not symbols_raw:
@@ -390,6 +418,8 @@ def load_universe(path: Path) -> Universe:
     symbols = tuple(
         _load_symbol(name, value, quote, path) for name, value in sorted(symbols_raw.items())
     )
+    if latest != _latest_month(as_of, symbols):
+        raise HistEtlError(f"universe file {path.name} latest_month does not follow its data")
     excluded: list[tuple[str, str]] = []
     for name, reason in sorted(excluded_raw.items()):
         if not isinstance(reason, str) or not reason or name in symbols_raw:

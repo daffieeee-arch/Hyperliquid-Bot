@@ -17,6 +17,7 @@ from research.hist_etl.models import (
     KLINE_DATASETS,
     KRAKEN_MINUTES_TO_SLUG,
     MONTHLY_ONLY_DATASETS,
+    SYMBOL_PATTERN,
     BinanceSpec,
     HistManifest,
     HyperliquidFundingSpec,
@@ -25,7 +26,7 @@ from research.hist_etl.models import (
 from research.hist_etl.universe import UNIVERSE_DATASETS, expand_universe, load_universe
 
 _ID = re.compile(r"[a-z0-9][a-z0-9-]*")
-_SYMBOL = re.compile(r"[A-Z0-9]{2,20}")
+_SYMBOL = SYMBOL_PATTERN
 _COIN = re.compile(r"[A-Z0-9]{1,20}")
 _HYPERLIQUID_KEYS = frozenset(
     {
@@ -176,6 +177,12 @@ def _binance_universe(item: object, manifest_dir: Path) -> tuple[str, tuple[Bina
     ):
         raise HistEtlError(f"{group} datasets must name klines and/or fundingRate once each")
     start = _date_field(table, "start") if "start" in table else None
+    # Month files are shared with other datasets of the same series, and a
+    # run's first month may start late. A cut on the first of a month keeps
+    # both exact: every month is whole, and only a run's own first month may
+    # start late.
+    if start is not None and start.day != 1:
+        raise HistEtlError(f"{group} start must be the first day of a month")
     universe = load_universe(manifest_dir / relative)
     specs = expand_universe(
         group,

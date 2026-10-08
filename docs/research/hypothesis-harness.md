@@ -167,7 +167,7 @@ portfolio:
   min_names_per_leg: 5
 configs:
   - id: q20-h7
-    quantile: 0.2              # per leg, in (0, 0.5]
+    quantile: 0.2              # per leg, in (0, 0.5] when signed, (0, 1] long only
     horizon_bars: 7
 ```
 
@@ -203,17 +203,19 @@ configs:
   `funding_covered`).
   - A **traded** day with **no rate** that a position could hold fails
     the run closed (`failure_kind: funding`) when the panel source is
-    built, before any config is scored: every traded day within
-    `latency_bars + max(horizon_bars)` days after a day the symbol is in
-    the universe (traded, rank at most `universe_size`, signal known)
-    needs a rate. The outcome is thus a property of the panel and the
+    built, before any config is scored: for every day the symbol is in
+    the universe (traded, rank at most `universe_size`, signal known), the
+    traded days from `latency_bars + 1` through `latency_bars +
+    max(horizon_bars)` days after it need a rate, up to the next day
+    without a row. The outcome is thus a property of the panel and the
     grid, not of which config's legs hold the symbol. The panel builder
     fails on a funding hole inside a funding run, so this happens only on
     a traded day outside one (a listing month before funding starts, or
     trading after a funding archive ends); a study's panel range and
     universe must not reach such a day. A held **halt** day with no rate,
-    which the builder does not check, is charged nothing and counted as
-    uncovered.
+    which the builder does not check, is charged nothing, and the report
+    counts such position-days per config as `unfunded_halt_days`: a whole
+    day of funding missing each.
   - A held day whose rate is there but **not covered** (at most one
     settlement missing, or an interval switch the panel cannot tell apart,
     see the panel's limitation) is charged its recorded sum, and the
@@ -245,8 +247,8 @@ configs:
   filled; a period with a leg below the floor at the fill is skipped.
 - **Report**: `result.json` has a `portfolio` block with the universe rule,
   `symbol_count`, and per config the validation (and, when scored, holdout)
-  period count, skipped decisions, mean names per leg, forced exits and
-  uncovered funding days;
+  period count, skipped decisions, mean names per leg, forced exits,
+  uncovered funding days and unfunded halt days;
   `result.md` has a Portfolio section. `bar_count`, `timestamp_min` and
   `timestamp_max` describe the date axis (one bar is one day of the panel,
   not one row); the fingerprint's `row_count` is the rows read. Each
@@ -259,7 +261,10 @@ configs:
   unique on its day. The signal, rank and funding may be null
   where the panel does not know them (warm-up, untraded days); a null is
   never read as zero. Every declared feature's availability clock is
-  audited on every row.
+  audited on every row. The date axis is the union of the rows' days and
+  must be evenly spaced: a row stamped off the grid would give every
+  other symbol a day without a row, which ends a contract, so it fails
+  the run (`failure_kind: gap`).
 
 ## Overfitting diagnostics
 

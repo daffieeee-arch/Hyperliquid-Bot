@@ -42,13 +42,14 @@ panel keeps such days only outside its funding runs, and a study's range
 must not hold a position across one. A held day whose rate is there but
 not whole (``funding_covered`` false: at most one settlement missing, or
 an interval switch the panel cannot tell apart) is charged the recorded
-sum and counted, so the report shows how much of the funding rests on such
-days. A halt day without any rate, which the panel builder does not check,
-is charged nothing and counted the same way.
+sum and counted as uncovered, so the report shows how much of the funding
+rests on such days. A halt day without any rate, which the panel builder
+does not check, is charged nothing and counted as unfunded.
 """
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from fractions import Fraction
@@ -77,6 +78,8 @@ class PeriodStats:
     forced_exits: int
     # Held position-days whose funding was charged from a day not whole.
     uncovered_funding_days: int = 0
+    # Held position-days of a halt without any rate, charged nothing.
+    unfunded_halt_days: int = 0
 
     def __add__(self, other: PeriodStats) -> PeriodStats:
         return PeriodStats(
@@ -86,6 +89,7 @@ class PeriodStats:
             short_names=self.short_names + other.short_names,
             forced_exits=self.forced_exits + other.forced_exits,
             uncovered_funding_days=self.uncovered_funding_days + other.uncovered_funding_days,
+            unfunded_halt_days=self.unfunded_halt_days + other.unfunded_halt_days,
         )
 
 
@@ -106,6 +110,7 @@ class _Held:
     received: float
     forced: int
     uncovered: int
+    unfunded: int
 
 
 @dataclass
@@ -131,21 +136,23 @@ class PanelSource:
     def _audit_funding_reach(self, funding: Sequence[Sequence[float | None]]) -> None:
         """A traded day without a rate fails closed wherever a position could hold it.
 
-        A position opened on a day the symbol is in the universe holds at
-        most ``latency_bars + max(horizon_bars)`` days after it, and never
-        across a day without a row; a traded day without a rate inside that
-        reach of any such day fails the run, whichever config's legs would
-        hold it. The same days matter to every config, so this is a
-        property of the panel and the grid.
+        A position decided on a day the symbol is in the universe is
+        charged, as ``_hold`` charges, the days after its fill through its
+        exit: ``decision + latency_bars + 1`` through ``decision +
+        latency_bars + horizon_bars``, the grid's longest horizon at most,
+        and never across a day without a row. A traded day without a rate
+        among those days of any such decision fails the run, whichever
+        config's legs would hold it. The same days matter to every config,
+        so this is a property of the panel and the grid.
         """
 
         panel = self.panel
         universe_size = self.portfolio.universe_size
-        reach = self.spec.costs.latency_bars + max(
-            config.horizon_bars for config in self.spec.configs
-        )
+        latency = self.spec.costs.latency_bars
+        longest = max(config.horizon_bars for config in self.spec.configs)
         for symbol in range(len(panel.symbols)):
-            reach_until = -1
+            # The charged spans of the universe days so far, in day order.
+            spans: deque[tuple[int, int]] = deque()
             prices = panel.prices[symbol]
             traded = panel.traded[symbol]
             ranks = panel.ranks[symbol]
@@ -154,13 +161,13 @@ class PanelSource:
             for day in range(self.length):
                 if prices[day] is None:
                     # The contract ends at a gap; nothing holds across it.
-                    reach_until = -1
+                    spans.clear()
                     continue
+                while spans and spans[0][1] < day:
+                    spans.popleft()
                 if traded[day] is not True:
                     continue
-                # The reach starts after the day: a position decided on it
-                # holds from its fill on, never the decision day itself.
-                if day <= reach_until and rates[day] is None:
+                if spans and spans[0][0] <= day and rates[day] is None:
                     raise IntegrityError(
                         "funding",
                         f"{panel.symbols[symbol]} has no funding on {panel.timestamps[day]}, a "
@@ -169,7 +176,7 @@ class PanelSource:
                     )
                 rank = ranks[day]
                 if rank is not None and rank <= universe_size and signals[day] is not None:
-                    reach_until = max(reach_until, day + reach)
+                    spans.append((day + latency + 1, day + latency + longest))
 
     @property
     def length(self) -> int:
@@ -211,6 +218,7 @@ class PanelSource:
             period_received = 0.0
             forced = 0
             uncovered = 0
+            unfunded = 0
             for position in positions:
                 held = self._hold(position, entry, exit_index)
                 period_gross += held.value
@@ -218,6 +226,7 @@ class PanelSource:
                 period_received += held.received
                 forced += held.forced
                 uncovered += held.uncovered
+                unfunded += held.unfunded
             gross.append(period_gross)
             paid.append(period_paid)
             received.append(period_received)
@@ -228,6 +237,7 @@ class PanelSource:
                 short_names=sum(1 for position in positions if position.side < 0),
                 forced_exits=forced,
                 uncovered_funding_days=uncovered,
+                unfunded_halt_days=unfunded,
             )
             decision = exit_index
         self.stats[(config.id, start, end)] = stats
@@ -288,6 +298,7 @@ class PanelSource:
         if cached is not None:
             return cached
         panel = self.panel
+        universe_size = self.portfolio.universe_size
         eligible: list[tuple[float, int]] = []
         for symbol in range(len(panel.symbols)):
             rank = panel.ranks[symbol][decision]
@@ -295,7 +306,7 @@ class PanelSource:
             if (
                 panel.traded[symbol][decision] is not True
                 or rank is None
-                or rank > self.portfolio.universe_size
+                or rank > universe_size
                 or signal is None
             ):
                 continue
@@ -314,7 +325,7 @@ class PanelSource:
         ends. It exits at its last traded close in that hold. Funding is
         paid on every day of the hold, traded or not, on the notional at
         the day's close. A halt day without a rate, which the panel builder
-        does not check, pays nothing and counts as uncovered; a traded day
+        does not check, pays nothing and counts as unfunded; a traded day
         without one fails closed (the grid's configs were refused such a
         day when the source was built; another config may reach further).
         """
@@ -328,6 +339,7 @@ class PanelSource:
         held_prices: list[float] = []
         held_rates: list[float] = []
         uncovered = 0
+        unfunded = 0
         last = entry
         for day in range(entry + 1, exit_index + 1):
             price = prices[day]
@@ -344,7 +356,9 @@ class PanelSource:
                     f"{panel.symbols[symbol]} has no funding on a held day at "
                     f"{panel.timestamps[day]}; a study's range must not hold across one.",
                 )
-            if rate is None or panel.covered[symbol][day] is not True:
+            if rate is None:
+                unfunded += 1
+            elif panel.covered[symbol][day] is not True:
                 uncovered += 1
             held_prices.append(price)
             held_rates.append(0.0 if rate is None else rate)
@@ -359,6 +373,7 @@ class PanelSource:
             received=position.weight * received,
             forced=0 if last == exit_index else 1,
             uncovered=uncovered,
+            unfunded=unfunded,
         )
 
     def window_stats(self, config_id: str, windows: Sequence[tuple[int, int]]) -> PeriodStats:
@@ -416,4 +431,5 @@ def _stats_json(stats: PeriodStats) -> dict[str, Json]:
         "mean_short_names": None if periods == 0 else stats.short_names / periods,
         "forced_exits": stats.forced_exits,
         "uncovered_funding_days": stats.uncovered_funding_days,
+        "unfunded_halt_days": stats.unfunded_halt_days,
     }

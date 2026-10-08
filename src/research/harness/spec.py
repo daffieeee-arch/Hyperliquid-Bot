@@ -9,6 +9,7 @@ import re
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
+from typing import Final
 
 from research.harness.errors import LockError, SpecError
 from research.harness.yaml_subset import JsonValue
@@ -84,6 +85,10 @@ class ConfigSpec:
     threshold: float | None
     horizon_bars: int
     quantile: float | None = None
+
+    def __post_init__(self) -> None:
+        if (self.threshold is None) == (self.quantile is None):
+            raise SpecError(f"Config {self.id} needs exactly one of threshold and quantile.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -263,7 +268,7 @@ def validate_spec(document: dict[str, Json]) -> HypothesisSpec:
     portfolio = (
         _parse_portfolio(_require_mapping(document["portfolio"], "portfolio")) if panel else None
     )
-    configs = _parse_configs(document["configs"], panel=panel)
+    configs = _parse_configs(document["configs"], panel=panel, signed=direction == "signed")
     if signal_feature not in {feature.name for feature in features}:
         raise SpecError("signal_feature must name a declared feature.")
     _require_funding_column(costs, data)
@@ -544,24 +549,18 @@ def _parse_portfolio(raw: dict[str, Json]) -> PortfolioSpec:
     return PortfolioSpec(universe_size=universe_size, min_names_per_leg=min_names)
 
 
+_DATA_KEYS: Final[frozenset[str]] = frozenset(
+    {"backend", "timestamp_column", "price_column", "max_gap", "max_rows", "columns"}
+)
+
+
 def _parse_data(raw: dict[str, Json]) -> DataSpec:
     backend = raw.get("backend")
     symbol_column = traded_column = rank_column = None
     if backend == "panel":
         _exact(
             raw,
-            {
-                "backend",
-                "parquet_path",
-                "timestamp_column",
-                "symbol_column",
-                "price_column",
-                "traded_column",
-                "rank_column",
-                "max_gap",
-                "max_rows",
-                "columns",
-            },
+            _DATA_KEYS | {"parquet_path", "symbol_column", "traded_column", "rank_column"},
             "data",
         )
         parquet_path = _relative_path(_require_str(raw["parquet_path"], "data.parquet_path", 240))
@@ -582,35 +581,11 @@ def _parse_data(raw: dict[str, Json]) -> DataSpec:
             "data.rank_column",
         )
     elif backend == "parquet":
-        _exact(
-            raw,
-            {
-                "backend",
-                "parquet_path",
-                "timestamp_column",
-                "price_column",
-                "max_gap",
-                "max_rows",
-                "columns",
-            },
-            "data",
-        )
+        _exact(raw, _DATA_KEYS | {"parquet_path"}, "data")
         parquet_path = _relative_path(_require_str(raw["parquet_path"], "data.parquet_path", 240))
         view = None
     elif backend == "duckdb":
-        _exact(
-            raw,
-            {
-                "backend",
-                "view",
-                "timestamp_column",
-                "price_column",
-                "max_gap",
-                "max_rows",
-                "columns",
-            },
-            "data",
-        )
+        _exact(raw, _DATA_KEYS | {"view"}, "data")
         view = _identifier(_require_str(raw["view"], "data.view", 64), _VIEW_NAME, "data.view")
         parquet_path = None
     else:
@@ -727,10 +702,14 @@ def _parse_features(raw: Json, data: DataSpec) -> tuple[FeatureSpec, ...]:
     return tuple(features)
 
 
-def _parse_configs(raw: Json, *, panel: bool = False) -> tuple[ConfigSpec, ...]:
+def _parse_configs(
+    raw: Json, *, panel: bool = False, signed: bool = True
+) -> tuple[ConfigSpec, ...]:
     if not isinstance(raw, list) or not raw:
         raise SpecError("configs must be a non-empty list.")
     knob = "quantile" if panel else "threshold"
+    # Two legs of the same quantile must not overlap; one leg may take all.
+    quantile_cap = 0.5 if signed else 1.0
     configs: list[ConfigSpec] = []
     seen: set[str] = set()
     for index, item in enumerate(raw):
@@ -747,9 +726,8 @@ def _parse_configs(raw: Json, *, panel: bool = False) -> tuple[ConfigSpec, ...]:
         horizon_bars = _positive_int(body["horizon_bars"], f"configs[{index}].horizon_bars", 10_000)
         if panel:
             quantile = _require_number(body["quantile"], f"configs[{index}].quantile")
-            # Two legs of the same quantile must not overlap.
-            if not 0.0 < quantile <= 0.5:
-                raise SpecError(f"configs[{index}].quantile must lie in (0, 0.5].")
+            if not 0.0 < quantile <= quantile_cap:
+                raise SpecError(f"configs[{index}].quantile must lie in (0, {quantile_cap}].")
             configs.append(
                 ConfigSpec(
                     id=config_id, threshold=None, horizon_bars=horizon_bars, quantile=quantile

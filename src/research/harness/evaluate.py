@@ -838,8 +838,6 @@ def held_funding(
     positions sum their funding through this one function.
     """
 
-    if len(prices) != len(rates):
-        raise HarnessError("invariant", "Held prices and rates differ in length.")
     paid: list[float] = []
     received: list[float] = []
     for price, rate in zip(prices, rates, strict=True):

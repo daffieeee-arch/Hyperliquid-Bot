@@ -47,21 +47,30 @@ LIMITATIONS: Final[tuple[str, ...]] = (
     "pre-registered configs as trials. In each split PBO picks the best positive mean net "
     "per trade among the configs that meet the trade floor pro-rated to the in-sample "
     "folds, and does not re-run the significance and stress gates.",
+    "Look-ahead control uses the declared clock. A falsely stamped future value is invisible.",
+    "paper_candidate is not LIVE, SHADOW, TESTNET, or an order authorization.",
+    "Spot Vision timestamps from 2025-01-01 are microseconds; USD-M examples are milliseconds.",
+    "Kraken OHLCVT omits empty intervals and is USD-quoted, not USDT.",
+)
+
+# What a bar series' result must say beyond the shared list.
+BAR_LIMITATIONS: Final[tuple[str, ...]] = (
     "The buy-and-hold benchmark is one unit long over the validation test folds, and over the "
     "holdout only when a config was selected. It fills after latency_bars like a trade, is "
     "context, and never changes the label.",
+)
+
+# What a panel portfolio's result must say beyond the shared list.
+PANEL_LIMITATIONS: Final[tuple[str, ...]] = (
     "A panel portfolio scores one trade per non-overlapping period: long the top quantile of "
     "the day's universe by the signal and, when signed, short the bottom quantile, equal "
     "weight within a leg, one round trip on the capital per period. A position is held to "
     "its exit day; a symbol not trading then is marked at its last traded close, which is "
     "not the delisting price a holder got, and pays the recorded funding of its untraded "
-    "days to the exit. A held day whose funding is not whole, or a halt day without any, is "
-    "charged its recorded sum and counted; a traded day without funding that a position "
-    "could hold fails closed. The buy-and-hold benchmark does not apply to a panel.",
-    "Look-ahead control uses the declared clock. A falsely stamped future value is invisible.",
-    "paper_candidate is not LIVE, SHADOW, TESTNET, or an order authorization.",
-    "Spot Vision timestamps from 2025-01-01 are microseconds; USD-M examples are milliseconds.",
-    "Kraken OHLCVT omits empty intervals and is USD-quoted, not USDT.",
+    "days to the exit. A held day whose funding is not whole is charged its recorded sum and "
+    "counted as uncovered; a halt day without any is charged nothing and counted as "
+    "unfunded; a traded day without funding that a position could hold fails closed. The "
+    "buy-and-hold benchmark does not apply to a panel.",
 )
 
 
@@ -227,7 +236,10 @@ def completed_document(
         "overfitting": _overfitting_json(decision.overfitting),
         **({} if portfolio is None else {"portfolio": portfolio}),
         "reasons": list(decision.reasons),
-        "limitations": list(LIMITATIONS),
+        "limitations": [
+            *LIMITATIONS,
+            *(BAR_LIMITATIONS if portfolio is None else PANEL_LIMITATIONS),
+        ],
         "generated_at_utc": _now(),
     }
 
@@ -403,9 +415,9 @@ def _portfolio_lines(document: dict[str, Json]) -> list[str]:
         "",
         (
             "| config | quantile | window | periods | skipped decisions | mean long names "
-            "| mean short names | forced exits | uncovered funding days |"
+            "| mean short names | forced exits | uncovered funding days | unfunded halt days |"
         ),
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     configs = block.get("configs")
     if not isinstance(configs, list):
@@ -419,7 +431,7 @@ def _portfolio_lines(document: dict[str, Json]) -> list[str]:
                 continue
             lines.append(
                 "| {id} | {quantile} | {window} | {periods} | {skipped} | {long} | {short} "
-                "| {forced} | {uncovered} |".format(
+                "| {forced} | {uncovered} | {unfunded} |".format(
                     id=config.get("id"),
                     quantile=config.get("quantile"),
                     window=window,
@@ -429,6 +441,7 @@ def _portfolio_lines(document: dict[str, Json]) -> list[str]:
                     short=_shown(stats.get("mean_short_names")),
                     forced=stats.get("forced_exits"),
                     uncovered=stats.get("uncovered_funding_days"),
+                    unfunded=stats.get("unfunded_halt_days"),
                 )
             )
     return lines

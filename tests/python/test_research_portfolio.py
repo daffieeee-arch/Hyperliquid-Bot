@@ -169,6 +169,11 @@ def _first(value: object) -> dict[str, object]:
     return _mapping(value[0])
 
 
+def _sequence(value: object) -> list[object]:
+    assert isinstance(value, list)
+    return value
+
+
 def _number(value: object) -> float:
     assert isinstance(value, int | float) and not isinstance(value, bool)
     return float(value)
@@ -268,7 +273,11 @@ def test_planted_cross_section_passes_h1(tmp_path: Path) -> None:
     markdown = (tmp_path / "out" / "result.md").read_text(encoding="utf-8")
     assert "## Portfolio" in markdown and "| q25-h4 | 0.25 | validation |" in markdown
     assert validation["uncovered_funding_days"] == 0
+    assert validation["unfunded_halt_days"] == 0
     assert "- validation: not applicable" in markdown
+    limitations = " ".join(str(item) for item in _sequence(document["limitations"]))
+    assert "A panel portfolio scores one trade" in limitations
+    assert "The buy-and-hold benchmark is one unit long" not in limitations
     scored = _first(_mapping(document["multiple_testing"])["configs"])
     assert scored["quantile"] == 0.25 and scored["threshold"] is None
 
@@ -498,7 +507,7 @@ def test_a_symbol_whose_rows_break_before_the_fill_is_not_opened() -> None:
     assert source.stats[("c", 0, 6)].long_names == 1
 
 
-def test_a_halt_day_without_a_rate_pays_nothing_and_counts_as_uncovered() -> None:
+def test_a_halt_day_without_a_rate_pays_nothing_and_counts_as_unfunded() -> None:
     spec = _four_symbol_spec(funding=True)
     panel = _table(
         symbols=["A", "B"],
@@ -510,7 +519,8 @@ def test_a_halt_day_without_a_rate_pays_nothing_and_counts_as_uncovered() -> Non
     source = PanelSource(spec, panel)
     series = source.window(_config(0.5, 3), 0, 5)
     assert series.funding_paid == pytest.approx((0.5 * 0.001 * (1.1 + 0.9),))
-    assert source.stats[("c", 0, 5)].uncovered_funding_days == 1
+    stats = source.stats[("c", 0, 5)]
+    assert (stats.unfunded_halt_days, stats.uncovered_funding_days) == (1, 0)
 
 
 def test_a_relisting_inside_the_horizon_exits_before_the_gap() -> None:
@@ -727,6 +737,40 @@ def test_a_traded_day_without_funding_in_reach_of_the_universe_fails_closed() ->
         PanelSource(spec, panel)
 
 
+def test_a_row_off_the_date_grid_fails_closed(tmp_path: Path) -> None:
+    # Days 0, 2, 4, ... with one row of one symbol stamped at 3: every other
+    # symbol would have no row on that day, which would end its contract.
+    body = _spec_body()
+    _mapping(body["data"])["max_gap"] = 2
+    rows = [(row[0] * 2, *row[1:]) for row in _planted_rows(300)]
+    rows = [row if not (row[0] == 2 and row[1] == _SYMBOLS[0]) else (3, *row[1:]) for row in rows]
+    assert _run_panel(tmp_path, rows, body)["failure_kind"] == "gap"
+
+
+def test_the_funding_audit_starts_after_the_fill_day() -> None:
+    # A is in the universe on day 0 only; at latency 1 a position fills on
+    # day 1 and is charged from day 2. Day 1 may lack a rate; day 2 may not.
+    spec = _four_symbol_spec(funding=True)
+    ranks = [[1, 7, 7, 7, 7, 7], [2] * 6]
+    pre_fill = _table(
+        symbols=["A", "B"],
+        prices=[[100.0] * 6, [100.0] * 6],
+        ranks=ranks,
+        signals=[[1.0] * 6, [-1.0] * 6],
+        funding=[[0.0, None, 0.0, 0.0, 0.0, 0.0], [0.0] * 6],
+    )
+    PanelSource(spec, pre_fill)
+    first_held = _table(
+        symbols=["A", "B"],
+        prices=[[100.0] * 6, [100.0] * 6],
+        ranks=ranks,
+        signals=[[1.0] * 6, [-1.0] * 6],
+        funding=[[0.0, 0.0, None, 0.0, 0.0, 0.0], [0.0] * 6],
+    )
+    with pytest.raises(IntegrityError, match="a traded day a position could hold"):
+        PanelSource(spec, first_held)
+
+
 def test_a_relisting_with_late_funding_after_the_gap_is_tolerated() -> None:
     # A is in the universe on day 1, has no row on day 3 and comes back on
     # day 4 without a rate: no position can hold across the gap, so the
@@ -839,6 +883,17 @@ def test_spec_rules_for_the_panel_backend() -> None:
         wide["configs"] = [{"id": "q", "quantile": quantile, "horizon_bars": 4}]
         with pytest.raises(SpecError, match="quantile"):
             _spec(wide)
+    # One leg may take the whole universe; two legs must not overlap.
+    long_only = _spec_body(direction="long_only")
+    long_only["configs"] = [{"id": "q", "quantile": 1.0, "horizon_bars": 4}]
+    assert _spec(long_only).configs[0].quantile == 1.0
+    long_only["configs"] = [{"id": "q", "quantile": 1.01, "horizon_bars": 4}]
+    with pytest.raises(SpecError, match="quantile"):
+        _spec(long_only)
+    with pytest.raises(SpecError, match="exactly one of threshold and quantile"):
+        ConfigSpec(id="both", threshold=0.1, horizon_bars=4, quantile=0.2)
+    with pytest.raises(SpecError, match="exactly one of threshold and quantile"):
+        ConfigSpec(id="neither", threshold=None, horizon_bars=4)
     sized = _spec_body()
     _mapping(_mapping(sized["data"])["columns"])["vol"] = {"dtype": "float64", "role": "feature"}
     _mapping(sized)["features"] = [

@@ -443,6 +443,7 @@ def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Pa
         row_symbols.append(_as_str(row[at.symbol.index], at.symbol.name, row_index))
     timestamps = sorted(set(row_timestamps))
     _audit_clock(timestamps, data.max_gap)
+    _audit_even_axis(timestamps)
     symbols = sorted(set(row_symbols))
     if len(symbols) > _PANEL_MAX_SYMBOLS:
         raise IntegrityError("too_many_rows", f"Panel has more than {_PANEL_MAX_SYMBOLS} symbols.")
@@ -526,6 +527,25 @@ class _FundingCells:
 
     def flag_series(self) -> tuple[tuple[bool | None, ...], ...]:
         return tuple(tuple(line) for line in self.flags)
+
+
+def _audit_even_axis(timestamps: list[int]) -> None:
+    """The panel's date axis is the union of its rows' days, so it must be one grid.
+
+    A row stamped off the grid would add a day on which every other symbol
+    has no row, and a day without a row ends a contract.
+    """
+
+    if len(timestamps) < 3:
+        return
+    step = timestamps[1] - timestamps[0]
+    for index in range(2, len(timestamps)):
+        if timestamps[index] - timestamps[index - 1] != step:
+            raise IntegrityError(
+                "gap",
+                f"Panel date axis is not evenly spaced at row {index}: a day off the grid "
+                "would give every other symbol a day without a row.",
+            )
 
 
 def _audit_ranks(ranks: list[list[int | None]], timestamps: list[int], symbols: list[str]) -> None:

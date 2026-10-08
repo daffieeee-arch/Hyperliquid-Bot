@@ -129,11 +129,10 @@ PYTHONPATH=src uv run --frozen python -m research.hist_etl universe \
 - Per symbol, it records the runs of consecutive months with a monthly
   `--interval` kline zip (default `1d`) and a monthly fundingRate zip.
 - `latest_month` is the newest month the planner expects by `as_of`. A run
-  that reaches it is still published. Before the first Monday of a month,
-  Binance may still be publishing the previous month for some symbols, so a
-  run that ends one month earlier is kept open too: an open run that has
-  ended shows up as a gap, while a closed one that still trades would lose
-  its data silently. Scan a few days after the first Monday.
+  that reaches it, or ends the month before it, is still published. The
+  month of grace covers Binance still uploading the newest month after the
+  first Monday: an open run that has ended shows up as a gap, while a
+  closed one that still trades would lose its data silently.
 - It never replaces an existing file; a refresh is a new dated file.
 - The regional endpoint now and then answers `NoSuchBucket` for this bucket
   (about one listing in eight on 2026-10-08). That answer, a dropped or
@@ -160,8 +159,8 @@ enabled = false                                        # default: false
 - Each symbol, dataset, and run becomes one Binance dataset, with id
   `bn-um-usdt-1d-klines-btcusdt` or `bn-um-usdt-1d-funding-btcusdt`. A
   relisted symbol's later runs add `-r2`, `-r3`.
-- A run that reaches `latest_month` keeps `end = "today"`, with a daily
-  kline tail. Any other run ends on the last day of its last month.
+- A still-published run keeps `end = "today"`, with a daily kline tail.
+  Any other run ends on the last day of its last month.
 - **Listing edges**: a run's first month may start late and a closed run's
   last month may end early, because the contract was listed or delisted
   then. Only those outer bars may be missing. A hole between two bars is

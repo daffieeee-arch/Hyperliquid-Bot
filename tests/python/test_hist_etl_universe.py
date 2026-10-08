@@ -23,7 +23,7 @@ from research.hist_etl.errors import HistEtlError
 from research.hist_etl.http import HttpBody, RateLimiter
 from research.hist_etl.manifest import assert_known_ids, load_manifest, select_binance
 from research.hist_etl.models import BINANCE_VISION_BASE, BINANCE_VISION_LISTING
-from research.hist_etl.pipeline import run_sync
+from research.hist_etl.pipeline import run_plan, run_sync
 from research.hist_etl.planning import latest_published_month, plan_binance
 from research.hist_etl.universe import (
     BucketLister,
@@ -378,6 +378,27 @@ def test_latest_month_keeps_runs_open_while_a_month_rolls_out() -> None:
     }
     assert specs["u-klines-btcusdt"].end is None
     assert specs["u-klines-lunausdt"].end == date(2026, 3, 31)
+
+
+def test_a_run_one_month_short_stays_open_after_the_first_monday() -> None:
+    # On 2026-10-08 September is due, but BTCUSDT's September zip is not up
+    # yet: its run stays open. A run two months short is closed.
+    keys = [
+        key
+        for key in _bucket_keys()
+        if not ("BTCUSDT" in key and "2026-09" in key)
+        and not ("RELUSDT" in key and ("2026-09" in key or "2026-08" in key))
+    ]
+    universe = discover_universe(
+        _lister(FakeBucket(keys)), as_of=AS_OF, quote="USDT", interval="1d"
+    )
+    assert universe.latest_month == _m("2026-09")
+    specs = {
+        spec.id: spec
+        for spec in expand_universe("u", universe, datasets=("klines",), start=None, enabled=True)
+    }
+    assert specs["u-klines-btcusdt"].end is None
+    assert "u-klines-relusdt-r2" not in specs
 
 
 def test_render_round_trips_one_line_per_symbol(tmp_path: Path) -> None:
@@ -757,6 +778,20 @@ def test_shared_archives_download_once(tmp_path: Path) -> None:
     assert (code, report["gaps"]) == (0, [])
     assert archives.gets.count(url) == 1
     assert len(list((root / "parquet").rglob("BTCUSDT-2026-09.parquet"))) == 1
+
+    probes = _Archives(archives.files)
+    assert (
+        run_plan(
+            root=tmp_path / "plan",
+            manifest_path=manifest,
+            today=AS_OF,
+            dataset_ids=("u", "legacy"),
+            env={},
+            transport=probes,
+        )
+        == 0
+    )
+    assert probes.requests == [("HEAD", url)]
 
     missing_root = tmp_path / "missing"
     empty = _Archives({})

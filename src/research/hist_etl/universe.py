@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import http.client
 import json
-import os
 import re
 import sys
 import time
@@ -46,13 +45,12 @@ from research.hist_etl.models import (
     SYMBOL_PATTERN,
     BinanceSpec,
 )
-from research.hist_etl.planning import latest_published_month, next_month
+from research.hist_etl.planning import latest_published_month, next_month, previous_month
 
 FORMAT: Final = 1
 SOURCE: Final = "binance-vision"
 UNIVERSE_DATASETS: Final = frozenset({"klines", "fundingRate"})
 
-_SYMBOL = SYMBOL_PATTERN
 _QUOTE = re.compile(r"[A-Z]{3,5}")
 _MONTH = re.compile(r"(\d{4})-(0[1-9]|1[0-2])")
 _S3_NS: Final = "{http://s3.amazonaws.com/doc/2006-03-01/}"
@@ -98,11 +96,8 @@ class Universe:
     """Which months of monthly archives exist per symbol, as listed on ``as_of``.
 
     ``latest_month`` is the newest month the planner expects to be published
-    by ``as_of``. A run that reaches it is still published, which does not
-    mean the contract still trades (see the module docstring). A run that
-    ends one month earlier while Binance is still publishing the newest
-    month is also kept open: an open run that has ended shows up as a gap,
-    while a closed run that still trades would cut its data off silently.
+    by ``as_of``. ``still_published`` decides which runs stay open; that
+    does not mean the contract still trades (see the module docstring).
     ``excluded`` names symbols with the quote suffix that the manifest cannot
     hold (for example a non-ASCII name), with the reason.
     """
@@ -188,6 +183,8 @@ class BucketLister:
 
         try:
             status, body = self._get(url, prefix)
+        except _TooLarge:
+            raise
         except (OSError, http.client.HTTPException, HistEtlError) as exc:
             return True, f"failed: {exc}"
         if status == 200:
@@ -218,7 +215,7 @@ def _read_capped(chunks: Iterable[bytes], prefix: str) -> bytes:
     for chunk in chunks:
         size += len(chunk)
         if size > _MAX_PAGE_BYTES:
-            raise HistEtlError(f"bucket listing of {prefix} is too large", exit_code=2)
+            raise _TooLarge(f"bucket listing of {prefix} is too large", exit_code=2)
         parts.append(chunk)
     return b"".join(parts)
 
@@ -249,6 +246,10 @@ def _parse_page(body: bytes, prefix: str) -> _Page:
         truncated=truncated == "true",
         next_marker=None if next_marker is None else next_marker.text or None,
     )
+
+
+class _TooLarge(HistEtlError):
+    """Final: a listing page is never this large, so another try is pointless."""
 
 
 class _Garbled(ValueError):
@@ -285,9 +286,9 @@ def discover_universe(
     excluded = tuple(
         (name, "symbol is not 2 to 20 of A-Z and 0-9")
         for name in candidates
-        if not _SYMBOL.fullmatch(name)
+        if not SYMBOL_PATTERN.fullmatch(name)
     )
-    valid = [name for name in candidates if _SYMBOL.fullmatch(name)]
+    valid = [name for name in candidates if SYMBOL_PATTERN.fullmatch(name)]
     if not valid:
         raise HistEtlError(f"the bucket lists no {quote} perp", exit_code=2)
     symbols: list[UniverseSymbol] = []
@@ -444,7 +445,7 @@ def load_universe(path: Path) -> Universe:
 
 
 def _load_symbol(name: str, value: object, quote: str, path: Path) -> UniverseSymbol:
-    if not _SYMBOL.fullmatch(name) or not name.endswith(quote) or name == quote:
+    if not SYMBOL_PATTERN.fullmatch(name) or not name.endswith(quote) or name == quote:
         raise HistEtlError(f"universe file {path.name} has an invalid symbol {name}")
     if not isinstance(value, dict) or set(value) != _SYMBOL_KEYS:
         raise HistEtlError(f"universe file {path.name} {name} must have klines and funding")
@@ -489,9 +490,15 @@ def _load_month(value: object, path: Path) -> date:
 
 
 def still_published(run: MonthRun, universe: Universe) -> bool:
-    """Whether Binance Vision still adds months to this run (see ``Universe``)."""
+    """Whether Binance Vision may still add months to this run (see ``Universe``).
 
-    return run.last >= universe.latest_month
+    A run that ends the month before ``latest_month`` also counts: Binance
+    can still be uploading the newest month after the first Monday, and a
+    run wrongly kept open shows up as a gap where a run wrongly closed would
+    cut a trading contract's data off silently.
+    """
+
+    return run.last >= previous_month(universe.latest_month)
 
 
 def expand_universe(
@@ -504,7 +511,7 @@ def expand_universe(
 ) -> tuple[BinanceSpec, ...]:
     """One spec per symbol, dataset, and run of months, ids ``{group}-{kind}-{symbol}``.
 
-    A run that reaches ``latest_month`` stays open (``end = "today"``, with a
+    A run that is ``still_published`` stays open (``end = "today"``, with a
     daily kline tail). Any other run ends with its last month and may end early
     inside it; every run may start late inside its first month, unless
     ``start`` cuts into it. Later runs of one symbol (a relisting) add
@@ -602,18 +609,15 @@ def run_universe(
         lister, as_of=today, quote=quote, interval=interval, progress=_progress
     )
     out.parent.mkdir(parents=True, exist_ok=True)
-    partial = out.with_name(out.name + ".partial")
-    partial.write_text(render_universe(universe), encoding="utf-8")
+    text = render_universe(universe)
     try:
-        # A link fails if ``out`` appeared during the scan, where a rename
-        # would replace it.
-        os.link(partial, out)
+        # Exclusive create: a file that appeared during the scan is kept.
+        with out.open("x", encoding="utf-8") as handle:
+            handle.write(text)
     except FileExistsError as exc:
         raise HistEtlError(
             f"refusing to replace {out}; it appeared during the scan", exit_code=2
         ) from exc
-    finally:
-        partial.unlink()
     published = sum(
         1
         for item in universe.symbols

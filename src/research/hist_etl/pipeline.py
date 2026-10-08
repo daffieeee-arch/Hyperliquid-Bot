@@ -393,7 +393,13 @@ def _describe(
     limiter = RateLimiter(manifest.requests_per_second, default_sleeper)
     described: list[ArchivePlan] = []
     lines: list[str] = []
+    seen: set[Path] = set()
     for item in resolved:
+        # An archive two datasets plan is probed and counted once, as sync
+        # downloads it once.
+        if item.canonical_path in seen:
+            continue
+        seen.add(item.canonical_path)
         current = item
         if probe and item.action == "download":
             status, size = head_status(

@@ -75,7 +75,7 @@ def coverage_window(
 
     end = resolve_end(spec, today)
     start_dt = datetime.combine(max(month, spec.start), datetime.min.time())
-    month_end_exclusive = datetime.combine(_next_month(month), datetime.min.time())
+    month_end_exclusive = datetime.combine(next_month(month), datetime.min.time())
     range_end_exclusive = datetime.combine(end + timedelta(days=1), datetime.min.time())
     end_exclusive = min(month_end_exclusive, range_end_exclusive)
     if start_dt >= end_exclusive:
@@ -162,7 +162,7 @@ def _months(start: date, end: date) -> list[date]:
     months: list[date] = []
     while cursor <= last:
         months.append(cursor)
-        cursor = _next_month(cursor)
+        cursor = next_month(cursor)
     return months
 
 
@@ -175,14 +175,14 @@ def _days(start: date, end: date) -> list[date]:
     return days
 
 
-def _next_month(month: date) -> date:
+def next_month(month: date) -> date:
     if month.month == 12:
         return date(month.year + 1, 1, 1)
     return date(month.year, month.month + 1, 1)
 
 
 def _month_end(month: date) -> date:
-    return _next_month(month) - timedelta(days=1)
+    return next_month(month) - timedelta(days=1)
 
 
 def _first_monday_on_or_after(day: date) -> date:
@@ -194,22 +194,18 @@ def latest_published_month(today: date) -> date:
 
     month = date(today.year, today.month, 1)
     while not _monthly_published(month, today):
-        month = _previous_month(month)
+        month = previous_month(month)
     return month
 
 
-def next_month(month: date) -> date:
-    return _next_month(month)
-
-
-def _previous_month(month: date) -> date:
+def previous_month(month: date) -> date:
     if month.month == 1:
         return date(month.year - 1, 12, 1)
     return date(month.year, month.month - 1, 1)
 
 
 def _monthly_published(month: date, today: date) -> bool:
-    return today >= _first_monday_on_or_after(_next_month(month))
+    return today >= _first_monday_on_or_after(next_month(month))
 
 
 def _daily_published(day: date, today: date) -> bool:

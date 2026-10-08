@@ -26,7 +26,6 @@ from research.hist_etl.models import (
 from research.hist_etl.universe import UNIVERSE_DATASETS, expand_universe, load_universe
 
 _ID = re.compile(r"[a-z0-9][a-z0-9-]*")
-_SYMBOL = SYMBOL_PATTERN
 _COIN = re.compile(r"[A-Z0-9]{1,20}")
 _HYPERLIQUID_KEYS = frozenset(
     {
@@ -203,7 +202,7 @@ def _kraken_spec(item: object) -> KrakenSpec:
         raise HistEtlError(f"{dataset_id} pairs must be a non-empty list")
     pairs: list[str] = []
     for pair in pairs_raw:
-        if not isinstance(pair, str) or not _SYMBOL.fullmatch(pair):
+        if not isinstance(pair, str) or not SYMBOL_PATTERN.fullmatch(pair):
             raise HistEtlError(f"{dataset_id} has an invalid pair")
         pairs.append(pair)
     intervals_raw = table.get("intervals", list(KRAKEN_MINUTES_TO_SLUG.values()))
@@ -376,7 +375,7 @@ def _ident(table: dict[str, object], key: str) -> str:
 
 def _symbol(table: dict[str, object], key: str) -> str:
     value = _required_str(table, key)
-    if not _SYMBOL.fullmatch(value):
+    if not SYMBOL_PATTERN.fullmatch(value):
         raise HistEtlError(f"invalid symbol {value}")
     return value
 

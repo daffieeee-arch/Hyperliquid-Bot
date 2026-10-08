@@ -17,8 +17,10 @@ re-run.
 ## Hypothesis
 
 A perp's funding rate is what longs pay shorts to keep the perp near spot.
-When it sits well above its usual level, longs are crowded and pay a lot to
-stay in; when it sits below, the crowd leans short. The contrarian view is
+When it sits well above Binance's neutral rate, longs are crowded and pay a
+lot to stay in; when it sits below, the crowd leans short. The rule measures
+funding against that fixed neutral rate, not against a rolling average, so a
+regime in which funding stays high for months keeps it short. The contrarian view is
 that crowded positioning unwinds: high funding precedes weak returns and low
 or negative funding precedes strong ones. A short against high funding also
 receives the funding the crowd pays.
@@ -179,8 +181,9 @@ As in `exp_tsmom_btc`:
 - **Round trip**: 12 bps, also stressed at 1.5× and 2.0×.
 - **Funding**: Binance's realized funding, charged or credited on the
   notional for every bar a trade holds, and stressed adversely payment by
-  payment at 1.5× and 2.0×. A short against high funding receives it, and
-  the stress halves what it receives at 2.0×.
+  payment at 1.5× and 2.0×, in the same stress as the round trip (one
+  multiplier for both). A short against high funding receives it, and the
+  stress halves what it receives at 2.0×.
 - **Conservative bias**: every trade pays a full round trip, even when the
   next trade keeps the same side.
 
@@ -213,23 +216,25 @@ A **pass** needs all of these:
    ≤ 0.5, both as the harness reports them, on validation net returns at
    1.0×. A value the harness reports as not computed fails this rule.
 4. **Not carry alone**: the selected config's holdout gross mean per trade
-   (the price return, before costs and funding) is > 0 and at least half of
-   its holdout net mean at 1.0×. The hypothesis is that crowding unwinds in
-   price. A pass that rests mostly on funding received is carry, which
-   belongs to the separate hedged study.
+   (the price return, before costs and funding) is > 0 and at least its
+   holdout funding mean per trade (the funding cashflow, positive when
+   received). The hypothesis is that crowding unwinds in price. A pass that
+   rests more on funding received than on price is carry, which belongs to
+   the separate hedged study.
 
 The outcome is then exactly one of these:
 
 | Result | Outcome |
 | --- | --- |
 | A pass | A pre-registered forward test on data after 2026-09-30, before any PAPER strategy design. The holdout's market was seen (see [Seen before](#seen-before)), so a pass here is not enough on its own. |
-| Validation selected a config, but the holdout has too few trades (`not_enough_data` after a selection) | Neither a pass nor a refutation. Only a pre-registered forward test may follow, with nothing re-tuned. |
-| Anything else: `no_edge`, `interesting_but_fragile`, `not_enough_data` at validation, or `passes_h1` failing rule 2, 3 or 4 | This family stops on BTC. |
+| Anything else: `no_edge`, `interesting_but_fragile`, `not_enough_data` at validation or after a selection, or `passes_h1` failing rule 2, 3 or 4 | This family stops on BTC. |
 
-On the thin-holdout case: holdout funding averaged about 0.000038 per 8h,
-below neutral and just above 0. The `near` configs are then likely to sit
-long for much of a falling holdout. The `far` configs go long only below 0
-and short only above 0.0002, so they may trade little there.
+A thin holdout after a selection stops the family too. Holdout funding
+averaged about 0.000038 per 8h, below neutral and just above 0, so the `far`
+configs, which go long only below 0 and short only above 0.0002, may trade
+little there. That was foreseeable from what was seen, so it must not become
+an outcome that can never refute them. The `near` configs are likely to sit
+long for much of a falling holdout.
 
 The harness's `promotion_decision` is not this decision. It says
 `paper_candidate` on rule 1 alone; rules 2 to 4 are applied in the results
@@ -243,7 +248,9 @@ When the family stops:
 
 ## Robustness (reported)
 
-- Cost stress at 1.5× and 2.0×, and adverse funding stress.
+- Joint stress at 1.5× and 2.0×: one multiplier scales the round trip and
+  each funding payment made, and divides each one received. There is no
+  separate cost-only or funding-only stress.
 - HAC p-values.
 - The deflated Sharpe ratio and PBO by CSCV (16 blocks of one fold; the
   oldest of the 17 folds is left out, as in `exp_tsmom_btc`).
@@ -277,11 +284,11 @@ export STUDY_DIR=...            # must not exist yet; outside the repository
   set -euo pipefail
   cd "$REPO_ROOT"
   # Run from main as merged: HEAD is on origin/main, so commit.txt is too.
-  git fetch --quiet origin main
+  git fetch --quiet origin +main:refs/remotes/origin/main
   git merge-base --is-ancestor HEAD origin/main
-  # ... with this document and spec as they stand on main today.
-  git diff --exit-code origin/main -- \
-    docs/experiments/exp_funding_btc.md docs/experiments/exp_funding_btc.spec.yaml
+  # ... with these decision rules as they stand on main today. The spec is
+  # checked by its hash below.
+  git diff --exit-code origin/main -- docs/experiments/exp_funding_btc.md
   # STUDY_DIR stays outside the repository, so the run cannot dirty it.
   study="$(realpath -m "$STUDY_DIR")"
   repo="$(realpath "$REPO_ROOT")"

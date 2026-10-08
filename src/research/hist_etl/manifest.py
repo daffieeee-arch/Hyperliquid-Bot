@@ -189,7 +189,8 @@ def _binance_universe(item: object, manifest_dir: Path) -> tuple[str, tuple[Bina
         universe,
         datasets=tuple(str(value) for value in datasets_raw),
         start=start,
-        enabled=_bool_field(table, "enabled", True),
+        # Opt-in: a universe is thousands of archives, never a routine sync.
+        enabled=_bool_field(table, "enabled", False),
     )
     return group, specs
 

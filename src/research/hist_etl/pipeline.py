@@ -470,11 +470,16 @@ def _acquire_binance(
     # dataset of the same series). The index predates this run's downloads,
     # so the second would try to download over the first one's file.
     ready: dict[Path, ArchivePlan] = {}
+    failed: dict[Path, Gap] = {}
     for plan in (resolve_local(item, index) for item in plan_binance(specs, today, root)):
         shared = ready.get(plan.canonical_path)
         if shared is not None:
             acquired.append(replace(shared, dataset_id=plan.dataset_id))
             print(f"sync\tready\t{plan.dataset_id}\t{shared.local_path}")
+            continue
+        refused = failed.get(plan.canonical_path)
+        if refused is not None:
+            gaps.append(replace(refused, dataset_id=plan.dataset_id))
             continue
         try:
             assert_free(root, manifest.min_free_bytes)
@@ -489,10 +494,12 @@ def _acquire_binance(
                 kind = "download_failed"
             else:
                 kind = "checksum_mismatch"
-            gaps.append(Gap(kind, plan.dataset_id, text))
+            failed[plan.canonical_path] = Gap(kind, plan.dataset_id, text)
+            gaps.append(failed[plan.canonical_path])
             continue
         if local is None:
-            gaps.append(Gap("missing_archive", plan.dataset_id, plan.filename))
+            failed[plan.canonical_path] = Gap("missing_archive", plan.dataset_id, plan.filename)
+            gaps.append(failed[plan.canonical_path])
             continue
         acquired.append(local)
         ready[plan.canonical_path] = local

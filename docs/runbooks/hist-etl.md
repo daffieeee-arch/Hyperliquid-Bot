@@ -128,13 +128,17 @@ PYTHONPATH=src uv run --frozen python -m research.hist_etl universe \
   name) is recorded under `excluded` with the reason.
 - Per symbol, it records the runs of consecutive months with a monthly
   `--interval` kline zip (default `1d`) and a monthly fundingRate zip.
-- `latest_month` is the newest month the planner expects by `as_of`, or a
-  newer month the bucket already lists. A run that reaches it is still
-  published.
+- `latest_month` is the newest month the planner expects by `as_of`. A run
+  that reaches it is still published. Before the first Monday of a month,
+  Binance may still be publishing the previous month for some symbols, so a
+  run that ends one month earlier is kept open too: an open run that has
+  ended shows up as a gap, while a closed one that still trades would lose
+  its data silently. Scan a few days after the first Monday.
 - It never replaces an existing file; a refresh is a new dated file.
 - The regional endpoint now and then answers `NoSuchBucket` for this bucket
-  (about one listing in eight on 2026-10-08). That answer is retried up to
-  ten times; any other error fails the run with exit 2.
+  (about one listing in eight on 2026-10-08). That answer, a dropped or
+  garbled body, and a 5xx or 429 are retried up to ten times per page; any
+  other answer, or the tenth failure, fails the run with exit 2.
 - On 2026-10-08 it found 901 USDT names and scanned 896 in about 13
   minutes from a cloud container, at 8 requests per second. The default
   rate is `--requests-per-second 4`.
@@ -150,7 +154,7 @@ id = "bn-um-usdt-1d"
 file = "universe/binance-um-usdt-1d-2026-10-08.json"  # below the manifest directory
 datasets = ["klines", "fundingRate"]                   # default: both
 # start = "2021-01-01"                                 # optional cut, first of a month
-enabled = false
+enabled = false                                        # default: false
 ```
 
 - Each symbol, dataset, and run becomes one Binance dataset, with id
@@ -170,7 +174,8 @@ enabled = false
   relisting, or another asset under the same ticker. The panel builder
   decides from volume, trade count, and price.
 - Two datasets that plan the same archive (a universe and a BTCUSDT
-  dataset) download it once in a sync.
+  dataset) download it once in a sync, and a failure is not retried for the
+  second.
 - `--dataset bn-um-usdt-1d` selects every dataset of the entry, even while
   it is disabled. A single id selects one.
 - Views follow the usual names, one per symbol: `hist_bn_um_btcusdt_klines_1d`

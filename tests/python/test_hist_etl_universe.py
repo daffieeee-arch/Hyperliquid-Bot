@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
 import io
 import json
 import urllib.parse
@@ -191,6 +192,7 @@ class _Fixed:
     ("status", "body", "message"),
     [
         (403, b"", "HTTP 403"),
+        (503, b"", "HTTP 503"),
         (200, b"<html>", "not XML"),
         (200, b"<Other/>", "has root"),
         (200, _listing_xml("data/other/", [], {}, truncated=False), "another prefix"),
@@ -282,6 +284,29 @@ def test_lister_retries_a_body_that_drops() -> None:
     assert caught.value.exit_code == 2
 
 
+class _IncompleteBody(BytesResponse):
+    def iter_bytes(self) -> Iterator[bytes]:
+        yield self.body[:10]
+        raise http.client.IncompleteRead(self.body[:10], len(self.body) - 10)
+
+
+def test_lister_retries_an_incomplete_chunked_body() -> None:
+    good = _listing_xml(KLINES, [f"{KLINES}A/"], {f"{KLINES}A/": True}, truncated=False)
+    transport = _Sequence(
+        [
+            _IncompleteBody(200, good),
+            BytesResponse(503, b""),
+            BytesResponse(200, good[:40]),
+            BytesResponse(200, good),
+        ]
+    )
+    lister = BucketLister(
+        transport, limiter=RateLimiter(0, lambda _s: None), max_retries=1, sleeper=lambda _s: None
+    )
+    assert lister.list(KLINES) == ((), (f"{KLINES}A/",))
+    assert transport.calls == 4
+
+
 def test_lister_does_not_retry_another_404() -> None:
     transport = _Sequence([BytesResponse(404, b"<Error><Code>NoSuchKey</Code></Error>")])
     lister = BucketLister(
@@ -339,19 +364,20 @@ def test_latest_month_follows_the_first_monday_rule() -> None:
     assert latest_published_month(date(2026, 1, 1)) == _m("2025-11")
 
 
-def test_a_month_published_early_moves_latest_month() -> None:
-    # 2026-10-04 is before the first Monday, but the bucket lists September.
+def test_latest_month_keeps_runs_open_while_a_month_rolls_out() -> None:
+    # 2026-10-04 is before the first Monday; September is listed for some
+    # symbols only. A run that ends in August must stay open, not close.
+    keys = [key for key in _bucket_keys() if "LUNAUSDT" in key or "2026-09" not in key]
     universe = discover_universe(
-        _lister(FakeBucket(_bucket_keys())), as_of=date(2026, 10, 4), quote="USDT", interval="1d"
-    )
-    assert universe.latest_month == _m("2026-09")
-    keys = [key for key in _bucket_keys() if "2026-09" not in key]
-    earlier = discover_universe(
         _lister(FakeBucket(keys)), as_of=date(2026, 10, 4), quote="USDT", interval="1d"
     )
-    assert earlier.latest_month == _m("2026-08")
-    specs = expand_universe("u", earlier, datasets=("klines",), start=None, enabled=True)
-    assert {spec.symbol: spec.end for spec in specs}["BTCUSDT"] is None
+    assert universe.latest_month == _m("2026-08")
+    specs = {
+        spec.id: spec
+        for spec in expand_universe("u", universe, datasets=("klines",), start=None, enabled=True)
+    }
+    assert specs["u-klines-btcusdt"].end is None
+    assert specs["u-klines-lunausdt"].end == date(2026, 3, 31)
 
 
 def test_render_round_trips_one_line_per_symbol(tmp_path: Path) -> None:
@@ -389,7 +415,7 @@ def _edited(tmp_path: Path, edit: dict[str, object]) -> Path:
         {"market": "spot"},
         {"extra": 1},
         {"kline_interval": "2d"},
-        {"latest_month": "2026-08"},
+        {"latest_month": "2026-10"},
         {"as_of": "2026-13-01"},
         {"symbols": {}},
         {"symbols": {"btcusdt": {"klines": [["2026-01", "2026-02"]], "funding": []}}},
@@ -544,6 +570,15 @@ def test_manifest_universe_entry_fails_closed(tmp_path: Path, body: str, message
         load_manifest(path)
 
 
+def test_manifest_universe_is_opt_in_by_default(tmp_path: Path) -> None:
+    _write_universe(tmp_path, _discovered())
+    manifest = load_manifest(
+        _universe_manifest(tmp_path, '[[binance_universe]]\nid = "u"\nfile = "universe/u.json"\n')
+    )
+    assert manifest.binance
+    assert select_binance(manifest, None) == ()
+
+
 def test_manifest_group_id_must_be_unique(tmp_path: Path) -> None:
     _write_universe(tmp_path, _discovered())
     path = _universe_manifest(
@@ -594,12 +629,14 @@ class _Archives:
     def __init__(self, files: dict[str, bytes]) -> None:
         self.files = files
         self.gets: list[str] = []
+        self.requests: list[tuple[str, str]] = []
 
     @contextmanager
     def open(
         self, method: str, url: str, headers: Mapping[str, str] | None = None
     ) -> Iterator[HttpBody]:
         del headers
+        self.requests.append((method, url))
         if method == "GET":
             self.gets.append(url)
         body = self.files.get(url)
@@ -720,6 +757,65 @@ def test_shared_archives_download_once(tmp_path: Path) -> None:
     assert (code, report["gaps"]) == (0, [])
     assert archives.gets.count(url) == 1
     assert len(list((root / "parquet").rglob("BTCUSDT-2026-09.parquet"))) == 1
+
+    missing_root = tmp_path / "missing"
+    empty = _Archives({})
+    code = run_sync(
+        root=missing_root,
+        manifest_path=manifest,
+        today=AS_OF,
+        dataset_ids=("u", "legacy"),
+        env={},
+        dry_run=False,
+        transport=empty,
+    )
+    report = json.loads((missing_root / "logs" / "gap_report.json").read_text(encoding="utf-8"))
+    assert code == 2
+    # The second dataset reuses the first one's failure instead of asking again.
+    assert empty.requests
+    assert len(empty.requests) == len(set(empty.requests))
+    assert {gap["dataset_id"] for gap in report["gaps"] if gap["kind"] == "missing_archive"} >= {
+        "u-funding-btcusdt",
+        "legacy",
+    }
+
+
+def test_cli_rejects_a_bad_retry_setting(tmp_path: Path, capsys: CaptureFixture[str]) -> None:
+    out = tmp_path / "u.json"
+    args = ["universe", "--out", str(out), "--today", AS_OF.isoformat()]
+    assert main(args, env={"HIST_ETL_MAX_RETRIES": "abc"}) == 1
+    assert "invalid HIST_ETL retry or timeout setting" in capsys.readouterr().err
+    assert not out.exists()
+
+
+class _RacingBucket(FakeBucket):
+    def __init__(self, keys: Iterable[str], out: Path) -> None:
+        super().__init__(keys)
+        self.out = out
+
+    @contextmanager
+    def open(
+        self, method: str, url: str, headers: Mapping[str, str] | None = None
+    ) -> Iterator[HttpBody]:
+        if not self.out.exists():
+            self.out.parent.mkdir(parents=True, exist_ok=True)
+            self.out.write_text("someone else's file", encoding="utf-8")
+        with super().open(method, url, headers) as response:
+            yield response
+
+
+def test_cli_keeps_a_file_that_appears_during_the_scan(
+    tmp_path: Path, monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
+) -> None:
+    out = tmp_path / "universe" / "u.json"
+    bucket = _RacingBucket(_bucket_keys(), out)
+    monkeypatch.setattr("research.hist_etl.universe.build_transport", lambda _timeout: bucket)
+    monkeypatch.setattr("research.hist_etl.universe._sleep", lambda _seconds: None)
+    args = ["universe", "--out", str(out), "--today", AS_OF.isoformat()]
+    assert main(args, env={}) == 2
+    assert "appeared during the scan" in capsys.readouterr().err
+    assert out.read_text(encoding="utf-8") == "someone else's file"
+    assert list(out.parent.iterdir()) == [out]
 
 
 def test_cli_writes_a_new_universe_and_never_replaces_one(

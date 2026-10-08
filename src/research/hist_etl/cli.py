@@ -33,7 +33,7 @@ def _dispatch(args: argparse.Namespace, env: Mapping[str, str]) -> int:
             today=parse_today(args.today if isinstance(args.today, str) else None),
             quote=args.quote,
             interval=args.interval,
-            requests_per_second=float(args.requests_per_second),
+            requests_per_second=args.requests_per_second,
             env=env,
         )
     root_text = args.root if isinstance(args.root, str) else env.get("HIST_ARCHIVES_ROOT")

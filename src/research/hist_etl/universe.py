@@ -17,6 +17,7 @@ the reader of the bars to decide from volume and trade count.
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import re
@@ -32,6 +33,7 @@ from typing import Final
 
 from research.hist_etl.errors import HistEtlError
 from research.hist_etl.http import (
+    RETRYABLE_STATUS,
     RateLimiter,
     Sleeper,
     Transport,
@@ -96,9 +98,11 @@ class Universe:
     """Which months of monthly archives exist per symbol, as listed on ``as_of``.
 
     ``latest_month`` is the newest month the planner expects to be published
-    by ``as_of``, or a newer month the bucket already lists. A run that
-    reaches it is still published, which does not mean the contract still
-    trades (see the module docstring).
+    by ``as_of``. A run that reaches it is still published, which does not
+    mean the contract still trades (see the module docstring). A run that
+    ends one month earlier while Binance is still publishing the newest
+    month is also kept open: an open run that has ended shows up as a gap,
+    while a closed run that still trades would cut its data off silently.
     ``excluded`` names symbols with the quote suffix that the manifest cannot
     hold (for example a non-ASCII name), with the reason.
     """
@@ -162,30 +166,38 @@ class BucketLister:
         url = f"{self._base}?{urllib.parse.urlencode(query, quote_via=urllib.parse.quote)}"
         delay = 0.5
         for attempt in range(1, _TRANSIENT_ATTEMPTS + 1):
-            last = attempt == _TRANSIENT_ATTEMPTS
-            try:
-                status, body = self._get(url, prefix)
-            except OSError as exc:
-                # open_with_retries retries the connect, not a body read that
-                # drops halfway; one dropped page must not end a long scan.
-                if last:
-                    raise HistEtlError(
-                        f"bucket listing of {prefix} failed: {exc}", exit_code=2
-                    ) from exc
-            else:
-                if status == 200:
-                    return _parse_page(body, prefix)
-                # The regional endpoint now and then answers NoSuchBucket for
-                # this bucket, which exists: about one listing in eight on
-                # 2026-10-08. That answer is never true, so it is retried; any
-                # other is final.
-                if status != 404 or _NO_SUCH_BUCKET not in body or last:
-                    raise HistEtlError(
-                        f"bucket listing of {prefix} returned HTTP {status}", exit_code=2
-                    )
+            problem = self._attempt(url, prefix)
+            if isinstance(problem, _Page):
+                return problem
+            transient, detail = problem
+            if not transient or attempt == _TRANSIENT_ATTEMPTS:
+                raise HistEtlError(f"bucket listing of {prefix} {detail}", exit_code=2)
             self._sleeper(delay)
             delay = min(delay * 2, 8.0)
         raise HistEtlError(f"bucket listing of {prefix} did not finish", exit_code=2)
+
+    def _attempt(self, url: str, prefix: str) -> _Page | tuple[bool, str]:
+        """A page, or whether the failure is worth another try and what it was.
+
+        One failed page must not end a scan of some 1,800 listings. A dropped
+        connection, a truncated or garbled body, and a 5xx or 429 are
+        transient. So is NoSuchBucket: the regional endpoint now and then
+        answers it for this bucket, which exists (about one listing in eight
+        on 2026-10-08). Any other answer is final.
+        """
+
+        try:
+            status, body = self._get(url, prefix)
+        except (OSError, http.client.HTTPException, HistEtlError) as exc:
+            return True, f"failed: {exc}"
+        if status == 200:
+            try:
+                return _parse_page(body, prefix)
+            except _Garbled as exc:
+                return True, str(exc)
+        if status in RETRYABLE_STATUS or (status == 404 and _NO_SUCH_BUCKET in body):
+            return True, f"returned HTTP {status}"
+        return False, f"returned HTTP {status}"
 
     def _get(self, url: str, prefix: str) -> tuple[int, bytes]:
         with open_with_retries(
@@ -217,7 +229,7 @@ def _parse_page(body: bytes, prefix: str) -> _Page:
     try:
         root = ElementTree.fromstring(body)
     except ElementTree.ParseError as exc:
-        raise HistEtlError(f"bucket listing of {prefix} is not XML: {exc}", exit_code=2) from exc
+        raise _Garbled(f"is not XML: {exc}") from exc
     if root.tag != f"{_S3_NS}ListBucketResult":
         raise HistEtlError(f"bucket listing of {prefix} has root {root.tag}", exit_code=2)
     if _text(root, "Prefix") != prefix:
@@ -237,6 +249,10 @@ def _parse_page(body: bytes, prefix: str) -> _Page:
         truncated=truncated == "true",
         next_marker=None if next_marker is None else next_marker.text or None,
     )
+
+
+class _Garbled(ValueError):
+    """A 200 body that does not parse, such as one cut short."""
 
 
 def _text(element: ElementTree.Element, tag: str) -> str:
@@ -289,21 +305,10 @@ def discover_universe(
         quote=quote,
         interval=interval,
         as_of=as_of,
-        latest_month=_latest_month(as_of, symbols),
+        latest_month=latest_published_month(as_of),
         symbols=tuple(symbols),
         excluded=excluded,
     )
-
-
-def _latest_month(as_of: date, symbols: Iterable[UniverseSymbol]) -> date:
-    """The planner's newest due month, or a newer one the bucket already lists.
-
-    Binance can publish a month before the first Monday. A run that ended a
-    month earlier must not then pass for one that is still published.
-    """
-
-    listed = [runs[-1].last for item in symbols for runs in (item.klines, item.funding) if runs]
-    return max([latest_published_month(as_of), *listed])
 
 
 def _child(prefix: str, parent: str) -> str:
@@ -418,8 +423,10 @@ def load_universe(path: Path) -> Universe:
     symbols = tuple(
         _load_symbol(name, value, quote, path) for name, value in sorted(symbols_raw.items())
     )
-    if latest != _latest_month(as_of, symbols):
-        raise HistEtlError(f"universe file {path.name} latest_month does not follow its data")
+    # Stored, not recomputed: a later change to the planner's publication rule
+    # must not invalidate a committed file.
+    if latest >= date(as_of.year, as_of.month, 1):
+        raise HistEtlError(f"universe file {path.name} latest_month is not before as_of")
     excluded: list[tuple[str, str]] = []
     for name, reason in sorted(excluded_raw.items()):
         if not isinstance(reason, str) or not reason or name in symbols_raw:
@@ -481,6 +488,12 @@ def _load_month(value: object, path: Path) -> date:
     return month
 
 
+def still_published(run: MonthRun, universe: Universe) -> bool:
+    """Whether Binance Vision still adds months to this run (see ``Universe``)."""
+
+    return run.last >= universe.latest_month
+
+
 def expand_universe(
     group: str,
     universe: Universe,
@@ -523,7 +536,7 @@ def _run_spec(
     start: date | None,
     enabled: bool,
 ) -> BinanceSpec | None:
-    published = run.last >= universe.latest_month
+    published = still_published(run, universe)
     end = None if published else next_month(run.last) - timedelta(days=1)
     first = run.first
     open_start = True
@@ -571,8 +584,11 @@ def run_universe(
 
     if out.exists():
         raise HistEtlError(f"refusing to replace {out}; universe files are dated", exit_code=2)
-    retries = int(env.get("HIST_ETL_MAX_RETRIES") or 5)
-    timeout = float(env.get("HIST_ETL_HTTP_TIMEOUT_SECONDS") or 60.0)
+    try:
+        retries = int(env.get("HIST_ETL_MAX_RETRIES") or 5)
+        timeout = float(env.get("HIST_ETL_HTTP_TIMEOUT_SECONDS") or 60.0)
+    except ValueError as exc:
+        raise HistEtlError(f"invalid HIST_ETL retry or timeout setting: {exc}") from exc
     if requests_per_second <= 0 or retries < 1 or timeout <= 0:
         raise HistEtlError("universe needs a positive rate, retry count, and timeout")
     wait = sleeper if sleeper is not None else _sleep
@@ -588,13 +604,20 @@ def run_universe(
     out.parent.mkdir(parents=True, exist_ok=True)
     partial = out.with_name(out.name + ".partial")
     partial.write_text(render_universe(universe), encoding="utf-8")
-    os.replace(partial, out)
+    try:
+        # A link fails if ``out`` appeared during the scan, where a rename
+        # would replace it.
+        os.link(partial, out)
+    except FileExistsError as exc:
+        raise HistEtlError(
+            f"refusing to replace {out}; it appeared during the scan", exit_code=2
+        ) from exc
+    finally:
+        partial.unlink()
     published = sum(
         1
         for item in universe.symbols
-        if any(
-            runs and runs[-1].last >= universe.latest_month for runs in (item.klines, item.funding)
-        )
+        if any(runs and still_published(runs[-1], universe) for runs in (item.klines, item.funding))
     )
     print(
         f"universe\t{len(universe.symbols)} symbols\t{published} still published\t"

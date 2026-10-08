@@ -54,9 +54,11 @@ of latency.
   holds its time plus a minute, so one stamped just before midnight counts
   for the day it opens. A day is covered when no settlement is missing,
   judged as hist_etl does: consecutive settlements are at most the longer
-  of their intervals apart (plus a minute), the first follows the previous
-  day's last, and the next is due after the close. A day on which Binance
-  changes the interval (8h to 4h, say) is covered.
+  of their intervals apart (plus a minute), and the settlements just before
+  and after the day were due outside it, judged with the longer interval of
+  the edge settlement and its neighbour. A day on which Binance changes the
+  interval, either way, is covered; a hole after a day's last settlement
+  counts against the next day.
 - **The universe comes from the rank, not from survival.** A row is complete
   when it traded and has every feature. `volume_rank` orders the complete
   rows of one day, ties going to the symbol that sorts first. A study takes
@@ -91,9 +93,9 @@ Nothing is written when any of these fail:
 - The funding file of the month before the first month is needed too, when
   the run has it, for a midnight settlement stamped just before the month
   opens.
-- **Inputs are not usable.** This covers bars off the daily grid or out of
-  order, a non-positive close, negative volume, a non-finite funding rate, or
-  a symbol twice on one day.
+- **Inputs are not usable.** This covers bars that do not close at the end
+  of a UTC day or are out of order, a non-positive close, negative volume,
+  and a non-finite funding rate.
 
 ## Limits
 

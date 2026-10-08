@@ -142,7 +142,7 @@ def _month_files(
             else:
                 missing.append(path)
             month = next_month(month)
-    return tuple(sorted(set(files))), tuple(runs), missing
+    return tuple(sorted(set(files))), tuple(runs), sorted(set(missing))
 
 
 def build_panel(files: UniverseFiles, spec: PanelSpec, start: date, end: date) -> list[PanelRow]:
@@ -213,11 +213,9 @@ def _check_funding_runs(rows: Sequence[PanelRow], runs: Sequence[Run]) -> None:
     for row in rows:
         by_symbol[row.symbol].append(row)
     for run in runs:
-        inside = [
-            row
-            for row in by_symbol.get(run.symbol, [])
-            if _close_ms(run.first) <= row.ts <= _close_ms(run.last)
-        ]
+        low = _close_ms(run.first)
+        high = _close_ms(run.last)
+        inside = [row for row in by_symbol.get(run.symbol, []) if low <= row.ts <= high]
         covered = [row.ts for row in inside if row.funding_covered]
         starts = covered[0] if covered else None
         stops = covered[-1] if covered else None

@@ -155,6 +155,20 @@ def test_a_day_that_changes_the_funding_interval_is_covered() -> None:
     assert rows[2].funding_covered
 
 
+def test_a_day_that_returns_to_eight_hour_funding_is_covered() -> None:
+    bars = _bars([100.0, 101.0, 102.0])
+    opens = bars[1].ts + 1 - DAY_MS
+    # Each settlement carries the hours since the one before it.
+    settlements = [
+        *[item for item in _funding(bars) if item.ts < opens],
+        *(Settlement(opens + hour * 3_600_000, 0.001, 4) for hour in (0, 4, 8, 12, 16)),
+        *[item for item in _funding(bars) if item.ts >= opens + DAY_MS],
+    ]
+    rows = _rows(bars, settlements)
+    assert (rows[1].funding_settlements, rows[1].funding_covered) == (5, True)
+    assert rows[2].funding_covered
+
+
 def test_a_settlement_stamped_just_before_midnight_opens_the_next_day() -> None:
     bars = _bars([100.0, 101.0, 102.0])
     early = [
@@ -218,6 +232,7 @@ def test_rank_orders_complete_rows_by_volume_per_day() -> None:
     [
         [DailyBar(_FIRST_CLOSE, 1.0, 1.0, 1), DailyBar(_FIRST_CLOSE, 1.0, 1.0, 1)],
         [DailyBar(_FIRST_CLOSE, 1.0, 1.0, 1), DailyBar(_FIRST_CLOSE + 3_600_000, 1.0, 1.0, 1)],
+        [DailyBar(_FIRST_CLOSE + 1, 1.0, 1.0, 1)],
         [DailyBar(_FIRST_CLOSE, 0.0, 1.0, 1)],
         [DailyBar(_FIRST_CLOSE, math.nan, 1.0, 1)],
         [DailyBar(_FIRST_CLOSE, 1.0, -1.0, 1)],

@@ -267,6 +267,7 @@ def test_planted_cross_section_passes_h1(tmp_path: Path) -> None:
     assert _mapping(benchmark["validation"])["status"] == "not_applicable"
     markdown = (tmp_path / "out" / "result.md").read_text(encoding="utf-8")
     assert "## Portfolio" in markdown and "| q25-h4 | 0.25 | validation |" in markdown
+    assert validation["uncovered_funding_days"] == 0
     assert "- validation: not applicable" in markdown
     scored = _first(_mapping(document["multiple_testing"])["configs"])
     assert scored["quantile"] == 0.25 and scored["threshold"] is None
@@ -569,17 +570,34 @@ def test_funding_is_paid_by_the_long_leg_and_received_by_the_short_leg() -> None
     assert stressed < base
 
 
-def test_a_partly_covered_held_day_fails_closed() -> None:
+def test_a_partly_covered_held_day_is_charged_and_counted() -> None:
     spec = _four_symbol_spec(funding=True)
     panel = _table(
         symbols=["A", "B"],
         prices=[[100.0] * 4, [100.0] * 4],
         signals=[[1.0] * 4, [-1.0] * 4],
-        funding=[[0.0001] * 4, [0.0001] * 4],
+        funding=[[0.0001] * 4, [0.0002] * 4],
         covered=[[True, True, False, True], [True] * 4],
     )
-    with pytest.raises(IntegrityError, match="whole funding day"):
-        PanelSource(spec, panel).window(_config(0.5, 2), 0, 4)
+    source = PanelSource(spec, panel)
+    series = source.window(_config(0.5, 2), 0, 4)
+    # Day 2 is charged its recorded rate, and the position-day is counted.
+    assert series.funding_paid == pytest.approx((0.5 * 0.0002,))
+    assert source.stats[("c", 0, 4)].uncovered_funding_days == 1
+
+
+def test_a_negative_rate_is_received_by_the_long_leg_and_paid_by_the_short() -> None:
+    spec = _four_symbol_spec(funding=True)
+    panel = _table(
+        symbols=["A", "B"],
+        prices=[[100.0] * 4, [100.0] * 4],
+        signals=[[1.0] * 4, [-1.0] * 4],
+        funding=[[-0.001] * 4, [-0.002] * 4],
+    )
+    series = PanelSource(spec, panel).window(_config(0.5, 2), 0, 4)
+    assert series.funding_received == pytest.approx((0.5 * 0.002,))
+    assert series.funding_paid == pytest.approx((0.5 * 0.004,))
+    assert series.net(spec.costs, 2.0)[0] < series.net(spec.costs, 1.0)[0]
 
 
 def test_a_third_quantile_does_not_round_a_leg_up() -> None:
@@ -610,7 +628,7 @@ def test_a_held_day_without_funding_fails_closed() -> None:
         signals=[[1.0] * 4, [-1.0] * 4],
         funding=[[0.0, 0.0, None, 0.0], [0.0] * 4],
     )
-    with pytest.raises(IntegrityError, match="while held"):
+    with pytest.raises(IntegrityError, match="no funding on a held day"):
         PanelSource(spec, panel).window(_config(0.5, 2), 0, 4)
 
 
@@ -705,6 +723,12 @@ def test_spec_rules_for_the_panel_backend() -> None:
     }
     with pytest.raises(SpecError, match="covered-role"):
         _spec(stray)
+    immediate = _spec_body()
+    _mapping(immediate["costs"])["latency_bars"] = 0
+    with pytest.raises(SpecError, match="latency_bars must be >= 1 on a panel"):
+        _spec(immediate)
+    _mapping(immediate["costs"])["allow_zero_latency"] = True
+    assert _spec(immediate).costs.latency_bars == 0
     wrong_type = _spec_body()
     _mapping(_mapping(wrong_type["data"])["columns"])["traded"] = {
         "dtype": "int64",

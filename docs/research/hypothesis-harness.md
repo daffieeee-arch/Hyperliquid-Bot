@@ -174,7 +174,9 @@ configs:
 - **Period**: decided on one day of the date axis, filled `latency_bars`
   days later at that day's close, exited `horizon_bars` days after the fill.
   The next decision is the exit day, so periods do not overlap, like a bar
-  series' trades. A validation period never reads a holdout close.
+  series' trades. A validation period never reads a holdout close. The
+  rank and the traded flag are the decision day's own close, so
+  `latency_bars` must be at least 1 unless `allow_zero_latency` is set.
 - **Universe and legs**: on the decision day the universe is every symbol
   that traded, has a rank at most `universe_size` and a known signal;
   funding plays no part in it. Sorted by the signal (ties by symbol), the
@@ -195,13 +197,19 @@ configs:
   that day's close and the short leg receives it, position by position, so
   the stress treats each payment adversely as for a bar trade. With
   funding, the panel declares one `role: covered` column (the panel's
-  `funding_covered`); a held day whose rate is null or not covered fails
-  the run closed (`failure_kind: funding`), so a partial day is never
-  charged as a whole one. The panel builder fails on a funding hole inside
-  a funding run, so this happens only on a traded day at or outside a
-  run's edge (a listing month before funding is whole, or trading after a
-  funding archive ends); a study's panel range and universe must not hold a
-  position across such a day.
+  `funding_covered`).
+  - A held day with **no rate** fails the run closed
+    (`failure_kind: funding`). The panel builder fails on a funding hole
+    inside a funding run, so this happens only on a traded day outside one
+    (a listing month before funding starts, or trading after a funding
+    archive ends); a study's panel range and universe must not hold a
+    position across such a day.
+  - A held day whose rate is there but **not covered** (at most one
+    settlement missing, or an interval switch the panel cannot tell apart,
+    see the panel's limitation) is charged its recorded sum, and the
+    report counts such position-days per config as
+    `uncovered_funding_days`. The error is bounded by one settlement per
+    counted day. A pre-registration should say how many it tolerates.
 - **Delisting while held**: a position whose symbol does not trade on a
   held day (no row, or `traded` false) is closed at its last traded close,
   and the period counts a forced exit. That is not the price a holder got at
@@ -210,7 +218,8 @@ configs:
   that filled; a period with an empty leg is skipped.
 - **Report**: `result.json` has a `portfolio` block with the universe rule,
   `symbol_count`, and per config the validation (and, when scored, holdout)
-  period count, skipped decisions, mean names per leg and forced exits;
+  period count, skipped decisions, mean names per leg, forced exits and
+  uncovered funding days;
   `result.md` has a Portfolio section. Each config reports its `quantile`
   and a null `threshold` (a bar series reports the reverse). The
   buy-and-hold benchmark does not apply: both windows report

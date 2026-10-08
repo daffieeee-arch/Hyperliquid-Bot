@@ -20,10 +20,15 @@ A position whose symbol does not trade on a held day is closed at its last
 traded close, as a holder of a delisted contract is; the period records a
 forced exit. A symbol that does not trade on the fill day is not opened, and
 its leg is spread over the names that filled. A period with a leg short of
-``min_names_per_leg`` names, at the decision or at the fill, is skipped. A
-held day without a funding rate, when funding is declared, fails the run
-closed: the panel keeps such days only outside its funding runs, and a
-study's range must not hold a position across one.
+``min_names_per_leg`` names, at the decision or at the fill, is skipped.
+
+With funding declared, a held day without any rate fails the run closed:
+the panel keeps such days only outside its funding runs, and a study's
+range must not hold a position across one. A held day whose rate is there
+but not whole (``funding_covered`` false: at most one settlement missing,
+or an interval switch the panel cannot tell apart) is charged the recorded
+sum and counted, so the report shows how much of the funding rests on such
+days.
 """
 
 from __future__ import annotations
@@ -35,7 +40,7 @@ from fractions import Fraction
 
 from research.harness.data import PanelTable
 from research.harness.errors import HarnessError, IntegrityError
-from research.harness.evaluate import Decision, TradeSeries, next_period
+from research.harness.evaluate import Decision, TradeSeries, funding_flow, next_period
 from research.harness.spec import ConfigSpec, HypothesisSpec, Json
 
 
@@ -48,6 +53,8 @@ class PeriodStats:
     long_names: int
     short_names: int
     forced_exits: int
+    # Held position-days whose funding was charged from a day not whole.
+    uncovered_funding_days: int = 0
 
     def __add__(self, other: PeriodStats) -> PeriodStats:
         return PeriodStats(
@@ -56,6 +63,7 @@ class PeriodStats:
             long_names=self.long_names + other.long_names,
             short_names=self.short_names + other.short_names,
             forced_exits=self.forced_exits + other.forced_exits,
+            uncovered_funding_days=self.uncovered_funding_days + other.uncovered_funding_days,
         )
 
 
@@ -67,6 +75,15 @@ class _Position:
     symbol: int
     side: int
     weight: float
+
+
+@dataclass(frozen=True, slots=True)
+class _Held:
+    value: float
+    paid: float
+    received: float
+    forced: int
+    uncovered: int
 
 
 @dataclass
@@ -101,6 +118,9 @@ class PanelSource:
         if config.quantile is None:
             raise HarnessError("invariant", f"Config {config.id} has no quantile.")
         latency = self.spec.costs.latency_bars
+        # The quantile as written in the spec, so 100 names at 0.29 give 29 and
+        # not the 28 its binary float would.
+        quantile = Fraction(repr(config.quantile))
         gross: list[float] = []
         paid: list[float] = []
         received: list[float] = []
@@ -109,7 +129,7 @@ class PanelSource:
         decision = start
         while (period := next_period(decision, latency, config.horizon_bars, end)) is not None:
             entry, exit_index = period
-            positions = self._positions(config.quantile, decision, entry)
+            positions = self._positions(quantile, decision, entry)
             if positions is None:
                 stats += PeriodStats(0, 1, 0, 0, 0)
                 decision += 1
@@ -118,12 +138,14 @@ class PanelSource:
             period_paid = 0.0
             period_received = 0.0
             forced = 0
+            uncovered = 0
             for position in positions:
-                value, flows, early = self._hold(position, entry, exit_index)
-                period_gross += value
-                period_paid += flows[0]
-                period_received += flows[1]
-                forced += early
+                held = self._hold(position, entry, exit_index)
+                period_gross += held.value
+                period_paid += held.paid
+                period_received += held.received
+                forced += held.forced
+                uncovered += held.uncovered
             gross.append(period_gross)
             paid.append(period_paid)
             received.append(period_received)
@@ -134,6 +156,7 @@ class PanelSource:
                 long_names=sum(1 for position in positions if position.side > 0),
                 short_names=sum(1 for position in positions if position.side < 0),
                 forced_exits=forced,
+                uncovered_funding_days=uncovered,
             )
             decision = exit_index
         self.stats[(config.id, start, end)] = stats
@@ -144,7 +167,7 @@ class PanelSource:
             weights=tuple(weights),
         )
 
-    def _positions(self, quantile: float, decision: int, entry: int) -> list[_Position] | None:
+    def _positions(self, quantile: Fraction, decision: int, entry: int) -> list[_Position] | None:
         """The period's positions, or None when it is skipped."""
 
         portfolio = self.spec.portfolio
@@ -165,14 +188,12 @@ class PanelSource:
             eligible.append((signal, symbol))
         # Ties go to the symbol that sorts first, so the legs are deterministic.
         eligible.sort(key=lambda item: (-item[0], panel.symbols[item[1]]))
-        # The quantile as written in the spec, so 100 names at 0.29 give 29 and
-        # not the 28 its binary float would.
-        names = math.floor(len(eligible) * Fraction(repr(quantile)))
-        if names < portfolio.min_names_per_leg:
+        names = math.floor(len(eligible) * quantile)
+        if names < max(portfolio.min_names_per_leg, 1):
             return None
         long_leg = [symbol for _signal, symbol in eligible[:names]]
         short_leg = (
-            [symbol for _signal, symbol in eligible[-names:]]
+            [symbol for _signal, symbol in eligible[len(eligible) - names :]]
             if self.spec.direction == "signed"
             else []
         )
@@ -190,10 +211,8 @@ class PanelSource:
         )
         return positions
 
-    def _hold(
-        self, position: _Position, entry: int, exit_index: int
-    ) -> tuple[float, tuple[float, float], int]:
-        """One position's weighted return, funding (paid, received) and forced-exit flag.
+    def _hold(self, position: _Position, entry: int, exit_index: int) -> _Held:
+        """One position's weighted return and funding over its hold.
 
         The position holds days ``entry + 1`` through ``exit_index``, paying
         each day's funding on the notional at that day's close. A day the
@@ -209,6 +228,7 @@ class PanelSource:
         received = 0.0
         last = entry
         forced = 0
+        uncovered = 0
         for day in range(entry + 1, exit_index + 1):
             price = prices[day]
             if price is None or panel.traded[position.symbol][day] is not True:
@@ -217,22 +237,28 @@ class PanelSource:
             last = day
             if panel.funding is not None and panel.covered is not None:
                 rate = panel.funding[position.symbol][day]
-                if rate is None or panel.covered[position.symbol][day] is not True:
+                if rate is None:
                     raise IntegrityError(
                         "funding",
-                        f"{panel.symbols[position.symbol]} has no whole funding day while held at "
+                        f"{panel.symbols[position.symbol]} has no funding on a held day at "
                         f"{panel.timestamps[day]}; a study's range must not hold across one.",
                     )
-                flow = -position.side * rate * price / entry_price
-                if flow < 0.0:
-                    paid -= flow
-                else:
-                    received += flow
+                if panel.covered[position.symbol][day] is not True:
+                    uncovered += 1
+                day_paid, day_received = funding_flow(position.side, rate, price, entry_price)
+                paid += day_paid
+                received += day_received
         exit_price = prices[last]
         if exit_price is None:
             raise HarnessError("invariant", "A held position has no exit price.")
         value = position.weight * position.side * (exit_price - entry_price) / entry_price
-        return value, (position.weight * paid, position.weight * received), forced
+        return _Held(
+            value=value,
+            paid=position.weight * paid,
+            received=position.weight * received,
+            forced=forced,
+            uncovered=uncovered,
+        )
 
     def window_stats(self, config_id: str, windows: Sequence[tuple[int, int]]) -> PeriodStats:
         """The summed stats of the given windows, each scored before."""
@@ -290,4 +316,5 @@ def _stats_json(stats: PeriodStats) -> dict[str, Json]:
         "mean_long_names": None if periods == 0 else stats.long_names / periods,
         "mean_short_names": None if periods == 0 else stats.short_names / periods,
         "forced_exits": stats.forced_exits,
+        "uncovered_funding_days": stats.uncovered_funding_days,
     }

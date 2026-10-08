@@ -280,6 +280,12 @@ def validate_spec(document: dict[str, Json]) -> HypothesisSpec:
         () if sizing.vol_feature is None else (sizing.vol_feature,)
     )
     _require_latency_floor(costs, features, data, decision_features)
+    if panel and costs.latency_bars == 0 and not costs.allow_zero_latency:
+        # The rank and traded flag are the decision day's own close.
+        raise SpecError(
+            "costs.latency_bars must be >= 1 on a panel: the universe (rank, traded) is known "
+            "at the decision day's close. latency_bars 0 requires costs.allow_zero_latency: true."
+        )
     return HypothesisSpec(
         hypothesis_id=hypothesis_id,
         universe=universe,

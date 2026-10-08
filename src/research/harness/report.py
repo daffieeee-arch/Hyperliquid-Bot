@@ -54,7 +54,9 @@ LIMITATIONS: Final[tuple[str, ...]] = (
     "the day's universe by the signal and, when signed, short the bottom quantile, equal "
     "weight within a leg, one round trip on the capital per period. A symbol that stops "
     "trading while held is closed at its last traded close, which is not the delisting price "
-    "a holder got. The buy-and-hold benchmark does not apply to a panel.",
+    "a holder got. A held day whose funding is not whole is charged its recorded sum and "
+    "counted; a held day with no funding fails closed. The buy-and-hold benchmark does not "
+    "apply to a panel.",
     "Look-ahead control uses the declared clock. A falsely stamped future value is invisible.",
     "paper_candidate is not LIVE, SHADOW, TESTNET, or an order authorization.",
     "Spot Vision timestamps from 2025-01-01 are microseconds; USD-M examples are milliseconds.",
@@ -387,7 +389,7 @@ _WINDOW_STATES: Final = {
 def _portfolio_lines(document: dict[str, Json]) -> list[str]:
     block = document.get("portfolio")
     if not isinstance(block, dict):
-        return ["- portfolio block missing"]
+        return []
     lines = [
         (
             "Each trade is one period: long the top quantile of the day's universe by the "
@@ -400,9 +402,9 @@ def _portfolio_lines(document: dict[str, Json]) -> list[str]:
         "",
         (
             "| config | quantile | window | periods | skipped decisions | mean long names "
-            "| mean short names | forced exits |"
+            "| mean short names | forced exits | uncovered funding days |"
         ),
-        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     configs = block.get("configs")
     if not isinstance(configs, list):
@@ -416,7 +418,7 @@ def _portfolio_lines(document: dict[str, Json]) -> list[str]:
                 continue
             lines.append(
                 "| {id} | {quantile} | {window} | {periods} | {skipped} | {long} | {short} "
-                "| {forced} |".format(
+                "| {forced} | {uncovered} |".format(
                     id=config.get("id"),
                     quantile=config.get("quantile"),
                     window=window,
@@ -425,6 +427,7 @@ def _portfolio_lines(document: dict[str, Json]) -> list[str]:
                     long=_shown(stats.get("mean_long_names")),
                     short=_shown(stats.get("mean_short_names")),
                     forced=stats.get("forced_exits"),
+                    uncovered=stats.get("uncovered_funding_days"),
                 )
             )
     return lines

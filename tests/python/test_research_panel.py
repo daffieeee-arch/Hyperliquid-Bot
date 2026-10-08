@@ -68,7 +68,7 @@ def test_features_use_only_days_at_or_before_the_close() -> None:
     )
     assert rows[3].mean_quote_volume == 1000.0
     assert rows[3].funding_rate == pytest.approx(0.0003)
-    assert rows[3].funding_hours == 24
+    assert (rows[3].funding_settlements, rows[3].funding_covered) == (3, True)
     assert rows[3].mean_funding == pytest.approx(0.0003)
 
 
@@ -114,9 +114,14 @@ def test_funding_needs_a_fully_covered_day() -> None:
     partial = [item for index, item in enumerate(settlements) if index != 7 and index < 12]
     rows = _rows(bars, partial)
     assert rows[2].funding_rate == pytest.approx(0.0002)
-    assert rows[2].funding_hours == 16
+    assert (rows[2].funding_settlements, rows[2].funding_covered) == (2, False)
     assert rows[2].mean_funding is None and rows[3].mean_funding is None
-    assert (rows[4].funding_rate, rows[4].funding_hours, rows[4].mean_funding) == (None, 0, None)
+    assert (rows[4].funding_rate, rows[4].funding_settlements, rows[4].funding_covered) == (
+        None,
+        0,
+        False,
+    )
+    assert rows[4].mean_funding is None
     assert rows[1].mean_funding == pytest.approx(0.0003)
 
 
@@ -128,8 +133,40 @@ def test_four_hour_funding_counts_as_covered() -> None:
         for hour in range(0, 24, 4)
     ]
     rows = _rows(bars, settlements)
-    assert rows[2].funding_hours == 24
+    assert (rows[2].funding_settlements, rows[2].funding_covered) == (6, True)
     assert rows[2].mean_funding == pytest.approx(0.0003)
+
+
+def test_a_day_that_changes_the_funding_interval_is_covered() -> None:
+    bars = _bars([100.0, 101.0, 102.0])
+    opens = bars[1].ts + 1 - DAY_MS
+    hours = [(0, 8), (8, 8), (12, 4), (16, 4), (20, 4)]
+    settlements = [
+        *[item for item in _funding(bars) if item.ts < opens],
+        *(Settlement(opens + hour * 3_600_000, 0.001, interval) for hour, interval in hours),
+        *(
+            Settlement(bars[2].ts + 1 - DAY_MS + hour * 3_600_000, 0.001, 4)
+            for hour in range(0, 24, 4)
+        ),
+    ]
+    rows = _rows(bars, settlements)
+    assert (rows[1].funding_settlements, rows[1].funding_covered) == (5, True)
+    assert rows[1].funding_rate == pytest.approx(0.005)
+    assert rows[2].funding_covered
+
+
+def test_a_settlement_stamped_just_before_midnight_opens_the_next_day() -> None:
+    bars = _bars([100.0, 101.0, 102.0])
+    early = [
+        replace(item, ts=item.ts - 5) if index == 3 else item
+        for index, item in enumerate(_funding(bars))
+    ]
+    rows = _rows(bars, early)
+    assert [(row.funding_settlements, row.funding_covered) for row in rows] == [
+        (3, True),
+        (3, True),
+        (3, True),
+    ]
 
 
 def test_flat_prices_give_no_realized_vol() -> None:
@@ -148,7 +185,8 @@ def test_rank_orders_complete_rows_by_volume_per_day() -> None:
             trades=1 if traded else 0,
             traded=traded,
             funding_rate=0.0,
-            funding_hours=24,
+            funding_settlements=3,
+            funding_covered=True,
             returns=(0.1,),
             realized_vol=0.01,
             mean_quote_volume=volume,
@@ -339,7 +377,8 @@ def test_the_cli_writes_the_panel_with_delisted_symbols(tmp_path: Path) -> None:
         "trades",
         "traded",
         "funding_rate",
-        "funding_hours",
+        "funding_settlements",
+        "funding_covered",
         "ret_3d",
         "ret_7d",
         "vol_5d",
@@ -374,6 +413,38 @@ def test_a_missing_day_inside_a_run_fails_closed(
     out = tmp_path / "panel.parquet"
     assert main(_panel_args(root, manifest, out)) == 2
     assert "AAAUSDT misses the daily bar of 2026-02-14" in capsys.readouterr().err
+    assert not out.exists()
+
+
+def test_a_still_published_run_must_reach_the_end(
+    tmp_path: Path, capsys: CaptureFixture[str]
+) -> None:
+    root, manifest = _universe_root(tmp_path)
+    _write_month(root, "klines_1d", "AAAUSDT", "2026-03", range(1, 31))
+    assert main(_panel_args(root, manifest, tmp_path / "panel.parquet")) == 2
+    assert "AAAUSDT misses the daily bar of 2026-03-31" in capsys.readouterr().err
+
+
+def test_a_run_cut_by_the_start_must_begin_on_it(
+    tmp_path: Path, capsys: CaptureFixture[str]
+) -> None:
+    root, manifest = _universe_root(tmp_path)
+    _write_month(root, "klines_1d", "AAAUSDT", "2026-02", range(3, 29))
+    args = _panel_args(root, manifest, tmp_path / "panel.parquet")
+    args[args.index("--start") + 1] = "2026-02-01"
+    assert main(args) == 2
+    assert "AAAUSDT misses the daily bar of 2026-02-01" in capsys.readouterr().err
+
+
+def test_a_funding_hole_on_a_traded_day_fails_closed(
+    tmp_path: Path, capsys: CaptureFixture[str]
+) -> None:
+    root, manifest = _universe_root(tmp_path)
+    # February funding stops after the 20th while AAAUSDT keeps trading.
+    _write_month(root, "funding", "AAAUSDT", "2026-02", range(1, 21))
+    out = tmp_path / "panel.parquet"
+    assert main(_panel_args(root, manifest, out)) == 2
+    assert "AAAUSDT traded on 2026-02-21 without full funding" in capsys.readouterr().err
     assert not out.exists()
 
 

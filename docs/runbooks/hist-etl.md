@@ -174,7 +174,9 @@ enabled = false                                        # default: false
   klines continue. The universe does not say whether that is a hole, a
   relisting, or another asset under the same ticker. The
   [cross-sectional panel](../research/cross-sectional-panel.md) restarts
-  its price windows after every untraded day, so no return spans the break.
+  its price windows after every untraded day, so a return spans such a break
+  only if the contract kept trading through it; its funding features stay
+  empty until funding resumes.
 - Two datasets that plan the same archive (a universe and a BTCUSDT
   dataset) download it once in a sync, and a failure is not retried for the
   second.

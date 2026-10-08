@@ -26,9 +26,10 @@ from dataclasses import dataclass, replace
 from itertools import pairwise
 from typing import Final
 
-from research.bar_tables.trend import BarTableError
+from research.bar_tables.trend import SETTLEMENT_SLACK_MS, BarTableError
 
 DAY_MS: Final = 86_400_000
+_HOUR_MS: Final = 3_600_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,17 +72,24 @@ class PanelSpec:
 class PanelRow:
     """One symbol on one day; every value is known at ``ts``.
 
-    - ``funding_rate``: the sum of the settlements in ``(ts - 1 day, ts]``,
-      the rate a long pays for holding over the day; ``None`` without any.
-    - ``funding_hours``: the sum of those settlements' intervals. A day is
-      fully covered when it is 24.
+    - ``funding_rate``: the sum of the day's settlements, the rate a long
+      pays for holding from the previous close to ``ts``; ``None`` without
+      any. A settlement belongs to the day whose ``(ts - 1 day, ts]`` holds
+      its time plus a minute, so one stamped just before midnight still
+      counts for the day it opens.
+    - ``funding_settlements``: how many settlements that is.
+    - ``funding_covered``: no settlement of the day is missing, judged from
+      each settlement's interval as hist_etl does: consecutive settlements
+      are at most the longer interval apart, the first follows the previous
+      day's last, and the next is due after the close. A day on which
+      Binance changes the interval (8h to 4h, say) is covered.
     - ``returns``: the log return over each lookback, in the spec's order.
     - ``realized_vol``: the sample stdev of the window's daily log returns;
       ``None`` unless positive.
     - ``mean_quote_volume``: the mean over the volume window, untraded days
       counting as their (zero) volume.
     - ``mean_funding``: the mean daily ``funding_rate`` over the funding
-      window, every day of it fully covered.
+      window, every day of it covered.
     """
 
     ts: int
@@ -91,7 +99,8 @@ class PanelRow:
     trades: int
     traded: bool
     funding_rate: float | None
-    funding_hours: int
+    funding_settlements: int
+    funding_covered: bool
     returns: tuple[float | None, ...]
     realized_vol: float | None
     mean_quote_volume: float | None
@@ -129,8 +138,12 @@ def build_symbol_rows(
     # run_start[i]: index of the first bar of the consecutive-day stretch holding i.
     run_start = _run_starts(bars)
     traded_streak = _streaks(traded, run_start)
-    covered = [hours == 24 for _rate, hours in funding]
-    covered_streak = _streaks(covered, run_start)
+    covered_streak = _streaks([day.covered for day in funding], run_start)
+    # one_day[i]: the log return into bar i, for bars inside one stretch.
+    one_day = [
+        math.log(bar.close / bars[index - 1].close) if run_start[index] != index else 0.0
+        for index, bar in enumerate(bars)
+    ]
     rows: list[PanelRow] = []
     for index, bar in enumerate(bars):
         span = index - run_start[index] + 1
@@ -142,14 +155,15 @@ def build_symbol_rows(
                 quote_volume=bar.quote_volume,
                 trades=bar.trades,
                 traded=traded[index],
-                funding_rate=funding[index][0],
-                funding_hours=funding[index][1],
+                funding_rate=funding[index].rate,
+                funding_settlements=funding[index].count,
+                funding_covered=funding[index].covered,
                 returns=tuple(
                     _log_return(bars, index, lookback) if traded_streak[index] > lookback else None
                     for lookback in spec.lookbacks
                 ),
                 realized_vol=(
-                    _realized_vol(bars, index, spec.vol_window)
+                    _sample_stdev(one_day[index - spec.vol_window + 1 : index + 1])
                     if traded_streak[index] > spec.vol_window
                     else None
                 ),
@@ -163,8 +177,8 @@ def build_symbol_rows(
                 ),
                 mean_funding=(
                     math.fsum(
-                        _known(rate)
-                        for rate, _hours in funding[index - spec.funding_window + 1 : index + 1]
+                        _known(day.rate)
+                        for day in funding[index - spec.funding_window + 1 : index + 1]
                     )
                     / spec.funding_window
                     if covered_streak[index] >= spec.funding_window
@@ -225,24 +239,51 @@ def _check_settlements(symbol: str, settlements: Sequence[Settlement]) -> None:
             raise BarTableError(f"{symbol} funding at {settlement.ts} is not usable.")
 
 
+@dataclass(frozen=True, slots=True)
+class _FundingDay:
+    rate: float | None
+    count: int
+    covered: bool
+
+
 def _daily_funding(
     bars: Sequence[DailyBar], settlements: Sequence[Settlement]
-) -> list[tuple[float | None, int]]:
-    """Per bar, the summed rate and interval hours of settlements in ``(ts - 1 day, ts]``."""
-
-    result: list[tuple[float | None, int]] = []
+) -> list[_FundingDay]:
+    result: list[_FundingDay] = []
     cursor = 0
     for bar in bars:
-        while cursor < len(settlements) and settlements[cursor].ts <= bar.ts - DAY_MS:
+        opens = bar.ts - DAY_MS
+        while cursor < len(settlements) and _day_time(settlements[cursor]) <= opens:
             cursor += 1
         day: list[Settlement] = []
         probe = cursor
-        while probe < len(settlements) and settlements[probe].ts <= bar.ts:
+        while probe < len(settlements) and _day_time(settlements[probe]) <= bar.ts:
             day.append(settlements[probe])
             probe += 1
         rate = math.fsum(item.rate for item in day) if day else None
-        result.append((rate, sum(item.interval_hours for item in day)))
+        result.append(_FundingDay(rate, len(day), _covered(day, opens, bar.ts)))
     return result
+
+
+def _day_time(settlement: Settlement) -> int:
+    return settlement.ts + SETTLEMENT_SLACK_MS
+
+
+def _covered(day: Sequence[Settlement], opens: int, closes: int) -> bool:
+    if not day:
+        return False
+    first, last = day[0], day[-1]
+    # The settlement before the first is due on the previous day, the one
+    # after the last on the next day, and none in between is skipped.
+    if first.ts - first.interval_hours * _HOUR_MS + SETTLEMENT_SLACK_MS > opens:
+        return False
+    if last.ts + last.interval_hours * _HOUR_MS + SETTLEMENT_SLACK_MS <= closes:
+        return False
+    return all(
+        later.ts - earlier.ts
+        <= max(earlier.interval_hours, later.interval_hours) * _HOUR_MS + SETTLEMENT_SLACK_MS
+        for earlier, later in pairwise(day)
+    )
 
 
 def _run_starts(bars: Sequence[DailyBar]) -> list[int]:
@@ -273,13 +314,9 @@ def _log_return(bars: Sequence[DailyBar], index: int, lookback: int) -> float:
     return math.log(bars[index].close / bars[index - lookback].close)
 
 
-def _realized_vol(bars: Sequence[DailyBar], index: int, window: int) -> float | None:
-    returns = [
-        math.log(bars[position].close / bars[position - 1].close)
-        for position in range(index - window + 1, index + 1)
-    ]
-    mean = math.fsum(returns) / window
-    stdev = math.sqrt(math.fsum((value - mean) ** 2 for value in returns) / (window - 1))
+def _sample_stdev(returns: Sequence[float]) -> float | None:
+    mean = math.fsum(returns) / len(returns)
+    stdev = math.sqrt(math.fsum((value - mean) ** 2 for value in returns) / (len(returns) - 1))
     return stdev if stdev > 0.0 else None
 
 

@@ -31,7 +31,7 @@ from research.bar_tables.panel import (
     build_symbol_rows,
     rank_by_volume,
 )
-from research.bar_tables.trend import BarTableError
+from research.bar_tables.trend import SETTLEMENT_SLACK_MS, BarTableError
 from research.hist_etl.binance_convert import binance_parquet_path
 from research.hist_etl.errors import HistEtlError
 from research.hist_etl.manifest import load_manifest
@@ -42,13 +42,30 @@ _MISSING_SHOWN: Final = 10
 
 
 @dataclass(frozen=True, slots=True)
+class Run:
+    """One universe run clipped to the panel, days inclusive.
+
+    ``must_start`` and ``must_end`` say whether the panel needs that edge
+    day: a run may start late only in its own listing month and end early
+    only in its delisting month; a run cut by the panel range, or still
+    published, has to reach the cut.
+    """
+
+    symbol: str
+    first: date
+    last: date
+    must_start: bool
+    must_end: bool
+
+
+@dataclass(frozen=True, slots=True)
 class UniverseFiles:
     """The month files a panel over ``[start, end)`` reads, per dataset."""
 
     klines: tuple[Path, ...]
     funding: tuple[Path, ...]
-    # Each kline run clipped to the panel, as inclusive (symbol, first day, last day).
-    runs: tuple[tuple[str, date, date], ...]
+    kline_runs: tuple[Run, ...]
+    funding_runs: tuple[Run, ...]
 
 
 def universe_files(
@@ -69,8 +86,8 @@ def universe_files(
         raise BarTableError(f"{group} must expand into both klines and fundingRate datasets.")
     if any(spec.interval != "1d" for spec in klines):
         raise BarTableError(f"{group} klines must be 1d for a daily panel.")
-    kline_files, runs, missing = _month_files(root, klines, start, end)
-    funding_files, _runs, funding_missing = _month_files(root, funding, start, end)
+    kline_files, kline_runs, missing = _month_files(root, klines, start, end)
+    funding_files, funding_runs, funding_missing = _month_files(root, funding, start, end)
     missing += funding_missing
     if missing:
         shown = ", ".join(str(path) for path in missing[:_MISSING_SHOWN])
@@ -78,14 +95,19 @@ def universe_files(
             f"{len(missing)} month file(s) of {group} are missing or have no sidecar; "
             f"sync the universe first. First: {shown}"
         )
-    return UniverseFiles(klines=kline_files, funding=funding_files, runs=runs)
+    return UniverseFiles(
+        klines=kline_files,
+        funding=funding_files,
+        kline_runs=kline_runs,
+        funding_runs=funding_runs,
+    )
 
 
 def _month_files(
     root: Path, specs: Sequence[BinanceSpec], start: date, end: date
-) -> tuple[tuple[Path, ...], tuple[tuple[str, date, date], ...], list[Path]]:
+) -> tuple[tuple[Path, ...], tuple[Run, ...], list[Path]]:
     files: list[Path] = []
-    runs: list[tuple[str, date, date]] = []
+    runs: list[Run] = []
     missing: list[Path] = []
     last_day = end - timedelta(days=1)
     for spec in specs:
@@ -93,7 +115,15 @@ def _month_files(
         last = last_day if spec.end is None else min(spec.end, last_day)
         if first > last:
             continue
-        runs.append((spec.symbol, first, last))
+        runs.append(
+            Run(
+                symbol=spec.symbol,
+                first=first,
+                last=last,
+                must_start=not spec.open_start or first > spec.start,
+                must_end=not spec.open_end or spec.end is None or last < spec.end,
+            )
+        )
         month = date(first.year, first.month, 1)
         while month <= last:
             path = binance_parquet_path(root, spec, f"{month.year:04d}-{month.month:02d}")
@@ -112,30 +142,72 @@ def build_panel(files: UniverseFiles, spec: PanelSpec, start: date, end: date) -
     start_ms = _day_ms(start)
     end_ms = _day_ms(end)
     bars = _read_bars(files.klines, start_ms, end_ms)
-    _check_runs(bars, files.runs)
-    settlements = _read_settlements(files.funding, start_ms - DAY_MS, end_ms)
+    _check_kline_runs(bars, files.kline_runs)
+    # Only the range's own month files are read; a settlement stamped up to a
+    # minute early still belongs to the first day.
+    settlements = _read_settlements(files.funding, start_ms - SETTLEMENT_SLACK_MS, end_ms)
     rows: list[PanelRow] = []
     for symbol in sorted(bars):
         rows.extend(build_symbol_rows(symbol, bars[symbol], settlements.get(symbol, []), spec))
     if not rows:
         raise BarTableError("The universe has no daily bar inside the panel range.")
+    _check_funding_runs(rows, files.funding_runs)
     return rank_by_volume(rows)
 
 
-def _check_runs(bars: dict[str, list[DailyBar]], runs: Sequence[tuple[str, date, date]]) -> None:
-    """No day may be missing between a run's first and last bar inside the panel."""
+def _check_kline_runs(bars: dict[str, list[DailyBar]], runs: Sequence[Run]) -> None:
+    """A run's days inside the panel are all there, edges included unless open."""
 
-    for symbol, first, last in runs:
-        low = _day_ms(first)
-        high = _day_ms(last + timedelta(days=1))
-        inside = [bar.ts for bar in bars.get(symbol, []) if low <= bar.ts < high]
-        for earlier, later in pairwise(inside):
-            if later - earlier != DAY_MS:
-                missing = datetime.fromtimestamp((earlier + 1) / 1000, UTC).date()
+    for run in runs:
+        low = _day_ms(run.first)
+        high = _day_ms(run.last + timedelta(days=1))
+        inside = [bar.ts for bar in bars.get(run.symbol, []) if low <= bar.ts < high]
+        if not inside:
+            if run.must_start or run.must_end:
                 raise BarTableError(
-                    f"{symbol} misses the daily bar of {missing} inside a run; "
+                    f"{run.symbol} has no daily bar from {run.first} to {run.last}; "
                     "run hist_etl verify and sync."
                 )
+            continue
+        if run.must_start and inside[0] != low + DAY_MS - 1:
+            raise BarTableError(_missing_day(run.symbol, low - 1))
+        if run.must_end and inside[-1] != high - 1:
+            raise BarTableError(_missing_day(run.symbol, inside[-1]))
+        for earlier, later in pairwise(inside):
+            if later - earlier != DAY_MS:
+                raise BarTableError(_missing_day(run.symbol, earlier))
+
+
+def _missing_day(symbol: str, previous_close: int) -> str:
+    missing = datetime.fromtimestamp((previous_close + 1) / 1000, UTC).date()
+    return f"{symbol} misses the daily bar of {missing} inside a run; run hist_etl verify and sync."
+
+
+def _check_funding_runs(rows: Sequence[PanelRow], runs: Sequence[Run]) -> None:
+    """Inside a funding run, a traded day without full funding is a hole.
+
+    A listing or delisting day may be partial, like the bars. A day that did
+    not trade is not checked: delisted contracts carry default funding.
+    """
+
+    by_symbol: dict[str, list[PanelRow]] = defaultdict(list)
+    for row in rows:
+        by_symbol[row.symbol].append(row)
+    for run in runs:
+        first_close = _day_ms(run.first) + DAY_MS - 1
+        last_close = _day_ms(run.last) + DAY_MS - 1
+        for row in by_symbol.get(run.symbol, []):
+            if not first_close <= row.ts <= last_close or not row.traded or row.funding_covered:
+                continue
+            if (row.ts == first_close and not run.must_start) or (
+                row.ts == last_close and not run.must_end
+            ):
+                continue
+            day = datetime.fromtimestamp(row.ts / 1000, UTC).date()
+            raise BarTableError(
+                f"{run.symbol} traded on {day} without full funding inside a funding run "
+                f"({row.funding_settlements} settlement(s)); run hist_etl verify and sync."
+            )
 
 
 def _read_bars(files: Sequence[Path], start_ms: int, end_ms: int) -> dict[str, list[DailyBar]]:
@@ -191,9 +263,9 @@ def write_panel_parquet(rows: Sequence[PanelRow], spec: PanelSpec, out: Path) ->
         f"funding_{spec.funding_window}d",
     ]
     names = ["ts", "available_ts", "symbol", "close", "quote_volume", "trades", "traded"]
-    names += ["funding_rate", "funding_hours", *features, "volume_rank"]
-    integers = {"ts", "available_ts", "trades", "funding_hours", "volume_rank"}
-    kinds = {"symbol": "VARCHAR", "traded": "BOOLEAN"}
+    names += ["funding_rate", "funding_settlements", "funding_covered", *features, "volume_rank"]
+    integers = {"ts", "available_ts", "trades", "funding_settlements", "volume_rank"}
+    kinds = {"symbol": "VARCHAR", "traded": "BOOLEAN", "funding_covered": "BOOLEAN"}
     types = ", ".join(
         f"'{name}': '{kinds.get(name, 'BIGINT' if name in integers else 'DOUBLE')}'"
         for name in names
@@ -218,7 +290,8 @@ def write_panel_parquet(rows: Sequence[PanelRow], spec: PanelSpec, out: Path) ->
                         row.trades,
                         "true" if row.traded else "false",
                         _cell(row.funding_rate),
-                        row.funding_hours,
+                        row.funding_settlements,
+                        "true" if row.funding_covered else "false",
                         *(_cell(value) for value in row.returns),
                         _cell(row.realized_vol),
                         _cell(row.mean_quote_volume),

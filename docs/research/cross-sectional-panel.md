@@ -30,12 +30,13 @@ of latency.
 | `symbol` | Binance USD-M symbol |
 | `close`, `quote_volume`, `trades` | The day's close, USDT volume and trade count |
 | `traded` | `trades > 0` and `quote_volume > 0` |
-| `funding_rate` | Sum of the settlements in `(ts - 1 day, ts]`, positive when longs pay; empty without any |
-| `funding_hours` | Sum of those settlements' intervals; 24 means the day is fully covered |
+| `funding_rate` | Sum of the day's settlements, positive when longs pay; empty without any |
+| `funding_settlements` | How many settlements that is |
+| `funding_covered` | No settlement of the day is missing |
 | `ret_<L>d` | Log return over `L` days |
 | `vol_<W>d` | Sample stdev of the last `W` daily log returns; empty unless positive |
 | `qv_<V>d` | Mean quote volume over `V` days, untraded days counting as 0 |
-| `funding_<K>d` | Mean daily `funding_rate` over `K` fully covered days |
+| `funding_<K>d` | Mean daily `funding_rate` over `K` covered days |
 | `volume_rank` | Rank by `qv_<V>d` among the day's complete rows; 1 is the largest |
 
 ## Point-in-time rules
@@ -49,6 +50,13 @@ of latency.
   untraded day as zero volume.
 - **Gaps restart windows.** A relisted symbol has a gap between its runs, and
   no window spans it.
+- **Funding days.** A settlement belongs to the day whose `(ts - 1 day, ts]`
+  holds its time plus a minute, so one stamped just before midnight counts
+  for the day it opens. A day is covered when no settlement is missing,
+  judged as hist_etl does: consecutive settlements are at most the longer
+  of their intervals apart (plus a minute), the first follows the previous
+  day's last, and the next is due after the close. A day on which Binance
+  changes the interval (8h to 4h, say) is covered.
 - **The universe comes from the rank, not from survival.** A row is complete
   when it traded and has every feature. `volume_rank` orders the complete
   rows of one day, ties going to the symbol that sorts first. A study takes
@@ -67,13 +75,24 @@ Nothing is written when any of these fail:
     synced data.
   - A run that the universe keeps open by its grace month, but which never got
     that month, blocks the build until a newer universe file closes it.
-- **A daily bar is missing inside a run.** Run `hist_etl verify` and `sync`.
+- **A daily bar is missing inside a run.** A run may start late only in its
+  own listing month and end early only in its delisting month. A run that
+  the panel's `start` or `end` cuts, or that is still published, must reach
+  the cut. Run `hist_etl verify` and `sync`.
+- **A traded day inside a funding run is not covered.** That is a funding
+  hole, and it would silently drop the symbol from the rank. Listing and
+  delisting days may be partial. Untraded days are not checked, because
+  delisted contracts carry default-rate funding.
 - **Inputs are not usable.** This covers bars off the daily grid or out of
   order, a non-positive close, negative volume, a non-finite funding rate, or
   a symbol twice on one day.
 
 ## Limits
 
+- Rows start at `start`, so the first `max` window days are warm-up. Pick
+  `start` that far before the study's first decision.
+- A full universe (about 670k rows) builds in under a minute and well under
+  1 GB of memory; 1.44M synthetic rows took 51 s and 1 GB.
 - Daily bars only (`1d` klines). Funding is summed per day, not per position
   hold. The harness's cross-sectional mode (S3) decides how a held day's
   funding is charged, and what an incomplete funding day means for a held

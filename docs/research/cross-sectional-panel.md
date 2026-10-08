@@ -89,10 +89,10 @@ Nothing is written when any of these fail:
 
 ## Limits
 
-- Rows start at `start`, so the first `max` window days are warm-up. Pick
-  `start` that far before the study's first decision.
-- A full universe (about 670k rows) builds in under a minute and well under
-  1 GB of memory; 1.44M synthetic rows took 51 s and 1 GB.
+- Rows start at `start`, so the days up to the longest window are warm-up.
+  Pick `start` that far before the study's first decision.
+- Size: 1.44M synthetic rows (600 symbols over 2,400 days, about twice the
+  2026-10-08 universe) took 51 s and peaked at 1 GB, input included.
 - Daily bars only (`1d` klines). Funding is summed per day, not per position
   hold. The harness's cross-sectional mode (S3) decides how a held day's
   funding is charged, and what an incomplete funding day means for a held

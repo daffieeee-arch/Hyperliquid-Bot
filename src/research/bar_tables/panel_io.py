@@ -196,8 +196,14 @@ def _check_kline_runs(bars: dict[str, list[DailyBar]], runs: Sequence[Run]) -> N
         inside = [bar.ts for bar in bars.get(run.symbol, []) if low <= bar.ts <= high]
         if not inside:
             # A still-published run's window can end inside its listing
-            # month, before the listing.
-            if run.published and run.late_start and _same_month(run.first, run.last):
+            # month, before the listing: the month file then holds later bars.
+            listed_later = any(bar.ts > high for bar in bars.get(run.symbol, []))
+            if (
+                run.published
+                and run.late_start
+                and _same_month(run.first, run.last)
+                and listed_later
+            ):
                 continue
             raise BarTableError(
                 f"{run.symbol} has no daily bar from {run.first} to {run.last}; "
@@ -246,27 +252,19 @@ def _check_funding_runs(
         series = settlements.get(run.symbol, [])
         own = [item for item in series if opens < item.ts + SETTLEMENT_SLACK_MS <= high]
         following = next((item for item in series if item.ts + SETTLEMENT_SLACK_MS > high), None)
-        listing_end = _close_ms(_month_end(run.first))
-        delisting_start = _close_ms(date(run.last.year, run.last.month, 1))
+        # Only the next day's settlement continues this run; a later one
+        # belongs to a relisting, months away.
+        if following is not None and following.ts > high + DAY_MS:
+            following = None
         if own:
-            starts = {
-                ts
-                for ts in _start_dues(own[0], opens)
-                if not (run.late_start and ts <= listing_end)
-            }
-            ends = {
-                ts
-                for ts in _end_dues(own[-1], following, high)
-                if not (run.early_end and ts >= delisting_start)
-            }
+            starts = {ts for ts in _start_dues(own[0], opens) if not _late_start_ok(run, ts)}
+            ends = {ts for ts in _end_dues(own[-1], following, high) if not _early_end_ok(run, ts)}
             holes = funding_hole_closes(own) | starts | ends
         else:
             holes = {
                 ts
                 for ts in traded
-                if opens < ts <= high
-                and not (run.late_start and ts <= listing_end)
-                and not (run.early_end and ts >= delisting_start)
+                if opens < ts <= high and not (_late_start_ok(run, ts) or _early_end_ok(run, ts))
             }
         for close in sorted(holes & traded):
             day = datetime.fromtimestamp(close / 1000, UTC).date()
@@ -274,6 +272,18 @@ def _check_funding_runs(
                 f"{run.symbol} traded on {day} with a funding settlement missing inside a "
                 "funding run; run hist_etl verify and sync."
             )
+
+
+def _late_start_ok(run: Run, close: int) -> bool:
+    """Funding may be missing at a run's start only inside its listing month."""
+
+    return run.late_start and close <= _close_ms(_month_end(run.first))
+
+
+def _early_end_ok(run: Run, close: int) -> bool:
+    """Funding may be missing at a run's end only inside its delisting month."""
+
+    return run.early_end and close >= _close_ms(date(run.last.year, run.last.month, 1))
 
 
 def _start_dues(first: Settlement, opens: int) -> set[int]:

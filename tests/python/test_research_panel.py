@@ -725,6 +725,29 @@ def test_the_last_day_needs_no_next_month_to_be_covered(tmp_path: Path) -> None:
     assert main(_panel_args(root, manifest, tmp_path / "panel.parquet")) == 0
 
 
+def test_a_listing_month_file_without_bars_in_reach_fails(
+    tmp_path: Path, capsys: CaptureFixture[str]
+) -> None:
+    root, manifest = _universe_root(tmp_path)
+    # NEWUSDT's January file was synced on Jan 21 and holds Jan 20 only;
+    # the panel ends on Jan 25, after the listing.
+    _write_month(root, "klines_1d", "NEWUSDT", "2026-01", range(20, 21))
+    args = _panel_args(root, manifest, tmp_path / "panel.parquet", end="2026-01-25")
+    assert main(args) == 2
+    assert "NEWUSDT misses the daily bar of 2026-01-21" in capsys.readouterr().err
+
+
+def test_an_empty_window_before_a_listing_needs_later_bars(
+    tmp_path: Path, capsys: CaptureFixture[str]
+) -> None:
+    root, manifest = _universe_root(tmp_path)
+    # The January file holds no bar at all after the listing day it promises.
+    _write_month(root, "klines_1d", "NEWUSDT", "2026-01", range(1, 1))
+    args = _panel_args(root, manifest, tmp_path / "panel.parquet", end="2026-01-10")
+    assert main(args) == 2
+    assert "NEWUSDT has no daily bar" in capsys.readouterr().err
+
+
 def test_a_start_inside_a_listing_month_needs_no_bar_on_it(tmp_path: Path) -> None:
     root, manifest = _universe_root(tmp_path)
     args = _panel_args(root, manifest, tmp_path / "panel.parquet")

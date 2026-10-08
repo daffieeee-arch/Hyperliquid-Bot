@@ -1,0 +1,82 @@
+# Pre-registered: contrarian funding on BTC (exp_funding_btc).
+# See docs/experiments/exp_funding_btc.md before changing anything here: a
+# change to any field is a new pre-registration with a new spec_sha256, not a
+# re-run. Comments are not part of the hash.
+# Copy it to a study directory outside the repository, build bars.parquet next
+# to the copy, then lock and run it there (see the Run section of the doc).
+
+hypothesis_id: funding-contrarian-btc-1h-w21
+universe: binance-um-btcusdt-perp-1h
+dataset_version: bn-um-btcusdt-klines-1h+funding 2020-01-01..2026-10-01, bar_tables trend 168/672/2016, vol 168, funding tilt 21 vs 0.0001
+h0: Mean net return per trade of the contrarian funding rule is less than or equal to zero after costs and funding.
+h1: Mean net return per trade of the contrarian funding rule is greater than zero after costs and funding on the holdout, scored once.
+alpha: 0.05
+selection_method: holm
+direction: signed
+signal_feature: funding_tilt_21
+costs:
+  fee_bps: 4.5
+  slippage_bps: 1.0
+  spread_bps: 0.5
+  latency_bars: 1
+  funding_column: funding_rate
+sizing:
+  method: vol_target
+  vol_feature: realized_vol
+  target_vol: 0.005
+  max_leverage: 2.0
+split:
+  method: expanding
+  train_bars: 4320
+  test_bars: 2160
+  holdout_bars: 15312
+sample:
+  min_trades_validation: 40
+  min_trades_holdout: 25
+  min_folds: 8
+data:
+  backend: parquet
+  parquet_path: bars.parquet
+  timestamp_column: ts
+  price_column: close
+  max_gap: 3600000
+  max_rows: 100000
+  columns:
+    ts:
+      dtype: int64
+      role: timestamp
+    close:
+      dtype: float64
+      role: price
+    funding_tilt_21:
+      dtype: float64
+      role: feature
+    realized_vol:
+      dtype: float64
+      role: feature
+    funding_rate:
+      dtype: float64
+      role: funding
+    available_ts:
+      dtype: int64
+      role: availability
+features:
+  - name: funding_tilt_21
+    column: funding_tilt_21
+    available_at_column: available_ts
+  - name: realized_vol
+    column: realized_vol
+    available_at_column: available_ts
+configs:
+  - id: near-3d
+    threshold: 0.00005
+    horizon_bars: 72
+  - id: near-1w
+    threshold: 0.00005
+    horizon_bars: 168
+  - id: far-3d
+    threshold: 0.0001
+    horizon_bars: 72
+  - id: far-1w
+    threshold: 0.0001
+    horizon_bars: 168

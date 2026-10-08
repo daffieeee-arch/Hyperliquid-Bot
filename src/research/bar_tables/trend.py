@@ -142,13 +142,15 @@ def _funding_tilts(
 
     if not funding_means:
         return [() for _ in closes]
-    known = [
-        (ts, rate, interval)
-        for (ts, rate), interval in zip(funding, intervals_ms, strict=True)
-        if ts <= closes[-1]
-    ]
-    if any(later[0] <= earlier[0] for earlier, later in pairwise(known)):
-        raise BarTableError("Funding settlements must be strictly increasing in time.")
+    # Sorted, so the count at a close holds even if older rows arrive out of order.
+    known = sorted(
+        (
+            (ts, rate, interval)
+            for (ts, rate), interval in zip(funding, intervals_ms, strict=True)
+            if ts <= closes[-1]
+        ),
+        key=lambda entry: entry[0],
+    )
     longest = max(funding_means)
     first = sum(1 for ts, _rate, _interval in known if ts <= closes[0])
     if first < longest:
@@ -160,15 +162,17 @@ def _funding_tilts(
     intervals = sorted({interval for _ts, _rate, interval in needed})
     if len(intervals) != 1 or intervals[0] < 1:
         raise BarTableError(f"Funding tilts need one settlement interval; found {intervals} ms.")
-    for ts, rate, _interval in needed:
-        if not math.isfinite(rate):
-            raise BarTableError(f"Funding rate at {ts} is not a finite number.")
-    edges = [ts for ts, _rate, _interval in needed] + [closes[-1]]
-    for earlier, later in pairwise(edges):
-        if later - earlier > intervals[0] + SETTLEMENT_SLACK_MS:
+    interval = intervals[0]
+    settled = [(ts, rate) for ts, rate, _interval in needed]
+    # None missing (finite, strictly increasing, no gap above the interval) ...
+    _check_funding(settled, settled[0][0], closes[-1], interval + SETTLEMENT_SLACK_MS)
+    # ... and none extra: settlements closer than the interval mean the label
+    # is wrong, e.g. 4h prints marked 8h, and K of them would span half the time.
+    for earlier, later in pairwise(ts for ts, _rate in settled):
+        if later - earlier < interval - SETTLEMENT_SLACK_MS:
             raise BarTableError(
-                f"No funding settlement between {earlier} and {later}; "
-                f"the interval is {intervals[0]} ms."
+                f"Funding settlements at {earlier} and {later} are closer than "
+                f"their {interval} ms interval."
             )
     rates = [rate for _ts, rate, _interval in known]
     # The means change only when a settlement arrives, so compute each once.

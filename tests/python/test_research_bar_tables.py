@@ -213,7 +213,7 @@ def test_funding_tilts_fail_closed_without_enough_or_continuous_settlements() ->
         build(funding, (0,))
     # A missing settlement is measured against the interval, not the looser
     # max gap: 4h between 2h settlements fails even with a 9h max gap.
-    with pytest.raises(BarTableError, match="the interval is 7200000 ms"):
+    with pytest.raises(BarTableError, match="the gap exceeds 7260000 ms"):
         build(gapped, (2,), max_gap=9 * _HOUR)
     # The settlements a mean reads must share one interval; an older one may differ.
     mixed = [3 * _HOUR] + [2 * _HOUR] * 5
@@ -222,6 +222,13 @@ def test_funding_tilts_fail_closed_without_enough_or_continuous_settlements() ->
         build(funding, (3,), mixed)
     with pytest.raises(BarTableError, match="one settlement interval per settlement"):
         build(funding, (1,), [2 * _HOUR])
+    # Settlements closer than their labelled interval are refused too: 2h
+    # prints labelled 3h would let K of them span less time than claimed.
+    with pytest.raises(BarTableError, match="closer than"):
+        build(funding, (2,), [3 * _HOUR] * 6, max_gap=9 * _HOUR)
+    # Older settlements out of order do not matter; they are sorted first.
+    shuffled = [funding[1], funding[0], *funding[2:]]
+    assert build(shuffled, (2,)) == build(funding, (2,))
 
 
 def test_the_cli_writes_a_harness_ready_table(tmp_path: Path) -> None:

@@ -187,7 +187,13 @@ def _read_funding_with_intervals(
         [files, start_ms * 1000, end_ms * 1000],
     )
     funding = [(_int(ts), _float(rate)) for ts, rate, _hours in rows]
-    return funding, [_int(hours) * _HOUR_MS for _ts, _rate, hours in rows]
+    return funding, [_interval_ms(hours) for _ts, _rate, hours in rows]
+
+
+def _interval_ms(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise BarTableError(f"Expected a positive whole funding_interval_hours, got {value!r}.")
+    return value * _HOUR_MS
 
 
 def _files(root: Path, market: str, slug: str, symbol: str) -> list[str]:

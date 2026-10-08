@@ -279,9 +279,10 @@ PYTHONPATH=src uv run --frozen python -m research.bar_tables trend \
   for that bar. The mean may reach back before the first output bar; the
   funding read reaches back too. The settlements any mean reads must share
   one `funding_interval_hours` (a missing value reads as 8, as in hist_etl),
-  since one baseline cannot fit 8h and 4h rates, and none may be missing:
-  each must follow the last within that interval plus a minute. Older
-  settlements no mean reads are not checked. Without the two options the
+  since one baseline cannot fit 8h and 4h rates. Each must follow the last
+  within that interval, give or take a minute, so a missing settlement or a
+  mislabelled interval fails closed. Older settlements no mean reads are not
+  checked, and a tilt table cannot span an interval switch. Without the two options the
   table is unchanged.
 - `available_ts`, equal to `ts`. Every value uses closes and settlements at or
   before its bar, so a spec reading it needs `latency_bars >= 1`.

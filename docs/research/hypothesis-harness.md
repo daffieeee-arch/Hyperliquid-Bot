@@ -34,11 +34,13 @@ fields:
 - `hypothesis_id`, `universe`, `dataset_version`, `h0`, `h1`, `alpha`
 - `selection_method`: `bonferroni` (always reported), or `holm` / `bh`
 - one signal feature, known at a declared availability clock
-- one or more configs (`threshold`, `horizon_bars`) — this is the whole grid
+- one or more configs (`threshold`, `horizon_bars`; for a panel `quantile`
+  instead of `threshold`) — this is the whole grid
 - costs in bps (`fee_bps`, `slippage_bps`, `spread_bps`) and `latency_bars`.
   `spread_bps` is the half-spread per side, not the full quoted spread
 - optional `costs.funding_column` for a perp: see [Funding](#funding)
 - optional `sizing`: `unit` (the default) or `vol_target`, see [Sizing](#sizing)
+- optional `portfolio` with `data.backend: panel`, see [Panel portfolios](#panel-portfolios)
 - walk-forward `expanding` or `rolling`, plus a final `holdout_bars` suffix
 - sample floors for folds and for validation / holdout trade counts
 
@@ -138,6 +140,74 @@ a per-bar return stdev, so is the target. Gross, costs, and funding all scale
 with the weight, and each config and the holdout report `mean_weight`.
 Volatility scaling changes what the t-test measures (risk-scaled returns per
 trade), which is the point of pre-registering it.
+
+## Panel portfolios
+
+A spec with `data.backend: panel` scores a cross-sectional portfolio over the
+[cross-sectional panel](cross-sectional-panel.md) instead of one bar series.
+See [examples/panel-template.spec.yaml](examples/panel-template.spec.yaml).
+The panel has one row per symbol and day; the harness splits, gates and
+labels exactly as for a bar series, with one trade per rebalance period.
+
+```yaml
+data:
+  backend: panel
+  parquet_path: panel.parquet
+  timestamp_column: ts
+  symbol_column: symbol        # role: symbol, dtype string
+  price_column: close
+  traded_column: traded        # role: traded, dtype bool
+  rank_column: volume_rank     # role: rank, dtype int64
+  max_gap: 86400000            # between consecutive days of the date axis
+  max_rows: 2000000
+  columns: ...
+portfolio:
+  universe_size: 50            # rank at most 50 on the decision day
+  min_names_per_leg: 5
+configs:
+  - id: q20-h7
+    quantile: 0.2              # per leg, in (0, 0.5]
+    horizon_bars: 7
+```
+
+- **Period**: decided on one day of the date axis, filled `latency_bars`
+  days later at that day's close, exited `horizon_bars` days after the fill.
+  The next decision is the exit day, so periods do not overlap, like a bar
+  series' trades. A validation period never reads a holdout close.
+- **Universe and legs**: on the decision day the universe is every symbol
+  that traded, has a rank at most `universe_size`, a known signal, and, when
+  funding is declared, a known funding rate. Sorted by the signal (ties by
+  symbol), the top `quantile` of the universe is the long leg and, under
+  `direction: signed`, the bottom `quantile` the short leg; `long_only`
+  holds the long leg alone. Both legs have `floor(universe × quantile)`
+  names, at least `min_names_per_leg`, or the day is skipped.
+- **Return and costs**: equal weight within a leg; each leg holds half the
+  capital under `signed`, the long leg all of it under `long_only`. The
+  period's gross return is the capital-weighted sum of its positions'
+  returns and its weight the gross exposure (1.0), so the round trip is
+  charged once on the capital per period, as each position pays entry and
+  exit on its notional. `sizing` must be `unit`.
+- **Funding**: the long leg pays each held day's rate on the notional at
+  that day's close and the short leg receives it, position by position, so
+  the stress treats each payment adversely as for a bar trade. A held day
+  without a funding rate fails the run closed (`failure_kind: funding`); the
+  panel builder validates funding holes, so this is a data problem.
+- **Delisting while held**: a position whose symbol does not trade on a
+  held day (no row, or `traded` false) is closed at its last traded close,
+  and the period counts a forced exit. That is not the price a holder got at
+  the delisting; a study must say what it assumes. A symbol that does not
+  trade on the fill day is not opened, and its leg is spread over the names
+  that filled; a period with an empty leg is skipped.
+- **Report**: `result.json` has a `portfolio` block with the universe rule,
+  `symbol_count`, and per config the validation (and, when scored, holdout)
+  period count, skipped decisions, mean names per leg and forced exits;
+  `result.md` has a Portfolio section. Each config reports `quantile`
+  instead of `threshold`. The buy-and-hold benchmark does not apply: both
+  windows report `not_applicable`.
+- **Nulls**: price, the traded flag, the symbol and the clock must be
+  present on every row. The signal, rank and funding may be null where the
+  panel does not know them (warm-up, untraded days); a null is never read
+  as zero. The signal's availability clock is audited on every row.
 
 ## Overfitting diagnostics
 

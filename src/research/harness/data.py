@@ -32,6 +32,15 @@ _INT_TYPES = frozenset(
     }
 )
 _FLOAT_TYPES = frozenset({"FLOAT", "DOUBLE", "REAL"})
+_BOOL_TYPES = frozenset({"BOOLEAN"})
+_STRING_TYPES = frozenset({"VARCHAR"})
+_TYPES_FOR_DTYPE = {
+    "int64": _INT_TYPES,
+    "float64": _FLOAT_TYPES,
+    "bool": _BOOL_TYPES,
+    "string": _STRING_TYPES,
+}
+_PANEL_MAX_SYMBOLS = 20_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +53,26 @@ class BarTable:
     availability: dict[str, tuple[int, ...]]
     # The funding rate a long pays over each bar, when costs.funding_column is set.
     funding: tuple[float, ...] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PanelTable:
+    """One symbol per column group, one timestamp per index, already audited.
+
+    ``timestamps`` is the date axis: every distinct timestamp, in order,
+    gap-checked like a bar series. Each per-symbol series is indexed by that
+    axis and is ``None`` where the symbol has no row. A row's price is
+    positive and its traded flag is set; its signal, rank and funding may be
+    ``None``, which means not known at that close, never zero.
+    """
+
+    timestamps: tuple[int, ...]
+    symbols: tuple[str, ...]
+    prices: tuple[tuple[float | None, ...], ...]
+    traded: tuple[tuple[bool | None, ...], ...]
+    ranks: tuple[tuple[int | None, ...], ...]
+    signals: tuple[tuple[float | None, ...], ...]
+    funding: tuple[tuple[float | None, ...], ...] | None
 
 
 def fingerprint_inputs(spec: HypothesisSpec, spec_dir: Path) -> dict[str, Json]:
@@ -66,7 +95,7 @@ def fingerprint_inputs(spec: HypothesisSpec, spec_dir: Path) -> dict[str, Json]:
         raise IntegrityError("schema", f"DuckDB read failed: {_short(str(error))}") from error
     finally:
         connection.close()
-    if data.backend == "parquet":
+    if data.backend in {"parquet", "panel"}:
         if data.parquet_path is None:
             raise IntegrityError("data_config", "parquet backend is missing parquet_path.")
         checksum = _sha256_file(spec_dir / data.parquet_path)
@@ -99,6 +128,8 @@ def fingerprint_inputs(spec: HypothesisSpec, spec_dir: Path) -> dict[str, Json]:
 def load_bars(spec: HypothesisSpec, spec_dir: Path) -> BarTable:
     """Load declared columns and refuse gaps, duplicates, schema drift, and look-ahead."""
 
+    if spec.data.backend == "panel":
+        raise IntegrityError("data_config", "A panel spec is loaded with load_panel.")
     connection, relation_sql, parameters = _open_source(spec.data, spec_dir)
     try:
         _assert_relation(connection, spec.data, relation_sql, parameters)
@@ -116,7 +147,7 @@ def _open_source(
     data: DataSpec,
     spec_dir: Path,
 ) -> tuple[duckdb.DuckDBPyConnection, str, list[object]]:
-    if data.backend == "parquet":
+    if data.backend in {"parquet", "panel"}:
         if data.parquet_path is None:
             raise IntegrityError("data_config", "parquet backend is missing parquet_path.")
         path = spec_dir / data.parquet_path
@@ -243,13 +274,9 @@ def _assert_relation(
         if column.name not in actual:
             raise IntegrityError("schema", f"Column {column.name} is missing.")
         token = actual[column.name]
-        if column.dtype == "int64" and token not in _INT_TYPES:
+        if token not in _TYPES_FOR_DTYPE[column.dtype]:
             raise IntegrityError(
-                "schema", f"Column {column.name} is {token}, expected an integer type."
-            )
-        if column.dtype == "float64" and token not in _FLOAT_TYPES:
-            raise IntegrityError(
-                "schema", f"Column {column.name} is {token}, expected a float type."
+                "schema", f"Column {column.name} is {token}, expected {column.dtype}."
             )
 
 
@@ -261,6 +288,8 @@ def _fetch_rows(
 ) -> list[tuple[object, ...]]:
     quoted = ", ".join(f'"{column.name}"' for column in data.columns)
     order = f'"{data.timestamp_column}"'
+    if data.symbol_column is not None:
+        order += f', "{data.symbol_column}"'
     limit = data.max_rows + 1
     sql = f"SELECT {quoted} FROM {relation_sql} ORDER BY {order} LIMIT ?"
     fetched = connection.execute(sql, [*parameters, limit]).fetchall()
@@ -321,6 +350,145 @@ def _table_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Ba
     )
     _audit_lookahead(spec.features, table)
     return table
+
+
+def load_panel(spec: HypothesisSpec, spec_dir: Path) -> PanelTable:
+    """Load a panel: one row per symbol and timestamp, audited like a bar series.
+
+    The date axis must be gap-free and duplicate-free; a (timestamp, symbol)
+    pair may appear once. Price and the traded flag are required on every
+    row; the signal, rank and funding columns may be null where the panel
+    does not know them, and a null is kept as None rather than read as 0.
+    """
+
+    data = spec.data
+    if data.backend != "panel" or data.symbol_column is None:
+        raise IntegrityError("data_config", "load_panel needs data.backend panel.")
+    connection, relation_sql, parameters = _open_source(data, spec_dir)
+    try:
+        _assert_relation(connection, data, relation_sql, parameters)
+        rows = _fetch_rows(connection, data, relation_sql, parameters)
+    except IntegrityError:
+        raise
+    except duckdb.Error as error:
+        raise IntegrityError("schema", f"DuckDB read failed: {_short(str(error))}") from error
+    finally:
+        connection.close()
+    return _panel_from_rows(spec, rows)
+
+
+def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> PanelTable:
+    data = spec.data
+    index_by_name = {column.name: index for index, column in enumerate(data.columns)}
+    signal_column = next(
+        feature.column for feature in spec.features if feature.name == spec.signal_feature
+    )
+    clock_column = next(
+        feature.available_at_column
+        for feature in spec.features
+        if feature.name == spec.signal_feature
+    )
+    required = [
+        name
+        for name in (
+            data.timestamp_column,
+            data.symbol_column,
+            data.price_column,
+            data.traded_column,
+            clock_column,
+        )
+        if name is not None
+    ]
+    parsed: list[tuple[int, str, float, bool, int | None, float | None, float | None]] = []
+    for row_index, row in enumerate(rows):
+        if len(row) != len(data.columns):
+            raise IntegrityError("schema", f"Row {row_index} does not match the declared width.")
+        if any(row[index_by_name[name]] is None for name in required):
+            raise IntegrityError(
+                "schema",
+                f"Row {row_index} has a null timestamp, symbol, price, traded flag or clock.",
+            )
+        timestamp = _as_int(
+            row[index_by_name[data.timestamp_column]], data.timestamp_column, row_index
+        )
+        clock = _as_int(row[index_by_name[clock_column]], clock_column, row_index)
+        if clock > timestamp:
+            raise IntegrityError(
+                "lookahead",
+                f"Feature {spec.signal_feature} row {row_index} is available at {clock}, "
+                f"after bar {timestamp}.",
+            )
+        rank_raw = row[index_by_name[str(data.rank_column)]]
+        signal_raw = row[index_by_name[signal_column]]
+        funding_raw = (
+            None
+            if spec.costs.funding_column is None
+            else row[index_by_name[spec.costs.funding_column]]
+        )
+        parsed.append(
+            (
+                timestamp,
+                _as_str(
+                    row[index_by_name[str(data.symbol_column)]], str(data.symbol_column), row_index
+                ),
+                _as_float(row[index_by_name[data.price_column]], data.price_column, row_index),
+                _as_bool(
+                    row[index_by_name[str(data.traded_column)]], str(data.traded_column), row_index
+                ),
+                None if rank_raw is None else _as_int(rank_raw, str(data.rank_column), row_index),
+                None if signal_raw is None else _as_float(signal_raw, signal_column, row_index),
+                None
+                if funding_raw is None
+                else _as_float(funding_raw, str(spec.costs.funding_column), row_index),
+            )
+        )
+    timestamps = sorted({item[0] for item in parsed})
+    _audit_clock(timestamps, data.max_gap)
+    _audit_prices([item[2] for item in parsed])
+    symbols = sorted({item[1] for item in parsed})
+    if len(symbols) > _PANEL_MAX_SYMBOLS:
+        raise IntegrityError("too_many_rows", f"Panel has more than {_PANEL_MAX_SYMBOLS} symbols.")
+    date_index = {timestamp: index for index, timestamp in enumerate(timestamps)}
+    symbol_index = {symbol: index for index, symbol in enumerate(symbols)}
+    width = len(timestamps)
+    prices: list[list[float | None]] = [[None] * width for _ in symbols]
+    traded: list[list[bool | None]] = [[None] * width for _ in symbols]
+    ranks: list[list[int | None]] = [[None] * width for _ in symbols]
+    signals: list[list[float | None]] = [[None] * width for _ in symbols]
+    funding: list[list[float | None]] = [[None] * width for _ in symbols]
+    for timestamp, symbol, price, flag, rank, signal, rate in parsed:
+        column = date_index[timestamp]
+        line = symbol_index[symbol]
+        if prices[line][column] is not None:
+            raise IntegrityError("duplicate", f"{symbol} appears twice at {timestamp}.")
+        prices[line][column] = price
+        traded[line][column] = flag
+        ranks[line][column] = rank
+        signals[line][column] = signal
+        funding[line][column] = rate
+    return PanelTable(
+        timestamps=tuple(timestamps),
+        symbols=tuple(symbols),
+        prices=tuple(tuple(line) for line in prices),
+        traded=tuple(tuple(line) for line in traded),
+        ranks=tuple(tuple(line) for line in ranks),
+        signals=tuple(tuple(line) for line in signals),
+        funding=None
+        if spec.costs.funding_column is None
+        else tuple(tuple(line) for line in funding),
+    )
+
+
+def _as_str(value: object, column: str, row_index: int) -> str:
+    if not isinstance(value, str) or not value:
+        raise IntegrityError("schema", f"Column {column} row {row_index} is not a symbol.")
+    return value
+
+
+def _as_bool(value: object, column: str, row_index: int) -> bool:
+    if not isinstance(value, bool):
+        raise IntegrityError("schema", f"Column {column} row {row_index} is not a boolean.")
+    return value
 
 
 def _audit_clock(timestamps: list[int], max_gap: int) -> None:

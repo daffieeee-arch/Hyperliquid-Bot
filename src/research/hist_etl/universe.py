@@ -7,6 +7,12 @@ of from the symbols that happen to trade today, which would be survivorship
 bias. The result is committed as a dated JSON file, and ``expand_universe``
 turns that file into one ``BinanceSpec`` per symbol, dataset, and run of
 consecutive archive months.
+
+An archive month is not a trading month. After a delisting, Binance Vision
+can keep publishing kline months with a flat price, zero volume and zero
+trades, and funding months at a constant default rate (SRMUSDT klines run to
+2024-05 and funding to 2024-07). Whether a contract traded on a date is for
+the reader of the bars to decide from volume and trade count.
 """
 
 from __future__ import annotations
@@ -85,7 +91,8 @@ class Universe:
     """Which months of monthly archives exist per symbol, as listed on ``as_of``.
 
     ``latest_month`` is the newest month the planner expects to be published
-    by ``as_of``. A symbol whose last run reaches it is treated as listed.
+    by ``as_of``. A run that reaches it is still published, which does not
+    mean the contract still trades (see the module docstring).
     ``excluded`` names symbols with the quote suffix that the manifest cannot
     hold (for example a non-ASCII name), with the reason.
     """
@@ -486,8 +493,8 @@ def _run_spec(
     start: date | None,
     enabled: bool,
 ) -> BinanceSpec | None:
-    listed = run.last >= universe.latest_month
-    end = None if listed else next_month(run.last) - timedelta(days=1)
+    published = run.last >= universe.latest_month
+    end = None if published else next_month(run.last) - timedelta(days=1)
     first = run.first
     open_start = True
     if start is not None and start > first:
@@ -497,7 +504,7 @@ def _run_spec(
         open_start = False
     suffix = "" if position == 1 else f"-r{position}"
     if dataset == "klines":
-        granularity = "monthly_with_daily_tail" if listed else "monthly"
+        granularity = "monthly_with_daily_tail" if published else "monthly"
         interval: str | None = universe.interval
     else:
         granularity = "monthly"
@@ -515,7 +522,7 @@ def _run_spec(
         enabled=enabled,
         group=group,
         open_start=open_start,
-        open_end=not listed,
+        open_end=not published,
     )
 
 
@@ -552,7 +559,7 @@ def run_universe(
     partial = out.with_name(out.name + ".partial")
     partial.write_text(render_universe(universe), encoding="utf-8")
     os.replace(partial, out)
-    listed = sum(
+    published = sum(
         1
         for item in universe.symbols
         if any(
@@ -560,8 +567,8 @@ def run_universe(
         )
     )
     print(
-        f"universe\t{len(universe.symbols)} symbols\t{listed} listed\t"
-        f"{len(universe.symbols) - listed} not listed\t{len(universe.excluded)} excluded\t{out}"
+        f"universe\t{len(universe.symbols)} symbols\t{published} still published\t"
+        f"{len(universe.symbols) - published} closed\t{len(universe.excluded)} excluded\t{out}"
     )
     return 0
 

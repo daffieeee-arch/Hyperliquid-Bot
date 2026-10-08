@@ -631,7 +631,7 @@ def test_cli_writes_a_new_universe_and_never_replaces_one(
     assert main(args, env={}) == 0
     assert load_universe(out) == _discovered()
     printed = capsys.readouterr()
-    assert "4 symbols\t3 listed\t1 not listed\t1 excluded" in printed.out
+    assert "4 symbols\t3 still published\t1 closed\t1 excluded" in printed.out
     assert "scanned\t5/5" in printed.err
     calls = len(bucket.calls)
     assert main(args, env={}) == 2

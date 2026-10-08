@@ -128,14 +128,18 @@ PYTHONPATH=src uv run --frozen python -m research.hist_etl universe \
   name) is recorded under `excluded` with the reason.
 - Per symbol, it records the runs of consecutive months with a monthly
   `--interval` kline zip (default `1d`) and a monthly fundingRate zip.
-- `latest_month` is the newest month the planner expects by `as_of`. A
-  symbol whose last run reaches it is treated as still listed.
+- `latest_month` is the newest month the planner expects by `as_of`. A run
+  that reaches it is still published.
 - It never replaces an existing file; a refresh is a new dated file.
 - The regional endpoint now and then answers `NoSuchBucket` for this bucket
   (about one listing in eight on 2026-10-08). That answer is retried up to
   ten times; any other error fails the run with exit 2.
-- On 2026-10-08 it scanned 896 USDT names in about 25 minutes from a cloud
-  container. The rate is `--requests-per-second` (default 4).
+- On 2026-10-08 it found 901 USDT names and scanned 896 in about 13
+  minutes from a cloud container, at 8 requests per second. The default
+  rate is `--requests-per-second 4`.
+- That file holds those 896 symbols: 22,221 kline months and 21,063 funding
+  months. Five Chinese names are excluded. BNTUSDT, BTCSTUSDT and LITUSDT
+  have more than one run, and GAIBUSDT has funding but no 1d klines.
 
 The manifest expands the committed file:
 
@@ -164,14 +168,30 @@ enabled = false
   and `hist_bn_um_btcusdt_funding`. Universe funding months for BTCUSDT are
   the same files the BTCUSDT funding datasets write.
 
+**An archive month is not a trading month.** After a delisting, Binance
+Vision can keep publishing monthly klines with a flat price, zero volume and
+zero trades, and funding at a constant default rate:
+
+- SRMUSDT klines run to 2024-05 and its funding to 2024-07. Its 2024-05
+  bars all close at 0.2870 with volume 0, and its 2024-07 funding is
+  0.0001 at every settlement.
+- On 2026-10-08, 864 symbols had 1d klines through 2026-09 but only 738 had
+  funding through that month. The 147 symbols whose kline and funding runs
+  end in different months include 1000XUSDT: it traded until late 2025 and
+  has flat, zero-volume bars in 2026-09.
+
+So "still published" is not "still listed". The reader of the bars decides
+whether a contract traded on a date, from volume and trade count, and must
+not charge or credit funding for a date it did not trade.
+
 The file holds every symbol with archives. That includes index contracts
 (`BTCDOMUSDT`, `DEFIUSDT`) and later non-crypto contracts. The study chooses
 its universe point in time, for example the top N by trailing quote volume
 on each date, and writes that rule down in its pre-registration. It does not
 drop symbols by hand after seeing results.
 
-A full sync is VPS work: about 32,000 monthly zips (each with a checksum),
-small for 1d klines and funding. `plan` sends a HEAD for every archive it
+A full sync is VPS work: about 43,000 monthly zips (each with a checksum),
+plus the daily kline tails, all small. `plan` sends a HEAD for every archive it
 would download, and `sync` two GETs, at `requests_per_second` (2 by default).
 Raise it with `HIST_ETL_REQUESTS_PER_SECOND` for this one run. A contract
 delisted after `latest_month` stops publishing daily files, which `plan`

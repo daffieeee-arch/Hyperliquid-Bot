@@ -54,9 +54,10 @@ LIMITATIONS: Final[tuple[str, ...]] = (
     "the day's universe by the signal and, when signed, short the bottom quantile, equal "
     "weight within a leg, one round trip on the capital per period. A position is held to "
     "its exit day; a symbol not trading then is marked at its last traded close, which is "
-    "not the delisting price a holder got. A held day whose funding is not whole is charged "
-    "its recorded sum and counted; a held day with no funding fails closed. The buy-and-hold "
-    "benchmark does not apply to a panel.",
+    "not the delisting price a holder got, and pays the recorded funding of its untraded "
+    "days to the exit. A held day whose funding is not whole, or a halt day without any, is "
+    "charged its recorded sum and counted; a traded day without funding that a position "
+    "could hold fails closed. The buy-and-hold benchmark does not apply to a panel.",
     "Look-ahead control uses the declared clock. A falsely stamped future value is invisible.",
     "paper_candidate is not LIVE, SHADOW, TESTNET, or an order authorization.",
     "Spot Vision timestamps from 2025-01-01 are microseconds; USD-M examples are milliseconds.",

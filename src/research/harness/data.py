@@ -42,6 +42,8 @@ _TYPES_FOR_DTYPE = {
 }
 # Bounds the dense symbol-by-day series a panel is held in.
 _PANEL_MAX_SYMBOLS = 5_000
+# Symbols times days of the dense series; six of them are held at once.
+_PANEL_MAX_CELLS = 25_000_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -416,7 +418,6 @@ def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Pa
     )
     clock_at = [(index_by_name[column], name) for column, name in clocks]
     required_at = tuple(index_by_name[name] for name in required)
-    with_funding = at.funding is not None and at.covered is not None
     # First pass: the axes and every row-level check; second pass: the series.
     # The parsed cells are kept, as references into the rows, for the second.
     row_timestamps: list[int] = []
@@ -448,12 +449,23 @@ def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Pa
     date_index = {timestamp: index for index, timestamp in enumerate(timestamps)}
     symbol_index = {symbol: index for index, symbol in enumerate(symbols)}
     width = len(timestamps)
+    if len(symbols) * width > _PANEL_MAX_CELLS:
+        raise IntegrityError(
+            "too_many_rows",
+            f"Panel spans {len(symbols)} symbols by {width} days, over {_PANEL_MAX_CELLS} cells.",
+        )
     prices: list[list[float | None]] = [[None] * width for _ in symbols]
     traded: list[list[bool | None]] = [[None] * width for _ in symbols]
     ranks: list[list[int | None]] = [[None] * width for _ in symbols]
     signals: list[list[float | None]] = [[None] * width for _ in symbols]
-    funding: list[list[float | None]] = [[None] * width for _ in symbols] if with_funding else []
-    covered: list[list[bool | None]] = [[None] * width for _ in symbols] if with_funding else []
+    funding_cells: _FundingCells | None = None
+    if at.funding is not None and at.covered is not None:
+        funding_cells = _FundingCells(
+            rate=at.funding,
+            covered=at.covered,
+            rates=[[None] * width for _ in symbols],
+            flags=[[None] * width for _ in symbols],
+        )
     for row_index, row in enumerate(rows):
         timestamp = row_timestamps[row_index]
         symbol = row_symbols[row_index]
@@ -462,8 +474,7 @@ def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Pa
         if prices[line][column] is not None:
             raise IntegrityError("duplicate", f"{symbol} appears twice at {timestamp}.")
         price = _as_float(row[at.price.index], at.price.name, row_index)
-        if not math.isfinite(price) or price <= 0.0:
-            raise IntegrityError("price", f"Price at row {row_index} must be finite and positive.")
+        _audit_price(price, row_index)
         prices[line][column] = price
         traded[line][column] = _as_bool(row[at.traded.index], at.traded.name, row_index)
         rank_raw = row[at.rank.index]
@@ -476,15 +487,8 @@ def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Pa
         signals[line][column] = (
             None if signal_raw is None else _as_float(signal_raw, at.signal.name, row_index)
         )
-        if at.funding is not None and at.covered is not None:
-            funding_raw = row[at.funding.index]
-            funding[line][column] = (
-                None if funding_raw is None else _as_float(funding_raw, at.funding.name, row_index)
-            )
-            covered_raw = row[at.covered.index]
-            covered[line][column] = (
-                None if covered_raw is None else _as_bool(covered_raw, at.covered.name, row_index)
-            )
+        if funding_cells is not None:
+            funding_cells.read(row, row_index, line, column)
     _audit_ranks(ranks, timestamps, symbols)
     return PanelTable(
         timestamps=tuple(timestamps),
@@ -493,9 +497,35 @@ def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Pa
         traded=tuple(tuple(line) for line in traded),
         ranks=tuple(tuple(line) for line in ranks),
         signals=tuple(tuple(line) for line in signals),
-        funding=tuple(tuple(line) for line in funding) if with_funding else None,
-        covered=tuple(tuple(line) for line in covered) if with_funding else None,
+        funding=None if funding_cells is None else funding_cells.rate_series(),
+        covered=None if funding_cells is None else funding_cells.flag_series(),
     )
+
+
+@dataclass(slots=True)
+class _FundingCells:
+    """The panel's funding rate and covered flag per symbol and day, filled row by row."""
+
+    rate: _RoleColumn
+    covered: _RoleColumn
+    rates: list[list[float | None]]
+    flags: list[list[bool | None]]
+
+    def read(self, row: tuple[object, ...], row_index: int, line: int, column: int) -> None:
+        rate_raw = row[self.rate.index]
+        self.rates[line][column] = (
+            None if rate_raw is None else _as_float(rate_raw, self.rate.name, row_index)
+        )
+        flag_raw = row[self.covered.index]
+        self.flags[line][column] = (
+            None if flag_raw is None else _as_bool(flag_raw, self.covered.name, row_index)
+        )
+
+    def rate_series(self) -> tuple[tuple[float | None, ...], ...]:
+        return tuple(tuple(line) for line in self.rates)
+
+    def flag_series(self) -> tuple[tuple[bool | None, ...], ...]:
+        return tuple(tuple(line) for line in self.flags)
 
 
 def _audit_ranks(ranks: list[list[int | None]], timestamps: list[int], symbols: list[str]) -> None:
@@ -568,8 +598,12 @@ def _audit_clock(timestamps: list[int], max_gap: int) -> None:
 
 def _audit_prices(prices: list[float]) -> None:
     for index, price in enumerate(prices):
-        if not math.isfinite(price) or price <= 0.0:
-            raise IntegrityError("price", f"Price at row {index} must be finite and positive.")
+        _audit_price(price, index)
+
+
+def _audit_price(price: float, row_index: int) -> None:
+    if not math.isfinite(price) or price <= 0.0:
+        raise IntegrityError("price", f"Price at row {row_index} must be finite and positive.")
 
 
 def _audit_lookahead(features: tuple[FeatureSpec, ...], table: BarTable) -> None:

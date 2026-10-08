@@ -131,7 +131,7 @@ Nothing is written when any of these fail:
 - Daily bars only (`1d` klines). Funding is summed per day, not per position
   hold. The harness's [panel portfolio mode](hypothesis-harness.md#panel-portfolios)
   charges a held day's funding on the notional at that day's close, and
-  fails closed on a held day without a rate.
+  fails closed on a traded day without a rate that a position could hold.
 - A ticker that Binance reuses for another asset while it keeps trading,
   with no untraded day between, is not detected: returns then span both
   assets. Price windows restart only after untraded days and gaps.

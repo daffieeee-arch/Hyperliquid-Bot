@@ -449,11 +449,11 @@ def test_an_untraded_exit_day_marks_the_position_at_its_last_traded_close() -> N
     )
     source = PanelSource(spec, panel)
     series = source.window(_config(0.5, 3), 0, 5)
-    # Long B is marked at 110, its last traded close; the flat untraded bars
-    # at 150 and their default funding are not read. Day 2's funding is paid
-    # on that day's notional, 110 per 100 of entry.
+    # Long B is marked at 110, its last traded close, not at the flat
+    # untraded bars at 150; their recorded funding is still paid through the
+    # exit day, each day on that day's notional per 100 of entry.
     assert series.gross == pytest.approx((0.05,))
-    assert series.funding_paid == pytest.approx((0.5 * 0.001 * 1.1,))
+    assert series.funding_paid == pytest.approx((0.5 * 0.001 * (1.1 + 1.5 + 1.5),))
     assert source.stats[("c", 0, 5)].forced_exits == 1
 
 
@@ -714,7 +714,7 @@ def test_an_unscored_window_is_an_invariant_error() -> None:
         PanelSource(spec, panel).window_stats("c", [(0, 3)])
 
 
-def test_a_held_day_without_funding_fails_closed() -> None:
+def test_a_traded_day_without_funding_in_reach_of_the_universe_fails_closed() -> None:
     spec = _four_symbol_spec(funding=True)
     panel = _table(
         symbols=["A", "B"],
@@ -722,8 +722,33 @@ def test_a_held_day_without_funding_fails_closed() -> None:
         signals=[[1.0] * 4, [-1.0] * 4],
         funding=[[0.0, 0.0, None, 0.0], [0.0] * 4],
     )
-    with pytest.raises(IntegrityError, match="no funding on a held day"):
-        PanelSource(spec, panel).window(_config(0.5, 2), 0, 4)
+    # Refused when the source is built, whichever config would hold A then.
+    with pytest.raises(IntegrityError, match="a traded day a position could hold"):
+        PanelSource(spec, panel)
+
+
+def test_a_traded_day_without_funding_beyond_the_universe_reach_is_tolerated() -> None:
+    # The spec's grid is q50-h2 at latency 1: a position opened from day d
+    # holds through day d + 3. A is in the universe only on days 0 and 1, so
+    # its rate on day 5 is out of reach, and its early days are before any.
+    spec = _four_symbol_spec(funding=True)
+    panel = _table(
+        symbols=["A", "B"],
+        prices=[[100.0] * 6, [100.0] * 6],
+        ranks=[[1, 1, 7, 7, 7, 7], [2] * 6],
+        signals=[[1.0] * 6, [-1.0] * 6],
+        funding=[[0.0, 0.0, 0.0, 0.0, 0.0, None], [0.0] * 6],
+    )
+    source = PanelSource(spec, panel)
+    assert source.window(_config(0.5, 2), 0, 6).gross == pytest.approx((0.0,))
+    listing = _table(
+        symbols=["A", "B"],
+        prices=[[100.0] * 6, [100.0] * 6],
+        ranks=[[None, None, 1, 1, 1, 1], [2] * 6],
+        signals=[[1.0] * 6, [-1.0] * 6],
+        funding=[[None, None, 0.0, 0.0, 0.0, 0.0], [0.0] * 6],
+    )
+    PanelSource(spec, listing)
 
 
 def test_the_panel_must_match_the_spec_on_funding() -> None:

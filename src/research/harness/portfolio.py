@@ -25,21 +25,26 @@ the panel keeps such gaps only between the runs of a relisted symbol, and
 the rows after the gap are another listing, so the hold stops at the last
 traded close before it, and a symbol whose rows break between the decision
 and the fill is not opened. A day with a row that did not trade is a halt,
-held through. Funding is charged on every held day up to that last traded
-day, so a halt that resumes pays its days and a delisting pays nothing
-after its last trade. A symbol that does not trade on the fill day is not
+held through. Funding is charged on every held day that has a row, through
+the exit day, whether the symbol traded that day or not: a halt pays its
+days, and the flat archive days a delisted contract keeps pay their
+recorded rate until the exit, which overstates a long's cost and a short's
+income by at most the horizon's worth of that rate; ``forced_exits`` counts
+such positions. A symbol that does not trade on the fill day is not
 opened, and its leg is spread over the names that filled. A period with a
 leg short of ``min_names_per_leg`` names, at the decision or at the fill,
 is skipped.
 
-With funding declared, a held traded day without any rate fails the run
-closed: the panel keeps such days only outside its funding runs, and a
-study's range must not hold a position across one. A held day whose rate
-is there but not whole (``funding_covered`` false: at most one settlement
-missing, or an interval switch the panel cannot tell apart) is charged the
-recorded sum and counted, so the report shows how much of the funding
-rests on such days. A halt day without any rate, which the panel builder
-does not check, is charged nothing and counted the same way.
+With funding declared, a traded day without any rate that a position could
+hold fails the run closed when the source is built, so the outcome is a
+property of the panel and the spec's grid, not of which config trades: the
+panel keeps such days only outside its funding runs, and a study's range
+must not hold a position across one. A held day whose rate is there but
+not whole (``funding_covered`` false: at most one settlement missing, or
+an interval switch the panel cannot tell apart) is charged the recorded
+sum and counted, so the report shows how much of the funding rests on such
+days. A halt day without any rate, which the panel builder does not check,
+is charged nothing and counted the same way.
 """
 
 from __future__ import annotations
@@ -112,6 +117,48 @@ class PanelSource:
             raise HarnessError("invariant", "The panel's funding does not match the spec.")
         if (self.panel.funding is None) != (self.panel.covered is None):
             raise HarnessError("invariant", "A panel with funding carries its covered flags.")
+        if self.panel.funding is not None:
+            self._audit_funding_reach(self.panel.funding)
+
+    def _audit_funding_reach(self, funding: Sequence[Sequence[float | None]]) -> None:
+        """A traded day without a rate fails closed wherever a position could hold it.
+
+        A position opened on a day the symbol is in the universe holds at
+        most ``latency_bars + max(horizon_bars)`` days after it; a traded
+        day without a rate inside that reach of any such day fails the run,
+        whichever config's legs would hold it. The same days matter to
+        every config, so this is a property of the panel and the grid.
+        """
+
+        panel = self.panel
+        reach = self.spec.costs.latency_bars + max(
+            config.horizon_bars for config in self.spec.configs
+        )
+        for symbol in range(len(panel.symbols)):
+            reach_until = -1
+            traded = panel.traded[symbol]
+            ranks = panel.ranks[symbol]
+            signals = panel.signals[symbol]
+            rates = funding[symbol]
+            for day in range(self.length):
+                if traded[day] is not True:
+                    continue
+                # The reach starts after the day: a position decided on it
+                # holds from its fill on, never the decision day itself.
+                if day <= reach_until and rates[day] is None:
+                    raise IntegrityError(
+                        "funding",
+                        f"{panel.symbols[symbol]} has no funding on {panel.timestamps[day]}, a "
+                        "traded day a position could hold; a study's range must not hold "
+                        "across one.",
+                    )
+                rank = ranks[day]
+                if (
+                    rank is not None
+                    and rank <= self.portfolio.universe_size
+                    and signals[day] is not None
+                ):
+                    reach_until = max(reach_until, day + reach)
 
     @property
     def length(self) -> int:
@@ -251,13 +298,13 @@ class PanelSource:
     def _hold(self, position: _Position, entry: int, exit_index: int) -> _Held:
         """One position's weighted return and funding over its hold.
 
-        The position holds days ``entry + 1`` through ``exit_index`` and
-        exits at the last traded close at or before ``exit_index``, or
-        before the first day without a row, where the contract ends. Funding
-        is paid on every day up to that last traded day, on the notional at
-        the day's close: a halt that resumes pays its days, a delisting pays
-        nothing after its last trade. A halt day without a rate, which the
-        panel builder does not check, pays nothing and counts as uncovered.
+        The position holds days ``entry + 1`` through ``exit_index``, or
+        through the day before the first without a row, where the contract
+        ends. It exits at its last traded close in that hold. Funding is
+        paid on every day of the hold, traded or not, on the notional at
+        the day's close. A halt day without a rate, which the panel builder
+        does not check, pays nothing and counts as uncovered; a traded day
+        without one was refused when the source was built.
         """
 
         panel = self.panel
@@ -266,34 +313,26 @@ class PanelSource:
         entry_price = prices[entry]
         if entry_price is None:
             raise HarnessError("invariant", "A filled position has no entry price.")
+        held_prices: list[float] = []
+        held_rates: list[float] = []
+        uncovered = 0
         last = entry
         for day in range(entry + 1, exit_index + 1):
-            if prices[day] is None:
+            price = prices[day]
+            if price is None:
                 break
             if panel.traded[symbol][day] is True:
                 last = day
-        paid = 0.0
-        received = 0.0
-        uncovered = 0
-        if panel.funding is not None and panel.covered is not None:
-            held_prices: list[float] = []
-            held_rates: list[float] = []
-            for day in range(entry + 1, last + 1):
-                price = prices[day]
-                if price is None:
-                    raise HarnessError("invariant", "A held day before the last trade has a row.")
-                rate = panel.funding[symbol][day]
-                if rate is None and panel.traded[symbol][day] is True:
-                    raise IntegrityError(
-                        "funding",
-                        f"{panel.symbols[symbol]} has no funding on a held day at "
-                        f"{panel.timestamps[day]}; a study's range must not hold across one.",
-                    )
-                if rate is None or panel.covered[symbol][day] is not True:
-                    uncovered += 1
-                held_prices.append(price)
-                held_rates.append(0.0 if rate is None else rate)
-            paid, received = held_funding(position.side, entry_price, held_prices, held_rates)
+            if panel.funding is None or panel.covered is None:
+                continue
+            rate = panel.funding[symbol][day]
+            if rate is None and panel.traded[symbol][day] is True:
+                raise HarnessError("invariant", "A traded held day without a rate was not refused.")
+            if rate is None or panel.covered[symbol][day] is not True:
+                uncovered += 1
+            held_prices.append(price)
+            held_rates.append(0.0 if rate is None else rate)
+        paid, received = held_funding(position.side, entry_price, held_prices, held_rates)
         exit_price = prices[last]
         if exit_price is None:
             raise HarnessError("invariant", "A held position has no exit price.")

@@ -201,13 +201,18 @@ configs:
   the stress treats each payment adversely as for a bar trade. With
   funding, the panel declares one `role: covered` column (the panel's
   `funding_covered`).
-  - A held **traded** day with **no rate** fails the run closed
-    (`failure_kind: funding`). The panel builder fails on a funding hole
-    inside a funding run, so this happens only on a traded day outside one
-    (a listing month before funding starts, or trading after a funding
-    archive ends); a study's panel range and universe must not hold a
-    position across such a day. A held **halt** day with no rate, which
-    the builder does not check, is charged nothing and counted as
+  - A **traded** day with **no rate** that a position could hold fails
+    the run closed (`failure_kind: funding`) when the panel source is
+    built, before any config is scored: every traded day within
+    `latency_bars + max(horizon_bars)` days after a day the symbol is in
+    the universe (traded, rank at most `universe_size`, signal known)
+    needs a rate. The outcome is thus a property of the panel and the
+    grid, not of which config's legs hold the symbol. The panel builder
+    fails on a funding hole inside a funding run, so this happens only on
+    a traded day outside one (a listing month before funding starts, or
+    trading after a funding archive ends); a study's panel range and
+    universe must not reach such a day. A held **halt** day with no rate,
+    which the builder does not check, is charged nothing and counted as
     uncovered.
   - A held day whose rate is there but **not covered** (at most one
     settlement missing, or an interval switch the panel cannot tell apart,
@@ -227,15 +232,17 @@ configs:
   after the gap are another listing, so the hold stops at the last traded
   close before the gap and never marks at the relisted price. A day with a
   row that did not trade is a halt, held through. Funding is charged on
-  every held day up to that last traded day, so a halt that resumes pays
-  its days and a delisting pays nothing after its last trade (not on the
-  flat archive days that follow it). `forced_exits` is the trace of both.
-  The one case the data cannot tell apart is a relisting whose archive
-  follows the old contract's without a missing day; it reads as a halt. A
-  symbol that does not trade on the fill day, or whose rows break between
-  the decision and the fill, is not opened, and its leg is spread over the
-  names that filled; a period with a leg below the floor at the fill is
-  skipped.
+  every held day that has a row, through the exit day, traded or not, so
+  the charge never depends on whether the halt resumes later: a halt pays
+  its days, and the flat archive days a delisted contract keeps pay their
+  recorded (default) rate until the exit. That overstates a long's cost
+  and a short's income on such a position by at most the horizon's worth
+  of that rate; `forced_exits` counts the positions concerned. The one
+  case the data cannot tell apart is a relisting whose archive follows the
+  old contract's without a missing day; it reads as a halt. A symbol that
+  does not trade on the fill day, or whose rows break between the decision
+  and the fill, is not opened, and its leg is spread over the names that
+  filled; a period with a leg below the floor at the fill is skipped.
 - **Report**: `result.json` has a `portfolio` block with the universe rule,
   `symbol_count`, and per config the validation (and, when scored, holdout)
   period count, skipped decisions, mean names per leg, forced exits and

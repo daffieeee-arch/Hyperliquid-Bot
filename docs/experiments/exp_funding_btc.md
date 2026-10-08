@@ -139,8 +139,9 @@ stated so the reader can judge their weight:
   that market.
 - **More was looked at than the four configs.** Eight threshold and hold
   combinations and two funding windows were counted, and a first-draft grid
-  was replaced, before the grid was fixed. The deflated Sharpe ratio counts only the four pre-registered
-  configs as trials, so it deflates less than the full search would.
+  was replaced, before the grid was fixed. The deflated Sharpe ratio counts
+  only the four pre-registered configs as trials, so it deflates less than
+  the full search would.
 - **A first draft of the grid held for 1 day.** Review pointed out that a
   1-day hold on a 7-day signal mostly re-buys the same position every day at
   a full round trip, so those configs would mainly test costs. They were
@@ -212,13 +213,17 @@ Proceed only if all of these hold:
    ≤ 0.5, both as the harness reports them, on validation net returns at
    1.0×.
 4. **Not carry alone**: the selected config's holdout gross mean per trade
-   (the price return, before costs and funding) is > 0. The hypothesis is
-   that crowding unwinds in price. A pass that rests only on funding
-   received is carry, which belongs to the separate hedged study.
+   (the price return, before costs and funding) is > 0 and at least half of
+   its holdout net mean at 1.0×. The hypothesis is that crowding unwinds in
+   price. A pass that rests mostly on funding received is carry, which
+   belongs to the separate hedged study.
 5. **Forward confirmation**: because the holdout's market was seen (see
    [Seen before](#seen-before)), a pass leads to a pre-registered forward
    test on data after 2026-09-30 before any PAPER strategy design, not
    straight to one.
+
+Any other label (`no_edge`, `interesting_but_fragile`, or `not_enough_data`
+at validation) means this family stops on BTC, as below.
 
 The harness's `promotion_decision` is not this decision. It says
 `paper_candidate` on rule 1 alone; rules 2 to 5 are applied in the results
@@ -272,6 +277,14 @@ export STUDY_DIR=...            # must not exist yet; outside the repository
 (
   set -euo pipefail
   cd "$REPO_ROOT"
+  # Run from main as merged: HEAD is on origin/main, so commit.txt is too.
+  git fetch --quiet origin main
+  git merge-base --is-ancestor HEAD origin/main
+  test -f docs/experiments/exp_funding_btc.md
+  # STUDY_DIR stays outside the repository, so the run cannot dirty it.
+  study="$(realpath -m "$STUDY_DIR")"
+  repo="$(realpath "$REPO_ROOT")"
+  case "$study/" in "$repo"/*) echo "STUDY_DIR is inside the repository" >&2; exit 1 ;; esac
   pin=9a294cd9a6244bd33fe6ee067456ad47dff1f17f
   pinned=(src uv.lock pyproject.toml .python-version)
   # The pre-registered code: no change, tracked, untracked or ignored.
@@ -286,8 +299,9 @@ export STUDY_DIR=...            # must not exist yet; outside the repository
   git rev-parse HEAD > "$STUDY_DIR/commit.txt"
   # Bytecode only from a fresh folder: no cached .pyc from the checkout runs.
   export PYTHONPYCACHEPREFIX="$STUDY_DIR/pycache"
-  # Exit 2 (a reported gap) is normal while the current month is open; any
-  # other failure stops here. A missing or broken archive inside the range
+  # Exit 2 with only gap lines is normal while the current month is open.
+  # Exit 2 with an error line is a data failure, and any other code is a
+  # crash: both stop here. A missing or broken archive inside the range also
   # fails the fingerprint check below.
   status=0
   PYTHONPATH=src uv run --frozen python -m research.hist_etl sync \
@@ -295,6 +309,7 @@ export STUDY_DIR=...            # must not exist yet; outside the repository
     --dataset bn-um-btcusdt-funding-2020 --dataset bn-um-btcusdt-funding \
     2>&1 | tee "$STUDY_DIR/sync.log" || status=$?
   test "$status" -eq 0 || test "$status" -eq 2
+  if grep -q '^error' "$STUDY_DIR/sync.log"; then exit 1; fi
   cp docs/experiments/exp_funding_btc.spec.yaml "$STUDY_DIR/spec.yaml"
   PYTHONPATH=src uv run --frozen python -m research.bar_tables trend \
     --symbol BTCUSDT --start 2020-01-01 --end 2026-10-01 \

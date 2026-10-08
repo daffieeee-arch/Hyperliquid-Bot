@@ -271,7 +271,10 @@ def test_planted_cross_section_passes_h1(tmp_path: Path) -> None:
     benchmark = _mapping(document["benchmark"])
     assert _mapping(benchmark["validation"])["status"] == "not_applicable"
     markdown = (tmp_path / "out" / "result.md").read_text(encoding="utf-8")
-    assert "## Portfolio" in markdown and "| q25-h4 | 0.25 | validation |" in markdown
+    assert "## Portfolio" in markdown and "rank at most 12, at least 2 names per leg" in markdown
+    periods = validation["periods"]
+    assert f"| q25-h4 | 0.25 | validation | {periods} | 0 | 3.0 | 3.0 | 0 | 0 | 0 |" in markdown
+    assert "Buy-and-hold: one unit long" not in markdown
     assert validation["uncovered_funding_days"] == 0
     assert validation["unfunded_halt_days"] == 0
     assert "- validation: not applicable" in markdown
@@ -732,9 +735,10 @@ def test_a_traded_day_without_funding_in_reach_of_the_universe_fails_closed() ->
         signals=[[1.0] * 4, [-1.0] * 4],
         funding=[[0.0, 0.0, None, 0.0], [0.0] * 4],
     )
-    # Refused when the source is built, whichever config would hold A then.
+    # Refused when the window is scored, whichever config would hold A then:
+    # the hole is on day 2, inside the grid's reach; this config's is not.
     with pytest.raises(IntegrityError, match="a traded day a position could hold"):
-        PanelSource(spec, panel)
+        PanelSource(spec, panel).window(_config(0.5, 1), 0, 4)
 
 
 def test_a_row_off_the_date_grid_fails_closed(tmp_path: Path) -> None:
@@ -759,7 +763,7 @@ def test_the_funding_audit_starts_after_the_fill_day() -> None:
         signals=[[1.0] * 6, [-1.0] * 6],
         funding=[[0.0, None, 0.0, 0.0, 0.0, 0.0], [0.0] * 6],
     )
-    PanelSource(spec, pre_fill)
+    PanelSource(spec, pre_fill).window(_config(0.5, 2), 0, 6)
     first_held = _table(
         symbols=["A", "B"],
         prices=[[100.0] * 6, [100.0] * 6],
@@ -768,7 +772,7 @@ def test_the_funding_audit_starts_after_the_fill_day() -> None:
         funding=[[0.0, 0.0, None, 0.0, 0.0, 0.0], [0.0] * 6],
     )
     with pytest.raises(IntegrityError, match="a traded day a position could hold"):
-        PanelSource(spec, first_held)
+        PanelSource(spec, first_held).window(_config(0.5, 2), 0, 6)
 
 
 def test_a_relisting_with_late_funding_after_the_gap_is_tolerated() -> None:
@@ -783,7 +787,7 @@ def test_a_relisting_with_late_funding_after_the_gap_is_tolerated() -> None:
         signals=[[1.0] * 7, [-1.0] * 7],
         funding=[[0.0, 0.0, 0.0, None, None, 0.0, 0.0], [0.0] * 7],
     )
-    PanelSource(spec, panel)
+    PanelSource(spec, panel).window(_config(0.5, 2), 0, 7)
 
 
 def test_a_config_beyond_the_grid_still_fails_closed_on_a_held_day_without_a_rate() -> None:
@@ -823,7 +827,36 @@ def test_a_traded_day_without_funding_beyond_the_universe_reach_is_tolerated() -
         signals=[[1.0] * 6, [-1.0] * 6],
         funding=[[None, None, 0.0, 0.0, 0.0, 0.0], [0.0] * 6],
     )
-    PanelSource(spec, listing)
+    PanelSource(spec, listing).window(_config(0.5, 2), 0, 6)
+
+
+def test_the_funding_audit_covers_the_scored_windows_only(tmp_path: Path) -> None:
+    body = _spec_body(funding=True)
+    rows = _planted_rows(300, funding=0.0)
+    # Day 5 lies in the warm-up before the first fold (train_bars 30): never
+    # decided on, never held, so the run completes.
+    warm_up = [
+        row if not (row[0] == 5 and row[1] == _SYMBOLS[0]) else (*row[:7], None) for row in rows
+    ]
+    assert _run_panel(tmp_path / "warm", warm_up, body)["label"] is not None
+    # Day 40 lies inside the first fold's test window, within reach.
+    held = [
+        row if not (row[0] == 40 and row[1] == _SYMBOLS[0]) else (*row[:7], None) for row in rows
+    ]
+    assert _run_panel(tmp_path / "held", held, body)["failure_kind"] == "funding"
+
+
+def test_a_signed_quantile_above_one_half_cannot_be_scored() -> None:
+    spec = _four_symbol_spec()
+    panel = _table(
+        symbols=["A", "B", "C", "D"],
+        prices=[[100.0] * 4] * 4,
+        signals=[[2.0] * 4, [1.0] * 4, [-1.0] * 4, [-2.0] * 4],
+    )
+    with pytest.raises(HarnessError, match="overlap"):
+        PanelSource(spec, panel).window(_config(0.75, 2), 0, 4)
+    with pytest.raises(SpecError, match="quantile must lie in"):
+        ConfigSpec(id="wide", threshold=None, horizon_bars=2, quantile=1.5)
 
 
 def test_the_panel_must_match_the_spec_on_funding() -> None:

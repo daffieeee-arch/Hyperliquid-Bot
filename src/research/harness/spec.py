@@ -89,6 +89,8 @@ class ConfigSpec:
     def __post_init__(self) -> None:
         if (self.threshold is None) == (self.quantile is None):
             raise SpecError(f"Config {self.id} needs exactly one of threshold and quantile.")
+        if self.quantile is not None and not 0.0 < self.quantile <= 1.0:
+            raise SpecError(f"Config {self.id} quantile must lie in (0, 1].")
 
 
 @dataclass(frozen=True, slots=True)

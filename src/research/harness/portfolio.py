@@ -36,10 +36,11 @@ leg short of ``min_names_per_leg`` names, at the decision or at the fill,
 is skipped.
 
 With funding declared, a traded day without any rate that a position could
-hold fails the run closed when the source is built, so the outcome is a
-property of the panel and the spec's grid, not of which config trades: the
-panel keeps such days only outside its funding runs, and a study's range
-must not hold a position across one. A held day whose rate is there but
+hold fails the run closed when the window holding it is first scored,
+before any config's positions are read, so the outcome is a property of
+the panel, the spec's grid and the windows, not of which config trades:
+the panel keeps such days only outside its funding runs, and a study's
+range must not hold a position across one. A held day whose rate is there but
 not whole (``funding_covered`` false: at most one settlement missing, or
 an interval switch the panel cannot tell apart) is charged the recorded
 sum and counted as uncovered, so the report shows how much of the funding
@@ -122,6 +123,8 @@ class PanelSource:
     stats: dict[tuple[str, int, int], PeriodStats] = field(default_factory=dict)
     # The day's eligible symbols, best signal first; the same for every config.
     _ranked: dict[int, list[tuple[float, int]]] = field(default_factory=dict, init=False)
+    # The windows whose held days were audited for funding.
+    _audited: set[tuple[int, int]] = field(default_factory=set, init=False)
 
     def __post_init__(self) -> None:
         if self.spec.portfolio is None:
@@ -130,26 +133,27 @@ class PanelSource:
             raise HarnessError("invariant", "The panel's funding does not match the spec.")
         if (self.panel.funding is None) != (self.panel.covered is None):
             raise HarnessError("invariant", "A panel with funding carries its covered flags.")
-        if self.panel.funding is not None:
-            self._audit_funding_reach(self.panel.funding)
 
-    def _audit_funding_reach(self, funding: Sequence[Sequence[float | None]]) -> None:
-        """A traded day without a rate fails closed wherever a position could hold it.
+    def _audit_window(
+        self, funding: Sequence[Sequence[float | None]], start: int, end: int
+    ) -> None:
+        """A traded day without a rate fails closed wherever a window's position could hold it.
 
-        A position decided on a day the symbol is in the universe is
-        charged, as ``_hold`` charges, the days after its fill through its
-        exit: ``decision + latency_bars + 1`` through ``decision +
-        latency_bars + horizon_bars``, the grid's longest horizon at most,
-        and never across a day without a row. A traded day without a rate
-        among those days of any such decision fails the run, whichever
-        config's legs would hold it. The same days matter to every config,
-        so this is a property of the panel and the grid.
+        A position decided on a day of ``[start, end)`` the symbol is in the
+        universe is charged, as ``_hold`` charges, the days after its fill
+        through its exit: ``decision + latency_bars + 1`` through
+        ``decision + latency_bars + horizon_bars`` for the grid's longest
+        horizon whose exit stays inside the window, and never across a day
+        without a row. A traded day without a rate among those days of any
+        such decision fails the run, whichever config's legs would hold it.
+        The same days matter to every config scored on the window, so this
+        is a property of the panel, the grid and the window.
         """
 
         panel = self.panel
         universe_size = self.portfolio.universe_size
         latency = self.spec.costs.latency_bars
-        longest = max(config.horizon_bars for config in self.spec.configs)
+        horizons = sorted({config.horizon_bars for config in self.spec.configs}, reverse=True)
         for symbol in range(len(panel.symbols)):
             # The charged spans of the universe days so far, in day order.
             spans: deque[tuple[int, int]] = deque()
@@ -158,7 +162,7 @@ class PanelSource:
             ranks = panel.ranks[symbol]
             signals = panel.signals[symbol]
             rates = funding[symbol]
-            for day in range(self.length):
+            for day in range(start, end):
                 if prices[day] is None:
                     # The contract ends at a gap; nothing holds across it.
                     spans.clear()
@@ -175,7 +179,10 @@ class PanelSource:
                         "across one.",
                     )
                 rank = ranks[day]
-                if rank is not None and rank <= universe_size and signals[day] is not None:
+                if rank is None or rank > universe_size or signals[day] is None:
+                    continue
+                longest = next((h for h in horizons if day + latency + h < end), None)
+                if longest is not None:
                     spans.append((day + latency + 1, day + latency + longest))
 
     @property
@@ -200,6 +207,9 @@ class PanelSource:
         if config.quantile is None:
             raise HarnessError("invariant", f"Config {config.id} has no quantile.")
         latency = self.spec.costs.latency_bars
+        if self.panel.funding is not None and (start, end) not in self._audited:
+            self._audit_window(self.panel.funding, start, end)
+            self._audited.add((start, end))
         quantile = exact_quantile(config.quantile)
         gross: list[float] = []
         paid: list[float] = []
@@ -258,6 +268,10 @@ class PanelSource:
         names = leg_size(len(eligible), quantile)
         if names < portfolio.min_names_per_leg:
             return None
+        if self.spec.direction == "signed" and 2 * names > len(eligible):
+            # The spec caps a signed quantile at one half; a wider one would
+            # put a name in both legs.
+            raise HarnessError("invariant", "The long and short legs would overlap.")
         long_leg = [symbol for _signal, symbol in eligible[:names]]
         short_leg = (
             [symbol for _signal, symbol in eligible[len(eligible) - names :]]

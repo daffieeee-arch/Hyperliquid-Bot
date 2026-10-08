@@ -41,6 +41,8 @@ _TYPES_FOR_DTYPE = {
     "string": _STRING_TYPES,
 }
 # Bounds the dense symbol-by-day series a panel is held in.
+# The backends read from one parquet file under the spec's directory.
+_FILE_BACKENDS = frozenset({"parquet", "panel"})
 _PANEL_MAX_SYMBOLS = 5_000
 # Symbols times days of the dense series; six of them are held at once.
 _PANEL_MAX_CELLS = 25_000_000
@@ -100,12 +102,10 @@ def fingerprint_inputs(spec: HypothesisSpec, spec_dir: Path) -> dict[str, Json]:
         raise IntegrityError("schema", f"DuckDB read failed: {_short(str(error))}") from error
     finally:
         connection.close()
-    if data.backend in {"parquet", "panel"}:
-        if data.parquet_path is None:
-            raise IntegrityError("data_config", "parquet backend is missing parquet_path.")
-        checksum = _sha256_file(spec_dir / data.parquet_path)
+    if data.backend in _FILE_BACKENDS:
+        locator = _parquet_relative(data)
+        checksum = _sha256_file(spec_dir / locator)
         algorithm = "sha256"
-        locator = data.parquet_path
     else:
         if data.view is None:
             raise IntegrityError("data_config", "duckdb backend is missing a view name.")
@@ -148,14 +148,20 @@ def load_bars(spec: HypothesisSpec, spec_dir: Path) -> BarTable:
     return _table_from_rows(spec, rows)
 
 
+def _parquet_relative(data: DataSpec) -> str:
+    """The parquet path a file-backed backend declares, relative to the spec."""
+
+    if data.parquet_path is None:
+        raise IntegrityError("data_config", f"{data.backend} backend is missing parquet_path.")
+    return data.parquet_path
+
+
 def _open_source(
     data: DataSpec,
     spec_dir: Path,
 ) -> tuple[duckdb.DuckDBPyConnection, str, list[object]]:
-    if data.backend in {"parquet", "panel"}:
-        if data.parquet_path is None:
-            raise IntegrityError("data_config", "parquet backend is missing parquet_path.")
-        path = spec_dir / data.parquet_path
+    if data.backend in _FILE_BACKENDS:
+        path = spec_dir / _parquet_relative(data)
         if path.is_symlink() or not path.is_file():
             raise IntegrityError(
                 "data_config", "parquet_path must be a regular file next to the spec."
@@ -491,16 +497,27 @@ def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Pa
         if funding_cells is not None:
             funding_cells.read(row, row_index, line, column)
     _audit_ranks(ranks, timestamps, symbols)
+    del rows
     return PanelTable(
         timestamps=tuple(timestamps),
         symbols=tuple(symbols),
-        prices=tuple(tuple(line) for line in prices),
-        traded=tuple(tuple(line) for line in traded),
-        ranks=tuple(tuple(line) for line in ranks),
-        signals=tuple(tuple(line) for line in signals),
-        funding=None if funding_cells is None else funding_cells.rate_series(),
-        covered=None if funding_cells is None else funding_cells.flag_series(),
+        prices=_freeze(prices),
+        traded=_freeze(traded),
+        ranks=_freeze(ranks),
+        signals=_freeze(signals),
+        funding=None if funding_cells is None else _freeze(funding_cells.rates),
+        covered=None if funding_cells is None else _freeze(funding_cells.flags),
     )
+
+
+def _freeze[T](series: list[list[T]]) -> tuple[tuple[T, ...], ...]:
+    """The series as tuples, releasing each line as it goes, so the peak is one series."""
+
+    lines: list[tuple[T, ...]] = []
+    while series:
+        lines.append(tuple(series.pop()))
+    lines.reverse()
+    return tuple(lines)
 
 
 @dataclass(slots=True)
@@ -521,12 +538,6 @@ class _FundingCells:
         self.flags[line][column] = (
             None if flag_raw is None else _as_bool(flag_raw, self.covered.name, row_index)
         )
-
-    def rate_series(self) -> tuple[tuple[float | None, ...], ...]:
-        return tuple(tuple(line) for line in self.rates)
-
-    def flag_series(self) -> tuple[tuple[bool | None, ...], ...]:
-        return tuple(tuple(line) for line in self.flags)
 
 
 def _audit_even_axis(timestamps: list[int]) -> None:

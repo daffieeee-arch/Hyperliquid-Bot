@@ -357,12 +357,21 @@ def _benchmark_lines(document: dict[str, Json]) -> list[str]:
     block = document.get("benchmark")
     if not isinstance(block, dict):
         return ["- benchmark block missing"]
-    lines = [
-        "Buy-and-hold: one unit long, filled after latency_bars, held to the window's "
-        "last close. Funding is positive when received. Context only; it never changes "
-        "the label.",
-        "",
-    ]
+    windows = [block.get(window) for window in ("validation", "holdout")]
+    applies = any(
+        isinstance(values, dict) and values.get("status") != NOT_APPLICABLE for values in windows
+    )
+    # A panel has no buy-and-hold; its notes say so without the preamble.
+    lines = (
+        [
+            "Buy-and-hold: one unit long, filled after latency_bars, held to the window's "
+            "last close. Funding is positive when received. Context only; it never changes "
+            "the label.",
+            "",
+        ]
+        if applies
+        else []
+    )
     for window in ("validation", "holdout"):
         values = block.get(window)
         if not isinstance(values, dict):

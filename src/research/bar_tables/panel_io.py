@@ -45,17 +45,18 @@ _MISSING_SHOWN: Final = 10
 class Run:
     """One universe run clipped to the panel, days inclusive.
 
-    ``must_start`` and ``must_end`` say whether the panel needs that edge
-    day: a run may start late only in its own listing month and end early
-    only in its delisting month; a run cut by the panel range, or still
-    published, has to reach the cut.
+    Universe runs are whole months. In a run's listing month its first bar
+    may come on any day (``late_start``), and in its delisting month its
+    last bar may (``early_end``). Any other edge, such as a cut by the
+    panel range outside those months or a still-published run's end, has
+    to be there.
     """
 
     symbol: str
     first: date
     last: date
-    must_start: bool
-    must_end: bool
+    late_start: bool
+    early_end: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,10 +121,16 @@ def _month_files(
                 symbol=spec.symbol,
                 first=first,
                 last=last,
-                must_start=not spec.open_start or first > spec.start,
-                must_end=not spec.open_end or spec.end is None or last < spec.end,
+                late_start=spec.open_start and _same_month(first, spec.start),
+                early_end=spec.open_end and spec.end is not None and _same_month(last, spec.end),
             )
         )
+        previous = _month_before(first)
+        if spec.dataset == "fundingRate" and previous >= date(spec.start.year, spec.start.month, 1):
+            # Its last settlement may be stamped just before the first day opens.
+            path = binance_parquet_path(root, spec, f"{previous.year:04d}-{previous.month:02d}")
+            if path.is_file() and path.with_name(path.name + ".sources.json").is_file():
+                files.append(path)
         month = date(first.year, first.month, 1)
         while month <= last:
             path = binance_parquet_path(root, spec, f"{month.year:04d}-{month.month:02d}")
@@ -159,19 +166,21 @@ def _check_kline_runs(bars: dict[str, list[DailyBar]], runs: Sequence[Run]) -> N
     """A run's days inside the panel are all there, edges included unless open."""
 
     for run in runs:
-        low = _day_ms(run.first)
-        high = _day_ms(run.last + timedelta(days=1))
-        inside = [bar.ts for bar in bars.get(run.symbol, []) if low <= bar.ts < high]
+        low = _close_ms(run.first)
+        high = _close_ms(run.last)
+        inside = [bar.ts for bar in bars.get(run.symbol, []) if low <= bar.ts <= high]
         if not inside:
-            if run.must_start or run.must_end:
-                raise BarTableError(
-                    f"{run.symbol} has no daily bar from {run.first} to {run.last}; "
-                    "run hist_etl verify and sync."
-                )
-            continue
-        if run.must_start and inside[0] != low + DAY_MS - 1:
-            raise BarTableError(_missing_day(run.symbol, low - 1))
-        if run.must_end and inside[-1] != high - 1:
+            if run.late_start and run.early_end and _same_month(run.first, run.last):
+                continue
+            raise BarTableError(
+                f"{run.symbol} has no daily bar from {run.first} to {run.last}; "
+                "run hist_etl verify and sync."
+            )
+        first_allowed = _close_ms(_month_end(run.first)) if run.late_start else low
+        if inside[0] > first_allowed:
+            raise BarTableError(_missing_day(run.symbol, low - DAY_MS))
+        last_allowed = _close_ms(date(run.last.year, run.last.month, 1)) if run.early_end else high
+        if inside[-1] < last_allowed:
             raise BarTableError(_missing_day(run.symbol, inside[-1]))
         for earlier, later in pairwise(inside):
             if later - earlier != DAY_MS:
@@ -186,21 +195,39 @@ def _missing_day(symbol: str, previous_close: int) -> str:
 def _check_funding_runs(rows: Sequence[PanelRow], runs: Sequence[Run]) -> None:
     """Inside a funding run, a traded day without full funding is a hole.
 
-    A listing or delisting day may be partial, like the bars. A day that did
-    not trade is not checked: delisted contracts carry default funding.
+    In a listing month, traded days before the run's first covered day may
+    be partial, and in a delisting month, traded days after its last one,
+    as funding starts and stops mid-day. A day that did not trade is not
+    checked: delisted contracts carry default funding.
     """
 
     by_symbol: dict[str, list[PanelRow]] = defaultdict(list)
     for row in rows:
         by_symbol[row.symbol].append(row)
     for run in runs:
-        first_close = _day_ms(run.first) + DAY_MS - 1
-        last_close = _day_ms(run.last) + DAY_MS - 1
-        for row in by_symbol.get(run.symbol, []):
-            if not first_close <= row.ts <= last_close or not row.traded or row.funding_covered:
+        inside = [
+            row
+            for row in by_symbol.get(run.symbol, [])
+            if _close_ms(run.first) <= row.ts <= _close_ms(run.last)
+        ]
+        covered = [row.ts for row in inside if row.funding_covered]
+        starts = covered[0] if covered else None
+        stops = covered[-1] if covered else None
+        listing_month_end = _close_ms(_month_end(run.first))
+        delisting_month_start = _close_ms(date(run.last.year, run.last.month, 1))
+        for row in inside:
+            if not row.traded or row.funding_covered:
                 continue
-            if (row.ts == first_close and not run.must_start) or (
-                row.ts == last_close and not run.must_end
+            if (
+                run.late_start
+                and row.ts <= listing_month_end
+                and (starts is None or row.ts < starts)
+            ):
+                continue
+            if (
+                run.early_end
+                and row.ts >= delisting_month_start
+                and (stops is None or row.ts > stops)
             ):
                 continue
             day = datetime.fromtimestamp(row.ts / 1000, UTC).date()
@@ -208,6 +235,25 @@ def _check_funding_runs(rows: Sequence[PanelRow], runs: Sequence[Run]) -> None:
                 f"{run.symbol} traded on {day} without full funding inside a funding run "
                 f"({row.funding_settlements} settlement(s)); run hist_etl verify and sync."
             )
+
+
+def _same_month(left: date, right: date) -> bool:
+    return (left.year, left.month) == (right.year, right.month)
+
+
+def _month_end(day: date) -> date:
+    return next_month(date(day.year, day.month, 1)) - timedelta(days=1)
+
+
+def _month_before(day: date) -> date:
+    first = date(day.year, day.month, 1)
+    return date(first.year - 1, 12, 1) if first.month == 1 else date(first.year, first.month - 1, 1)
+
+
+def _close_ms(day: date) -> int:
+    """The close time of the daily bar that opens on ``day``."""
+
+    return _day_ms(day) + DAY_MS - 1
 
 
 def _read_bars(files: Sequence[Path], start_ms: int, end_ms: int) -> dict[str, list[DailyBar]]:

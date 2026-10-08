@@ -249,8 +249,21 @@ def test_bad_funding_and_specs_are_refused() -> None:
 
 
 def _write_month(
-    root: Path, slug: str, symbol: str, month: str, days: range, *, untraded_from: int = 99
+    root: Path,
+    slug: str,
+    symbol: str,
+    month: str,
+    days: range,
+    *,
+    untraded_from: int = 99,
+    slots: range | None = None,
+    early_last_ms: int = 0,
 ) -> None:
+    """Klines for ``days``, or 8-hourly funding for their slots (or ``slots``).
+
+    Funding slot ``k`` is ``8k`` hours after the month opens; the last slot
+    can be stamped ``early_last_ms`` early.
+    """
     directory = root / "parquet" / "hist_etl" / "binance" / "um" / slug
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{symbol}-{month}.parquet"
@@ -269,11 +282,20 @@ def _write_month(
                 [start_us, untraded_from, symbol, days.start, days.stop],
             )
         else:
+            chosen = slots or range((days.start - 1) * 3, (days.stop - 1) * 3)
             connection.execute(
-                "COPY (SELECT make_timestamp(? + i * 28800000000) AS calc_time, "
+                "COPY (SELECT make_timestamp(? + i * 28800000000 "
+                "- CASE WHEN i = ? THEN ? ELSE 0 END) AS calc_time, "
                 "8 AS funding_interval_hours, 0.0001 AS last_funding_rate, ? AS symbol "
                 f"FROM range(?, ?) t(i)) TO {target} (FORMAT PARQUET)",
-                [start_us, symbol, (days.start - 1) * 3, (days.stop - 1) * 3],
+                [
+                    start_us,
+                    chosen.stop - 1,
+                    early_last_ms * 1000,
+                    symbol,
+                    chosen.start,
+                    chosen.stop,
+                ],
             )
     finally:
         connection.close()
@@ -313,8 +335,9 @@ def _universe_root(tmp_path: Path) -> tuple[Path, Path]:
         _write_month(root, "klines_1d", "AAAUSDT", month, days)
         _write_month(root, "funding", "AAAUSDT", month, days)
     # Listed on Jan 10, delisted after Jan 24: its last bars have no trades.
+    # Funding starts at 16:00 on Jan 10 and stops after 08:00 on Jan 24.
     _write_month(root, "klines_1d", "DEADUSDT", "2026-01", range(10, 32), untraded_from=25)
-    _write_month(root, "funding", "DEADUSDT", "2026-01", range(10, 32))
+    _write_month(root, "funding", "DEADUSDT", "2026-01", range(10, 25), slots=range(29, 71))
     return root, manifest
 
 
@@ -386,8 +409,9 @@ def test_the_cli_writes_the_panel_with_delisted_symbols(tmp_path: Path) -> None:
         "funding_3d",
         "volume_rank",
     ]
-    # DEADUSDT ranks from its eighth traded day (Jan 17) to its last (Jan 24).
-    assert counts == [("AAAUSDT", 90, 90, 83, True), ("DEADUSDT", 22, 15, 8, True)]
+    # DEADUSDT ranks from its eighth traded day (Jan 17) to Jan 23, its last
+    # with three covered funding days; Jan 10 and Jan 24 are partial.
+    assert counts == [("AAAUSDT", 90, 90, 83, True), ("DEADUSDT", 22, 15, 7, True)]
     # The 7-day return first exists on day 8.
     assert first_ranked == (_FIRST_CLOSE + 7 * DAY_MS,)
     assert sorted(path.name for path in tmp_path.iterdir()) == ["config", "panel.parquet", "root"]
@@ -446,6 +470,50 @@ def test_a_funding_hole_on_a_traded_day_fails_closed(
     assert main(_panel_args(root, manifest, out)) == 2
     assert "AAAUSDT traded on 2026-02-21 without full funding" in capsys.readouterr().err
     assert not out.exists()
+
+
+def test_a_start_inside_a_listing_month_needs_no_bar_on_it(tmp_path: Path) -> None:
+    root, manifest = _universe_root(tmp_path)
+    args = _panel_args(root, manifest, tmp_path / "panel.parquet")
+    args[args.index("--start") + 1] = "2026-01-05"
+    assert main(args) == 0
+
+
+def test_an_end_inside_a_delisting_month_needs_no_bar_before_it(tmp_path: Path) -> None:
+    root, manifest = _universe_root(tmp_path)
+    # No flat bars after the delisting: the klines stop on Jan 24.
+    _write_month(root, "klines_1d", "DEADUSDT", "2026-01", range(10, 25))
+    assert main(_panel_args(root, manifest, tmp_path / "panel.parquet", end="2026-01-28")) == 0
+
+
+def test_funding_may_stop_mid_month_at_a_closed_run_end(tmp_path: Path) -> None:
+    root, manifest = _universe_root(tmp_path)
+    # DEADUSDT keeps trading to Jan 31, but its funding run ends after Jan 24 08:00.
+    _write_month(root, "klines_1d", "DEADUSDT", "2026-01", range(10, 32))
+    assert main(_panel_args(root, manifest, tmp_path / "panel.parquet")) == 0
+
+
+def test_a_midnight_settlement_in_the_previous_month_file_counts(tmp_path: Path) -> None:
+    root, manifest = _universe_root(tmp_path)
+    # Feb 1 00:00 is stamped 10 ms early, so it sits in the January file.
+    _write_month(
+        root, "funding", "AAAUSDT", "2026-01", range(1, 32), slots=range(0, 94), early_last_ms=10
+    )
+    _write_month(root, "funding", "AAAUSDT", "2026-02", range(1, 29), slots=range(1, 84))
+    out = tmp_path / "panel.parquet"
+    args = _panel_args(root, manifest, out)
+    args[args.index("--start") + 1] = "2026-02-01"
+    assert main(args) == 0
+    connection = duckdb.connect()
+    try:
+        first = connection.execute(
+            "SELECT funding_settlements, funding_covered FROM read_parquet(?) "
+            "WHERE symbol = 'AAAUSDT' ORDER BY ts LIMIT 1",
+            [str(out)],
+        ).fetchone()
+    finally:
+        connection.close()
+    assert first == (3, True)
 
 
 def test_the_open_month_is_expected_only_inside_the_range(tmp_path: Path) -> None:

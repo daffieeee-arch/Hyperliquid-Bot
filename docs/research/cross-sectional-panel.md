@@ -75,14 +75,19 @@ Nothing is written when any of these fail:
     synced data.
   - A run that the universe keeps open by its grace month, but which never got
     that month, blocks the build until a newer universe file closes it.
-- **A daily bar is missing inside a run.** A run may start late only in its
-  own listing month and end early only in its delisting month. A run that
-  the panel's `start` or `end` cuts, or that is still published, must reach
-  the cut. Run `hist_etl verify` and `sync`.
+- **A daily bar is missing inside a run.** Universe runs are whole months.
+  In a run's listing month its first bar may come on any day, and in its
+  delisting month its last bar may. Every other edge has to be there: a
+  `start` or `end` that cuts a run outside those months, and the end of a
+  still-published run. Run `hist_etl verify` and `sync`.
 - **A traded day inside a funding run is not covered.** That is a funding
-  hole, and it would silently drop the symbol from the rank. Listing and
-  delisting days may be partial. Untraded days are not checked, because
-  delisted contracts carry default-rate funding.
+  hole, and it would silently drop the symbol from the rank. In a funding
+  run's listing month, traded days before its first covered day may be
+  partial. In its delisting month, traded days after its last covered day
+  may be too, since funding starts and stops mid-day. Untraded days are not
+  checked, because delisted contracts carry default-rate funding.
+- The funding file of the month before `start` is read too, when the run
+  has it, for a midnight settlement stamped just before the first day.
 - **Inputs are not usable.** This covers bars off the daily grid or out of
   order, a non-positive close, negative volume, a non-finite funding rate, or
   a symbol twice on one day.

@@ -457,19 +457,36 @@ def test_an_untraded_exit_day_marks_the_position_at_its_last_traded_close() -> N
     assert source.stats[("c", 0, 5)].forced_exits == 1
 
 
-def test_a_halt_that_resumes_before_the_exit_is_held_through() -> None:
-    spec = _four_symbol_spec()
+def test_a_halt_that_resumes_before_the_exit_is_held_through_and_pays_funding() -> None:
+    spec = _four_symbol_spec(funding=True)
     panel = _table(
         symbols=["A", "B"],
         prices=[[100.0] * 5, [100.0, 100.0, 110.0, 50.0, 90.0]],
         traded=[[True] * 5, [True, True, True, False, True]],
         signals=[[-1.0] * 5, [1.0] * 5],
+        funding=[[0.0] * 5, [0.0, 0.0, 0.001, 0.001, 0.001]],
     )
     source = PanelSource(spec, panel)
     series = source.window(_config(0.5, 3), 0, 5)
-    # Long B sits through the halt on day 3 and exits at day 4's close of 90.
+    # Long B sits through the halt on day 3 and exits at day 4's close of 90;
+    # it pays the halt day's funding too, on that day's notional.
     assert series.gross == pytest.approx((0.5 * -0.10,))
+    assert series.funding_paid == pytest.approx((0.5 * 0.001 * (1.1 + 0.5 + 0.9),))
     assert source.stats[("c", 0, 5)].forced_exits == 0
+
+
+def test_a_panel_rank_must_be_positive_and_unique_on_its_day(tmp_path: Path) -> None:
+    rows = _planted_rows(300)
+    zero = [
+        row if not (row[0] == 10 and row[1] == _SYMBOLS[0]) else (*row[:4], 0, *row[5:])
+        for row in rows
+    ]
+    assert _run_panel(tmp_path / "zero", zero)["failure_kind"] == "schema"
+    twin = [
+        row if not (row[0] == 10 and row[1] == _SYMBOLS[0]) else (*row[:4], 2, *row[5:])
+        for row in rows
+    ]
+    assert _run_panel(tmp_path / "twin", twin)["failure_kind"] == "duplicate"
 
 
 def test_a_symbol_not_trading_on_the_fill_day_is_not_opened() -> None:

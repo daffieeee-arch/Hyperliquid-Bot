@@ -20,10 +20,12 @@ A position is held to the period's exit day whatever happens in between,
 so no exit uses knowledge of a later day. It exits at that day's close when
 the symbol trades then; otherwise at its last traded close at or before the
 exit day, the one price a holder of a halted or delisted contract has, and
-the period records a forced exit. Funding is charged on traded held days
-only. A symbol that does not trade on the fill day is not opened, and its
-leg is spread over the names that filled. A period with a leg short of
-``min_names_per_leg`` names, at the decision or at the fill, is skipped.
+the period records a forced exit. Funding is charged on every held day up
+to that last traded day, so a halt that resumes pays its days and a
+delisting pays nothing after its last trade. A symbol that does not trade
+on the fill day is not opened, and its leg is spread over the names that
+filled. A period with a leg short of ``min_names_per_leg`` names, at the
+decision or at the fill, is skipped.
 
 With funding declared, a held day without any rate fails the run closed:
 the panel keeps such days only outside its funding runs, and a study's
@@ -97,6 +99,8 @@ class PanelSource:
     panel: PanelTable
     stats: dict[tuple[str, int, int], PeriodStats] = field(default_factory=dict)
     portfolio: PortfolioSpec = field(init=False)
+    # The day's eligible symbols, best signal first; the same for every config.
+    _ranked: dict[int, list[tuple[float, int]]] = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
         if self.spec.portfolio is None:
@@ -154,7 +158,8 @@ class PanelSource:
             gross.append(period_gross)
             paid.append(period_paid)
             received.append(period_received)
-            weights.append(math.fsum(position.weight for position in positions))
+            # The deployed capital: both legs together, or the long leg alone.
+            weights.append(1.0)
             stats += PeriodStats(
                 periods=1,
                 skipped_decisions=0,
@@ -177,21 +182,7 @@ class PanelSource:
 
         portfolio = self.portfolio
         panel = self.panel
-        eligible: list[tuple[float, int]] = []
-        for symbol in range(len(panel.symbols)):
-            rank = panel.ranks[symbol][decision]
-            signal = panel.signals[symbol][decision]
-            if (
-                panel.traded[symbol][decision] is not True
-                or rank is None
-                or rank > portfolio.universe_size
-                or signal is None
-            ):
-                continue
-            eligible.append((signal, symbol))
-        # One ranking, ties by symbol, so the legs are deterministic and
-        # disjoint: the long leg is its top and the short leg its bottom.
-        eligible.sort(key=lambda item: (-item[0], panel.symbols[item[1]]))
+        eligible = self._eligible(decision)
         names = math.floor(len(eligible) * quantile)
         if names < portfolio.min_names_per_leg:
             return None
@@ -215,12 +206,39 @@ class PanelSource:
         )
         return positions
 
+    def _eligible(self, decision: int) -> list[tuple[float, int]]:
+        """The decision day's universe ranked by signal, cached across configs."""
+
+        cached = self._ranked.get(decision)
+        if cached is not None:
+            return cached
+        panel = self.panel
+        eligible: list[tuple[float, int]] = []
+        for symbol in range(len(panel.symbols)):
+            rank = panel.ranks[symbol][decision]
+            signal = panel.signals[symbol][decision]
+            if (
+                panel.traded[symbol][decision] is not True
+                or rank is None
+                or rank > self.portfolio.universe_size
+                or signal is None
+            ):
+                continue
+            eligible.append((signal, symbol))
+        # One ranking, ties by symbol, so the legs are deterministic and
+        # disjoint: the long leg is its top and the short leg its bottom.
+        eligible.sort(key=lambda item: (-item[0], panel.symbols[item[1]]))
+        self._ranked[decision] = eligible
+        return eligible
+
     def _hold(self, position: _Position, entry: int, exit_index: int) -> _Held:
         """One position's weighted return and funding over its hold.
 
-        The position holds days ``entry + 1`` through ``exit_index``, paying
-        each traded day's funding on the notional at that day's close, and
-        exits at the last traded close at or before ``exit_index``.
+        The position holds days ``entry + 1`` through ``exit_index`` and
+        exits at the last traded close at or before ``exit_index``. Funding
+        is paid on every day up to that last traded day, on the notional at
+        the day's close: a halt that resumes pays its days, a delisting pays
+        nothing after its last trade.
         """
 
         panel = self.panel
@@ -228,18 +246,18 @@ class PanelSource:
         entry_price = prices[entry]
         if entry_price is None:
             raise HarnessError("invariant", "A filled position has no entry price.")
+        last = entry
+        for day in range(entry + 1, exit_index + 1):
+            if prices[day] is not None and panel.traded[position.symbol][day] is True:
+                last = day
         paid = 0.0
         received = 0.0
-        last = entry
         uncovered = 0
-        for day in range(entry + 1, exit_index + 1):
-            price = prices[day]
-            if price is None or panel.traded[position.symbol][day] is not True:
-                continue
-            last = day
-            if panel.funding is not None and panel.covered is not None:
+        if panel.funding is not None and panel.covered is not None:
+            for day in range(entry + 1, last + 1):
+                price = prices[day]
                 rate = panel.funding[position.symbol][day]
-                if rate is None:
+                if price is None or rate is None:
                     raise IntegrityError(
                         "funding",
                         f"{panel.symbols[position.symbol]} has no funding on a held day at "

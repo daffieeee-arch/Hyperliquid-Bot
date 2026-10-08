@@ -220,7 +220,11 @@ configs:
   false), the one price a holder of a halted or delisted contract has, and
   the period counts a forced exit. That is not the price a holder got at
   the delisting; a study must say what it assumes. Funding is charged on
-  traded held days only. A symbol that does not trade on the fill day is
+  every held day up to that last traded day, so a halt that resumes pays
+  its days and a delisting pays nothing after its last trade. The harness
+  cannot tell a missing row from a delisting; the panel builder fails on a
+  missing day inside a run, so a built panel has none, and `forced_exits`
+  is the trace. A symbol that does not trade on the fill day is
   not opened, and its leg is spread over the names that filled; a period
   with a leg below the floor at the fill is skipped.
 - **Report**: `result.json` has a `portfolio` block with the universe rule,
@@ -231,8 +235,9 @@ configs:
   and a null `threshold` (a bar series reports the reverse). The
   buy-and-hold benchmark does not apply: both windows report
   `not_applicable`.
-- **Nulls**: price, the traded flag, the symbol and every feature's clock
-  must be present on every row. The signal, rank and funding may be null
+- **Nulls and ranks**: price, the traded flag, the symbol and every
+  feature's clock must be present on every row; a rank is at least 1 and
+  unique on its day. The signal, rank and funding may be null
   where the panel does not know them (warm-up, untraded days); a null is
   never read as zero. Every declared feature's availability clock is
   audited on every row.

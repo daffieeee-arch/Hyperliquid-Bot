@@ -384,7 +384,7 @@ def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Pa
     signal_feature = next(
         feature for feature in spec.features if feature.name == spec.signal_feature
     )
-    clocks = {feature.available_at_column: feature.name for feature in spec.features}
+    clocks = [(feature.available_at_column, feature.name) for feature in spec.features]
     required = [
         name
         for name in (
@@ -392,7 +392,7 @@ def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Pa
             data.symbol_column,
             data.price_column,
             data.traded_column,
-            *clocks,
+            *(column for column, _name in clocks),
         )
         if name is not None
     ]
@@ -414,7 +414,7 @@ def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Pa
             else _role_column(index_by_name, data.funding_covered_column)
         ),
     )
-    clock_at = {index_by_name[column]: name for column, name in clocks.items()}
+    clock_at = [(index_by_name[column], name) for column, name in clocks]
     with_funding = at.funding is not None and at.covered is not None
     # First pass: the axes and every row-level check; second pass: the series.
     keys: list[tuple[int, str]] = []
@@ -427,7 +427,7 @@ def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Pa
                 f"Row {row_index} has a null timestamp, symbol, price, traded flag or clock.",
             )
         timestamp = _as_int(row[at.timestamp.index], at.timestamp.name, row_index)
-        for index, feature_name in clock_at.items():
+        for index, feature_name in clock_at:
             clock = _as_int(row[index], feature_name, row_index)
             if clock > timestamp:
                 raise IntegrityError(
@@ -461,9 +461,11 @@ def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Pa
         prices[line][column] = price
         traded[line][column] = _as_bool(row[at.traded.index], at.traded.name, row_index)
         rank_raw = row[at.rank.index]
-        ranks[line][column] = (
-            None if rank_raw is None else _as_int(rank_raw, at.rank.name, row_index)
-        )
+        if rank_raw is not None:
+            rank = _as_int(rank_raw, at.rank.name, row_index)
+            if rank < 1:
+                raise IntegrityError("schema", f"Rank at row {row_index} must be at least 1.")
+            ranks[line][column] = rank
         signal_raw = row[at.signal.index]
         signals[line][column] = (
             None if signal_raw is None else _as_float(signal_raw, at.signal.name, row_index)
@@ -477,6 +479,7 @@ def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Pa
             covered[line][column] = (
                 None if covered_raw is None else _as_bool(covered_raw, at.covered.name, row_index)
             )
+    _audit_ranks(ranks, timestamps, symbols)
     return PanelTable(
         timestamps=tuple(timestamps),
         symbols=tuple(symbols),
@@ -487,6 +490,22 @@ def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Pa
         funding=tuple(tuple(line) for line in funding) if with_funding else None,
         covered=tuple(tuple(line) for line in covered) if with_funding else None,
     )
+
+
+def _audit_ranks(ranks: list[list[int | None]], timestamps: list[int], symbols: list[str]) -> None:
+    """A day's ranks are unique, so ``rank <= n`` is at most n symbols."""
+
+    for column, timestamp in enumerate(timestamps):
+        seen: dict[int, str] = {}
+        for line, symbol in enumerate(symbols):
+            rank = ranks[line][column]
+            if rank is None:
+                continue
+            if rank in seen:
+                raise IntegrityError(
+                    "duplicate", f"{symbol} and {seen[rank]} share rank {rank} at {timestamp}."
+                )
+            seen[rank] = symbol
 
 
 @dataclass(frozen=True, slots=True)

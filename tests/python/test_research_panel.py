@@ -661,6 +661,26 @@ def test_an_edge_gap_is_caught_past_an_untraded_day(
     )
 
 
+def test_a_bad_funding_interval_fails_instead_of_hanging(
+    tmp_path: Path, capsys: CaptureFixture[str]
+) -> None:
+    root, manifest = _universe_root(tmp_path)
+    directory = root / "parquet" / "hist_etl" / "binance" / "um" / "funding"
+    february = directory / "AAAUSDT-2026-02.parquet"
+    connection = duckdb.connect()
+    try:
+        source = "'" + str(february).replace("'", "''") + "'"
+        connection.execute(
+            f"COPY (SELECT * REPLACE (0 AS funding_interval_hours) FROM read_parquet({source})) "
+            f"TO {source[:-1]}.tmp' (FORMAT PARQUET)"
+        )
+    finally:
+        connection.close()
+    Path(f"{february}.tmp").replace(february)
+    assert main(_panel_args(root, manifest, tmp_path / "panel.parquet")) == 2
+    assert "not 1 to 24 hours" in capsys.readouterr().err
+
+
 def test_a_malformed_manifest_is_reported(tmp_path: Path, capsys: CaptureFixture[str]) -> None:
     root, manifest = _universe_root(tmp_path)
     manifest.write_text("[[binance_universe]\n", encoding="utf-8")

@@ -42,7 +42,6 @@ from research.hist_etl.planning import next_month, previous_month
 
 _MISSING_SHOWN: Final = 10
 _HOUR_MS: Final = 3_600_000
-_RELISTING_GAP_MS: Final = 27 * DAY_MS
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +67,8 @@ class Run:
     # The window opens on the run's own first day, which a manifest ``start``
     # may set: hist_etl drops a settlement stamped just before it.
     at_spec_start: bool
+    # The window closes on the run's own last day: nothing after it is this run's.
+    reaches_end: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,9 +82,9 @@ class UniverseFiles:
 
 
 def universe_files(
-    root: Path, manifest_path: Path, group: str, start: date, end: date, warmup_days: int = 0
+    root: Path, manifest_path: Path, group: str, start: date, end: date, spec: PanelSpec
 ) -> UniverseFiles:
-    """Every month file of ``group`` from ``warmup_days`` before ``start`` to ``end``.
+    """Every month file of ``group`` from the spec's warm-up before ``start`` to ``end``.
 
     Any missing one fails. The warm-up lets a row's features read their whole
     window whatever ``start`` is, where the universe has the history.
@@ -103,16 +104,20 @@ def universe_files(
         raise BarTableError(f"{group} must expand into both klines and fundingRate datasets.")
     if any(spec.interval != "1d" for spec in klines):
         raise BarTableError(f"{group} klines must be 1d for a daily panel.")
-    reach = start - timedelta(days=warmup_days)
+    reach = start - timedelta(days=spec.warmup_days)
     kline_files, kline_runs, missing = _month_files(root, klines, reach, end)
     funding_files, funding_runs, funding_missing = _month_files(root, funding, reach, end)
     missing += funding_missing
     if missing:
         shown = ", ".join(str(path) for path in missing[:_MISSING_SHOWN])
+        hint = (
+            " Funding is published per month only, so --end cannot pass the newest published month."
+            if funding_missing
+            else ""
+        )
         raise BarTableError(
             f"{len(missing)} month file(s) of {group} are missing or have no sidecar; "
-            "sync the universe first. Funding is published per month only, so --end "
-            f"cannot pass the newest published month. First: {shown}"
+            f"sync the universe first.{hint} First: {shown}"
         )
     return UniverseFiles(
         klines=kline_files,
@@ -145,6 +150,7 @@ def _month_files(
                 early_end=spec.open_end and spec.end is not None and _same_month(last, spec.end),
                 published=spec.end is None,
                 at_spec_start=first == spec.start,
+                reaches_end=spec.end is not None and last == spec.end,
             )
         )
         month = date(first.year, first.month, 1)
@@ -260,9 +266,9 @@ def _check_funding_runs(
         series = settlements.get(run.symbol, [])
         own = [item for item in series if opens < item.ts + SETTLEMENT_SLACK_MS <= high]
         following = next((item for item in series if item.ts + SETTLEMENT_SLACK_MS > high), None)
-        # Runs are at least a whole month apart, so a settlement that far
-        # after the window belongs to a relisting, not to this run.
-        if following is not None and following.ts > high + _RELISTING_GAP_MS:
+        # A settlement after a window that reaches the run's own end belongs
+        # to a relisting, not to this run.
+        if run.reaches_end:
             following = None
         if own:
             starts = {ts for ts in _start_dues(own[0], opens) if not _late_start_ok(run, ts)}
@@ -388,6 +394,10 @@ def _read_settlements(files: Sequence[Path]) -> dict[str, list[Settlement]]:
     for symbol, ts, rate, hours in rows:
         if ts is None or rate is None:
             raise BarTableError(f"{symbol} has a funding settlement with an empty time or rate.")
+        if isinstance(hours, bool) or not isinstance(hours, int) or not 1 <= hours <= 24:
+            raise BarTableError(
+                f"{symbol} funding at {ts} has interval {hours!r}, not 1 to 24 hours."
+            )
         settlements[_str(symbol)].append(
             Settlement(ts=_int(ts), rate=_float(rate), interval_hours=_int(hours))
         )

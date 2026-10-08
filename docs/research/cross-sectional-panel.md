@@ -132,6 +132,9 @@ Nothing is written when any of these fail:
   hold. The harness's cross-sectional mode (S3) decides how a held day's
   funding is charged, and what an incomplete funding day means for a held
   position.
+- A ticker that Binance reuses for another asset while it keeps trading,
+  with no untraded day between, is not detected: returns then span both
+  assets. Price windows restart only after untraded days and gaps.
 - Delisting is seen through trading activity. The panel does not know the
   delisting price a holder actually got, so a study must state how it exits a
   contract that stops trading while held.

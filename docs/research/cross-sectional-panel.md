@@ -75,27 +75,32 @@ Nothing is written when any of these fail:
     synced data.
   - A run that the universe keeps open by its grace month, but which never got
     that month, blocks the build until a newer universe file closes it.
-- **A daily bar is missing inside a run.** Universe runs are whole months.
-  In a run's listing month its first bar may come on any day, and in its
-  delisting month its last bar may. Every other edge has to be there: a
-  `start` or `end` that cuts a run outside those months, and the end of a
-  still-published run. Run `hist_etl verify` and `sync`.
+- **A daily bar is missing inside a run.** The month files are read and
+  checked whole, so where `start` or `end` cuts a month does not hide a
+  hole; rows are cut to `[start, end)` only afterwards. Universe runs are
+  whole months: in a run's listing month its first bar may come on any day,
+  and in its delisting month its last bar may. Every other day has to be
+  there, through `end` for a still-published run. Run `hist_etl verify` and
+  `sync`.
 - **A traded day inside a funding run is not covered.** That is a funding
   hole, and it would silently drop the symbol from the rank. In a funding
   run's listing month, traded days before its first covered day may be
   partial. In its delisting month, traded days after its last covered day
   may be too, since funding starts and stops mid-day. Untraded days are not
   checked, because delisted contracts carry default-rate funding.
-- The funding file of the month before `start` is read too, when the run
-  has it, for a midnight settlement stamped just before the first day.
+- The funding file of the month before the first month is needed too, when
+  the run has it, for a midnight settlement stamped just before the month
+  opens.
 - **Inputs are not usable.** This covers bars off the daily grid or out of
   order, a non-positive close, negative volume, a non-finite funding rate, or
   a symbol twice on one day.
 
 ## Limits
 
-- Rows start at `start`, so the days up to the longest window are warm-up.
-  Pick `start` that far before the study's first decision.
+- Rows start at `start`. Features can use bars from earlier in `start`'s
+  month, which are past data, but not from before it, so up to the longest
+  window of days is warm-up. Pick `start` that far before the study's first
+  decision.
 - Size: 1.44M synthetic rows (600 symbols over 2,400 days, about twice the
   2026-10-08 universe) took 51 s and peaked at 1 GB, input included.
 - Daily bars only (`1d` klines). Funding is summed per day, not per position

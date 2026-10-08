@@ -303,7 +303,7 @@ def _write_month(
 
 
 def _universe_root(tmp_path: Path) -> tuple[Path, Path]:
-    """AAAUSDT trades through Q1 2026; DEADUSDT was delisted after January."""
+    """AAAUSDT trades through Q1 2026, NEWUSDT from Jan 20; DEADUSDT ends in January."""
 
     runs_aaa = (MonthRun(date(2026, 1, 1), date(2026, 3, 1)),)
     runs_dead = (MonthRun(date(2026, 1, 1), date(2026, 1, 1)),)
@@ -316,6 +316,7 @@ def _universe_root(tmp_path: Path) -> tuple[Path, Path]:
         symbols=(
             UniverseSymbol("AAAUSDT", runs_aaa, runs_aaa),
             UniverseSymbol("DEADUSDT", runs_dead, runs_dead),
+            UniverseSymbol("NEWUSDT", runs_aaa, runs_aaa),
         ),
         excluded=(),
     )
@@ -334,6 +335,13 @@ def _universe_root(tmp_path: Path) -> tuple[Path, Path]:
     ):
         _write_month(root, "klines_1d", "AAAUSDT", month, days)
         _write_month(root, "funding", "AAAUSDT", month, days)
+    for month, days in (
+        ("2026-01", range(20, 32)),
+        ("2026-02", range(1, 29)),
+        ("2026-03", range(1, 32)),
+    ):
+        _write_month(root, "klines_1d", "NEWUSDT", month, days)
+        _write_month(root, "funding", "NEWUSDT", month, days)
     # Listed on Jan 10, delisted after Jan 24: its last bars have no trades.
     # Funding starts at 16:00 on Jan 10 and stops after 08:00 on Jan 24.
     _write_month(root, "klines_1d", "DEADUSDT", "2026-01", range(10, 32), untraded_from=25)
@@ -411,7 +419,12 @@ def test_the_cli_writes_the_panel_with_delisted_symbols(tmp_path: Path) -> None:
     ]
     # DEADUSDT ranks from its eighth traded day (Jan 17) to Jan 23, its last
     # with three covered funding days; Jan 10 and Jan 24 are partial.
-    assert counts == [("AAAUSDT", 90, 90, 83, True), ("DEADUSDT", 22, 15, 7, True)]
+    # NEWUSDT ranks from Jan 27, its eighth day.
+    assert counts == [
+        ("AAAUSDT", 90, 90, 83, True),
+        ("DEADUSDT", 22, 15, 7, True),
+        ("NEWUSDT", 71, 71, 64, True),
+    ]
     # The 7-day return first exists on day 8.
     assert first_ranked == (_FIRST_CLOSE + 7 * DAY_MS,)
     assert sorted(path.name for path in tmp_path.iterdir()) == ["config", "panel.parquet", "root"]
@@ -477,6 +490,45 @@ def test_a_start_inside_a_listing_month_needs_no_bar_on_it(tmp_path: Path) -> No
     args = _panel_args(root, manifest, tmp_path / "panel.parquet")
     args[args.index("--start") + 1] = "2026-01-05"
     assert main(args) == 0
+
+
+def test_an_end_before_a_mid_month_listing_needs_no_bar(tmp_path: Path) -> None:
+    root, manifest = _universe_root(tmp_path)
+    # NEWUSDT lists on Jan 20, after the panel ends.
+    assert main(_panel_args(root, manifest, tmp_path / "panel.parquet", end="2026-01-10")) == 0
+
+
+def test_a_start_after_a_listing_still_sees_a_missing_bar_on_it(
+    tmp_path: Path, capsys: CaptureFixture[str]
+) -> None:
+    root, manifest = _universe_root(tmp_path)
+    january = root / "parquet/hist_etl/binance/um/klines_1d/NEWUSDT-2026-01.parquet"
+    # Drop Jan 25 from NEWUSDT's listing month; the panel starts on that day.
+    connection = duckdb.connect()
+    try:
+        source = "'" + str(january).replace("'", "''") + "'"
+        connection.execute(
+            f"COPY (SELECT * FROM read_parquet({source}) WHERE day(ts) <> 25) "
+            f"TO {source[:-1]}.tmp' (FORMAT PARQUET)"
+        )
+    finally:
+        connection.close()
+    Path(f"{january}.tmp").replace(january)
+    args = _panel_args(root, manifest, tmp_path / "panel.parquet")
+    args[args.index("--start") + 1] = "2026-01-25"
+    assert main(args) == 2
+    assert "NEWUSDT misses the daily bar of 2026-01-25" in capsys.readouterr().err
+
+
+def test_the_funding_month_before_a_cut_start_is_required(
+    tmp_path: Path, capsys: CaptureFixture[str]
+) -> None:
+    root, manifest = _universe_root(tmp_path)
+    (root / "parquet/hist_etl/binance/um/funding/AAAUSDT-2026-01.parquet.sources.json").unlink()
+    args = _panel_args(root, manifest, tmp_path / "panel.parquet")
+    args[args.index("--start") + 1] = "2026-02-01"
+    assert main(args) == 2
+    assert "funding/AAAUSDT-2026-01.parquet" in capsys.readouterr().err
 
 
 def test_an_end_inside_a_delisting_month_needs_no_bar_before_it(tmp_path: Path) -> None:

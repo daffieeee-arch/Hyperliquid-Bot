@@ -31,7 +31,7 @@ from research.bar_tables.panel import (
     build_symbol_rows,
     rank_by_volume,
 )
-from research.bar_tables.trend import SETTLEMENT_SLACK_MS, BarTableError
+from research.bar_tables.trend import BarTableError
 from research.hist_etl.binance_convert import binance_parquet_path
 from research.hist_etl.errors import HistEtlError
 from research.hist_etl.manifest import load_manifest
@@ -43,13 +43,16 @@ _MISSING_SHOWN: Final = 10
 
 @dataclass(frozen=True, slots=True)
 class Run:
-    """One universe run clipped to the panel, days inclusive.
+    """The days of one universe run that the panel's month files hold.
 
-    Universe runs are whole months. In a run's listing month its first bar
+    The window spans whole months, the panel's months inside the run, so an
+    edge is judged from the month file and not from where the panel range
+    cuts it. A still-published run ends on the panel's last day instead,
+    as its newest month may still be growing.
+
+    Universe runs are whole months: in a run's listing month its first bar
     may come on any day (``late_start``), and in its delisting month its
-    last bar may (``early_end``). Any other edge, such as a cut by the
-    panel range outside those months or a still-published run's end, has
-    to be there.
+    last bar may (``early_end``). Every other edge has to be there.
     """
 
     symbol: str
@@ -112,10 +115,12 @@ def _month_files(
     missing: list[Path] = []
     last_day = end - timedelta(days=1)
     for spec in specs:
-        first = max(spec.start, start)
-        last = last_day if spec.end is None else min(spec.end, last_day)
-        if first > last:
+        cut_first = max(spec.start, start)
+        cut_last = last_day if spec.end is None else min(spec.end, last_day)
+        if cut_first > cut_last:
             continue
+        first = max(spec.start, date(cut_first.year, cut_first.month, 1))
+        last = cut_last if spec.end is None else min(spec.end, _month_end(cut_last))
         runs.append(
             Run(
                 symbol=spec.symbol,
@@ -125,13 +130,10 @@ def _month_files(
                 early_end=spec.open_end and spec.end is not None and _same_month(last, spec.end),
             )
         )
-        previous = _month_before(first)
-        if spec.dataset == "fundingRate" and previous >= date(spec.start.year, spec.start.month, 1):
-            # Its last settlement may be stamped just before the first day opens.
-            path = binance_parquet_path(root, spec, f"{previous.year:04d}-{previous.month:02d}")
-            if path.is_file() and path.with_name(path.name + ".sources.json").is_file():
-                files.append(path)
         month = date(first.year, first.month, 1)
+        if spec.dataset == "fundingRate" and month > date(spec.start.year, spec.start.month, 1):
+            # A midnight settlement stamped just early sits in the month before.
+            month = _month_before(month)
         while month <= last:
             path = binance_parquet_path(root, spec, f"{month.year:04d}-{month.month:02d}")
             # hist_etl writes the sidecar last; a file without one is not its output.
@@ -144,33 +146,39 @@ def _month_files(
 
 
 def build_panel(files: UniverseFiles, spec: PanelSpec, start: date, end: date) -> list[PanelRow]:
-    """Ranked panel rows for every symbol with a bar closing in ``[start, end)``."""
+    """Ranked panel rows for every symbol with a bar closing in ``[start, end)``.
 
-    start_ms = _day_ms(start)
-    end_ms = _day_ms(end)
-    bars = _read_bars(files.klines, start_ms, end_ms)
+    The month files are read whole and checked whole, and rows are cut to the
+    range only then. Features of the first rows can so use bars from earlier
+    in the start's month, which are past data.
+    """
+
+    bars = _read_bars(files.klines)
     _check_kline_runs(bars, files.kline_runs)
-    # Only the range's own month files are read; a settlement stamped up to a
-    # minute early still belongs to the first day.
-    settlements = _read_settlements(files.funding, start_ms - SETTLEMENT_SLACK_MS, end_ms)
+    settlements = _read_settlements(files.funding)
     rows: list[PanelRow] = []
     for symbol in sorted(bars):
         rows.extend(build_symbol_rows(symbol, bars[symbol], settlements.get(symbol, []), spec))
-    if not rows:
-        raise BarTableError("The universe has no daily bar inside the panel range.")
     _check_funding_runs(rows, files.funding_runs)
-    return rank_by_volume(rows)
+    start_ms = _day_ms(start)
+    end_ms = _day_ms(end)
+    inside = [row for row in rows if start_ms <= row.ts < end_ms]
+    if not inside:
+        raise BarTableError("The universe has no daily bar inside the panel range.")
+    return rank_by_volume(inside)
 
 
 def _check_kline_runs(bars: dict[str, list[DailyBar]], runs: Sequence[Run]) -> None:
-    """A run's days inside the panel are all there, edges included unless open."""
+    """Every day of a run's window has its bar, edges included unless open."""
 
     for run in runs:
         low = _close_ms(run.first)
         high = _close_ms(run.last)
         inside = [bar.ts for bar in bars.get(run.symbol, []) if low <= bar.ts <= high]
         if not inside:
-            if run.late_start and run.early_end and _same_month(run.first, run.last):
+            # A still-published run's window can end inside its listing
+            # month, before the listing.
+            if run.late_start and _same_month(run.first, run.last):
                 continue
             raise BarTableError(
                 f"{run.symbol} has no daily bar from {run.first} to {run.last}; "
@@ -256,14 +264,13 @@ def _close_ms(day: date) -> int:
     return _day_ms(day) + DAY_MS - 1
 
 
-def _read_bars(files: Sequence[Path], start_ms: int, end_ms: int) -> dict[str, list[DailyBar]]:
+def _read_bars(files: Sequence[Path]) -> dict[str, list[DailyBar]]:
     if not files:
         raise BarTableError("The universe has no kline month inside the panel range.")
     rows = _query(
         "SELECT symbol, epoch_ms(ts), CAST(close AS DOUBLE), CAST(quote_volume AS DOUBLE), "
-        "CAST(trade_count AS BIGINT) FROM read_parquet(?) "
-        "WHERE ts >= make_timestamp(?) AND ts < make_timestamp(?) ORDER BY symbol, ts",
-        [[str(path) for path in files], start_ms * 1000, end_ms * 1000],
+        "CAST(trade_count AS BIGINT) FROM read_parquet(?) ORDER BY symbol, ts",
+        [[str(path) for path in files]],
     )
     bars: dict[str, list[DailyBar]] = defaultdict(list)
     for symbol, ts, close, volume, trades in rows:
@@ -275,17 +282,13 @@ def _read_bars(files: Sequence[Path], start_ms: int, end_ms: int) -> dict[str, l
     return dict(bars)
 
 
-def _read_settlements(
-    files: Sequence[Path], start_ms: int, end_ms: int
-) -> dict[str, list[Settlement]]:
+def _read_settlements(files: Sequence[Path]) -> dict[str, list[Settlement]]:
     if not files:
         return {}
     rows = _query(
         "SELECT symbol, epoch_ms(calc_time), CAST(last_funding_rate AS DOUBLE), "
-        "coalesce(funding_interval_hours, 8) FROM read_parquet(?) "
-        "WHERE calc_time >= make_timestamp(?) AND calc_time < make_timestamp(?) "
-        "ORDER BY symbol, calc_time",
-        [[str(path) for path in files], start_ms * 1000, end_ms * 1000],
+        "coalesce(funding_interval_hours, 8) FROM read_parquet(?) ORDER BY symbol, calc_time",
+        [[str(path) for path in files]],
     )
     settlements: dict[str, list[Settlement]] = defaultdict(list)
     for symbol, ts, rate, hours in rows:

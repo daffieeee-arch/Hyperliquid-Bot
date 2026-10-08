@@ -475,6 +475,24 @@ def test_a_halt_that_resumes_before_the_exit_is_held_through_and_pays_funding() 
     assert source.stats[("c", 0, 5)].forced_exits == 0
 
 
+def test_a_relisting_inside_the_horizon_exits_before_the_gap() -> None:
+    spec = _four_symbol_spec(funding=True)
+    panel = _table(
+        symbols=["A", "B"],
+        prices=[[100.0] * 5, [100.0, 100.0, 90.0, None, 300.0]],
+        signals=[[-1.0] * 5, [1.0] * 5],
+        funding=[[0.0] * 5, [0.0, 0.0, 0.001, None, 0.001]],
+    )
+    source = PanelSource(spec, panel)
+    series = source.window(_config(0.5, 3), 0, 5)
+    # B's row is missing on day 3: the contract ended, and the 300 of day 4 is
+    # another listing. Long B exits at 90, its last traded close before the
+    # gap, pays funding to that day only, and the period counts a forced exit.
+    assert series.gross == pytest.approx((0.5 * -0.10,))
+    assert series.funding_paid == pytest.approx((0.5 * 0.001 * 0.9,))
+    assert source.stats[("c", 0, 5)].forced_exits == 1
+
+
 def test_a_panel_rank_must_be_positive_and_unique_on_its_day(tmp_path: Path) -> None:
     rows = _planted_rows(300)
     zero = [

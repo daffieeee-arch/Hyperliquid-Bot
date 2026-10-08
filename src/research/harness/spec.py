@@ -279,13 +279,7 @@ def validate_spec(document: dict[str, Json]) -> HypothesisSpec:
     decision_features = (signal_feature,) + (
         () if sizing.vol_feature is None else (sizing.vol_feature,)
     )
-    _require_latency_floor(costs, features, data, decision_features)
-    if panel and costs.latency_bars == 0 and not costs.allow_zero_latency:
-        # The rank and traded flag are the decision day's own close.
-        raise SpecError(
-            "costs.latency_bars must be >= 1 on a panel: the universe (rank, traded) is known "
-            "at the decision day's close. latency_bars 0 requires costs.allow_zero_latency: true."
-        )
+    _require_latency_floor(costs, features, data, decision_features, panel)
     return HypothesisSpec(
         hypothesis_id=hypothesis_id,
         universe=universe,
@@ -447,15 +441,23 @@ def _require_latency_floor(
     features: tuple[FeatureSpec, ...],
     data: DataSpec,
     decision_features: tuple[str, ...],
+    panel: bool,
 ) -> None:
     """Bar-timestamp clocks fill on a later bar unless zero latency is explicit.
 
-    Every feature read at the decision bar counts: the signal, and the sizing
-    volatility, which would otherwise size a fill with that bar's own close.
+    Every input read at the decision bar counts: the signal, the sizing
+    volatility, which would otherwise size a fill with that bar's own close,
+    and on a panel the universe (rank, traded), which is the decision day's
+    own close.
     """
 
     if costs.latency_bars >= 1 or costs.allow_zero_latency:
         return
+    if panel:
+        raise SpecError(
+            "costs.latency_bars must be >= 1 on a panel: the universe (rank, traded) is known "
+            "at the decision day's close. latency_bars 0 requires costs.allow_zero_latency: true."
+        )
     for feature in features:
         if feature.name in decision_features and (
             feature.available_at_column == data.timestamp_column

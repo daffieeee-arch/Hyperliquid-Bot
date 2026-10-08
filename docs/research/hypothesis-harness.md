@@ -219,19 +219,28 @@ configs:
   at its last traded close at or before the exit day (no row, or `traded`
   false), the one price a holder of a halted or delisted contract has, and
   the period counts a forced exit. That is not the price a holder got at
-  the delisting; a study must say what it assumes. Funding is charged on
+  the delisting; a study must say what it assumes. A day without a row
+  ends the contract: the panel builder fails on a day missing inside a run
+  and keeps a gap only between the runs of a relisted symbol, whose rows
+  after the gap are another listing, so the hold stops at the last traded
+  close before the gap and never marks at the relisted price. A day with a
+  row that did not trade is a halt, held through. Funding is charged on
   every held day up to that last traded day, so a halt that resumes pays
-  its days and a delisting pays nothing after its last trade. The harness
-  cannot tell a missing row from a delisting; the panel builder fails on a
-  missing day inside a run, so a built panel has none, and `forced_exits`
-  is the trace. A symbol that does not trade on the fill day is
-  not opened, and its leg is spread over the names that filled; a period
-  with a leg below the floor at the fill is skipped.
+  its days and a delisting pays nothing after its last trade (not on the
+  flat archive days that follow it). `forced_exits` is the trace of both.
+  The one case the data cannot tell apart is a relisting whose archive
+  follows the old contract's without a missing day; it reads as a halt. A
+  symbol that does not trade on the fill day is not opened, and its leg is
+  spread over the names that filled; a period with a leg below the floor
+  at the fill is skipped.
 - **Report**: `result.json` has a `portfolio` block with the universe rule,
   `symbol_count`, and per config the validation (and, when scored, holdout)
   period count, skipped decisions, mean names per leg, forced exits and
   uncovered funding days;
-  `result.md` has a Portfolio section. Each config reports its `quantile`
+  `result.md` has a Portfolio section. `bar_count`, `timestamp_min` and
+  `timestamp_max` describe the date axis (one bar is one day of the panel,
+  not one row); the fingerprint's `row_count` is the rows read. Each
+  config reports its `quantile`
   and a null `threshold` (a bar series reports the reverse). The
   buy-and-hold benchmark does not apply: both windows report
   `not_applicable`.

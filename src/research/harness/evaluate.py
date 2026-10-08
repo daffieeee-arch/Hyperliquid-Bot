@@ -824,13 +824,26 @@ def _unit_funding(
 
     if funding is None:
         return 0.0, 0.0
-    entry_price = prices[trade.entry]
+    held = slice(trade.entry + 1, trade.exit + 1)
+    return held_funding(trade.side, prices[trade.entry], prices[held], funding[held])
+
+
+def held_funding(
+    side: int, entry_price: float, prices: Sequence[float], rates: Sequence[float]
+) -> tuple[float, float]:
+    """Funding (paid, received) per unit of entry notional over the held settlements.
+
+    ``prices`` and ``rates`` run over the held bars in order; each rate is
+    charged on the notional at its bar's close. Bar trades and panel
+    positions sum their funding through this one function.
+    """
+
+    if len(prices) != len(rates):
+        raise HarnessError("invariant", "Held prices and rates differ in length.")
     paid: list[float] = []
     received: list[float] = []
-    for index in range(trade.entry + 1, trade.exit + 1):
-        day_paid, day_received = funding_flow(
-            trade.side, funding[index], prices[index], entry_price
-        )
+    for price, rate in zip(prices, rates, strict=True):
+        day_paid, day_received = funding_flow(side, rate, price, entry_price)
         paid.append(day_paid)
         received.append(day_received)
     return math.fsum(paid), math.fsum(received)

@@ -20,12 +20,15 @@ A position is held to the period's exit day whatever happens in between,
 so no exit uses knowledge of a later day. It exits at that day's close when
 the symbol trades then; otherwise at its last traded close at or before the
 exit day, the one price a holder of a halted or delisted contract has, and
-the period records a forced exit. Funding is charged on every held day up
-to that last traded day, so a halt that resumes pays its days and a
-delisting pays nothing after its last trade. A symbol that does not trade
-on the fill day is not opened, and its leg is spread over the names that
-filled. A period with a leg short of ``min_names_per_leg`` names, at the
-decision or at the fill, is skipped.
+the period records a forced exit. A day without a row ends the contract:
+the panel keeps such gaps only between the runs of a relisted symbol, and
+the rows after the gap are another listing, so the hold stops at the last
+traded close before it. A day with a row that did not trade is a halt, held
+through. Funding is charged on every held day up to that last traded day,
+so a halt that resumes pays its days and a delisting pays nothing after its
+last trade. A symbol that does not trade on the fill day is not opened, and
+its leg is spread over the names that filled. A period with a leg short of
+``min_names_per_leg`` names, at the decision or at the fill, is skipped.
 
 With funding declared, a held day without any rate fails the run closed:
 the panel keeps such days only outside its funding runs, and a study's
@@ -45,7 +48,7 @@ from fractions import Fraction
 
 from research.harness.data import PanelTable
 from research.harness.errors import HarnessError, IntegrityError
-from research.harness.evaluate import Decision, TradeSeries, funding_flow, next_period
+from research.harness.evaluate import Decision, TradeSeries, held_funding, next_period
 from research.harness.spec import ConfigSpec, HypothesisSpec, Json, PortfolioSpec
 
 
@@ -235,39 +238,47 @@ class PanelSource:
         """One position's weighted return and funding over its hold.
 
         The position holds days ``entry + 1`` through ``exit_index`` and
-        exits at the last traded close at or before ``exit_index``. Funding
+        exits at the last traded close at or before ``exit_index``, or
+        before the first day without a row, where the contract ends. Funding
         is paid on every day up to that last traded day, on the notional at
         the day's close: a halt that resumes pays its days, a delisting pays
         nothing after its last trade.
         """
 
         panel = self.panel
-        prices = panel.prices[position.symbol]
+        symbol = position.symbol
+        prices = panel.prices[symbol]
         entry_price = prices[entry]
         if entry_price is None:
             raise HarnessError("invariant", "A filled position has no entry price.")
         last = entry
         for day in range(entry + 1, exit_index + 1):
-            if prices[day] is not None and panel.traded[position.symbol][day] is True:
+            if prices[day] is None:
+                break
+            if panel.traded[symbol][day] is True:
                 last = day
         paid = 0.0
         received = 0.0
         uncovered = 0
         if panel.funding is not None and panel.covered is not None:
+            held_prices: list[float] = []
+            held_rates: list[float] = []
             for day in range(entry + 1, last + 1):
                 price = prices[day]
-                rate = panel.funding[position.symbol][day]
-                if price is None or rate is None:
+                if price is None:
+                    raise HarnessError("invariant", "A held day before the last trade has a row.")
+                rate = panel.funding[symbol][day]
+                if rate is None:
                     raise IntegrityError(
                         "funding",
-                        f"{panel.symbols[position.symbol]} has no funding on a held day at "
+                        f"{panel.symbols[symbol]} has no funding on a held day at "
                         f"{panel.timestamps[day]}; a study's range must not hold across one.",
                     )
-                if panel.covered[position.symbol][day] is not True:
+                if panel.covered[symbol][day] is not True:
                     uncovered += 1
-                day_paid, day_received = funding_flow(position.side, rate, price, entry_price)
-                paid += day_paid
-                received += day_received
+                held_prices.append(price)
+                held_rates.append(rate)
+            paid, received = held_funding(position.side, entry_price, held_prices, held_rates)
         exit_price = prices[last]
         if exit_price is None:
             raise HarnessError("invariant", "A held position has no exit price.")

@@ -175,8 +175,9 @@ configs:
   days later at that day's close, exited `horizon_bars` days after the fill.
   The next decision is the exit day, so periods do not overlap, like a bar
   series' trades. After a period skipped at the decision the next decision
-  is the next day; after one unwound at the fill it is the fill day, when
-  the non-fill is known. A validation period never reads a holdout close.
+  is the next day; after one unwound at the fill, or one whose orders all
+  failed to fill, it is the fill day, when the non-fill is known. A
+  validation period never reads a holdout close.
   The rank and the traded flag are the decision day's own close, so
   `latency_bars` must be at least 1 unless `allow_zero_latency` is set.
 - **Universe and legs**: on the decision day the universe is every symbol
@@ -265,8 +266,10 @@ configs:
   leg below the floor at the fill unwinds its fills at cost.
 - **Report**: `result.json` has a `portfolio` block with the universe rule,
   `symbol_count`, and per config the validation (and, when scored, holdout)
-  period count, skipped decisions, mean names per leg, forced exits,
-  uncovered funding days, unfunded halt days and unwound periods;
+  period count, skipped decisions (decisions that led to no trade: too
+  few names at the decision, or none of the orders filled), mean names
+  per leg, forced exits, uncovered funding days, unfunded halt days and
+  unwound periods;
   `result.md` has a Portfolio section. `bar_count`, `timestamp_min` and
   `timestamp_max` describe the date axis (one bar is one day of the panel,
   not one row); the fingerprint's `row_count` is the rows read. Each
@@ -279,7 +282,8 @@ configs:
   unique on its day. The signal, rank and funding may be null
   where the panel does not know them (warm-up, untraded days); a null is
   never read as zero. Every declared feature's availability clock is
-  audited on every row. The date axis is the union of the rows' days and
+  audited on every row, and every declared feature's value where present
+  (a float, finite), though the portfolio reads the signal alone. The date axis is the union of the rows' days and
   must be evenly spaced: a row stamped off the grid would give every
   other symbol a day without a row, which ends a contract, so it fails
   the run (`failure_kind: gap`). On a panel `max_gap` therefore bounds the

@@ -605,7 +605,7 @@ def test_a_period_is_skipped_when_a_leg_cannot_fill_or_is_too_small() -> None:
         signals=[[2.0] * 4, [1.0] * 4, [-1.0] * 4],
     )
     assert len(PanelSource(small, three).window(_config(0.5, 1), 0, 4).gross) == 0
-    # A leg that fills below the floor skips the period too.
+    # A leg that fills below the floor unwinds the period's fills instead.
     floored = _four_symbol_spec(portfolio={"universe_size": 4, "min_names_per_leg": 2})
     thin = _table(
         symbols=["A", "B", "C", "D"],

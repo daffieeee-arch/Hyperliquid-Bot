@@ -128,8 +128,10 @@ class PortfolioSpec:
     On each decision day the universe is the symbols that traded with a rank
     at most ``universe_size`` and a known signal; each config goes long the
     top ``quantile`` of it by the signal and, under ``direction: signed``,
-    short the bottom ``quantile``. A leg needs ``min_names_per_leg`` names,
-    at the decision and at the fill, or the period is skipped.
+    short the bottom ``quantile``. A leg needs ``min_names_per_leg`` names:
+    short of them at the decision, no orders are sent and the day is
+    skipped; short of them at the fill, the names that filled are unwound
+    at the fill close for the round trip and no return.
     """
 
     universe_size: int

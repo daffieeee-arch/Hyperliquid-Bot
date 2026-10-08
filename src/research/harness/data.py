@@ -413,6 +413,12 @@ def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Pa
         ),
     )
     clock_at = [(index_by_name[column], name) for column, name in clocks]
+    # The features the portfolio does not read are still audited where present.
+    other_features = [
+        (index_by_name[feature.column], feature.column)
+        for feature in spec.features
+        if feature.name != spec.signal_feature
+    ]
     # Present on every row: the axes, the price, the traded flag, every clock.
     required_at = (
         at.timestamp.index,
@@ -468,6 +474,10 @@ def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Pa
         signals[line][column] = (
             None if signal_raw is None else _as_float(signal_raw, at.signal.name, row_index)
         )
+        for index, name in other_features:
+            raw = row[index]
+            if raw is not None:
+                _as_float(raw, name, row_index)
         if funding_cells is not None:
             funding_cells.read(row, row_index, line, column)
     del rows, rank_holder, axes

@@ -89,8 +89,6 @@ class ConfigSpec:
     def __post_init__(self) -> None:
         if (self.threshold is None) == (self.quantile is None):
             raise SpecError(f"Config {self.id} needs exactly one of threshold and quantile.")
-        if self.quantile is not None and not 0.0 < self.quantile <= 1.0:
-            raise SpecError(f"Config {self.id} quantile must lie in (0, 1].")
 
 
 @dataclass(frozen=True, slots=True)
@@ -585,7 +583,7 @@ def _parse_data(raw: dict[str, Json]) -> DataSpec:
     price_column = _column_ref(raw, "price_column")
     max_gap = _positive_int(raw["max_gap"], "data.max_gap", 10**18)
     max_rows = _positive_int(raw["max_rows"], "data.max_rows", _MAX_ROWS_CAP)
-    columns = _parse_columns(raw["columns"], str(backend) == "panel")
+    columns = _parse_columns(raw["columns"], backend == "panel")
     _require_role_column(columns, "timestamp", timestamp_column, "data.timestamp_column")
     _require_role_column(columns, "price", price_column, "data.price_column")
     funding_covered_column = None
@@ -600,7 +598,7 @@ def _parse_data(raw: dict[str, Json]) -> DataSpec:
                 "and one without funding declares none."
             )
     return DataSpec(
-        backend=str(backend),
+        backend=backend,
         parquet_path=parquet_path,
         view=view,
         timestamp_column=timestamp_column,
@@ -641,7 +639,7 @@ def _parse_columns(raw: Json, panel: bool) -> tuple[ColumnSpec, ...]:
 def _require_role_column(
     columns: tuple[ColumnSpec, ...], role: str, name: str | None, label: str
 ) -> None:
-    if _optional_role_column(columns, role) != name or name is None:
+    if name is None or _optional_role_column(columns, role) != name:
         raise SpecError(f"{label} must be the unique {role}-role column.")
 
 

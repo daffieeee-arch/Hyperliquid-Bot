@@ -96,13 +96,11 @@ class PeriodStats:
     def __add__(self, other: PeriodStats) -> PeriodStats:
         # Every counter sums, so a new one cannot be left out here.
         return PeriodStats(
-            **{
-                item.name: getattr(self, item.name) + getattr(other, item.name)
-                for item in fields(PeriodStats)
-            }
+            **{name: getattr(self, name) + getattr(other, name) for name in _STAT_NAMES}
         )
 
 
+_STAT_NAMES = tuple(item.name for item in fields(PeriodStats))
 EMPTY_STATS = PeriodStats()
 
 
@@ -152,6 +150,8 @@ class PanelSource:
     _ranked: dict[int, list[tuple[float, int]]] = field(default_factory=dict, init=False)
     # The windows whose held days were audited for funding.
     _audited: set[tuple[int, int]] = field(default_factory=set, init=False)
+    # Per symbol, the first day at or after each day without a row.
+    _gaps: dict[int, list[int]] = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
         if self.spec.portfolio is None:
@@ -350,24 +350,29 @@ class PanelSource:
         listing, which the decision day's signal says nothing about.
         """
 
-        panel = self.panel
-        prices = panel.prices[symbol]
-        if any(prices[day] is None for day in range(decision + 1, entry + 1)):
+        if self._gap_from(symbol, decision + 1) <= entry:
             return False
-        return panel.traded[symbol][entry] is True
+        return self.panel.traded[symbol][entry] is True
 
     def _held_through(self, symbol: int, entry: int, exit_index: int) -> int:
         """The last day a position filled at ``entry`` holds: ``exit_index``, or the
         day before the first without a row, where the contract ends. The hold
         and the funding audit share this one rule."""
 
-        prices = self.panel.prices[symbol]
-        through = entry
-        for day in range(entry + 1, exit_index + 1):
-            if prices[day] is None:
-                break
-            through = day
-        return through
+        return max(entry, min(exit_index, self._gap_from(symbol, entry + 1) - 1))
+
+    def _gap_from(self, symbol: int, day: int) -> int:
+        """The first day at or after ``day`` without a row for the symbol, or the length."""
+
+        gaps = self._gaps.get(symbol)
+        if gaps is None:
+            # One backward pass per symbol, so every lookup after it is O(1).
+            prices = self.panel.prices[symbol]
+            gaps = [self.length] * (self.length + 1)
+            for index in range(self.length - 1, -1, -1):
+                gaps[index] = index if prices[index] is None else gaps[index + 1]
+            self._gaps[symbol] = gaps
+        return gaps[min(day, self.length)]
 
     def _in_universe(self, symbol: int, day: int, universe_size: int) -> bool:
         """Whether the symbol can be decided on that day: traded, ranked within the
@@ -413,8 +418,9 @@ class PanelSource:
         paid on every day of the hold, traded or not, on the notional at
         the day's close. A halt day without a rate, which the panel builder
         does not check, pays nothing and counts as unfunded; a traded day
-        without one fails closed (the grid's configs were refused such a
-        day when the window was audited; another config may reach further).
+        without one fails closed here too: the audit refused such a day for
+        every config of the grid, so this guards a config handed to
+        ``window`` from outside the grid.
         """
 
         panel = self.panel

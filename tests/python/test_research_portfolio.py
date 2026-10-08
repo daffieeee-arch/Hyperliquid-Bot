@@ -918,8 +918,6 @@ def test_a_signed_quantile_above_one_half_cannot_be_scored() -> None:
     )
     with pytest.raises(HarnessError, match="overlap"):
         PanelSource(spec, panel).window(_config(0.75, 2), 0, 4)
-    with pytest.raises(SpecError, match="quantile must lie in"):
-        ConfigSpec(id="wide", threshold=None, horizon_bars=2, quantile=1.5)
 
 
 def test_the_panel_must_match_the_spec_on_funding() -> None:

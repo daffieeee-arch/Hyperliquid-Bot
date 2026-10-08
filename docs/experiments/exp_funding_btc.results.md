@@ -26,7 +26,8 @@ not a trading authorization.
 - **Commit**: `19a452441cd589eb06dd847e6d3b48b0c5657a47`, the #132 merge,
   from `commit.txt`, equal to `source_commit` in the harness output.
 - **Gates**:
-  - HEAD was on `origin/main`, and the document matched main.
+  - HEAD (`19a4524`) was an ancestor of `origin/main`, which the script
+    checks; at the run it was also main's tip. The document matched main.
   - `STUDY_DIR` was outside the repository.
   - The code check against `9a294cd9a6244bd33fe6ee067456ad47dff1f17f`
     passed on a clean tree.
@@ -35,8 +36,11 @@ not a trading authorization.
   null (no `RESEARCH_IMAGE_DIGEST` was set).
 - **Sync**: 169 archives ready, and sync exited 2 with one gap line,
   `refused_overwrite` for `BTCUSDT-2026-10.parquet`.
-  - That is the open October 2026 klines file. It lies outside the range,
-    since the table ends at 2026-09-30.
+  - The archive root was the one `exp_tsmom_btc` and the dry runs used.
+  - Since then, the 2026-10-07 daily archive had been published: 169 ready
+    against 168 then. So the open October 2026 klines Parquet built earlier
+    no longer matched its sources, and hist_etl refused to overwrite it.
+  - That file lies outside the range, since the table ends at 2026-09-30.
   - There was no `error` line, and the fingerprint check below passed.
 - **Spec**: canonical sha256
   `52eb9a64ff094b80ed6c350a1d51a9ae95c5b33d84cdad907f39bcc2a2ad8d5d`, as
@@ -118,7 +122,7 @@ filled after `latency_bars`, priced like a strategy trade.
 
 - **Holdout benchmark**: sealed, like the strategy.
 - **Fixed quantity versus constant notional**: a fixed quantity of BTC paid
-  funding on a notional that grew about 8.7 times, so it paid far more than
+  funding on a notional that grew about 8.75 times, so it paid far more than
   a long of constant notional.
 - **Not comparable**: the strategy rows are per-trade means of risk-scaled
   positions, while this is one unscaled position over four years.
@@ -144,9 +148,10 @@ stops on BTC.
 - **The price return carried most of it**: gross means of 0.36% to 0.95% per
   trade against funding received of 0.06% to 0.34%. The rule did not live
   mainly on carry in validation.
-- **Longer holds did better per trade**: the 1-week holds had about twice
-  the per-trade mean and Sharpe of the 3-day holds. With 62 to 130 trades,
-  that difference is itself within noise.
+- **Longer holds did better per trade**: the 1-week holds had about three
+  times the per-trade mean of the 3-day holds (0.97% against 0.32%, and
+  1.18% against 0.43%), and 1.6 to 1.9 times the Sharpe per trade. With 62
+  to 130 trades, that difference is itself within noise.
 - **Compared with `exp_tsmom_btc`**: both BTC studies found positive
   validation means that do not survive multiple testing. Neither earns a
   holdout test.

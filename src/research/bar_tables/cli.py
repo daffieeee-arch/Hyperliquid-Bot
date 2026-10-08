@@ -1,4 +1,4 @@
-"""Build a harness bar table from hist_etl Binance Parquet.
+"""Build harness bar tables from hist_etl Binance Parquet.
 
     python -m research.bar_tables trend --root "$HIST_ARCHIVES_ROOT" \
         --market um --symbol BTCUSDT --interval 1h \
@@ -12,6 +12,15 @@ last ``K`` funding settlements known at the bar's close.
 Bars with a close time in ``[start, end)`` are read; the first output bar
 follows the warm-up (the longest lookback or the vol window, whichever is
 longer). Nothing is written when the inputs fail a point-in-time check.
+
+    python -m research.bar_tables panel --root "$HIST_ARCHIVES_ROOT" \
+        --group bn-um-usdt-1d --start 2020-01-01 --end 2026-10-01 \
+        --lookbacks 7,30,90 --vol-window 30 --volume-window 30 \
+        --funding-window 7 --out panel.parquet
+
+writes the daily cross-sectional panel of a hist_etl universe: one row per
+symbol and day with a bar closing in ``[start, end)``, warm-up rows kept
+with empty features (see ``research.bar_tables.panel``).
 """
 
 from __future__ import annotations
@@ -27,12 +36,16 @@ from pathlib import Path
 
 import duckdb
 
+from research.bar_tables.panel import PanelSpec
+from research.bar_tables.panel_io import build_panel, universe_files, write_panel_parquet
 from research.bar_tables.trend import (
     BarTableError,
     TrendRow,
     build_trend_rows,
     check_funding_means,
 )
+from research.hist_etl.errors import HistEtlError
+from research.hist_etl.manifest import default_manifest_path
 from research.hist_etl.models import INTERVAL_SECONDS, parquet_slug
 
 _HOUR_MS = 3_600_000
@@ -40,6 +53,8 @@ _HOUR_MS = 3_600_000
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if args.command == "panel":
+        return _panel(args)
     try:
         root = _root(args.root)
         lookbacks = _lookbacks(args.lookbacks)
@@ -79,6 +94,35 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"bar_tables: {exc}", file=sys.stderr)
         return 2
     print(f"bar_tables\twrote\t{len(rows)}\trows\t{args.out}")
+    return 0
+
+
+def _panel(args: argparse.Namespace) -> int:
+    try:
+        root = _root(args.root)
+        spec = PanelSpec(
+            lookbacks=_counts(args.lookbacks, "--lookbacks", "day counts"),
+            vol_window=args.vol_window,
+            volume_window=args.volume_window,
+            funding_window=args.funding_window,
+        )
+        start = _date(args.start, "--start")
+        end = _date(args.end, "--end")
+        if end <= start:
+            raise BarTableError("--end must be after --start.")
+        manifest = Path(args.manifest) if args.manifest else default_manifest_path()
+        files = universe_files(root, manifest, args.group, start, end)
+        rows = build_panel(files, spec, start, end)
+        write_panel_parquet(rows, spec, Path(args.out))
+    except (BarTableError, HistEtlError, duckdb.Error, OSError) as exc:
+        print(f"bar_tables: {exc}", file=sys.stderr)
+        return 2
+    symbols = len({row.symbol for row in rows})
+    ranked = len({row.symbol for row in rows if row.volume_rank is not None})
+    print(
+        f"bar_tables\twrote\t{len(rows)}\trows\t{symbols}\tsymbols\t"
+        f"{ranked}\tever ranked\t{args.out}"
+    )
     return 0
 
 
@@ -255,11 +299,15 @@ def _funding_tilt_options(
     return counts, baseline
 
 
-def _date_ms(value: str, flag: str) -> int:
+def _date(value: str, flag: str) -> date:
     try:
-        day = date.fromisoformat(value)
+        return date.fromisoformat(value)
     except ValueError as exc:
         raise BarTableError(f"{flag} must be a YYYY-MM-DD date: {value}") from exc
+
+
+def _date_ms(value: str, flag: str) -> int:
+    day = _date(value, flag)
     return int(datetime(day.year, day.month, day.day, tzinfo=UTC).timestamp() * 1000)
 
 
@@ -298,4 +346,24 @@ def _parser() -> argparse.ArgumentParser:
         help="The rate each funding_tilt_<K> is measured from (baseline - mean).",
     )
     trend.add_argument("--out", required=True, help="Output Parquet path.")
+    panel = sub.add_parser(
+        "panel",
+        help="Daily cross-sectional panel of a hist_etl binance_universe entry.",
+    )
+    panel.add_argument("--root", help="Archive root. Defaults to HIST_ARCHIVES_ROOT.")
+    panel.add_argument(
+        "--manifest", help="hist_etl manifest. Defaults to config/hist_etl/datasets.toml."
+    )
+    panel.add_argument("--group", required=True, help="binance_universe id, e.g. bn-um-usdt-1d.")
+    panel.add_argument("--start", required=True, help="First daily bar's open date, UTC.")
+    panel.add_argument("--end", required=True, help="Exclusive end date, UTC.")
+    panel.add_argument("--lookbacks", required=True, help="Comma-separated return lookbacks, days.")
+    panel.add_argument("--vol-window", type=int, required=True, help="Realized vol window, days.")
+    panel.add_argument(
+        "--volume-window", type=int, required=True, help="Trailing quote volume window, days."
+    )
+    panel.add_argument(
+        "--funding-window", type=int, required=True, help="Trailing funding mean window, days."
+    )
+    panel.add_argument("--out", required=True, help="Output Parquet path.")
     return parser

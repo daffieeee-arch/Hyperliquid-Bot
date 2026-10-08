@@ -42,6 +42,7 @@ from research.hist_etl.planning import next_month, previous_month
 
 _MISSING_SHOWN: Final = 10
 _HOUR_MS: Final = 3_600_000
+_RELISTING_GAP_MS: Final = 27 * DAY_MS
 
 
 @dataclass(frozen=True, slots=True)
@@ -259,9 +260,9 @@ def _check_funding_runs(
         series = settlements.get(run.symbol, [])
         own = [item for item in series if opens < item.ts + SETTLEMENT_SLACK_MS <= high]
         following = next((item for item in series if item.ts + SETTLEMENT_SLACK_MS > high), None)
-        # Only the next day's settlement continues this run; a later one
-        # belongs to a relisting, months away.
-        if following is not None and following.ts > high + DAY_MS:
+        # Runs are at least a whole month apart, so a settlement that far
+        # after the window belongs to a relisting, not to this run.
+        if following is not None and following.ts > high + _RELISTING_GAP_MS:
             following = None
         if own:
             starts = {ts for ts in _start_dues(own[0], opens) if not _late_start_ok(run, ts)}

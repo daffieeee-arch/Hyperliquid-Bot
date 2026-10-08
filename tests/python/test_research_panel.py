@@ -863,3 +863,8 @@ def test_an_unknown_group_or_bad_window_is_refused(
     bad[bad.index("--vol-window") + 1] = "1"
     assert main(bad) == 2
     assert "two daily returns" in capsys.readouterr().err
+    early = [*args]
+    early[early.index("--start") + 1] = "0005-01-01"
+    early[early.index("--lookbacks") + 1] = "3650"
+    assert main(early) == 2
+    assert "bar_tables:" in capsys.readouterr().err

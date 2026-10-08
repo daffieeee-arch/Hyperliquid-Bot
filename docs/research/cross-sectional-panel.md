@@ -37,7 +37,7 @@ of latency.
 | `vol_<W>d` | Sample stdev of the last `W` daily log returns; empty unless positive |
 | `qv_<V>d` | Mean quote volume over `V` days, untraded days counting as 0 |
 | `funding_<K>d` | Mean daily `funding_rate` over `K` covered days |
-| `volume_rank` | Rank by `qv_<V>d` among the day's complete rows; 1 is the largest |
+| `volume_rank` | Rank by `qv_<V>d` among the day's rows that traded and have it; 1 is the largest |
 
 ## Point-in-time rules
 
@@ -56,12 +56,11 @@ of latency.
   no window spans it.
 - **Funding days.** A settlement belongs to the day whose `(ts - 1 day, ts]`
   holds its time plus a minute, so one stamped just before midnight counts
-  for the day it opens. `funding_covered` is judged at the close, from
-  settlements up to it: the day's consecutive settlements are at most the
-  longer of their intervals apart (plus a minute), the one before the first
-  was due by the open, and the next one is due after the close by the last
-  one's interval. A hole late on one day does not mark the next day. A day
-  that goes from 8h to 4h funding is covered.
+  for the day it opens. `funding_covered` is judged at the close from the
+  day's own settlements: consecutive ones are at most the longer of their
+  interval labels apart (plus a minute), the first one's label reaches back
+  to the open, and the last one's past the close. A hole on the day before
+  does not change it. A day that goes from 8h to 4h funding is covered.
   - **Limitation:** Binance's interval label is sometimes the hours since
     the previous settlement and sometimes the new setting (TRBUSDT, GASUSDT
     and LOOMUSDT in 2023-10). On a day that returns from 4h to 8h, a missing
@@ -70,14 +69,15 @@ of latency.
     later settlement must not decide a feature. For the same reason, one
     settlement missing right where the interval shortens cannot be told
     from the switch itself, and is not caught.
-  - A settlement from before the previous day is not used to judge a day's
-    start, so the first day of a relisting is judged like a fresh listing,
-    whatever `start` the panel reads from.
-- **The universe comes from the rank, not from survival.** A row is complete
-  when it traded and has every feature. `volume_rank` orders the complete
-  rows of one day, ties going to the symbol that sorts first. A study takes
-  its universe per day from that rank, for example `volume_rank <= 50`, and
-  writes that rule into its pre-registration.
+  - Only the day's own settlements count, so the first day of a relisting
+    is judged like a fresh listing, whatever `start` the panel reads from.
+- **The universe comes from the rank, not from survival.** `volume_rank`
+  orders the rows of one day that traded and have `qv_<V>d`, ties going to
+  the symbol that sorts first. It needs no other feature, so the universe
+  never depends on another feature's data, funding included. A study takes
+  its universe per day from that rank, for example `volume_rank <= 50`,
+  requires the features it uses on top, and writes both rules into its
+  pre-registration.
 
 ## What fails the build
 

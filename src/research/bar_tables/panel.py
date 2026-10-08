@@ -84,11 +84,10 @@ class PanelRow:
       its time plus a minute, so one stamped just before midnight still
       counts for the day it opens.
     - ``funding_settlements``: how many settlements that is.
-    - ``funding_covered``: no settlement of the day is missing, judged from
-      each settlement's interval as hist_etl does: consecutive settlements
-      are at most the longer interval apart, the first follows the previous
-      day's last, and the next is due after the close. A day on which
-      Binance changes the interval (8h to 4h, say) is covered.
+    - ``funding_covered``: no settlement of the day is missing, judged at the
+      close from each settlement's interval label: the day's consecutive
+      settlements are at most the longer label apart, the first one's label
+      reaches back to the open, and the last one's reaches past the close.
     - ``returns``: the log return over each lookback, in the spec's order.
     - ``realized_vol``: the sample stdev of the window's daily log returns;
       ``None`` unless positive.
@@ -114,7 +113,15 @@ class PanelRow:
     volume_rank: int | None = None
 
     @property
+    def rankable(self) -> bool:
+        """Traded, with a trailing volume: what the volume universe needs."""
+
+        return self.traded and self.mean_quote_volume is not None
+
+    @property
     def complete(self) -> bool:
+        """Rankable and every feature present."""
+
         return (
             self.traded
             and all(value is not None for value in self.returns)
@@ -196,7 +203,11 @@ def build_symbol_rows(
 
 
 def rank_by_volume(rows: Sequence[PanelRow]) -> list[PanelRow]:
-    """Set ``volume_rank`` per day among complete rows: 1 is the largest volume.
+    """Set ``volume_rank`` per day among rankable rows: 1 is the largest volume.
+
+    The rank needs only trading and trailing volume, so the universe never
+    depends on a feature's data, funding included; a study requires the
+    features it uses on top.
 
     Ties go to the symbol that sorts first, so the rank is deterministic.
     Rows come back ordered by ``ts`` and then symbol.
@@ -212,7 +223,7 @@ def rank_by_volume(rows: Sequence[PanelRow]) -> list[PanelRow]:
         if len(set(symbols)) != len(symbols):
             raise BarTableError(f"A symbol appears twice on the day closing at {ts}.")
         eligible = sorted(
-            (row for row in day if row.complete),
+            (row for row in day if row.rankable),
             key=lambda row: (-_known(row.mean_quote_volume), row.symbol),
         )
         ranks = {row.symbol: position for position, row in enumerate(eligible, start=1)}
@@ -265,14 +276,8 @@ def _daily_funding(
         while probe < len(settlements) and _day_time(settlements[probe]) <= bar.ts:
             probe += 1
         day = settlements[cursor:probe]
-        before = settlements[cursor - 1] if cursor else None
-        # A settlement from before the previous day says nothing about this
-        # one's start (a relisting, or a hole that already counted), and must
-        # not make coverage depend on how far back the panel reads.
-        if before is not None and _day_time(before) <= opens - DAY_MS:
-            before = None
         rate = math.fsum(item.rate for item in day) if day else None
-        result.append(_FundingDay(rate, len(day), _covered(day, before, opens, bar.ts)))
+        result.append(_FundingDay(rate, len(day), _covered(day, opens, bar.ts)))
     return result
 
 
@@ -280,27 +285,31 @@ def _day_time(settlement: Settlement) -> int:
     return settlement.ts + SETTLEMENT_SLACK_MS
 
 
-def _covered(day: Sequence[Settlement], before: Settlement | None, opens: int, closes: int) -> bool:
-    """No settlement due by the close is missing, judged at the close.
+def settlement_day_close(moment: int) -> int:
+    """The close of the day a settlement stamped at ``moment`` belongs to."""
 
-    Consecutive settlements of the day are at most the longer of their
-    intervals apart. The settlement before the first was due by the open,
-    judged with the longer label of the first and the previous day's last,
-    and the next is due after the close by the last one's interval.
+    shifted = moment + SETTLEMENT_SLACK_MS
+    return shifted - shifted % DAY_MS + DAY_MS - 1
+
+
+def _covered(day: Sequence[Settlement], opens: int, closes: int) -> bool:
+    """No settlement due inside the day is missing, judged at the close.
+
+    The day's consecutive settlements are at most the longer of their labels
+    apart, the first one's label reaches back to the open, and the last
+    one's past the close. Only the day's own settlements count, so neither a
+    hole on the day before nor how far back the panel reads changes it.
     Binance's interval label is the hours since the previous settlement or
-    the new setting, so a day that returns from
-    4h to 8h funding can read as short a settlement: the close cannot tell
-    yet, and a later settlement must not decide it. ``funding_hole_closes``
-    judges holes with the whole series instead.
+    the new setting, so a day that returns from 4h to 8h funding can read
+    as short a settlement: the close cannot tell yet, and a later settlement
+    must not decide it. ``funding_hole_closes`` judges holes with the whole
+    series instead.
     """
 
     if not day:
         return False
     first, last = day[0], day[-1]
-    # The settlement before the first was due by the open; a hole before
-    # that belongs to an earlier day.
-    lead = max(first.interval_hours, before.interval_hours if before else 0)
-    if first.ts - lead * _HOUR_MS + SETTLEMENT_SLACK_MS > opens:
+    if first.ts - first.interval_hours * _HOUR_MS + SETTLEMENT_SLACK_MS > opens:
         return False
     if last.ts + last.interval_hours * _HOUR_MS + SETTLEMENT_SLACK_MS <= closes:
         return False
@@ -328,8 +337,7 @@ def funding_hole_closes(settlements: Sequence[Settlement]) -> set[int]:
         step = min(earlier.interval_hours, later.interval_hours) * _HOUR_MS
         due = earlier.ts + max(earlier.interval_hours, later.interval_hours) * _HOUR_MS
         while due + SETTLEMENT_SLACK_MS < later.ts:
-            shifted = due + SETTLEMENT_SLACK_MS
-            closes.add(shifted - shifted % DAY_MS + DAY_MS - 1)
+            closes.add(settlement_day_close(due))
             due += step
     return closes
 

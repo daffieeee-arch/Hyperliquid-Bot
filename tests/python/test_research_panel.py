@@ -449,7 +449,8 @@ def test_the_cli_writes_the_panel_with_delisted_symbols(tmp_path: Path) -> None:
         ]
         counts = connection.execute(
             "SELECT symbol, count(*), sum(CASE WHEN traded THEN 1 ELSE 0 END), "
-            "count(volume_rank), bool_and(available_ts = ts) "
+            "count(volume_rank), count(*) FILTER (WHERE traded AND ret_7d IS NOT NULL "
+            "AND vol_5d IS NOT NULL AND funding_3d IS NOT NULL), bool_and(available_ts = ts) "
             "FROM read_parquet(?) GROUP BY symbol ORDER BY symbol",
             [str(out)],
         ).fetchall()
@@ -477,16 +478,17 @@ def test_the_cli_writes_the_panel_with_delisted_symbols(tmp_path: Path) -> None:
         "funding_3d",
         "volume_rank",
     ]
-    # DEADUSDT ranks from its eighth traded day (Jan 17) to Jan 23, its last
-    # with three covered funding days; Jan 10 and Jan 24 are partial.
-    # NEWUSDT ranks from Jan 27, its eighth day.
+    # A symbol ranks once it traded with five days of volume: DEADUSDT from
+    # Jan 14 to its last traded day, Jan 24; NEWUSDT from Jan 24.
+    # Every feature is there from the eighth traded day; for DEADUSDT up to
+    # Jan 23, its last with three covered funding days.
     assert counts == [
-        ("AAAUSDT", 90, 90, 83, True),
-        ("DEADUSDT", 22, 15, 7, True),
-        ("NEWUSDT", 71, 71, 64, True),
+        ("AAAUSDT", 90, 90, 86, 83, True),
+        ("DEADUSDT", 22, 15, 11, 7, True),
+        ("NEWUSDT", 71, 71, 67, 64, True),
     ]
-    # The 7-day return first exists on day 8.
-    assert first_ranked == (_FIRST_CLOSE + 7 * DAY_MS,)
+    # The 5-day volume first exists on day 5.
+    assert first_ranked == (_FIRST_CLOSE + 4 * DAY_MS,)
     assert sorted(path.name for path in tmp_path.iterdir()) == ["config", "panel.parquet", "root"]
 
 

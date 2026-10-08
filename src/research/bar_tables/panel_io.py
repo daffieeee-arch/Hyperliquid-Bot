@@ -31,6 +31,7 @@ from research.bar_tables.panel import (
     build_symbol_rows,
     funding_hole_closes,
     rank_by_volume,
+    settlement_day_close,
 )
 from research.bar_tables.trend import SETTLEMENT_SLACK_MS, BarTableError
 from research.hist_etl.binance_convert import binance_parquet_path
@@ -147,8 +148,7 @@ def _month_files(
             month = previous_month(month)
         while month <= last:
             path = binance_parquet_path(root, spec, f"{month.year:04d}-{month.month:02d}")
-            # hist_etl writes the sidecar last; a file without one is not its output.
-            if path.is_file() and path.with_name(path.name + ".sources.json").is_file():
+            if _synced(path):
                 files.append(path)
             else:
                 missing.append(path)
@@ -157,7 +157,7 @@ def _month_files(
             # The settlement after the window gives the interval at its end;
             # its month may not be published yet, so it is optional.
             path = binance_parquet_path(root, spec, f"{month.year:04d}-{month.month:02d}")
-            if path.is_file() and path.with_name(path.name + ".sources.json").is_file():
+            if _synced(path):
                 files.append(path)
     return tuple(sorted(set(files))), tuple(runs), sorted(set(missing))
 
@@ -205,6 +205,11 @@ def _check_kline_runs(bars: dict[str, list[DailyBar]], runs: Sequence[Run]) -> N
             )
         first_allowed = _close_ms(_month_end(run.first)) if run.late_start else low
         if inside[0] > first_allowed:
+            if run.late_start:
+                raise BarTableError(
+                    f"{run.symbol} has no daily bar in its listing month {run.first:%Y-%m}; "
+                    "run hist_etl verify and sync."
+                )
             raise BarTableError(_missing_day(run.symbol, low - DAY_MS))
         last_allowed = _close_ms(date(run.last.year, run.last.month, 1)) if run.early_end else high
         if inside[-1] < last_allowed:
@@ -276,22 +281,21 @@ def _edge_holes(
         step = first.interval_hours * _HOUR_MS
         due = first.ts - step
         while due + SETTLEMENT_SLACK_MS > opens:
-            holes.add(_day_close(due))
+            holes.add(settlement_day_close(due))
             due -= step
     if not run.early_end:
         step = max(last.interval_hours, following.interval_hours if following else 0) * _HOUR_MS
         due = last.ts + step
         while due + SETTLEMENT_SLACK_MS <= high:
-            holes.add(_day_close(due))
+            holes.add(settlement_day_close(due))
             due += step
     return holes
 
 
-def _day_close(moment: int) -> int:
-    """The close of the day a settlement at ``moment`` belongs to."""
+def _synced(path: Path) -> bool:
+    """hist_etl writes the sidecar last; a file without one is not its output."""
 
-    shifted = moment + SETTLEMENT_SLACK_MS
-    return shifted - shifted % DAY_MS + DAY_MS - 1
+    return path.is_file() and path.with_name(path.name + ".sources.json").is_file()
 
 
 def _same_month(left: date, right: date) -> bool:

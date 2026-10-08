@@ -33,7 +33,9 @@ income by at most the horizon's worth of that rate; ``forced_exits`` counts
 such positions. A symbol that does not trade on the fill day is not
 opened, and its leg is spread over the names that filled. A period with a
 leg short of ``min_names_per_leg`` names, at the decision or at the fill,
-is skipped.
+is skipped. After a skip at the decision the next decision is the next
+day; after a skip at the fill it is the fill day, when the non-fill is
+known, so no decision is placed with a later day's knowledge.
 
 With funding declared, a traded day without any rate that a position could
 hold fails the run closed when the window holding it is first scored,
@@ -105,6 +107,13 @@ class _Position:
 
 
 @dataclass(frozen=True, slots=True)
+class _Skipped:
+    """A period not taken: at the decision (no orders sent) or at the fill."""
+
+    at_fill: bool
+
+
+@dataclass(frozen=True, slots=True)
 class _Held:
     value: float
     paid: float
@@ -125,10 +134,12 @@ class PanelSource:
     _ranked: dict[int, list[tuple[float, int]]] = field(default_factory=dict, init=False)
     # The windows whose held days were audited for funding.
     _audited: set[tuple[int, int]] = field(default_factory=set, init=False)
+    _universe_size: int = field(init=False)
 
     def __post_init__(self) -> None:
         if self.spec.portfolio is None:
             raise HarnessError("invariant", "PanelSource needs a portfolio spec.")
+        self._universe_size = self.spec.portfolio.universe_size
         if (self.spec.costs.funding_column is None) != (self.panel.funding is None):
             raise HarnessError("invariant", "The panel's funding does not match the spec.")
         if (self.panel.funding is None) != (self.panel.covered is None):
@@ -215,9 +226,10 @@ class PanelSource:
         while (period := next_period(decision, latency, config.horizon_bars, end)) is not None:
             entry, exit_index = period
             positions = self._positions(quantile, decision, entry)
-            if positions is None:
+            if isinstance(positions, _Skipped):
                 stats += PeriodStats(0, 1, 0, 0, 0)
-                decision += 1
+                # A non-fill is known on the fill day, not before.
+                decision = entry if positions.at_fill else decision + 1
                 continue
             period_gross = 0.0
             period_paid = 0.0
@@ -256,14 +268,16 @@ class PanelSource:
             weights=(1.0,) * len(gross),
         )
 
-    def _positions(self, quantile: Fraction, decision: int, entry: int) -> list[_Position] | None:
-        """The period's positions, or None when it is skipped."""
+    def _positions(
+        self, quantile: Fraction, decision: int, entry: int
+    ) -> list[_Position] | _Skipped:
+        """The period's positions, or why it is skipped."""
 
         portfolio = self.portfolio
         eligible = self._eligible(decision)
         names = leg_size(len(eligible), quantile)
         if names < portfolio.min_names_per_leg:
-            return None
+            return _Skipped(at_fill=False)
         if self.spec.direction == "signed" and 2 * names > len(eligible):
             # The spec caps a signed quantile at one half; a wider one would
             # put a name in both legs.
@@ -280,7 +294,7 @@ class PanelSource:
         long_filled = [symbol for symbol in long_leg if self._fills(symbol, decision, entry)]
         short_filled = [symbol for symbol in short_leg if self._fills(symbol, decision, entry)]
         if len(long_filled) < floor or (short_leg and len(short_filled) < floor):
-            return None
+            return _Skipped(at_fill=True)
         capital = 0.5 if short_leg else 1.0
         positions = [_Position(symbol, 1, capital / len(long_filled)) for symbol in long_filled]
         positions.extend(
@@ -310,7 +324,7 @@ class PanelSource:
         return (
             panel.traded[symbol][day] is True
             and rank is not None
-            and rank <= self.portfolio.universe_size
+            and rank <= self._universe_size
             and panel.signals[symbol][day] is not None
         )
 

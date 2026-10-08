@@ -269,6 +269,7 @@ def test_planted_cross_section_passes_h1(tmp_path: Path) -> None:
     assert validation["forced_exits"] == 0 and validation["skipped_decisions"] == 0
     assert "holdout" in config
     benchmark = _mapping(document["benchmark"])
+    assert benchmark["method"] is None
     assert _mapping(benchmark["validation"])["status"] == "not_applicable"
     markdown = (tmp_path / "out" / "result.md").read_text(encoding="utf-8")
     assert "## Portfolio" in markdown and "rank at most 12, at least 2 names per leg" in markdown
@@ -844,6 +845,27 @@ def test_the_funding_audit_covers_the_scored_windows_only(tmp_path: Path) -> Non
         row if not (row[0] == 40 and row[1] == _SYMBOLS[0]) else (*row[:7], None) for row in rows
     ]
     assert _run_panel(tmp_path / "held", held, body)["failure_kind"] == "funding"
+
+
+def test_a_period_skipped_at_the_fill_is_followed_by_a_decision_on_the_fill_day() -> None:
+    spec = _four_symbol_spec(
+        costs={"fee_bps": 2.0, "slippage_bps": 1.0, "spread_bps": 1.0, "latency_bars": 2}
+    )
+    panel = _table(
+        symbols=["A", "B", "C", "D"],
+        prices=[[100.0] * 6] * 4,
+        traded=[[True] * 6, [True] * 6, [True, True, False, True, True, True]] * 1
+        + [[True, True, False, True, True, True]],
+        signals=[[2.0] * 6, [1.0] * 6, [-1.0] * 6, [-2.0] * 6],
+    )
+    source = PanelSource(spec, panel)
+    series = source.window(_config(0.5, 2), 0, 6)
+    # Day 0's short leg cannot fill on day 2, which is known on day 2 only:
+    # the next decision is day 2, whose exit (day 6) falls outside the
+    # window, so no period is taken. A decision on day 1 would have been
+    # placed with day 2's knowledge.
+    assert series.gross == ()
+    assert source.stats[("c", 0, 6)].skipped_decisions == 1
 
 
 def test_a_signed_quantile_above_one_half_cannot_be_scored() -> None:

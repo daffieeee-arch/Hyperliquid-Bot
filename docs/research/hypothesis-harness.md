@@ -174,8 +174,10 @@ configs:
 - **Period**: decided on one day of the date axis, filled `latency_bars`
   days later at that day's close, exited `horizon_bars` days after the fill.
   The next decision is the exit day, so periods do not overlap, like a bar
-  series' trades. A validation period never reads a holdout close. The
-  rank and the traded flag are the decision day's own close, so
+  series' trades. After a period skipped at the decision the next decision
+  is the next day; after one skipped at the fill it is the fill day, when
+  the non-fill is known. A validation period never reads a holdout close.
+  The rank and the traded flag are the decision day's own close, so
   `latency_bars` must be at least 1 unless `allow_zero_latency` is set.
 - **Universe and legs**: on the decision day the universe is every symbol
   that traded, has a rank at most `universe_size` and a known signal;
@@ -258,8 +260,8 @@ configs:
   not one row); the fingerprint's `row_count` is the rows read. Each
   config reports its `quantile`
   and a null `threshold` (a bar series reports the reverse). The
-  buy-and-hold benchmark does not apply: both windows report
-  `not_applicable`.
+  buy-and-hold benchmark does not apply: the `benchmark` block's `method`
+  is null and both windows report `not_applicable`.
 - **Nulls and ranks**: price, the traded flag, the symbol and every
   feature's clock must be present on every row; a rank is at least 1 and
   unique on its day. The signal, rank and funding may be null

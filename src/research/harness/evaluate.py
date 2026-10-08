@@ -841,24 +841,14 @@ def held_funding(
     paid: list[float] = []
     received: list[float] = []
     for price, rate in zip(prices, rates, strict=True):
-        day_paid, day_received = funding_flow(side, rate, price, entry_price)
-        paid.append(day_paid)
-        received.append(day_received)
+        # A long pays a positive rate and a short receives it, on the
+        # notional at the settlement's close.
+        flow = -side * rate * price / entry_price
+        if flow < 0.0:
+            paid.append(-flow)
+        else:
+            received.append(flow)
     return math.fsum(paid), math.fsum(received)
-
-
-def funding_flow(side: int, rate: float, price: float, entry_price: float) -> tuple[float, float]:
-    """One settlement's (paid, received) per unit of entry notional, both >= 0.
-
-    A long pays a positive rate and a short receives it, on the notional at
-    the settlement's close; this one formula serves bar trades and panel
-    positions alike.
-    """
-
-    flow = -side * rate * price / entry_price
-    if flow < 0.0:
-        return -flow, 0.0
-    return 0.0, flow
 
 
 def _side(value: float, threshold: float, direction: str) -> int:

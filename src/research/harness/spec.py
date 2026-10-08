@@ -690,9 +690,7 @@ def _parse_features(raw: Json, data: DataSpec) -> tuple[FeatureSpec, ...]:
     return tuple(features)
 
 
-def _parse_configs(
-    raw: Json, *, panel: bool = False, signed: bool = True
-) -> tuple[ConfigSpec, ...]:
+def _parse_configs(raw: Json, *, panel: bool, signed: bool) -> tuple[ConfigSpec, ...]:
     if not isinstance(raw, list) or not raw:
         raise SpecError("configs must be a non-empty list.")
     knob = "quantile" if panel else "threshold"

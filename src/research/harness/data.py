@@ -449,7 +449,7 @@ def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Pa
         row_timestamps.append(timestamp)
         row_symbols.append(_as_str(row[at.symbol.index], at.symbol.name, row_index))
     timestamps = sorted(set(row_timestamps))
-    _audit_clock(timestamps, data.max_gap)
+    _audit_clock(timestamps, data.max_gap, axis=True)
     _audit_even_axis(timestamps)
     symbols = sorted(set(row_symbols))
     if len(symbols) > _PANEL_MAX_SYMBOLS:
@@ -561,8 +561,8 @@ def _audit_even_axis(timestamps: list[int]) -> None:
         if timestamps[index] - timestamps[index - 1] != step:
             raise IntegrityError(
                 "gap",
-                f"Panel date axis is not evenly spaced at row {index}: a day off the grid "
-                "would give every other symbol a day without a row.",
+                f"Panel date axis is not evenly spaced at {timestamps[index]}: a day off the "
+                "grid would give every other symbol a day without a row.",
             )
 
 
@@ -604,17 +604,20 @@ def _as_bool(value: object, column: str, row_index: int) -> bool:
     return value
 
 
-def _audit_clock(timestamps: list[int], max_gap: int) -> None:
+def _audit_clock(timestamps: list[int], max_gap: int, *, axis: bool = False) -> None:
+    """Bar rows in order without holes; ``axis`` names a panel's date axis instead of rows."""
+
     for index in range(1, len(timestamps)):
         delta = timestamps[index] - timestamps[index - 1]
+        where = f"date axis day {index} ({timestamps[index]})" if axis else f"row {index}"
         if delta == 0:
-            raise IntegrityError("duplicate", f"Duplicate timestamp at row {index}.")
+            raise IntegrityError("duplicate", f"Duplicate timestamp at {where}.")
         if delta < 0:
-            raise IntegrityError("order", f"Timestamp moves backwards at row {index}.")
+            raise IntegrityError("order", f"Timestamp moves backwards at {where}.")
         if delta > max_gap:
             raise IntegrityError(
                 "gap",
-                f"Gap {delta} exceeds max_gap {max_gap} at row {index}. Rows are not zero-filled.",
+                f"Gap {delta} exceeds max_gap {max_gap} at {where}. Rows are not zero-filled.",
             )
 
 

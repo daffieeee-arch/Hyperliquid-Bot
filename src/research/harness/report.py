@@ -229,7 +229,8 @@ def completed_document(
         "primary_config_id": decision.primary_config_id,
         "holdout": _holdout_json(decision),
         "benchmark": {
-            "method": "buy_and_hold",
+            # A panel has no buy-and-hold; its windows say not applicable.
+            "method": "buy_and_hold" if portfolio is None else None,
             "validation": _window_json(benchmark.validation),
             "holdout": _window_json(benchmark.holdout),
         },

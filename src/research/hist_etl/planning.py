@@ -189,6 +189,25 @@ def _first_monday_on_or_after(day: date) -> date:
     return day + timedelta(days=(7 - day.weekday()) % 7)
 
 
+def latest_published_month(today: date) -> date:
+    """First day of the newest month whose monthly archive is due by ``today``."""
+
+    month = date(today.year, today.month, 1)
+    while not _monthly_published(month, today):
+        month = _previous_month(month)
+    return month
+
+
+def next_month(month: date) -> date:
+    return _next_month(month)
+
+
+def _previous_month(month: date) -> date:
+    if month.month == 1:
+        return date(month.year - 1, 12, 1)
+    return date(month.year, month.month - 1, 1)
+
+
 def _monthly_published(month: date, today: date) -> bool:
     return today >= _first_monday_on_or_after(_next_month(month))
 

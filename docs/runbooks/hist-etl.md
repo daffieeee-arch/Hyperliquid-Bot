@@ -70,7 +70,7 @@ series key. Conflicting duplicates fail. Parquet is one file per month, under
 a tree the legacy converter does not use:
 
 ```text
-parquet/hist_etl/binance/{spot|um}/{klines_1m|klines_1h|aggtrades|funding|mark_klines_1m|index_klines_1m|premium_klines_1m|metrics}/SYMBOL-YYYY-MM.parquet
+parquet/hist_etl/binance/{spot|um}/{klines_1m|klines_1h|klines_1d|aggtrades|funding|mark_klines_1m|index_klines_1m|premium_klines_1m|metrics}/SYMBOL-YYYY-MM.parquet
 ```
 
 A month file that already exists without a `.sources.json` sidecar, or whose
@@ -100,6 +100,82 @@ PYTHONPATH=src uv run --frozen python -m research.hist_etl plan \
 Metrics are daily-only. Funding is monthly-only. Metrics samples are treated
 as a 5-minute grid. Funding holes are gaps larger than the row's
 `funding_interval_hours`.
+
+## Binance USD-M universe
+
+Cross-sectional studies need every contract that traded at each date, not the
+ones that trade today: a universe drawn from today's listings leaves out the
+contracts that died (LUNAUSDT, SRMUSDT, FTTUSDT) and is survivorship-biased.
+Binance Vision keeps the archives of delisted contracts, and the S3 bucket
+behind it lists them.
+
+`universe` writes that list as a new, dated JSON file. It needs no archive
+root and no manifest:
+
+```bash
+PYTHONPATH=src uv run --frozen python -m research.hist_etl universe \
+  --today 2026-10-08 \
+  --out config/hist_etl/universe/binance-um-usdt-1d-2026-10-08.json
+```
+
+- It lists `data/futures/um/monthly/klines/` and `.../fundingRate/` with the
+  public ListObjects (v1) XML of
+  `s3-ap-northeast-1.amazonaws.com/data.binance.vision`. There are no
+  credentials and nothing is downloaded.
+- It keeps symbols that end with `--quote` (default `USDT`). Other quotes
+  and dated delivery contracts (`BTCUSDT_250926`) are skipped. A USDT name
+  the manifest cannot hold (not 2 to 20 of `A-Z0-9`, such as a Chinese
+  name) is recorded under `excluded` with the reason.
+- Per symbol, it records the runs of consecutive months with a monthly
+  `--interval` kline zip (default `1d`) and a monthly fundingRate zip.
+- `latest_month` is the newest month the planner expects by `as_of`. A
+  symbol whose last run reaches it is treated as still listed.
+- It never replaces an existing file; a refresh is a new dated file.
+- The regional endpoint now and then answers `NoSuchBucket` for this bucket
+  (about one listing in eight on 2026-10-08). That answer is retried up to
+  ten times; any other error fails the run with exit 2.
+- On 2026-10-08 it scanned 896 USDT names in about 25 minutes from a cloud
+  container. The rate is `--requests-per-second` (default 4).
+
+The manifest expands the committed file:
+
+```toml
+[[binance_universe]]
+id = "bn-um-usdt-1d"
+file = "universe/binance-um-usdt-1d-2026-10-08.json"  # below the manifest directory
+datasets = ["klines", "fundingRate"]                   # default: both
+# start = "2021-01-01"                                 # optional cut
+enabled = false
+```
+
+- Each symbol, dataset, and run becomes one Binance dataset, with id
+  `bn-um-usdt-1d-klines-btcusdt` or `bn-um-usdt-1d-funding-btcusdt`. A
+  relisted symbol's later runs add `-r2`, `-r3`.
+- A run that reaches `latest_month` keeps `end = "today"`, with a daily
+  kline tail. Any other run ends on the last day of its last month.
+- **Listing edges**: a run's first month may start late and a closed run's
+  last month may end early, because the contract was listed or delisted
+  then. Only those outer bars may be missing. A hole between two bars is
+  still a `kline_hole`. A `start` that cuts into a run removes that run's
+  late-start allowance, because the contract already traded on that date.
+- `--dataset bn-um-usdt-1d` selects every dataset of the entry, even while
+  it is disabled. A single id selects one.
+- Views follow the usual names, one per symbol: `hist_bn_um_btcusdt_klines_1d`
+  and `hist_bn_um_btcusdt_funding`. Universe funding months for BTCUSDT are
+  the same files the BTCUSDT funding datasets write.
+
+The file holds every symbol with archives. That includes index contracts
+(`BTCDOMUSDT`, `DEFIUSDT`) and later non-crypto contracts. The study chooses
+its universe point in time, for example the top N by trailing quote volume
+on each date, and writes that rule down in its pre-registration. It does not
+drop symbols by hand after seeing results.
+
+A full sync is VPS work: about 32,000 monthly zips (each with a checksum),
+small for 1d klines and funding. `plan` sends a HEAD for every archive it
+would download, and `sync` two GETs, at `requests_per_second` (2 by default).
+Raise it with `HIST_ETL_REQUESTS_PER_SECOND` for this one run. A contract
+delisted after `latest_month` stops publishing daily files, which `plan`
+reports as absent until a newer universe file replaces this one.
 
 ## Kraken OHLCVT
 

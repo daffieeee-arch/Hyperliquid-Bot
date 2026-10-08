@@ -51,6 +51,9 @@ KRAKEN_MINUTES_TO_SLUG: dict[int, str] = {
 
 USER_AGENT = "hyperliquid-bot-hist-etl/1"
 BINANCE_VISION_BASE = "https://data.binance.vision/"
+# The public S3 bucket behind data.binance.vision. Its ListObjects (v1) XML is
+# the only index of which symbols and months exist, delisted ones included.
+BINANCE_VISION_LISTING = "https://s3-ap-northeast-1.amazonaws.com/data.binance.vision"
 # Public info endpoint. fundingHistory needs no key and no account.
 HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info"
 # REST requests share 1200 weight per minute per IP. An info request weighs 20,
@@ -97,6 +100,13 @@ class BinanceSpec:
     end_token: str
     granularity: str
     enabled: bool
+    # The universe entry that expanded into this series; --dataset selects it.
+    group: str | None = None
+    # Listing edges: the first (or last) month may start late (or end early),
+    # because the contract was listed (or delisted) that month. Only those
+    # outer bars may be absent; a hole between two bars is still a gap.
+    open_start: bool = False
+    open_end: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,6 +150,8 @@ class HistManifest:
     binance: tuple[BinanceSpec, ...]
     kraken: tuple[KrakenSpec, ...]
     hyperliquid: tuple[HyperliquidFundingSpec, ...] = ()
+    # Ids of binance_universe entries; each selects the specs it expanded into.
+    binance_groups: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

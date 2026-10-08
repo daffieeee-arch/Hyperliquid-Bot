@@ -137,9 +137,9 @@ stated so the reader can judge their weight:
   thresholds therefore also dropped the configs that market would punish.
   The reason given above is the real one, but the choice was not blind to
   that market.
-- **More was looked at than the four configs.** Six threshold and hold
-  combinations and two funding windows were counted before the grid was
-  fixed. The deflated Sharpe ratio counts only the four pre-registered
+- **More was looked at than the four configs.** Eight threshold and hold
+  combinations and two funding windows were counted, and a first-draft grid
+  was replaced, before the grid was fixed. The deflated Sharpe ratio counts only the four pre-registered
   configs as trials, so it deflates less than the full search would.
 - **A first draft of the grid held for 1 day.** Review pointed out that a
   1-day hold on a 7-day signal mostly re-buys the same position every day at
@@ -206,9 +206,11 @@ Proceed only if all of these hold:
    holdout is one pre-selected config, so there is no Holm step there.
 2. **Annualized Sharpe**: the holdout net Sharpe at 1.0× is ≥ 0.5, as
    `sharpe_per_trade × sqrt(trades / 1.748)`, with the selected config's
-   holdout trade count and the holdout's length in years.
+   holdout trade count and 1.748 = 15,312 / 8,760, the holdout in 365-day
+   years.
 3. **Overfitting**: the deflated Sharpe ratio is ≥ 0.95 and the PBO is
-   ≤ 0.5.
+   ≤ 0.5, both as the harness reports them, on validation net returns at
+   1.0×.
 4. **Not carry alone**: the selected config's holdout gross mean per trade
    (the price return, before costs and funding) is > 0. The hypothesis is
    that crowding unwinds in price. A pass that rests only on funding
@@ -218,10 +220,16 @@ Proceed only if all of these hold:
    test on data after 2026-09-30 before any PAPER strategy design, not
    straight to one.
 
+The harness's `promotion_decision` is not this decision. It says
+`paper_candidate` on rule 1 alone; rules 2 to 5 are applied in the results
+document, and a `paper_candidate` that fails any of them is not acted on.
+
 A selected config with too few holdout trades (`not_enough_data`) is not a
-pass and not a refutation. Holdout funding sat near neutral, so the `far`
-configs, which trade only below 0 or above 0.0002, may trade little there.
-That outcome also leads to the forward test, with nothing re-tuned.
+pass and not a refutation; it also leads to the forward test, with nothing
+re-tuned. Holdout funding averaged about 0.000038 per 8h, below neutral and
+just above 0. The `near` configs are then likely to sit long for much of a
+falling holdout. The `far` configs go long only below 0 and short only above
+0.0002, so they may trade little there.
 
 Otherwise this family stops on BTC:
 
@@ -278,12 +286,15 @@ export STUDY_DIR=...            # must not exist yet; outside the repository
   git rev-parse HEAD > "$STUDY_DIR/commit.txt"
   # Bytecode only from a fresh folder: no cached .pyc from the checkout runs.
   export PYTHONPYCACHEPREFIX="$STUDY_DIR/pycache"
-  # Exit 2 is normal while the current month is open. Any missing or broken
-  # archive inside the range fails the fingerprint check below.
+  # Exit 2 (a reported gap) is normal while the current month is open; any
+  # other failure stops here. A missing or broken archive inside the range
+  # fails the fingerprint check below.
+  status=0
   PYTHONPATH=src uv run --frozen python -m research.hist_etl sync \
     --dataset bn-um-btcusdt-klines-1h-2020 --dataset bn-um-btcusdt-klines-1h \
     --dataset bn-um-btcusdt-funding-2020 --dataset bn-um-btcusdt-funding \
-    2>&1 | tee "$STUDY_DIR/sync.log" || true
+    2>&1 | tee "$STUDY_DIR/sync.log" || status=$?
+  test "$status" -eq 0 || test "$status" -eq 2
   cp docs/experiments/exp_funding_btc.spec.yaml "$STUDY_DIR/spec.yaml"
   PYTHONPATH=src uv run --frozen python -m research.bar_tables trend \
     --symbol BTCUSDT --start 2020-01-01 --end 2026-10-01 \

@@ -276,10 +276,13 @@ PYTHONPATH=src uv run --frozen python -m research.bar_tables trend \
   positive when longs paid less than the baseline, so under
   `direction: signed` a positive threshold goes long when funding is low and
   short when it is high. A settlement that lands exactly on a close counts
-  for that bar. The mean may reach back before the first output bar, so the
-  funding read must hold `K` settlements by then, with no gap above
-  `--max-funding-gap-hours` between them. Without the two options the table
-  is unchanged.
+  for that bar. The mean may reach back before the first output bar; the
+  funding read reaches back too. The settlements any mean reads must share
+  one `funding_interval_hours` (a missing value reads as 8, as in hist_etl),
+  since one baseline cannot fit 8h and 4h rates, and none may be missing:
+  each must follow the last within that interval plus a minute. Older
+  settlements no mean reads are not checked. Without the two options the
+  table is unchanged.
 - `available_ts`, equal to `ts`. Every value uses closes and settlements at or
   before its bar, so a spec reading it needs `latency_bars >= 1`.
 

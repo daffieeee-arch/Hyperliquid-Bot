@@ -19,6 +19,10 @@ import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from itertools import pairwise
+from typing import Final
+
+# hist_etl's own continuity rule: settlements may drift up to a minute late.
+SETTLEMENT_SLACK_MS: Final = 60_000
 
 
 class BarTableError(Exception):
@@ -49,6 +53,7 @@ def build_trend_rows(
     max_funding_gap_ms: int,
     funding_means: Sequence[int] = (),
     funding_baseline: float = 0.0,
+    funding_intervals_ms: Sequence[int] = (),
 ) -> list[TrendRow]:
     """Rows from ``(close_ts_ms, close)`` bars and ``(settle_ts_ms, rate)`` funding.
 
@@ -62,10 +67,14 @@ def build_trend_rows(
       ``funding_baseline`` minus the mean of the last ``K`` settlements at or
       before the bar's close. Settlements before the first output bar count,
       so the funding read must reach back ``K`` settlements without a gap.
+      ``funding_intervals_ms`` gives each settlement's interval; the
+      settlements a mean reads must share one, with none missing.
     """
 
     _check_parameters(lookbacks, vol_window, bar_ms, max_funding_gap_ms)
-    _check_funding_means(funding_means, funding_baseline)
+    check_funding_means(funding_means, funding_baseline)
+    if funding_means and len(funding_intervals_ms) != len(funding):
+        raise BarTableError("Funding tilts need one settlement interval per settlement.")
     warmup = max(max(lookbacks), vol_window)
     if len(closes) <= warmup:
         raise BarTableError(f"Need more than {warmup} bars for the warm-up; got {len(closes)}.")
@@ -78,10 +87,10 @@ def build_trend_rows(
     per_bar = _bucket_funding(settled, [ts for ts, _close in closes], start=warmup)
     tilts = _funding_tilts(
         funding,
+        funding_intervals_ms,
         [ts for ts, _close in closes[warmup:]],
         funding_means,
         funding_baseline,
-        max_funding_gap_ms,
     )
     rows: list[TrendRow] = []
     for index in range(warmup, len(closes)):
@@ -106,7 +115,7 @@ def build_trend_rows(
     return rows
 
 
-def _check_funding_means(funding_means: Sequence[int], baseline: float) -> None:
+def check_funding_means(funding_means: Sequence[int], baseline: float) -> None:
     if any(count < 1 for count in funding_means):
         raise BarTableError("Funding mean counts must be positive settlement counts.")
     if len(set(funding_means)) != len(funding_means):
@@ -117,32 +126,51 @@ def _check_funding_means(funding_means: Sequence[int], baseline: float) -> None:
 
 def _funding_tilts(
     funding: Sequence[tuple[int, float]],
+    intervals_ms: Sequence[int],
     closes: Sequence[int],
     funding_means: Sequence[int],
     baseline: float,
-    max_gap: int,
 ) -> list[tuple[float, ...]]:
     """``baseline - mean`` of the last ``K`` settlements at or before each close.
 
-    Only the settlements some mean reads are checked for gaps: from the
-    oldest one the first output bar needs through the last close.
+    Only the settlements some mean reads are checked: from the oldest one the
+    first output bar needs through the last close. They must share one
+    interval, since one baseline cannot fit 8h and 4h rates alike, and each
+    must follow the last within that interval (plus hist_etl's minute of
+    slack), so a missing settlement never stretches a mean.
     """
 
     if not funding_means:
         return [() for _ in closes]
-    known = [entry for entry in funding if entry[0] <= closes[-1]]
+    known = [
+        (ts, rate, interval)
+        for (ts, rate), interval in zip(funding, intervals_ms, strict=True)
+        if ts <= closes[-1]
+    ]
     if any(later[0] <= earlier[0] for earlier, later in pairwise(known)):
         raise BarTableError("Funding settlements must be strictly increasing in time.")
     longest = max(funding_means)
-    first = sum(1 for ts, _rate in known if ts <= closes[0])
+    first = sum(1 for ts, _rate, _interval in known if ts <= closes[0])
     if first < longest:
         raise BarTableError(
             f"Only {first} funding settlements at or before {closes[0]}; "
             f"a mean over {longest} needs that many."
         )
     needed = known[first - longest :]
-    _check_funding(needed, needed[0][0], closes[-1], max_gap)
-    rates = [rate for _ts, rate in known]
+    intervals = sorted({interval for _ts, _rate, interval in needed})
+    if len(intervals) != 1 or intervals[0] < 1:
+        raise BarTableError(f"Funding tilts need one settlement interval; found {intervals} ms.")
+    for ts, rate, _interval in needed:
+        if not math.isfinite(rate):
+            raise BarTableError(f"Funding rate at {ts} is not a finite number.")
+    edges = [ts for ts, _rate, _interval in needed] + [closes[-1]]
+    for earlier, later in pairwise(edges):
+        if later - earlier > intervals[0] + SETTLEMENT_SLACK_MS:
+            raise BarTableError(
+                f"No funding settlement between {earlier} and {later}; "
+                f"the interval is {intervals[0]} ms."
+            )
+    rates = [rate for _ts, rate, _interval in known]
     # The means change only when a settlement arrives, so compute each once.
     by_count: dict[int, tuple[float, ...]] = {}
     tilts: list[tuple[float, ...]] = []

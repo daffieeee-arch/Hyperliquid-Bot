@@ -158,6 +158,7 @@ def test_funding_tilts_read_only_settlements_known_at_the_close() -> None:
         max_funding_gap_ms=3 * _HOUR,
         funding_means=(1, 3),
         funding_baseline=0.0001,
+        funding_intervals_ms=[2 * _HOUR] * len(funding),
     )
     # Rows are bars 4..11. Bar 4 knows the settlements at bars 0, 2 and 4;
     # bar 5 still only those, and bar 6 adds the one at its own close.
@@ -179,16 +180,22 @@ def test_funding_tilts_fail_closed_without_enough_or_continuous_settlements() ->
     closes = _closes(prices)
     funding = [(closes[2 * index][0], 0.0001) for index in range(6)]
 
-    def build(entries: list[tuple[int, float]], means: tuple[int, ...]) -> list[TrendRow]:
+    def build(
+        entries: list[tuple[int, float]],
+        means: tuple[int, ...],
+        intervals: list[int] | None = None,
+        max_gap: int = 3 * _HOUR,
+    ) -> list[TrendRow]:
         return build_trend_rows(
             closes,
             entries,
             lookbacks=(4,),
             vol_window=3,
             bar_ms=_HOUR,
-            max_funding_gap_ms=3 * _HOUR,
+            max_funding_gap_ms=max_gap,
             funding_means=means,
             funding_baseline=0.0,
+            funding_intervals_ms=[2 * _HOUR] * len(entries) if intervals is None else intervals,
         )
 
     # Bar 4 knows three settlements; a mean over four cannot be formed yet.
@@ -204,6 +211,17 @@ def test_funding_tilts_fail_closed_without_enough_or_continuous_settlements() ->
         build(funding, (2, 2))
     with pytest.raises(BarTableError, match="positive settlement counts"):
         build(funding, (0,))
+    # A missing settlement is measured against the interval, not the looser
+    # max gap: 4h between 2h settlements fails even with a 9h max gap.
+    with pytest.raises(BarTableError, match="the interval is 7200000 ms"):
+        build(gapped, (2,), max_gap=9 * _HOUR)
+    # The settlements a mean reads must share one interval; an older one may differ.
+    mixed = [3 * _HOUR] + [2 * _HOUR] * 5
+    assert len(build(funding, (2,), mixed)) == 8
+    with pytest.raises(BarTableError, match="one settlement interval"):
+        build(funding, (3,), mixed)
+    with pytest.raises(BarTableError, match="one settlement interval per settlement"):
+        build(funding, (1,), [2 * _HOUR])
 
 
 def test_the_cli_writes_a_harness_ready_table(tmp_path: Path) -> None:
@@ -324,10 +342,11 @@ def test_the_cli_adds_funding_tilt_columns_only_when_asked(tmp_path: Path) -> No
             [str(klines / "BTCUSDT-2020-01.parquet")],
         )
         # Settlements from 2019-12-31 00:00, 8 hours apart; i * 0.0001 each.
+        # A missing interval reads as 8 hours, as in hist_etl.
         connection.execute(
             "COPY (SELECT make_timestamp(1577750400000000 + i * 28800000000) AS calc_time, "
-            "8 AS funding_interval_hours, 0.0001 * i AS last_funding_rate "
-            "FROM range(10) t(i)) TO ? (FORMAT PARQUET)",
+            "CASE WHEN i = 4 THEN NULL ELSE 8 END::INTEGER AS funding_interval_hours, "
+            "0.0001 * i AS last_funding_rate FROM range(10) t(i)) TO ? (FORMAT PARQUET)",
             [str(funding / "BTCUSDT-2020-01.parquet")],
         )
     finally:
@@ -360,7 +379,7 @@ def test_the_cli_adds_funding_tilt_columns_only_when_asked(tmp_path: Path) -> No
     lone = tmp_path / "lone.parquet"
     assert main([*base, "--funding-means", "1", "--out", str(lone)]) == 2
     assert not lone.exists()
-    # A change of settlement interval inside the read fails closed.
+    # A 4h settlement among the 8h ones a mean reads fails closed.
     connection = duckdb.connect()
     try:
         connection.execute(
@@ -373,3 +392,7 @@ def test_the_cli_adds_funding_tilt_columns_only_when_asked(tmp_path: Path) -> No
     mixed = tmp_path / "mixed.parquet"
     assert main([*base, *tilt, "--out", str(mixed)]) == 2
     assert not mixed.exists()
+    # Counts are checked before they size any read.
+    bad = tmp_path / "bad.parquet"
+    assert main([*base, "--funding-means", "-5", "--funding-baseline", "0", "--out", str(bad)]) == 2
+    assert not bad.exists()

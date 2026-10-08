@@ -86,7 +86,8 @@ def universe_files(
 
     try:
         manifest = load_manifest(manifest_path)
-    except HistEtlError as exc:
+    except (HistEtlError, ValueError) as exc:
+        # tomllib's decode error is a ValueError.
         raise BarTableError(f"Manifest: {exc}") from exc
     if group not in manifest.binance_groups:
         raise BarTableError(f"{group} is not a binance_universe entry of {manifest_path}.")
@@ -152,6 +153,12 @@ def _month_files(
             else:
                 missing.append(path)
             month = next_month(month)
+        if spec.dataset == "fundingRate" and (spec.end is None or month <= spec.end):
+            # The settlement after the window gives the interval at its end;
+            # its month may not be published yet, so it is optional.
+            path = binance_parquet_path(root, spec, f"{month.year:04d}-{month.month:02d}")
+            if path.is_file() and path.with_name(path.name + ".sources.json").is_file():
+                files.append(path)
     return tuple(sorted(set(files))), tuple(runs), sorted(set(missing))
 
 
@@ -231,12 +238,8 @@ def _check_funding_runs(
     for run in runs:
         opens = _close_ms(run.first) - DAY_MS
         high = _close_ms(run.last)
-        own = [
-            item
-            for item in settlements.get(run.symbol, [])
-            if opens < item.ts + SETTLEMENT_SLACK_MS <= high
-        ]
         series = settlements.get(run.symbol, [])
+        own = [item for item in series if opens < item.ts + SETTLEMENT_SLACK_MS <= high]
         following = next((item for item in series if item.ts + SETTLEMENT_SLACK_MS > high), None)
         holes = funding_hole_closes(own) | _edge_holes(run, own, following, opens, high)
         # A window that is all listing month (or all delisting month) may
@@ -261,24 +264,34 @@ def _edge_holes(
 ) -> set[int]:
     """Days at the window's edges on which a settlement was due but is missing.
 
-    The settlement after the window, when there is one, gives the interval
-    at the end too, as in the interior.
+    Like the interior, every due day is marked. The settlement after the
+    window, when loaded, gives the interval at the end.
     """
 
     if not own:
         return set()
     holes: set[int] = set()
     first, last = own[0], own[-1]
-    if (
-        not run.late_start
-        and first.ts - first.interval_hours * _HOUR_MS + SETTLEMENT_SLACK_MS > opens
-    ):
-        holes.add(_close_ms(run.first))
-    interval = max(last.interval_hours, following.interval_hours if following else 0)
-    due = last.ts + interval * _HOUR_MS + SETTLEMENT_SLACK_MS
-    if not run.early_end and due <= high:
-        holes.add(due - due % DAY_MS + DAY_MS - 1)
+    if not run.late_start:
+        step = first.interval_hours * _HOUR_MS
+        due = first.ts - step
+        while due + SETTLEMENT_SLACK_MS > opens:
+            holes.add(_day_close(due))
+            due -= step
+    if not run.early_end:
+        step = max(last.interval_hours, following.interval_hours if following else 0) * _HOUR_MS
+        due = last.ts + step
+        while due + SETTLEMENT_SLACK_MS <= high:
+            holes.add(_day_close(due))
+            due += step
     return holes
+
+
+def _day_close(moment: int) -> int:
+    """The close of the day a settlement at ``moment`` belongs to."""
+
+    shifted = moment + SETTLEMENT_SLACK_MS
+    return shifted - shifted % DAY_MS + DAY_MS - 1
 
 
 def _same_month(left: date, right: date) -> bool:
@@ -326,6 +339,8 @@ def _read_settlements(files: Sequence[Path]) -> dict[str, list[Settlement]]:
     )
     settlements: dict[str, list[Settlement]] = defaultdict(list)
     for symbol, ts, rate, hours in rows:
+        if ts is None or rate is None:
+            raise BarTableError(f"{symbol} has a funding settlement with an empty time or rate.")
         settlements[_str(symbol)].append(
             Settlement(ts=_int(ts), rate=_float(rate), interval_hours=_int(hours))
         )
@@ -353,6 +368,8 @@ def write_panel_parquet(rows: Sequence[PanelRow], spec: PanelSpec, out: Path) ->
         f"'{name}': '{kinds.get(name, 'BIGINT' if name in integers else 'DOUBLE')}'"
         for name in names
     )
+    if any(len(row.returns) != len(spec.lookbacks) for row in rows):
+        raise BarTableError("Each panel row needs one return per lookback of the spec.")
     out.parent.mkdir(parents=True, exist_ok=True)
     descriptor, name = tempfile.mkstemp(dir=out.parent, prefix=f"{out.name}.", suffix=".csv")
     os.close(descriptor)

@@ -602,6 +602,59 @@ def test_a_listing_month_window_may_end_before_the_first_settlement(tmp_path: Pa
     assert main(_panel_args(root, manifest, tmp_path / "panel.parquet", end="2026-02-01")) == 0
 
 
+def test_a_window_ending_on_a_return_to_eight_hours_is_not_a_hole(tmp_path: Path) -> None:
+    root, manifest = _universe_root(tmp_path)
+    # Feb 28 runs 4h funding to 16:00; Mar 1 opens with an 8h settlement.
+    directory = root / "parquet" / "hist_etl" / "binance" / "um" / "funding"
+    feb = directory / "AAAUSDT-2026-02.parquet"
+    feb_open_us = (date(2026, 2, 1) - date(1970, 1, 1)).days * 86_400_000_000
+    last_day_us = feb_open_us + 27 * 86_400_000_000
+    connection = duckdb.connect()
+    try:
+        target = "'" + str(feb).replace("'", "''") + "'"
+        connection.execute(
+            "COPY (SELECT make_timestamp(? + i * 28800000000) AS calc_time, 8 AS "
+            "funding_interval_hours, 0.0001 AS last_funding_rate, 'AAAUSDT' AS symbol "
+            "FROM range(0, 81) t(i) UNION ALL SELECT make_timestamp(? + h * 3600000000), 4, "
+            f"0.0001, 'AAAUSDT' FROM unnest([0, 4, 8, 12, 16]) t(h)) TO {target} (FORMAT PARQUET)",
+            [feb_open_us, last_day_us],
+        )
+    finally:
+        connection.close()
+    assert main(_panel_args(root, manifest, tmp_path / "panel.parquet", end="2026-03-01")) == 0
+
+
+def test_an_edge_gap_is_caught_past_an_untraded_day(
+    tmp_path: Path, capsys: CaptureFixture[str]
+) -> None:
+    root, manifest = _universe_root(tmp_path)
+    # Funding stops after Mar 10; Mar 11 has no trades, Mar 12 on trade again.
+    _write_month(root, "funding", "AAAUSDT", "2026-03", range(1, 11))
+    directory = root / "parquet" / "hist_etl" / "binance" / "um" / "klines_1d"
+    march = directory / "AAAUSDT-2026-03.parquet"
+    connection = duckdb.connect()
+    try:
+        source = "'" + str(march).replace("'", "''") + "'"
+        connection.execute(
+            f"COPY (SELECT * REPLACE (CASE WHEN day(ts) = 11 THEN 0 ELSE trade_count END "
+            f"AS trade_count) FROM read_parquet({source})) TO {source[:-1]}.tmp' (FORMAT PARQUET)"
+        )
+    finally:
+        connection.close()
+    Path(f"{march}.tmp").replace(march)
+    assert main(_panel_args(root, manifest, tmp_path / "panel.parquet")) == 2
+    assert (
+        "AAAUSDT traded on 2026-03-12 with a funding settlement missing" in capsys.readouterr().err
+    )
+
+
+def test_a_malformed_manifest_is_reported(tmp_path: Path, capsys: CaptureFixture[str]) -> None:
+    root, manifest = _universe_root(tmp_path)
+    manifest.write_text("[[binance_universe]\n", encoding="utf-8")
+    assert main(_panel_args(root, manifest, tmp_path / "panel.parquet")) == 2
+    assert "Manifest:" in capsys.readouterr().err
+
+
 def test_a_start_inside_a_listing_month_needs_no_bar_on_it(tmp_path: Path) -> None:
     root, manifest = _universe_root(tmp_path)
     args = _panel_args(root, manifest, tmp_path / "panel.parquet")

@@ -106,8 +106,9 @@ Nothing is written when any of these fail:
   edges of a run's window, funding may start late only in its listing month
   and stop early only in its delisting month, like the bars; elsewhere,
   including the end of a still-published run, a late start or early stop
-  is a hole. The settlement after the window, when loaded, gives the
-  interval at the end. A window that lies wholly in a listing (or
+  is a hole, on every day a settlement was due. The funding file of the
+  month after the window is read when it exists, so the settlement after
+  the window gives the interval at its end. A window that lies wholly in a listing (or
   delisting) month may hold no settlement at all. Untraded days are not checked, because delisted contracts
   carry default-rate funding.
 - The funding file of the month before the first month is needed too, when

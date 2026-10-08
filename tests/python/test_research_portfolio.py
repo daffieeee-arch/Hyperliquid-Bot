@@ -868,6 +868,33 @@ def test_a_period_skipped_at_the_fill_is_followed_by_a_decision_on_the_fill_day(
     assert source.stats[("c", 0, 6)].skipped_decisions == 1
 
 
+def test_a_hole_in_the_holdout_fails_the_run_without_a_selected_config(tmp_path: Path) -> None:
+    body = _spec_body(funding=True)
+    rows = [(*row[:7], 0.0) for row in _noise_rows(300, seed=7)]
+    assert _run_panel(tmp_path / "whole", rows, body)["label"] == "no_edge"
+    # Holdout_bars 60 of 300 days: day 270 is in the holdout, which noise
+    # never reaches through selection; the audit of the split still does.
+    holed = [
+        row if not (row[0] == 270 and row[1] == _SYMBOLS[0]) else (*row[:7], None) for row in rows
+    ]
+    assert _run_panel(tmp_path / "holed", holed, body)["failure_kind"] == "funding"
+
+
+def test_the_funding_audit_skips_a_symbol_that_cannot_fill() -> None:
+    # A is in the universe on day 0 but does not trade on the fill day 1, so
+    # no position holds it; its missing rate on day 2 is harmless.
+    spec = _four_symbol_spec(funding=True)
+    panel = _table(
+        symbols=["A", "B"],
+        prices=[[100.0] * 5, [100.0] * 5],
+        traded=[[True, False, True, True, True], [True] * 5],
+        ranks=[[1, 7, 7, 7, 7], [2] * 5],
+        signals=[[1.0] * 5, [-1.0] * 5],
+        funding=[[0.0, 0.0, None, 0.0, 0.0], [0.0] * 5],
+    )
+    PanelSource(spec, panel).window(_config(0.5, 2), 0, 5)
+
+
 def test_a_signed_quantile_above_one_half_cannot_be_scored() -> None:
     spec = _four_symbol_spec()
     panel = _table(

@@ -565,21 +565,17 @@ def _column_ref(raw: dict[str, Json], key: str) -> str:
 def _parse_data(raw: dict[str, Json]) -> DataSpec:
     backend = raw.get("backend")
     symbol_column = traded_column = rank_column = None
-    if backend == "panel":
-        _exact(
-            raw,
-            _DATA_KEYS | {"parquet_path", "symbol_column", "traded_column", "rank_column"},
-            "data",
+    if backend in {"panel", "parquet"}:
+        panel_keys = (
+            {"symbol_column", "traded_column", "rank_column"} if backend == "panel" else set()
         )
+        _exact(raw, _DATA_KEYS | {"parquet_path"} | panel_keys, "data")
         parquet_path = _relative_path(_require_str(raw["parquet_path"], "data.parquet_path", 240))
         view = None
-        symbol_column = _column_ref(raw, "symbol_column")
-        traded_column = _column_ref(raw, "traded_column")
-        rank_column = _column_ref(raw, "rank_column")
-    elif backend == "parquet":
-        _exact(raw, _DATA_KEYS | {"parquet_path"}, "data")
-        parquet_path = _relative_path(_require_str(raw["parquet_path"], "data.parquet_path", 240))
-        view = None
+        if backend == "panel":
+            symbol_column = _column_ref(raw, "symbol_column")
+            traded_column = _column_ref(raw, "traded_column")
+            rank_column = _column_ref(raw, "rank_column")
     elif backend == "duckdb":
         _exact(raw, _DATA_KEYS | {"view"}, "data")
         view = _identifier(_require_str(raw["view"], "data.view", 64), _VIEW_NAME, "data.view")

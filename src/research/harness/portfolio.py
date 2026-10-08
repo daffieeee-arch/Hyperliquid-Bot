@@ -38,9 +38,10 @@ day; after a skip at the fill it is the fill day, when the non-fill is
 known, so no decision is placed with a later day's knowledge.
 
 With funding declared, a traded day without any rate that a position could
-hold fails the run closed when the window holding it is first scored,
-before any config's positions are read, so the outcome is a property of
-the panel, the spec's grid and the windows, not of which config trades:
+hold fails the run closed before any window is scored (``audit_split``
+audits every window of the split; a window scored on its own is audited
+first), so the outcome is a property of the panel, the spec's grid and the
+windows, not of which config trades or is selected:
 the panel keeps such days only outside its funding runs, and a study's
 range must not hold a position across one. A held day whose rate is there but
 not whole (``funding_covered`` false: at most one settlement missing, or
@@ -54,7 +55,7 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from fractions import Fraction
 
 from research.harness.data import PanelTable
@@ -68,35 +69,34 @@ from research.harness.spec import (
     exact_quantile,
     leg_size,
 )
+from research.harness.splits import walk_forward
 
 
 @dataclass(frozen=True, slots=True)
 class PeriodStats:
     """What one window's periods did, beyond their returns."""
 
-    periods: int
-    skipped_decisions: int
-    long_names: int
-    short_names: int
-    forced_exits: int
+    periods: int = 0
+    skipped_decisions: int = 0
+    long_names: int = 0
+    short_names: int = 0
+    forced_exits: int = 0
     # Held position-days whose funding was charged from a day not whole.
     uncovered_funding_days: int = 0
     # Held position-days of a halt without any rate, charged nothing.
     unfunded_halt_days: int = 0
 
     def __add__(self, other: PeriodStats) -> PeriodStats:
+        # Every counter sums, so a new one cannot be left out here.
         return PeriodStats(
-            periods=self.periods + other.periods,
-            skipped_decisions=self.skipped_decisions + other.skipped_decisions,
-            long_names=self.long_names + other.long_names,
-            short_names=self.short_names + other.short_names,
-            forced_exits=self.forced_exits + other.forced_exits,
-            uncovered_funding_days=self.uncovered_funding_days + other.uncovered_funding_days,
-            unfunded_halt_days=self.unfunded_halt_days + other.unfunded_halt_days,
+            **{
+                item.name: getattr(self, item.name) + getattr(other, item.name)
+                for item in fields(PeriodStats)
+            }
         )
 
 
-EMPTY_STATS = PeriodStats(0, 0, 0, 0, 0)
+EMPTY_STATS = PeriodStats()
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,12 +134,12 @@ class PanelSource:
     _ranked: dict[int, list[tuple[float, int]]] = field(default_factory=dict, init=False)
     # The windows whose held days were audited for funding.
     _audited: set[tuple[int, int]] = field(default_factory=set, init=False)
-    _universe_size: int = field(init=False)
+    _portfolio: PortfolioSpec = field(init=False)
 
     def __post_init__(self) -> None:
         if self.spec.portfolio is None:
             raise HarnessError("invariant", "PanelSource needs a portfolio spec.")
-        self._universe_size = self.spec.portfolio.universe_size
+        self._portfolio = self.spec.portfolio
         if (self.spec.costs.funding_column is None) != (self.panel.funding is None):
             raise HarnessError("invariant", "The panel's funding does not match the spec.")
         if (self.panel.funding is None) != (self.panel.covered is None):
@@ -189,7 +189,8 @@ class PanelSource:
                 if not self._in_universe(symbol, day):
                     continue
                 longest = next((h for h in horizons if day + latency + h < end), None)
-                if longest is not None:
+                # A symbol that cannot fill from this day never holds from it.
+                if longest is not None and self._fills(symbol, day, day + latency):
                     spans.append((day + latency + 1, day + latency + longest))
 
     @property
@@ -198,9 +199,24 @@ class PanelSource:
 
     @property
     def portfolio(self) -> PortfolioSpec:
-        if self.spec.portfolio is None:
-            raise HarnessError("invariant", "PanelSource needs a portfolio spec.")
-        return self.spec.portfolio
+        return self._portfolio
+
+    def audit_split(self) -> None:
+        """Audit the funding of every window the split will score, before any is.
+
+        The folds' test windows and the holdout are the windows a run
+        scores; auditing them here, rather than as each is first scored,
+        makes a hole in the holdout fail the run whether or not validation
+        selects a config to score on it.
+        """
+
+        if self.panel.funding is None:
+            return
+        folds, holdout = walk_forward(self.length, self.spec.split)
+        for start, end in (*((fold.test_start, fold.test_end) for fold in folds), holdout):
+            if (start, end) not in self._audited:
+                self._audit_window(self.panel.funding, start, end)
+                self._audited.add((start, end))
 
     def window(self, config: ConfigSpec, start: int, end: int) -> TradeSeries:
         """Non-overlapping periods decided inside ``[start, end)``.
@@ -227,9 +243,10 @@ class PanelSource:
             entry, exit_index = period
             positions = self._positions(quantile, decision, entry)
             if isinstance(positions, _Skipped):
-                stats += PeriodStats(0, 1, 0, 0, 0)
-                # A non-fill is known on the fill day, not before.
-                decision = entry if positions.at_fill else decision + 1
+                stats += PeriodStats(skipped_decisions=1)
+                # A non-fill is known on the fill day, not before; the
+                # decision always advances, at zero latency too.
+                decision = max(entry, decision + 1) if positions.at_fill else decision + 1
                 continue
             period_gross = 0.0
             period_paid = 0.0
@@ -324,7 +341,7 @@ class PanelSource:
         return (
             panel.traded[symbol][day] is True
             and rank is not None
-            and rank <= self._universe_size
+            and rank <= self._portfolio.universe_size
             and panel.signals[symbol][day] is not None
         )
 
@@ -359,8 +376,7 @@ class PanelSource:
         the day's close. A halt day without a rate, which the panel builder
         does not check, pays nothing and counts as unfunded; a traded day
         without one fails closed (the grid's configs were refused such a
-        day when the window holding it was first scored; another config
-        may reach further).
+        day when the window was audited; another config may reach further).
         """
 
         panel = self.panel

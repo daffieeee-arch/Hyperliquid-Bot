@@ -426,42 +426,12 @@ def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Pa
     clock_at = [(index_by_name[column], name) for column, name in clocks]
     required_at = tuple(index_by_name[name] for name in required)
     # First pass: the axes and every row-level check; second pass: the series.
-    # The parsed cells are kept, as references into the rows, for the second.
-    row_timestamps: list[int] = []
-    row_symbols: list[str] = []
-    for row_index, row in enumerate(rows):
-        if len(row) != len(data.columns):
-            raise IntegrityError("schema", f"Row {row_index} does not match the declared width.")
-        if any(row[index] is None for index in required_at):
-            raise IntegrityError(
-                "schema",
-                f"Row {row_index} has a null timestamp, symbol, price, traded flag or clock.",
-            )
-        timestamp = _as_int(row[at.timestamp.index], at.timestamp.name, row_index)
-        for index, feature_name in clock_at:
-            clock = _as_int(row[index], feature_name, row_index)
-            if clock > timestamp:
-                raise IntegrityError(
-                    "lookahead",
-                    f"Feature {feature_name} row {row_index} is available at {clock}, "
-                    f"after bar {timestamp}.",
-                )
-        row_timestamps.append(timestamp)
-        row_symbols.append(_as_str(row[at.symbol.index], at.symbol.name, row_index))
-    timestamps = sorted(set(row_timestamps))
-    _audit_clock(timestamps, data.max_gap, axis=True)
-    _audit_even_axis(timestamps)
-    symbols = sorted(set(row_symbols))
-    if len(symbols) > _PANEL_MAX_SYMBOLS:
-        raise IntegrityError("too_many_rows", f"Panel has more than {_PANEL_MAX_SYMBOLS} symbols.")
+    axes = _panel_axes(rows, at, clock_at, required_at, len(data.columns), data.max_gap)
+    timestamps = axes.timestamps
+    symbols = axes.symbols
     date_index = {timestamp: index for index, timestamp in enumerate(timestamps)}
     symbol_index = {symbol: index for index, symbol in enumerate(symbols)}
     width = len(timestamps)
-    if len(symbols) * width > _PANEL_MAX_CELLS:
-        raise IntegrityError(
-            "too_many_rows",
-            f"Panel spans {len(symbols)} symbols by {width} days, over {_PANEL_MAX_CELLS} cells.",
-        )
     prices: list[list[float | None]] = [[None] * width for _ in symbols]
     traded: list[list[bool | None]] = [[None] * width for _ in symbols]
     ranks: list[list[int | None]] = [[None] * width for _ in symbols]
@@ -477,8 +447,8 @@ def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Pa
     # A day's ranks are unique, so ``rank <= n`` is at most n symbols.
     rank_holder: list[dict[int, str]] = [{} for _ in timestamps]
     for row_index, row in enumerate(rows):
-        timestamp = row_timestamps[row_index]
-        symbol = row_symbols[row_index]
+        timestamp = axes.row_timestamps[row_index]
+        symbol = axes.row_symbols[row_index]
         column = date_index[timestamp]
         line = symbol_index[symbol]
         if prices[line][column] is not None:
@@ -504,7 +474,7 @@ def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Pa
         )
         if funding_cells is not None:
             funding_cells.read(row, row_index, line, column)
-    del rows, rank_holder, row_timestamps, row_symbols
+    del rows, rank_holder, axes
     return PanelTable(
         timestamps=tuple(timestamps),
         symbols=tuple(symbols),
@@ -515,6 +485,66 @@ def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Pa
         funding=None if funding_cells is None else _freeze(funding_cells.rates),
         covered=None if funding_cells is None else _freeze(funding_cells.flags),
     )
+
+
+@dataclass(frozen=True, slots=True)
+class _PanelAxes:
+    """The panel's date axis and symbols, with each row's parsed cell for the fill pass."""
+
+    timestamps: list[int]
+    symbols: list[str]
+    row_timestamps: list[int]
+    row_symbols: list[str]
+
+
+def _panel_axes(
+    rows: list[tuple[object, ...]],
+    at: _PanelColumns,
+    clock_at: list[tuple[int, str]],
+    required_at: tuple[int, ...],
+    row_width: int,
+    max_gap: int,
+) -> _PanelAxes:
+    """The first pass: every row-level check, then the axes and their caps.
+
+    The parsed timestamp and symbol of each row are kept, as references
+    into the rows, so the fill pass does not parse them again.
+    """
+
+    row_timestamps: list[int] = []
+    row_symbols: list[str] = []
+    for row_index, row in enumerate(rows):
+        if len(row) != row_width:
+            raise IntegrityError("schema", f"Row {row_index} does not match the declared width.")
+        if any(row[index] is None for index in required_at):
+            raise IntegrityError(
+                "schema",
+                f"Row {row_index} has a null timestamp, symbol, price, traded flag or clock.",
+            )
+        timestamp = _as_int(row[at.timestamp.index], at.timestamp.name, row_index)
+        for index, feature_name in clock_at:
+            clock = _as_int(row[index], feature_name, row_index)
+            if clock > timestamp:
+                raise IntegrityError(
+                    "lookahead",
+                    f"Feature {feature_name} row {row_index} is available at {clock}, "
+                    f"after bar {timestamp}.",
+                )
+        row_timestamps.append(timestamp)
+        row_symbols.append(_as_str(row[at.symbol.index], at.symbol.name, row_index))
+    timestamps = sorted(set(row_timestamps))
+    _audit_clock(timestamps, max_gap, axis=True)
+    _audit_even_axis(timestamps)
+    symbols = sorted(set(row_symbols))
+    if len(symbols) > _PANEL_MAX_SYMBOLS:
+        raise IntegrityError("too_many_rows", f"Panel has more than {_PANEL_MAX_SYMBOLS} symbols.")
+    if len(symbols) * len(timestamps) > _PANEL_MAX_CELLS:
+        raise IntegrityError(
+            "too_many_rows",
+            f"Panel spans {len(symbols)} symbols by {len(timestamps)} days, "
+            f"over {_PANEL_MAX_CELLS} cells.",
+        )
+    return _PanelAxes(timestamps, symbols, row_timestamps, row_symbols)
 
 
 def _freeze[T](series: list[list[T]]) -> tuple[tuple[T, ...], ...]:

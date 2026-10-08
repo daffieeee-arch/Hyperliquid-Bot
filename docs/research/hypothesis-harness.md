@@ -204,17 +204,18 @@ configs:
   funding, the panel declares one `role: covered` column (the panel's
   `funding_covered`).
   - A **traded** day with **no rate** that a position could hold fails
-    the run closed (`failure_kind: funding`) when a window (a fold's test
-    window, or the holdout) is first scored, before any config's
-    positions are read: for every decision day of the window the symbol
-    is in the universe (traded, rank at most `universe_size`, signal
-    known), the traded days from `latency_bars + 1` through `latency_bars
-    + horizon_bars` days after it need a rate, for the grid's longest
-    horizon whose exit stays inside the window, up to the next day
-    without a row. Warm-up days before the first fold are never decided
-    on, so a hole there is harmless. The outcome is thus a property of
-    the panel, the grid and the windows, not of which config's legs hold
-    the symbol. The panel builder
+    the run closed (`failure_kind: funding`) before any window is scored:
+    the run audits every fold's test window and the holdout up front. For
+    every decision day of a window the symbol is in the universe (traded,
+    rank at most `universe_size`, signal known) and can fill from (rows
+    through the fill day, traded on it), the traded days from
+    `latency_bars + 1` through `latency_bars + horizon_bars` days after it
+    need a rate, for the grid's longest horizon whose exit stays inside
+    the window, up to the next day without a row. Warm-up days before the
+    first fold are never decided on, so a hole there is harmless. The
+    outcome is thus a property of the panel, the grid and the split, not
+    of which config's legs hold the symbol nor of whether a config is
+    selected for the holdout. The panel builder
     fails on a funding hole inside a funding run, so this happens only on
     a traded day outside one (a listing month before funding starts, or
     trading after a funding archive ends); a study's panel range and

@@ -253,7 +253,9 @@ def _check_bars(symbol: str, bars: Sequence[DailyBar]) -> None:
             raise BarTableError(f"{symbol} bar at {bar.ts} does not close at the end of a UTC day.")
         if not (math.isfinite(bar.close) and bar.close > 0.0):
             raise BarTableError(f"{symbol} close at {bar.ts} is not a positive number.")
-        if not (math.isfinite(bar.quote_volume) and bar.quote_volume >= 0.0) or bar.trades < 0:
+        if not math.isfinite(bar.quote_volume):
+            raise BarTableError(f"{symbol} quote volume at {bar.ts} is not a number.")
+        if bar.quote_volume < 0.0 or bar.trades < 0:
             raise BarTableError(f"{symbol} volume or trade count at {bar.ts} is negative.")
 
 

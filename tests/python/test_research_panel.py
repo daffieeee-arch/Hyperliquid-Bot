@@ -291,6 +291,7 @@ def test_rank_orders_complete_rows_by_volume_per_day() -> None:
         [DailyBar(_FIRST_CLOSE, 0.0, 1.0, 1)],
         [DailyBar(_FIRST_CLOSE, math.nan, 1.0, 1)],
         [DailyBar(_FIRST_CLOSE, 1.0, -1.0, 1)],
+        [DailyBar(_FIRST_CLOSE, 1.0, math.nan, 1)],
     ],
 )
 def test_bad_bars_are_refused(bars: list[DailyBar]) -> None:
@@ -883,8 +884,8 @@ def test_an_unknown_group_or_bad_window_is_refused(
     bad[bad.index("--vol-window") + 1] = "1"
     assert main(bad) == 2
     assert "two daily returns" in capsys.readouterr().err
-    early = [*args]
-    early[early.index("--start") + 1] = "0005-01-01"
-    early[early.index("--lookbacks") + 1] = "3650"
-    assert main(early) == 2
-    assert "bar_tables:" in capsys.readouterr().err
+    for flag, value in (("--start", "0005-01-01"), ("--end", "9999-12-31")):
+        extreme = [*args]
+        extreme[extreme.index(flag) + 1] = value
+        assert main(extreme) == 2
+        assert "Panel dates must lie from 2000-01-01 to 2100-01-01" in capsys.readouterr().err

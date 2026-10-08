@@ -49,6 +49,8 @@ from research.hist_etl.manifest import default_manifest_path
 from research.hist_etl.models import INTERVAL_SECONDS, parquet_slug
 
 _HOUR_MS = 3_600_000
+_PANEL_FIRST_DAY = date(2000, 1, 1)
+_PANEL_LAST_DAY = date(2100, 1, 1)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -110,12 +112,17 @@ def _panel(args: argparse.Namespace) -> int:
         end = _date(args.end, "--end")
         if end <= start:
             raise BarTableError("--end must be after --start.")
+        # Binance archives start in 2017; the bounds keep warm-up and month
+        # arithmetic far from the ends of the calendar.
+        if start < _PANEL_FIRST_DAY or end > _PANEL_LAST_DAY:
+            raise BarTableError(
+                f"Panel dates must lie from {_PANEL_FIRST_DAY} to {_PANEL_LAST_DAY}."
+            )
         manifest = Path(args.manifest) if args.manifest else default_manifest_path()
         files = universe_files(root, manifest, args.group, start, end, spec)
         rows = build_panel(files, spec, start, end)
         write_panel_parquet(rows, spec, Path(args.out))
-    # OverflowError and ValueError come from date arithmetic on extreme dates.
-    except (BarTableError, HistEtlError, duckdb.Error, OSError, OverflowError, ValueError) as exc:
+    except (BarTableError, HistEtlError, duckdb.Error, OSError) as exc:
         print(f"bar_tables: {exc}", file=sys.stderr)
         return 2
     symbols = len({row.symbol for row in rows})

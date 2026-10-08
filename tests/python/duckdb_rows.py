@@ -39,7 +39,10 @@ def insert_rows(
         source = str(path).replace("'", "''")
         connection.execute(
             f"COPY {table} FROM '{source}' (FORMAT csv, HEADER false, DELIM ',', "
-            f"QUOTE '\"', ESCAPE '\"', NULLSTR '{_NULL}', AUTO_DETECT false)"
+            f"QUOTE '\"', ESCAPE '\"', NULLSTR '{_NULL}', AUTO_DETECT false, "
+            # The writer ends rows with \n; fixing it keeps a \r inside a
+            # quoted value from being taken for a row end.
+            "NEW_LINE '\\n')"
         )
 
 

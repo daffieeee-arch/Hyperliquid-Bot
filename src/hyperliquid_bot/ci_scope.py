@@ -21,11 +21,12 @@ skips the checks that read them.
 
 A draft pull request sets neither area: its heavy jobs run once it is marked
 ready for review (the workflows also trigger on ``ready_for_review``), so
-pushing work-in-progress commits costs no heavy CI. Only the first attempt of
-a run skips for a draft: a re-run replays the event payload it started with,
-so a re-run of a draft-era run after the PR is ready must not report skipped
-successes again. Pushes to main and any other event run everything. The
-secret scan always runs; it is not gated.
+pushing work-in-progress commits costs no heavy CI. The draft state is read
+live from the GitHub API, not from the event payload: a payload is a snapshot
+from when the event fired, so a late run of a draft-era push, or a re-run,
+would otherwise skip on a PR that is already ready. If the live state cannot
+be read, the PR is treated as ready and everything runs. Pushes to main and
+any other event run everything. The secret scan always runs; it is not gated.
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ import argparse
 import json
 import os
 import subprocess
+import urllib.request
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
@@ -75,7 +77,6 @@ PYTHON_BASENAME_PATTERNS: Final = (
     "uv.toml",
     "ruff.toml",
     ".ruff.toml",
-    "conftest.py",
     "pytest.ini",
     "mypy.ini",
     ".mypy.ini",
@@ -236,20 +237,44 @@ def classify_github_event(
     return classify_areas(changed)
 
 
-def pull_request_is_draft(event_path: str | None) -> bool:
-    """Whether the webhook payload at ``event_path`` is a draft pull request.
-
-    A missing or unreadable payload is not a draft, so CI runs in full.
-    """
+def pull_request_number(event_path: str | None) -> int | None:
+    """The pull request number in the webhook payload at ``event_path``, if any."""
 
     if not event_path:
-        return False
+        return None
     try:
         payload = json.loads(Path(event_path).read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return False
+        return None
     pull_request = payload.get("pull_request") if isinstance(payload, dict) else None
-    return isinstance(pull_request, dict) and pull_request.get("draft") is True
+    number = pull_request.get("number") if isinstance(pull_request, dict) else None
+    return number if isinstance(number, int) and not isinstance(number, bool) else None
+
+
+def live_draft_state(repository: str, number: int, token: str | None) -> bool | None:
+    """Whether the pull request is a draft now, read from the GitHub API.
+
+    None when the state cannot be read (no token, a network or HTTP error, an
+    unexpected body); the caller then runs everything.
+    """
+
+    if not token or "/" not in repository:
+        return None
+    request = urllib.request.Request(
+        f"https://api.github.com/repos/{repository}/pulls/{number}",
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            body = json.loads(response.read().decode("utf-8"))
+    except (OSError, ValueError):
+        return None
+    draft = body.get("draft") if isinstance(body, dict) else None
+    return draft if isinstance(draft, bool) else None
 
 
 def _write_output(handle: Path | None, key: str, value: bool | str) -> None:
@@ -266,9 +291,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.parse_args(argv)
     event_name = os.environ.get("GITHUB_EVENT_NAME", "")
     base_ref = os.environ.get("GITHUB_BASE_REF") or None
-    # A re-run (attempt 2 and up) replays the original payload; never skip it.
-    first_attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "1") == "1"
-    draft = first_attempt and pull_request_is_draft(os.environ.get("GITHUB_EVENT_PATH"))
+    draft = False
+    number = pull_request_number(os.environ.get("GITHUB_EVENT_PATH"))
+    if event_name == "pull_request" and number is not None:
+        live = live_draft_state(
+            os.environ.get("GITHUB_REPOSITORY", ""), number, os.environ.get("GITHUB_TOKEN")
+        )
+        if live is None:
+            print("draft state unavailable; treating the pull request as ready")
+        draft = live is True
     scope = classify_github_event(event_name=event_name, base_ref=base_ref, draft=draft)
     output_path = os.environ.get("GITHUB_OUTPUT")
     handle = Path(output_path) if output_path else None

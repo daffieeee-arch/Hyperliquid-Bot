@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -13,8 +15,9 @@ from hyperliquid_bot import ci_scope
 from hyperliquid_bot.ci_scope import (
     classify_areas,
     classify_github_event,
+    live_draft_state,
     path_areas,
-    pull_request_is_draft,
+    pull_request_number,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -150,35 +153,97 @@ def test_a_failed_diff_runs_everything(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "full CI" in scope.reason
 
 
-def test_draft_flag_is_read_from_the_event_payload(tmp_path: Path) -> None:
-    draft = tmp_path / "draft.json"
-    draft.write_text(json.dumps({"pull_request": {"draft": True}}), encoding="utf-8")
-    ready = tmp_path / "ready.json"
-    ready.write_text(json.dumps({"pull_request": {"draft": False}}), encoding="utf-8")
+def test_the_pull_request_number_is_read_from_the_event_payload(tmp_path: Path) -> None:
+    event = tmp_path / "event.json"
+    event.write_text(json.dumps({"pull_request": {"number": 139}}), encoding="utf-8")
     broken = tmp_path / "broken.json"
     broken.write_text("{", encoding="utf-8")
-    assert pull_request_is_draft(str(draft)) is True
-    assert pull_request_is_draft(str(ready)) is False
-    assert pull_request_is_draft(str(broken)) is False
-    assert pull_request_is_draft(str(tmp_path / "missing.json")) is False
-    assert pull_request_is_draft(None) is False
+    assert pull_request_number(str(event)) == 139
+    assert pull_request_number(str(broken)) is None
+    assert pull_request_number(str(tmp_path / "missing.json")) is None
+    assert pull_request_number(None) is None
+
+
+class _Response:
+    def __init__(self, body: bytes) -> None:
+        self.body = body
+
+    def __enter__(self) -> _Response:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return self.body
+
+
+def test_the_live_draft_state_fails_to_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    bodies = iter([b'{"draft": true}', b'{"draft": false}', b"not json", b'{"draft": "yes"}'])
+    seen: list[str] = []
+
+    def fake_urlopen(request: urllib.request.Request, timeout: float) -> _Response:
+        seen.append(request.full_url)
+        return _Response(next(bodies))
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    assert live_draft_state("o/r", 7, "token") is True
+    assert live_draft_state("o/r", 7, "token") is False
+    assert live_draft_state("o/r", 7, "token") is None
+    assert live_draft_state("o/r", 7, "token") is None
+    assert seen[0] == "https://api.github.com/repos/o/r/pulls/7"
+    assert live_draft_state("o/r", 7, None) is None
+
+    def failing_urlopen(request: urllib.request.Request, timeout: float) -> _Response:
+        raise urllib.error.URLError("unreachable")
+
+    monkeypatch.setattr(urllib.request, "urlopen", failing_urlopen)
+    assert live_draft_state("o/r", 7, "token") is None
+
+
+def _run_main(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    payload_draft: bool,
+    live: bool | None,
+) -> dict[str, str]:
+    event = tmp_path / "event.json"
+    event.write_text(
+        json.dumps({"pull_request": {"number": 139, "draft": payload_draft}}), encoding="utf-8"
+    )
+    output = tmp_path / "output.txt"
+    output.unlink(missing_ok=True)
+    monkeypatch.setattr(ci_scope, "_git_changed_paths", lambda base_ref: ["src/a.py"])
+    monkeypatch.setattr(ci_scope, "live_draft_state", lambda repository, number, token: live)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    monkeypatch.setenv("GITHUB_BASE_REF", "main")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    assert ci_scope.main([]) == 0
+    return dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
+
+
+def test_main_follows_the_live_draft_state_not_the_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def areas(payload_draft: bool, live: bool | None) -> tuple[str, str]:
+        written = _run_main(tmp_path, monkeypatch, payload_draft=payload_draft, live=live)
+        return written["python"], written["typescript"]
+
+    # A draft now: skip, whatever the payload said.
+    assert areas(payload_draft=False, live=True) == ("false", "false")
+    # Ready now, though the event fired while it was a draft (a late run or a re-run).
+    assert areas(payload_draft=True, live=False) == ("true", "false")
+    # The live state cannot be read: run as ready.
+    assert areas(payload_draft=True, live=None) == ("true", "false")
 
 
 def test_main_writes_the_outputs_the_workflows_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    event = tmp_path / "event.json"
-    event.write_text(json.dumps({"pull_request": {"draft": True}}), encoding="utf-8")
-    output = tmp_path / "output.txt"
-    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
-    monkeypatch.setenv("GITHUB_BASE_REF", "main")
-    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
-    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
-    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "1")
-    assert ci_scope.main([]) == 0
-    written = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
-    assert written["python"] == "false"
-    assert written["typescript"] == "false"
+    written = _run_main(tmp_path, monkeypatch, payload_draft=False, live=True)
     assert set(written) == {"python", "typescript", "reason"}
     # Every output a workflow job reads is one main() writes and the changes job exports.
     for workflow in sorted(WORKFLOWS.glob("*.yml")):
@@ -193,25 +258,10 @@ _CLASSIFIER_FILES = frozenset({"src/hyperliquid_bot/ci_scope.py", "tests/python/
 _SCANNED_TREES = ("tests", "src", "vertical_slices", "fit_gates", "scripts")
 
 
-def test_a_rerun_of_a_draft_run_does_not_skip(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # A re-run replays the draft-era payload; it must classify the diff instead.
-    event = tmp_path / "event.json"
-    event.write_text(json.dumps({"pull_request": {"draft": True}}), encoding="utf-8")
-    output = tmp_path / "output.txt"
-    monkeypatch.setattr(ci_scope, "_git_changed_paths", lambda base_ref: ["src/a.py"])
-    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
-    monkeypatch.setenv("GITHUB_BASE_REF", "main")
-    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
-    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
-    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "2")
-    assert ci_scope.main([]) == 0
-    written = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
-    assert (written["python"], written["typescript"]) == ("true", "false")
-
-
-_DOCS_LITERAL = re.compile(r"""["'](docs/[A-Za-z0-9_./-]+)["']""")
+_DOCS_LITERAL = re.compile(r"""["'](docs/[^"'\n]*)["']""")
+# Where a literal turns into a pattern or an f-string field, only the
+# directory before it is known.
+_DOCS_WILDCARD = re.compile(r"[{*?\[]")
 _DOCS_COMPONENT = re.compile(r"""["']docs["']((?:\s*/\s*["'][A-Za-z0-9_.-]+["'])*)""")
 
 
@@ -223,11 +273,20 @@ def _docs_reads_in(text: str) -> set[str]:
     covers, so the guard fails until the read is spelled out or covered.
     """
 
-    found = {match.group(1) for match in _DOCS_LITERAL.finditer(text)}
+    found = {_known_prefix(match.group(1)) for match in _DOCS_LITERAL.finditer(text)}
     for match in _DOCS_COMPONENT.finditer(text):
         parts = re.findall(r"""["']([A-Za-z0-9_.-]+)["']""", match.group(1))
         found.add("/".join(["docs", *parts]))
     return found
+
+
+def _known_prefix(path: str) -> str:
+    """The path up to its first wildcard or f-string field, cut back to a directory."""
+
+    wildcard = _DOCS_WILDCARD.search(path)
+    if wildcard is None:
+        return path
+    return path[: wildcard.start()].rsplit("/", 1)[0]
 
 
 def _docs_paths_read_by_python() -> set[str]:
@@ -253,5 +312,10 @@ def test_every_doc_python_code_reads_is_a_python_path() -> None:
 
 
 def test_the_docs_scan_sees_single_quotes_and_bare_components() -> None:
-    sample = "A = ROOT / 'docs' / 'RISK.md'\nDOCS = ROOT / \"docs\"\nB = \"docs/x/y.md\"\n"
-    assert _docs_reads_in(sample) == {"docs/RISK.md", "docs", "docs/x/y.md"}
+    sample = (
+        "A = ROOT / 'docs' / 'RISK.md'\nDOCS = ROOT / \"docs\"\nB = \"docs/x/y.md\"\n"
+        'C = f"docs/runbooks/data1{lane}.md"\nD = REPO.glob("docs/**/*.md")\n'
+        'E = f"docs/{name}.md"\n'
+    )
+    # The glob and the bare f-string field leave only docs/ itself known.
+    assert _docs_reads_in(sample) == {"docs/RISK.md", "docs", "docs/x/y.md", "docs/runbooks"}

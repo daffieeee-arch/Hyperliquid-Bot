@@ -15,6 +15,8 @@ _EDGE_ROWS: list[tuple[object, ...]] = [
     (3, float("-inf"), "it's\nnew", None, 5e-324),
     (9223372036854775807, 1.7976931348623157e308, "", True, 0.1 + 0.2),
     (-4, 100, "S1", False, 1),
+    (5, 1.5, "carriage\rreturn", True, 2.5),
+    (6, 2.5, "crlf\r\nline", False, 3.5),
 ]
 
 

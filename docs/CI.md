@@ -68,11 +68,14 @@ an area counts for that area too.
 **Draft pull requests** set neither flag: push work in progress to a draft
 PR without paying for heavy CI. Both workflows also trigger on
 `ready_for_review`, so marking the PR ready runs the full selection on the
-same head. Wait for that run before merging; a draft's skipped jobs report
-success. Only a run's first attempt skips for a draft: re-running a
-draft-era run replays its original payload, so the re-run classifies the
-diff instead. A PR marked ready with the Actions `GITHUB_TOKEN` starts no
-workflow run; mark it ready as a person or app, or push a commit.
+same head. The `changes` job reads the draft state live from the GitHub API
+(`pull-requests: read`), not from the event payload, so a late run of a
+draft-era push or a re-run cannot skip on a PR that is already ready; if the
+state cannot be read, the PR counts as ready. A draft's skipped jobs report
+success, so before merging confirm the latest run on the head ran its heavy
+steps (its `changes` job does not say draft). A PR marked ready with the
+Actions `GITHUB_TOKEN` starts no workflow run; mark it ready as a person or
+app, or push a commit.
 
 **Fail closed**: every gated job has `if: ${{ !cancelled() }}` and its steps
 run unless the flag is exactly `false`. If the `changes` job fails, its
@@ -97,9 +100,11 @@ under about half a second. Tests share no fixed paths, environment or ports
 (each worker is a process; use `tmp_path` and `monkeypatch`), so any other
 test may run in any worker in any order.
 
-Test fixtures that build DuckDB tables use `tests/python/duckdb_rows.py`
-(`insert_rows`): it loads rows through one CSV `COPY`, the same table as
-`executemany` in milliseconds instead of seconds.
+Test fixtures that build DuckDB tables of more than a few rows use
+`tests/python/duckdb_rows.py` (`insert_rows`): it loads rows through one CSV
+`COPY`, the same table as `executemany` in milliseconds instead of seconds,
+when each value's type matches its column. Small fixtures, and tables with
+BLOB columns, may keep `executemany`.
 
 ## Cockpit lint
 

@@ -20,6 +20,9 @@ jobs:
   changes:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       typescript: ${{ steps.scope.outputs.typescript }}
     steps:
@@ -33,6 +36,8 @@ jobs:
         id: scope
         env:
           PYTHONPATH: src
+          # Read-only: the live draft state of the pull request.
+          GITHUB_TOKEN: ${{ github.token }}
         run: python3 src/hyperliquid_bot/ci_scope.py
 
   first-paper-screen:

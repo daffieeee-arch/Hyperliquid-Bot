@@ -727,6 +727,37 @@ def test_a_traded_day_without_funding_in_reach_of_the_universe_fails_closed() ->
         PanelSource(spec, panel)
 
 
+def test_a_relisting_with_late_funding_after_the_gap_is_tolerated() -> None:
+    # A is in the universe on day 1, has no row on day 3 and comes back on
+    # day 4 without a rate: no position can hold across the gap, so the
+    # audit does not reach the new listing's first day.
+    spec = _four_symbol_spec(funding=True)
+    panel = _table(
+        symbols=["A", "B"],
+        prices=[[100.0, 100.0, 100.0, None, 100.0, 100.0, 100.0], [100.0] * 7],
+        ranks=[[1, 1, 1, None, 7, 7, 7], [2] * 7],
+        signals=[[1.0] * 7, [-1.0] * 7],
+        funding=[[0.0, 0.0, 0.0, None, None, 0.0, 0.0], [0.0] * 7],
+    )
+    PanelSource(spec, panel)
+
+
+def test_a_config_beyond_the_grid_still_fails_closed_on_a_held_day_without_a_rate() -> None:
+    spec = _four_symbol_spec(funding=True)
+    panel = _table(
+        symbols=["A", "B"],
+        prices=[[100.0] * 6, [100.0] * 6],
+        ranks=[[1, 7, 7, 7, 7, 7], [2] * 6],
+        signals=[[1.0] * 6, [-1.0] * 6],
+        funding=[[0.0, 0.0, 0.0, 0.0, None, 0.0], [0.0] * 6],
+    )
+    # A is in the universe on day 0 only; the grid's q50-h2 reaches day 3
+    # from it, so the audit passes, while a horizon of 4 holds day 4.
+    source = PanelSource(spec, panel)
+    with pytest.raises(IntegrityError, match="no funding on a held day"):
+        source.window(_config(0.5, 4), 0, 6)
+
+
 def test_a_traded_day_without_funding_beyond_the_universe_reach_is_tolerated() -> None:
     # The spec's grid is q50-h2 at latency 1: a position opened from day d
     # holds through day d + 3. A is in the universe only on days 0 and 1, so

@@ -51,11 +51,19 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from fractions import Fraction
 
 from research.harness.data import PanelTable
 from research.harness.errors import HarnessError, IntegrityError
 from research.harness.evaluate import Decision, TradeSeries, held_funding, next_period
-from research.harness.spec import ConfigSpec, HypothesisSpec, Json, PortfolioSpec, leg_size
+from research.harness.spec import (
+    ConfigSpec,
+    HypothesisSpec,
+    Json,
+    PortfolioSpec,
+    exact_quantile,
+    leg_size,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,23 +132,30 @@ class PanelSource:
         """A traded day without a rate fails closed wherever a position could hold it.
 
         A position opened on a day the symbol is in the universe holds at
-        most ``latency_bars + max(horizon_bars)`` days after it; a traded
-        day without a rate inside that reach of any such day fails the run,
-        whichever config's legs would hold it. The same days matter to
-        every config, so this is a property of the panel and the grid.
+        most ``latency_bars + max(horizon_bars)`` days after it, and never
+        across a day without a row; a traded day without a rate inside that
+        reach of any such day fails the run, whichever config's legs would
+        hold it. The same days matter to every config, so this is a
+        property of the panel and the grid.
         """
 
         panel = self.panel
+        universe_size = self.portfolio.universe_size
         reach = self.spec.costs.latency_bars + max(
             config.horizon_bars for config in self.spec.configs
         )
         for symbol in range(len(panel.symbols)):
             reach_until = -1
+            prices = panel.prices[symbol]
             traded = panel.traded[symbol]
             ranks = panel.ranks[symbol]
             signals = panel.signals[symbol]
             rates = funding[symbol]
             for day in range(self.length):
+                if prices[day] is None:
+                    # The contract ends at a gap; nothing holds across it.
+                    reach_until = -1
+                    continue
                 if traded[day] is not True:
                     continue
                 # The reach starts after the day: a position decided on it
@@ -153,11 +168,7 @@ class PanelSource:
                         "across one.",
                     )
                 rank = ranks[day]
-                if (
-                    rank is not None
-                    and rank <= self.portfolio.universe_size
-                    and signals[day] is not None
-                ):
+                if rank is not None and rank <= universe_size and signals[day] is not None:
                     reach_until = max(reach_until, day + reach)
 
     @property
@@ -182,7 +193,7 @@ class PanelSource:
         if config.quantile is None:
             raise HarnessError("invariant", f"Config {config.id} has no quantile.")
         latency = self.spec.costs.latency_bars
-        quantile = config.quantile
+        quantile = exact_quantile(config.quantile)
         gross: list[float] = []
         paid: list[float] = []
         received: list[float] = []
@@ -229,7 +240,7 @@ class PanelSource:
             weights=(1.0,) * len(gross),
         )
 
-    def _positions(self, quantile: float, decision: int, entry: int) -> list[_Position] | None:
+    def _positions(self, quantile: Fraction, decision: int, entry: int) -> list[_Position] | None:
         """The period's positions, or None when it is skipped."""
 
         portfolio = self.portfolio
@@ -304,7 +315,8 @@ class PanelSource:
         paid on every day of the hold, traded or not, on the notional at
         the day's close. A halt day without a rate, which the panel builder
         does not check, pays nothing and counts as uncovered; a traded day
-        without one was refused when the source was built.
+        without one fails closed (the grid's configs were refused such a
+        day when the source was built; another config may reach further).
         """
 
         panel = self.panel
@@ -327,7 +339,11 @@ class PanelSource:
                 continue
             rate = panel.funding[symbol][day]
             if rate is None and panel.traded[symbol][day] is True:
-                raise HarnessError("invariant", "A traded held day without a rate was not refused.")
+                raise IntegrityError(
+                    "funding",
+                    f"{panel.symbols[symbol]} has no funding on a held day at "
+                    f"{panel.timestamps[day]}; a study's range must not hold across one.",
+                )
             if rate is None or panel.covered[symbol][day] is not True:
                 uncovered += 1
             held_prices.append(price)

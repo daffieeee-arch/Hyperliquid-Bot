@@ -172,8 +172,11 @@ enabled = false                                        # default: false
 - A break between runs is an archive fact, not proof of a relisting.
   LITUSDT funding stops after 2025-06 and resumes in 2025-12 while its
   klines continue. The universe does not say whether that is a hole, a
-  relisting, or another asset under the same ticker. The panel builder
-  decides from volume, trade count, and price.
+  relisting, or another asset under the same ticker. The
+  [cross-sectional panel](../research/cross-sectional-panel.md) restarts
+  its price windows after every untraded day, so a return spans such a break
+  only if the contract kept trading through it; its funding features stay
+  empty until funding resumes.
 - Two datasets that plan the same archive (a universe and a BTCUSDT
   dataset) download it once in a sync, and a failure is not retried for the
   second.

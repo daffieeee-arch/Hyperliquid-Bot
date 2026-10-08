@@ -158,6 +158,7 @@ data:
   price_column: close
   traded_column: traded        # role: traded, dtype bool
   rank_column: volume_rank     # role: rank, dtype int64
+  # with costs.funding_column: one role: covered column (dtype bool)
   max_gap: 86400000            # between consecutive days of the date axis
   max_rows: 2000000
   columns: ...
@@ -180,8 +181,10 @@ configs:
   top `quantile` of the universe is the long leg and, under
   `direction: signed`, the bottom `quantile` the short leg; `long_only`
   holds the long leg alone. Both legs have `floor(universe × quantile)`
-  names, at least `min_names_per_leg` at the decision and again at the
-  fill, or the day is skipped.
+  names, with the quantile as written in the spec (100 names at 0.29 give
+  29), at least `min_names_per_leg` at the decision and again at the fill,
+  or the day is skipped. A config whose quantile cannot fill a leg from a
+  full universe is refused at validation.
 - **Return and costs**: equal weight within a leg; each leg holds half the
   capital under `signed`, the long leg all of it under `long_only`. The
   period's gross return is the capital-weighted sum of its positions'
@@ -190,12 +193,15 @@ configs:
   exit on its notional. `sizing` must be `unit`.
 - **Funding**: the long leg pays each held day's rate on the notional at
   that day's close and the short leg receives it, position by position, so
-  the stress treats each payment adversely as for a bar trade. A held day
-  without a funding rate fails the run closed (`failure_kind: funding`). The
-  panel builder fails on a funding hole inside a funding run, so this
-  happens only on a traded day outside one (a listing month before funding
-  starts, or trading after a funding archive ends); a study's panel range
-  and universe must not hold a position across such a day.
+  the stress treats each payment adversely as for a bar trade. With
+  funding, the panel declares one `role: covered` column (the panel's
+  `funding_covered`); a held day whose rate is null or not covered fails
+  the run closed (`failure_kind: funding`), so a partial day is never
+  charged as a whole one. The panel builder fails on a funding hole inside
+  a funding run, so this happens only on a traded day at or outside a
+  run's edge (a listing month before funding is whole, or trading after a
+  funding archive ends); a study's panel range and universe must not hold a
+  position across such a day.
 - **Delisting while held**: a position whose symbol does not trade on a
   held day (no row, or `traded` false) is closed at its last traded close,
   and the period counts a forced exit. That is not the price a holder got at
@@ -209,10 +215,11 @@ configs:
   and a null `threshold` (a bar series reports the reverse). The
   buy-and-hold benchmark does not apply: both windows report
   `not_applicable`.
-- **Nulls**: price, the traded flag, the symbol and the clock must be
-  present on every row. The signal, rank and funding may be null where the
-  panel does not know them (warm-up, untraded days); a null is never read
-  as zero. The signal's availability clock is audited on every row.
+- **Nulls**: price, the traded flag, the symbol and every feature's clock
+  must be present on every row. The signal, rank and funding may be null
+  where the panel does not know them (warm-up, untraded days); a null is
+  never read as zero. Every declared feature's availability clock is
+  audited on every row.
 
 ## Overfitting diagnostics
 

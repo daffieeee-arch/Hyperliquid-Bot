@@ -31,11 +31,11 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Final
+from fractions import Fraction
 
 from research.harness.data import PanelTable
 from research.harness.errors import HarnessError, IntegrityError
-from research.harness.evaluate import Decision, TradeSeries
+from research.harness.evaluate import Decision, TradeSeries, next_period
 from research.harness.spec import ConfigSpec, HypothesisSpec, Json
 
 
@@ -60,9 +60,6 @@ class PeriodStats:
 
 
 EMPTY_STATS = PeriodStats(0, 0, 0, 0, 0)
-# A binary product like 100 * 0.29 lands just under 29; this rounding restores
-# the floor the spec's own arithmetic gives.
-_LEG_ROUNDING: Final = 9
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +82,8 @@ class PanelSource:
             raise HarnessError("invariant", "PanelSource needs a portfolio spec.")
         if (self.spec.costs.funding_column is None) != (self.panel.funding is None):
             raise HarnessError("invariant", "The panel's funding does not match the spec.")
+        if (self.panel.funding is None) != (self.panel.covered is None):
+            raise HarnessError("invariant", "A panel with funding carries its covered flags.")
 
     @property
     def length(self) -> int:
@@ -108,11 +107,8 @@ class PanelSource:
         weights: list[float] = []
         stats = EMPTY_STATS
         decision = start
-        while True:
-            entry = decision + latency
-            exit_index = entry + config.horizon_bars
-            if decision >= end or exit_index >= end:
-                break
+        while (period := next_period(decision, latency, config.horizon_bars, end)) is not None:
+            entry, exit_index = period
             positions = self._positions(config.quantile, decision, entry)
             if positions is None:
                 stats += PeriodStats(0, 1, 0, 0, 0)
@@ -169,7 +165,9 @@ class PanelSource:
             eligible.append((signal, symbol))
         # Ties go to the symbol that sorts first, so the legs are deterministic.
         eligible.sort(key=lambda item: (-item[0], panel.symbols[item[1]]))
-        names = math.floor(round(len(eligible) * quantile, _LEG_ROUNDING))
+        # The quantile as written in the spec, so 100 names at 0.29 give 29 and
+        # not the 28 its binary float would.
+        names = math.floor(len(eligible) * Fraction(repr(quantile)))
         if names < portfolio.min_names_per_leg:
             return None
         long_leg = [symbol for _signal, symbol in eligible[:names]]
@@ -217,13 +215,13 @@ class PanelSource:
                 forced = 1
                 break
             last = day
-            if panel.funding is not None:
+            if panel.funding is not None and panel.covered is not None:
                 rate = panel.funding[position.symbol][day]
-                if rate is None:
+                if rate is None or panel.covered[position.symbol][day] is not True:
                     raise IntegrityError(
                         "funding",
-                        f"{panel.symbols[position.symbol]} has no funding on a held day at "
-                        f"{panel.timestamps[day]}; the panel must not leave a held day empty.",
+                        f"{panel.symbols[position.symbol]} has no whole funding day while held at "
+                        f"{panel.timestamps[day]}; a study's range must not hold across one.",
                     )
                 flow = -position.side * rate * price / entry_price
                 if flow < 0.0:
@@ -241,7 +239,12 @@ class PanelSource:
 
         total = EMPTY_STATS
         for start, end in windows:
-            total += self.stats[(config_id, start, end)]
+            scored = self.stats.get((config_id, start, end))
+            if scored is None:
+                raise HarnessError(
+                    "invariant", f"Window [{start}, {end}) of {config_id} was not scored."
+                )
+            total += scored
         return total
 
 

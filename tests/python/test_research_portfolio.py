@@ -48,6 +48,7 @@ def _spec_body(*, funding: bool = False, direction: str = "signed") -> dict[str,
     }
     if funding:
         columns["funding_rate"] = {"dtype": "float64", "role": "funding"}
+        columns["funding_covered"] = {"dtype": "bool", "role": "covered"}
         costs["funding_column"] = "funding_rate"
     return {
         "hypothesis_id": "fixture-panel",
@@ -133,10 +134,14 @@ def _write_panel(path: Path, rows: Sequence[Row], *, funding: bool) -> None:
     connection = duckdb.connect()
     connection.execute(
         "CREATE TABLE panel (ts BIGINT, symbol VARCHAR, close DOUBLE, traded BOOLEAN, "
-        "volume_rank BIGINT, signal DOUBLE, available_ts BIGINT, funding_rate DOUBLE)"
+        "volume_rank BIGINT, signal DOUBLE, available_ts BIGINT, funding_rate DOUBLE, "
+        "funding_covered BOOLEAN)"
     )
-    connection.executemany("INSERT INTO panel VALUES (?, ?, ?, ?, ?, ?, ?, ?)", list(rows))
-    kept = "*" if funding else "* EXCLUDE (funding_rate)"
+    connection.executemany(
+        "INSERT INTO panel VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [(*row, row[7] is not None) for row in rows],
+    )
+    kept = "*" if funding else "* EXCLUDE (funding_rate, funding_covered)"
     destination = str(path).replace("'", "''")
     connection.execute(f"COPY (SELECT {kept} FROM panel) TO '{destination}' (FORMAT PARQUET)")
     connection.close()
@@ -177,8 +182,13 @@ def _table(
     ranks: Sequence[Sequence[int | None]] | None = None,
     signals: Sequence[Sequence[float | None]],
     funding: Sequence[Sequence[float | None]] | None = None,
+    covered: Sequence[Sequence[bool | None]] | None = None,
 ) -> PanelTable:
-    """A hand-built panel; a price of None means no row that day."""
+    """A hand-built panel; a price of None means no row that day.
+
+    With funding, a day is covered exactly when it has a rate, unless
+    ``covered`` says otherwise.
+    """
 
     width = len(prices[0])
     present = [[price is not None for price in line] for line in prices]
@@ -205,6 +215,18 @@ def _table(
         ),
         signals=tuple(tuple(line) for line in signals),
         funding=None if funding is None else tuple(tuple(line) for line in funding),
+        covered=(
+            None
+            if funding is None
+            else tuple(
+                tuple(line)
+                for line in (
+                    covered
+                    if covered is not None
+                    else [[None if rate is None else True for rate in line] for line in funding]
+                )
+            )
+        ),
     )
 
 
@@ -215,6 +237,8 @@ def _config(quantile: float = 0.5, horizon: int = 2) -> ConfigSpec:
 def _four_symbol_spec(**overrides: object) -> HypothesisSpec:
     body = _spec_body(funding=bool(overrides.pop("funding", False)))
     body["portfolio"] = {"universe_size": 4, "min_names_per_leg": 1}
+    # The direct window tests pass their own config; the spec's must validate.
+    body["configs"] = [{"id": "q50-h2", "quantile": 0.5, "horizon_bars": 2}]
     for key, value in overrides.items():
         body[key] = value
     return _spec(body)
@@ -273,6 +297,32 @@ def test_lookahead_in_the_panel_fails_closed(tmp_path: Path) -> None:
     rows = [(*row[:6], row[0] + 1, row[7]) for row in _planted_rows(300)]
     document = _run_panel(tmp_path, rows)
     assert document["status"] == "failed_closed"
+    assert document["failure_kind"] == "lookahead"
+
+
+def test_every_declared_feature_clock_is_audited(tmp_path: Path) -> None:
+    # A second feature, not the signal, stamped after its bar.
+    body = _spec_body()
+    columns = _mapping(_mapping(body["data"])["columns"])
+    columns["other"] = {"dtype": "float64", "role": "feature"}
+    columns["other_ts"] = {"dtype": "int64", "role": "availability"}
+    features = body["features"]
+    assert isinstance(features, list)
+    features.append({"name": "other", "column": "other", "available_at_column": "other_ts"})
+    rows = _planted_rows(300)
+    _write_panel(tmp_path / "panel.parquet", rows, funding=False)
+    connection = duckdb.connect()
+    path = str(tmp_path / "panel.parquet").replace("'", "''")
+    connection.execute(
+        f"COPY (SELECT *, 0.0::DOUBLE AS other, ts + 1 AS other_ts FROM read_parquet('{path}')) "
+        f"TO '{path}.tmp' (FORMAT PARQUET)"
+    )
+    connection.close()
+    Path(f"{tmp_path / 'panel.parquet'}.tmp").replace(tmp_path / "panel.parquet")
+    spec_path = tmp_path / "spec.json"
+    spec_path.write_text(json.dumps(body), encoding="utf-8")
+    lock_spec(spec_path)
+    document = execute(spec_path, tmp_path / "out").document
     assert document["failure_kind"] == "lookahead"
 
 
@@ -428,8 +478,14 @@ def test_a_period_is_skipped_when_a_leg_cannot_fill_or_is_too_small() -> None:
     # Day 0's short leg cannot fill on day 1; day 1's period fills on day 2.
     assert len(series.gross) == 1
     assert source.stats[("c", 0, 4)].skipped_decisions == 1
-    small = _four_symbol_spec(portfolio={"universe_size": 4, "min_names_per_leg": 3})
-    assert len(PanelSource(small, panel).window(_config(0.5, 1), 0, 4).gross) == 0
+    # Three eligible names at quantile 0.5 give one per leg, under a floor of two.
+    small = _four_symbol_spec(portfolio={"universe_size": 4, "min_names_per_leg": 2})
+    three = _table(
+        symbols=["A", "B", "C"],
+        prices=[[100.0] * 4] * 3,
+        signals=[[2.0] * 4, [1.0] * 4, [-1.0] * 4],
+    )
+    assert len(PanelSource(small, three).window(_config(0.5, 1), 0, 4).gross) == 0
     # A leg that fills below the floor skips the period too.
     floored = _four_symbol_spec(portfolio={"universe_size": 4, "min_names_per_leg": 2})
     thin = _table(
@@ -513,6 +569,39 @@ def test_funding_is_paid_by_the_long_leg_and_received_by_the_short_leg() -> None
     assert stressed < base
 
 
+def test_a_partly_covered_held_day_fails_closed() -> None:
+    spec = _four_symbol_spec(funding=True)
+    panel = _table(
+        symbols=["A", "B"],
+        prices=[[100.0] * 4, [100.0] * 4],
+        signals=[[1.0] * 4, [-1.0] * 4],
+        funding=[[0.0001] * 4, [0.0001] * 4],
+        covered=[[True, True, False, True], [True] * 4],
+    )
+    with pytest.raises(IntegrityError, match="whole funding day"):
+        PanelSource(spec, panel).window(_config(0.5, 2), 0, 4)
+
+
+def test_a_third_quantile_does_not_round_a_leg_up() -> None:
+    spec = _four_symbol_spec(portfolio={"universe_size": 4, "min_names_per_leg": 1})
+    panel = _table(
+        symbols=["A", "B", "C"],
+        prices=[[100.0] * 3] * 3,
+        signals=[[1.0] * 3, [0.0] * 3, [-1.0] * 3],
+    )
+    source = PanelSource(spec, panel)
+    # 3 * 0.3333333333 is 0.9999999999: no name, so the day is skipped.
+    assert len(source.window(_config(0.3333333333, 1), 0, 3).gross) == 0
+    assert source.stats[("c", 0, 3)].skipped_decisions == 1
+
+
+def test_an_unscored_window_is_an_invariant_error() -> None:
+    spec = _four_symbol_spec()
+    panel = _table(symbols=["A"], prices=[[100.0] * 3], signals=[[1.0] * 3])
+    with pytest.raises(HarnessError, match="was not scored"):
+        PanelSource(spec, panel).window_stats("c", [(0, 3)])
+
+
 def test_a_held_day_without_funding_fails_closed() -> None:
     spec = _four_symbol_spec(funding=True)
     panel = _table(
@@ -521,7 +610,7 @@ def test_a_held_day_without_funding_fails_closed() -> None:
         signals=[[1.0] * 4, [-1.0] * 4],
         funding=[[0.0, 0.0, None, 0.0], [0.0] * 4],
     )
-    with pytest.raises(IntegrityError, match="held day"):
+    with pytest.raises(IntegrityError, match="while held"):
         PanelSource(spec, panel).window(_config(0.5, 2), 0, 4)
 
 
@@ -547,9 +636,9 @@ def test_the_portfolio_block_sums_validation_folds_and_names_the_holdout() -> No
     config = _first(block["configs"])
     validation = _mapping(config["validation"])
     assert validation["periods"] == sum(
-        source.stats[("q25-h4", fold.test_start, fold.test_end)].periods for fold in decision.folds
+        source.stats[("q50-h2", fold.test_start, fold.test_end)].periods for fold in decision.folds
     )
-    assert ("holdout" in config) == (decision.holdout_config_id == "q25-h4")
+    assert ("holdout" in config) == (decision.holdout_config_id == "q50-h2")
 
 
 # --- Spec rules ----------------------------------------------------------------
@@ -600,6 +689,22 @@ def test_spec_rules_for_the_panel_backend() -> None:
     leg["portfolio"] = {"universe_size": 4, "min_names_per_leg": 5}
     with pytest.raises(SpecError, match="min_names_per_leg"):
         _spec(leg)
+    unreachable = _spec_body()
+    unreachable["portfolio"] = {"universe_size": 50, "min_names_per_leg": 5}
+    unreachable["configs"] = [{"id": "q", "quantile": 0.05, "horizon_bars": 4}]
+    with pytest.raises(SpecError, match="fills at most 2 names"):
+        _spec(unreachable)
+    uncovered = _spec_body(funding=True)
+    del _mapping(_mapping(uncovered["data"])["columns"])["funding_covered"]
+    with pytest.raises(SpecError, match="covered-role"):
+        _spec(uncovered)
+    stray = _spec_body()
+    _mapping(_mapping(stray["data"])["columns"])["funding_covered"] = {
+        "dtype": "bool",
+        "role": "covered",
+    }
+    with pytest.raises(SpecError, match="covered-role"):
+        _spec(stray)
     wrong_type = _spec_body()
     _mapping(_mapping(wrong_type["data"])["columns"])["traded"] = {
         "dtype": "int64",

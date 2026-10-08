@@ -306,11 +306,8 @@ def collect_trades(
         raise HarnessError("split", "Trade window is not a valid index range.")
     trades: list[Trade] = []
     decision = start
-    while True:
-        entry = decision + latency_bars
-        exit_index = entry + horizon_bars
-        if decision >= end or exit_index >= end:
-            break
+    while (period := next_period(decision, latency_bars, horizon_bars, end)) is not None:
+        entry, exit_index = period
         side = _side(feature[decision], threshold, direction)
         if side == 0:
             decision += 1
@@ -318,6 +315,23 @@ def collect_trades(
         trades.append(Trade(decision=decision, entry=entry, exit=exit_index, side=side))
         decision = exit_index
     return tuple(trades)
+
+
+def next_period(
+    decision: int, latency_bars: int, horizon_bars: int, end: int
+) -> tuple[int, int] | None:
+    """The fill and exit of a period decided at ``decision``, or None past the window.
+
+    The fill is ``decision + latency_bars`` and the exit ``horizon_bars``
+    later; both stay strictly inside ``[.., end)``, the one rule a bar trade
+    and a panel period share, so neither reads a close outside its window.
+    """
+
+    entry = decision + latency_bars
+    exit_index = entry + horizon_bars
+    if decision >= end or exit_index >= end:
+        return None
+    return entry, exit_index
 
 
 def trade_series(

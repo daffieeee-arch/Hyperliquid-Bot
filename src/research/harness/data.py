@@ -74,6 +74,8 @@ class PanelTable:
     ranks: tuple[tuple[int | None, ...], ...]
     signals: tuple[tuple[float | None, ...], ...]
     funding: tuple[tuple[float | None, ...], ...] | None
+    # With funding: whether the row's funding day is whole; None without funding.
+    covered: tuple[tuple[bool | None, ...], ...] | None = None
 
 
 def fingerprint_inputs(spec: HypothesisSpec, spec_dir: Path) -> dict[str, Json]:
@@ -384,8 +386,7 @@ def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Pa
     signal_feature = next(
         feature for feature in spec.features if feature.name == spec.signal_feature
     )
-    signal_column = signal_feature.column
-    clock_column = signal_feature.available_at_column
+    clocks = {feature.available_at_column: feature.name for feature in spec.features}
     required = [
         name
         for name in (
@@ -393,11 +394,13 @@ def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Pa
             data.symbol_column,
             data.price_column,
             data.traded_column,
-            clock_column,
+            *clocks,
         )
         if name is not None
     ]
-    parsed: list[tuple[int, str, float, bool, int | None, float | None, float | None]] = []
+    # First pass: the axes and every row-level check; second pass: the series.
+    timestamp_set: set[int] = set()
+    symbol_set: set[str] = set()
     for row_index, row in enumerate(rows):
         if len(row) != len(data.columns):
             raise IntegrityError("schema", f"Row {row_index} does not match the declared width.")
@@ -409,41 +412,21 @@ def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Pa
         timestamp = _as_int(
             row[index_by_name[data.timestamp_column]], data.timestamp_column, row_index
         )
-        clock = _as_int(row[index_by_name[clock_column]], clock_column, row_index)
-        if clock > timestamp:
-            raise IntegrityError(
-                "lookahead",
-                f"Feature {spec.signal_feature} row {row_index} is available at {clock}, "
-                f"after bar {timestamp}.",
-            )
-        rank_raw = row[index_by_name[str(data.rank_column)]]
-        signal_raw = row[index_by_name[signal_column]]
-        funding_raw = (
-            None
-            if spec.costs.funding_column is None
-            else row[index_by_name[spec.costs.funding_column]]
+        for clock_column, feature_name in clocks.items():
+            clock = _as_int(row[index_by_name[clock_column]], clock_column, row_index)
+            if clock > timestamp:
+                raise IntegrityError(
+                    "lookahead",
+                    f"Feature {feature_name} row {row_index} is available at {clock}, "
+                    f"after bar {timestamp}.",
+                )
+        timestamp_set.add(timestamp)
+        symbol_set.add(
+            _as_str(row[index_by_name[str(data.symbol_column)]], str(data.symbol_column), row_index)
         )
-        parsed.append(
-            (
-                timestamp,
-                _as_str(
-                    row[index_by_name[str(data.symbol_column)]], str(data.symbol_column), row_index
-                ),
-                _as_float(row[index_by_name[data.price_column]], data.price_column, row_index),
-                _as_bool(
-                    row[index_by_name[str(data.traded_column)]], str(data.traded_column), row_index
-                ),
-                None if rank_raw is None else _as_int(rank_raw, str(data.rank_column), row_index),
-                None if signal_raw is None else _as_float(signal_raw, signal_column, row_index),
-                None
-                if funding_raw is None
-                else _as_float(funding_raw, str(spec.costs.funding_column), row_index),
-            )
-        )
-    timestamps = sorted({item[0] for item in parsed})
+    timestamps = sorted(timestamp_set)
     _audit_clock(timestamps, data.max_gap)
-    _audit_prices([item[2] for item in parsed])
-    symbols = sorted({item[1] for item in parsed})
+    symbols = sorted(symbol_set)
     if len(symbols) > _PANEL_MAX_SYMBOLS:
         raise IntegrityError("too_many_rows", f"Panel has more than {_PANEL_MAX_SYMBOLS} symbols.")
     date_index = {timestamp: index for index, timestamp in enumerate(timestamps)}
@@ -453,17 +436,48 @@ def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Pa
     traded: list[list[bool | None]] = [[None] * width for _ in symbols]
     ranks: list[list[int | None]] = [[None] * width for _ in symbols]
     signals: list[list[float | None]] = [[None] * width for _ in symbols]
-    funding: list[list[float | None]] = [[None] * width for _ in symbols]
-    for timestamp, symbol, price, flag, rank, signal, rate in parsed:
+    with_funding = spec.costs.funding_column is not None
+    funding: list[list[float | None]] = [[None] * width for _ in symbols] if with_funding else []
+    covered: list[list[bool | None]] = [[None] * width for _ in symbols] if with_funding else []
+    for row_index, row in enumerate(rows):
+        timestamp = _as_int(
+            row[index_by_name[data.timestamp_column]], data.timestamp_column, row_index
+        )
+        symbol = _as_str(
+            row[index_by_name[str(data.symbol_column)]], str(data.symbol_column), row_index
+        )
         column = date_index[timestamp]
         line = symbol_index[symbol]
         if prices[line][column] is not None:
             raise IntegrityError("duplicate", f"{symbol} appears twice at {timestamp}.")
+        price = _as_float(row[index_by_name[data.price_column]], data.price_column, row_index)
+        if not math.isfinite(price) or price <= 0.0:
+            raise IntegrityError("price", f"Price at row {row_index} must be finite and positive.")
         prices[line][column] = price
-        traded[line][column] = flag
-        ranks[line][column] = rank
-        signals[line][column] = signal
-        funding[line][column] = rate
+        traded[line][column] = _as_bool(
+            row[index_by_name[str(data.traded_column)]], str(data.traded_column), row_index
+        )
+        rank_raw = row[index_by_name[str(data.rank_column)]]
+        ranks[line][column] = (
+            None if rank_raw is None else _as_int(rank_raw, str(data.rank_column), row_index)
+        )
+        signal_raw = row[index_by_name[signal_feature.column]]
+        signals[line][column] = (
+            None if signal_raw is None else _as_float(signal_raw, signal_feature.column, row_index)
+        )
+        if with_funding:
+            funding_raw = row[index_by_name[str(spec.costs.funding_column)]]
+            funding[line][column] = (
+                None
+                if funding_raw is None
+                else _as_float(funding_raw, str(spec.costs.funding_column), row_index)
+            )
+            covered_raw = row[index_by_name[str(data.funding_covered_column)]]
+            covered[line][column] = (
+                None
+                if covered_raw is None
+                else _as_bool(covered_raw, str(data.funding_covered_column), row_index)
+            )
     return PanelTable(
         timestamps=tuple(timestamps),
         symbols=tuple(symbols),
@@ -471,9 +485,8 @@ def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Pa
         traded=tuple(tuple(line) for line in traded),
         ranks=tuple(tuple(line) for line in ranks),
         signals=tuple(tuple(line) for line in signals),
-        funding=None
-        if spec.costs.funding_column is None
-        else tuple(tuple(line) for line in funding),
+        funding=tuple(tuple(line) for line in funding) if with_funding else None,
+        covered=tuple(tuple(line) for line in covered) if with_funding else None,
     )
 
 

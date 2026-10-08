@@ -61,6 +61,9 @@ data:
     funding_rate:
       dtype: float64
       role: funding
+    funding_covered:
+      dtype: bool
+      role: covered
     available_ts:
       dtype: int64
       role: availability

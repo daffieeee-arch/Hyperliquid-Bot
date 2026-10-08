@@ -7,6 +7,7 @@ import json
 import math
 import re
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
 
 from research.harness.errors import LockError, SpecError
@@ -46,7 +47,7 @@ _MAX_LEVERAGE_CAP = 100.0
 _MAX_UNIVERSE_SIZE = 10_000
 _BAR_BACKENDS = frozenset({"parquet", "duckdb"})
 _BAR_ROLES = frozenset({"timestamp", "price", "feature", "availability", "funding"})
-_PANEL_ROLES = _BAR_ROLES | {"symbol", "traded", "rank"}
+_PANEL_ROLES = _BAR_ROLES | {"symbol", "traded", "rank", "covered"}
 _DTYPE_FOR_ROLE = {
     "timestamp": "int64",
     "availability": "int64",
@@ -56,6 +57,7 @@ _DTYPE_FOR_ROLE = {
     "funding": "float64",
     "symbol": "string",
     "traded": "bool",
+    "covered": "bool",
 }
 
 
@@ -158,6 +160,8 @@ class DataSpec:
     symbol_column: str | None = None
     traded_column: str | None = None
     rank_column: str | None = None
+    # With funding on a panel: whether the row's funding day is whole.
+    funding_covered_column: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -270,6 +274,8 @@ def validate_spec(document: dict[str, Json]) -> HypothesisSpec:
     )
     if panel and sizing.method != "unit":
         raise SpecError("A panel portfolio sizes each period at unit weight; sizing must be unit.")
+    if portfolio is not None:
+        _require_reachable_legs(portfolio, configs)
     decision_features = (signal_feature,) + (
         () if sizing.vol_feature is None else (sizing.vol_feature,)
     )
@@ -487,6 +493,21 @@ def _parse_sample(raw: dict[str, Json]) -> SampleSpec:
     )
 
 
+def _require_reachable_legs(portfolio: PortfolioSpec, configs: tuple[ConfigSpec, ...]) -> None:
+    """Every config must be able to fill a leg from a full universe, or it never trades."""
+
+    for config in configs:
+        if config.quantile is None:
+            raise SpecError(f"Config {config.id} needs a quantile on a panel.")
+        names = math.floor(portfolio.universe_size * Fraction(repr(config.quantile)))
+        if names < portfolio.min_names_per_leg:
+            raise SpecError(
+                f"Config {config.id} fills at most {names} names per leg from a universe of "
+                f"{portfolio.universe_size}, under portfolio.min_names_per_leg "
+                f"{portfolio.min_names_per_leg}."
+            )
+
+
 def _parse_portfolio(raw: dict[str, Json]) -> PortfolioSpec:
     _exact(raw, {"universe_size", "min_names_per_leg"}, "portfolio")
     universe_size = _positive_int(
@@ -584,10 +605,19 @@ def _parse_data(raw: dict[str, Json]) -> DataSpec:
     columns = _parse_columns(raw["columns"], str(backend) == "panel")
     _require_role_column(columns, "timestamp", timestamp_column, "data.timestamp_column")
     _require_role_column(columns, "price", price_column, "data.price_column")
+    funding_covered_column = None
     if backend == "panel":
         _require_role_column(columns, "symbol", symbol_column, "data.symbol_column")
         _require_role_column(columns, "traded", traded_column, "data.traded_column")
         _require_role_column(columns, "rank", rank_column, "data.rank_column")
+        covered = [column.name for column in columns if column.role == "covered"]
+        funding = [column.name for column in columns if column.role == "funding"]
+        if len(covered) > 1 or bool(covered) != bool(funding):
+            raise SpecError(
+                "A panel with a funding-role column declares exactly one covered-role column, "
+                "and one without funding declares none."
+            )
+        funding_covered_column = covered[0] if covered else None
     return DataSpec(
         backend=str(backend),
         parquet_path=parquet_path,
@@ -600,6 +630,7 @@ def _parse_data(raw: dict[str, Json]) -> DataSpec:
         symbol_column=symbol_column,
         traded_column=traded_column,
         rank_column=rank_column,
+        funding_covered_column=funding_covered_column,
     )
 
 

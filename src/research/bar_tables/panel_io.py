@@ -230,8 +230,13 @@ def _check_funding_runs(
             for item in settlements.get(run.symbol, [])
             if opens < item.ts + SETTLEMENT_SLACK_MS <= high
         ]
-        holes = funding_hole_closes(own) | _edge_holes(run, own, opens, high)
-        if not own and not (run.late_start and run.early_end):
+        series = settlements.get(run.symbol, [])
+        following = next((item for item in series if item.ts + SETTLEMENT_SLACK_MS > high), None)
+        holes = funding_hole_closes(own) | _edge_holes(run, own, following, opens, high)
+        # A window that is all listing month (or all delisting month) may
+        # hold no settlement yet (or any more).
+        edge_only = (run.late_start or run.early_end) and _same_month(run.first, run.last)
+        if not own and not edge_only:
             holes |= {ts for ts in traded[run.symbol] if opens < ts <= high}
         for close in sorted(holes & traded[run.symbol]):
             day = datetime.fromtimestamp(close / 1000, UTC).date()
@@ -241,8 +246,18 @@ def _check_funding_runs(
             )
 
 
-def _edge_holes(run: Run, own: Sequence[Settlement], opens: int, high: int) -> set[int]:
-    """Days at the window's edges on which a settlement was due but is missing."""
+def _edge_holes(
+    run: Run,
+    own: Sequence[Settlement],
+    following: Settlement | None,
+    opens: int,
+    high: int,
+) -> set[int]:
+    """Days at the window's edges on which a settlement was due but is missing.
+
+    The settlement after the window, when there is one, gives the interval
+    at the end too, as in the interior.
+    """
 
     if not own:
         return set()
@@ -253,7 +268,8 @@ def _edge_holes(run: Run, own: Sequence[Settlement], opens: int, high: int) -> s
         and first.ts - first.interval_hours * _HOUR_MS + SETTLEMENT_SLACK_MS > opens
     ):
         holes.add(_close_ms(run.first))
-    due = last.ts + last.interval_hours * _HOUR_MS + SETTLEMENT_SLACK_MS
+    interval = max(last.interval_hours, following.interval_hours if following else 0)
+    due = last.ts + interval * _HOUR_MS + SETTLEMENT_SLACK_MS
     if not run.early_end and due <= high:
         holes.add(due - due % DAY_MS + DAY_MS - 1)
     return holes

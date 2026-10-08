@@ -62,7 +62,12 @@ of latency.
     and LOOMUSDT in 2023-10). On a day that returns from 4h to 8h, a missing
     20:00 settlement and the return look alike at the close, so such a day
     can read as not covered. Its `funding_<K>d` stays empty for `K` days. A
-    later settlement must not decide a feature.
+    later settlement must not decide a feature. For the same reason, one
+    settlement missing right where the interval shortens cannot be told
+    from the switch itself, and is not caught.
+  - A settlement from before the previous day is not used to judge a day's
+    start, so the first day of a relisting is judged like a fresh listing,
+    whatever `start` the panel reads from.
 - **The universe comes from the rank, not from survival.** A row is complete
   when it traded and has every feature. `volume_rank` orders the complete
   rows of one day, ties going to the symbol that sorts first. A study takes
@@ -96,7 +101,9 @@ Nothing is written when any of these fail:
   edges of a run's window, funding may start late only in its listing month
   and stop early only in its delisting month, like the bars; elsewhere,
   including the end of a still-published run, a late start or early stop
-  is a hole. Untraded days are not checked, because delisted contracts
+  is a hole. The settlement after the window, when loaded, gives the
+  interval at the end. A window that lies wholly in a listing (or
+  delisting) month may hold no settlement at all. Untraded days are not checked, because delisted contracts
   carry default-rate funding.
 - The funding file of the month before the first month is needed too, when
   the run has it, for a midnight settlement stamped just before the month

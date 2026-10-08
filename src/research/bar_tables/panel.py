@@ -260,6 +260,11 @@ def _daily_funding(
             probe += 1
         day = settlements[cursor:probe]
         before = settlements[cursor - 1] if cursor else None
+        # A settlement from before the previous day says nothing about this
+        # one's start (a relisting, or a hole that already counted), and must
+        # not make coverage depend on how far back the panel reads.
+        if before is not None and _day_time(before) <= opens - DAY_MS:
+            before = None
         rate = math.fsum(item.rate for item in day) if day else None
         result.append(_FundingDay(rate, len(day), _covered(day, before, opens, bar.ts)))
     return result

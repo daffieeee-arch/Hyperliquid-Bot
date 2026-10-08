@@ -187,6 +187,16 @@ def test_funding_features_never_read_past_the_close() -> None:
         assert _rows(bars[:count], known) == full[:count]
 
 
+def test_a_relisting_day_is_judged_like_a_fresh_listing() -> None:
+    bars = _bars([100.0, 101.0, 102.0, 103.0, 104.0])
+    relisted = [*bars[:2], *(replace(bar, ts=bar.ts + 30 * DAY_MS) for bar in bars[2:])]
+    settlements = _funding(relisted)
+    with_history = _rows(relisted, settlements)
+    fresh = build_symbol_rows("AAAUSDT", relisted[2:], settlements[6:], _SPEC)
+    assert with_history[2:] == fresh
+    assert with_history[2].funding_covered
+
+
 def test_funding_holes_mark_the_days_a_settlement_was_due() -> None:
     bars = _bars([100.0, 101.0, 102.0, 103.0, 104.0])
     settlements = _funding(bars)
@@ -550,6 +560,13 @@ def test_funding_that_starts_late_in_a_cut_window_fails(
     assert main(args) == 2
     message = capsys.readouterr().err
     assert "AAAUSDT traded on 2026-02-01 with a funding settlement missing" in message
+
+
+def test_a_listing_month_window_may_end_before_the_first_settlement(tmp_path: Path) -> None:
+    root, manifest = _universe_root(tmp_path)
+    # NEWUSDT trades from Jan 20, but its funding starts on Feb 1.
+    _write_month(root, "funding", "NEWUSDT", "2026-01", range(32, 32))
+    assert main(_panel_args(root, manifest, tmp_path / "panel.parquet", end="2026-02-01")) == 0
 
 
 def test_a_start_inside_a_listing_month_needs_no_bar_on_it(tmp_path: Path) -> None:

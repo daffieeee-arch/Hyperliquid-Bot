@@ -92,10 +92,12 @@ Nothing is written when any of these fail:
   is a funding hole, and it would silently drop the symbol from the rank.
   This check is validation, not a feature, so it reads the whole series:
   between two of a run's settlements farther apart than the longer of
-  their intervals, each day on which a settlement was due is a hole. Days
-  before a run's first settlement and after its last are its listing and
-  delisting edges. Untraded days are not checked, because delisted
-  contracts carry default-rate funding.
+  their intervals, each day on which a settlement was due is a hole. At the
+  edges of a run's window, funding may start late only in its listing month
+  and stop early only in its delisting month, like the bars; elsewhere,
+  including the end of a still-published run, a late start or early stop
+  is a hole. Untraded days are not checked, because delisted contracts
+  carry default-rate funding.
 - The funding file of the month before the first month is needed too, when
   the run has it, for a midnight settlement stamped just before the month
   opens.

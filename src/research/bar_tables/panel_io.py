@@ -40,6 +40,7 @@ from research.hist_etl.models import BinanceSpec
 from research.hist_etl.planning import next_month, previous_month
 
 _MISSING_SHOWN: Final = 10
+_HOUR_MS: Final = 3_600_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,11 +211,11 @@ def _check_funding_runs(
 ) -> None:
     """A traded day inside a funding run with a settlement missing fails.
 
-    Holes are judged between the run's own settlements in its window, with
-    the whole series (validation may read past a day's close). The days
-    before a run's first settlement and after its last are its listing and
-    delisting edges, not holes. A day that did not trade is not checked:
-    delisted contracts carry default funding.
+    This is validation, not a feature, so it reads the whole series. Holes
+    are judged between the run's own settlements in its window, and at the
+    window's edges like the bars: only a listing month may start late and
+    only a delisting month may end early. A day that did not trade is not
+    checked: delisted contracts carry default funding.
     """
 
     traded: dict[str, set[int]] = defaultdict(set)
@@ -229,12 +230,33 @@ def _check_funding_runs(
             for item in settlements.get(run.symbol, [])
             if opens < item.ts + SETTLEMENT_SLACK_MS <= high
         ]
-        for close in sorted(funding_hole_closes(own) & traded[run.symbol]):
+        holes = funding_hole_closes(own) | _edge_holes(run, own, opens, high)
+        if not own and not (run.late_start and run.early_end):
+            holes |= {ts for ts in traded[run.symbol] if opens < ts <= high}
+        for close in sorted(holes & traded[run.symbol]):
             day = datetime.fromtimestamp(close / 1000, UTC).date()
             raise BarTableError(
                 f"{run.symbol} traded on {day} with a funding settlement missing inside a "
                 "funding run; run hist_etl verify and sync."
             )
+
+
+def _edge_holes(run: Run, own: Sequence[Settlement], opens: int, high: int) -> set[int]:
+    """Days at the window's edges on which a settlement was due but is missing."""
+
+    if not own:
+        return set()
+    holes: set[int] = set()
+    first, last = own[0], own[-1]
+    if (
+        not run.late_start
+        and first.ts - first.interval_hours * _HOUR_MS + SETTLEMENT_SLACK_MS > opens
+    ):
+        holes.add(_close_ms(run.first))
+    due = last.ts + last.interval_hours * _HOUR_MS + SETTLEMENT_SLACK_MS
+    if not run.early_end and due <= high:
+        holes.add(due - due % DAY_MS + DAY_MS - 1)
+    return holes
 
 
 def _same_month(left: date, right: date) -> bool:

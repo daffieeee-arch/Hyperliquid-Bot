@@ -528,6 +528,30 @@ def test_a_funding_hole_on_a_traded_day_fails_closed(
     assert not out.exists()
 
 
+def test_funding_that_stops_early_in_a_still_published_run_fails(
+    tmp_path: Path, capsys: CaptureFixture[str]
+) -> None:
+    root, manifest = _universe_root(tmp_path)
+    # March funding stops after Mar 10 while AAAUSDT trades to Mar 31.
+    _write_month(root, "funding", "AAAUSDT", "2026-03", range(1, 11))
+    assert main(_panel_args(root, manifest, tmp_path / "panel.parquet")) == 2
+    message = capsys.readouterr().err
+    assert "AAAUSDT traded on 2026-03-11 with a funding settlement missing" in message
+
+
+def test_funding_that_starts_late_in_a_cut_window_fails(
+    tmp_path: Path, capsys: CaptureFixture[str]
+) -> None:
+    root, manifest = _universe_root(tmp_path)
+    # February funding starts on Feb 5; the panel starts in February.
+    _write_month(root, "funding", "AAAUSDT", "2026-02", range(5, 29))
+    args = _panel_args(root, manifest, tmp_path / "panel.parquet")
+    args[args.index("--start") + 1] = "2026-02-10"
+    assert main(args) == 2
+    message = capsys.readouterr().err
+    assert "AAAUSDT traded on 2026-02-01 with a funding settlement missing" in message
+
+
 def test_a_start_inside_a_listing_month_needs_no_bar_on_it(tmp_path: Path) -> None:
     root, manifest = _universe_root(tmp_path)
     args = _panel_args(root, manifest, tmp_path / "panel.parquet")

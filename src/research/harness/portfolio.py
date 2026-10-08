@@ -151,7 +151,6 @@ class PanelSource:
         """
 
         panel = self.panel
-        universe_size = self.portfolio.universe_size
         latency = self.spec.costs.latency_bars
         horizons = sorted({config.horizon_bars for config in self.spec.configs}, reverse=True)
         for symbol in range(len(panel.symbols)):
@@ -159,8 +158,6 @@ class PanelSource:
             spans: deque[tuple[int, int]] = deque()
             prices = panel.prices[symbol]
             traded = panel.traded[symbol]
-            ranks = panel.ranks[symbol]
-            signals = panel.signals[symbol]
             rates = funding[symbol]
             for day in range(start, end):
                 if prices[day] is None:
@@ -178,8 +175,7 @@ class PanelSource:
                         "traded day a position could hold; a study's range must not hold "
                         "across one.",
                     )
-                rank = ranks[day]
-                if rank is None or rank > universe_size or signals[day] is None:
+                if not self._in_universe(symbol, day):
                     continue
                 longest = next((h for h in horizons if day + latency + h < end), None)
                 if longest is not None:
@@ -305,6 +301,19 @@ class PanelSource:
             return False
         return panel.traded[symbol][entry] is True
 
+    def _in_universe(self, symbol: int, day: int) -> bool:
+        """Whether the symbol can be decided on that day: traded, ranked within the
+        universe, signal known. The ranking and the funding audit share this one test."""
+
+        panel = self.panel
+        rank = panel.ranks[symbol][day]
+        return (
+            panel.traded[symbol][day] is True
+            and rank is not None
+            and rank <= self.portfolio.universe_size
+            and panel.signals[symbol][day] is not None
+        )
+
     def _eligible(self, decision: int) -> list[tuple[float, int]]:
         """The decision day's universe ranked by signal, cached across configs."""
 
@@ -312,18 +321,13 @@ class PanelSource:
         if cached is not None:
             return cached
         panel = self.panel
-        universe_size = self.portfolio.universe_size
         eligible: list[tuple[float, int]] = []
         for symbol in range(len(panel.symbols)):
-            rank = panel.ranks[symbol][decision]
-            signal = panel.signals[symbol][decision]
-            if (
-                panel.traded[symbol][decision] is not True
-                or rank is None
-                or rank > universe_size
-                or signal is None
-            ):
+            if not self._in_universe(symbol, decision):
                 continue
+            signal = panel.signals[symbol][decision]
+            if signal is None:
+                raise HarnessError("invariant", "A universe member has a signal.")
             eligible.append((signal, symbol))
         # One ranking, ties by symbol, so the legs are deterministic and
         # disjoint: the long leg is its top and the short leg its bottom.
@@ -341,7 +345,8 @@ class PanelSource:
         the day's close. A halt day without a rate, which the panel builder
         does not check, pays nothing and counts as unfunded; a traded day
         without one fails closed (the grid's configs were refused such a
-        day when the source was built; another config may reach further).
+        day when the window holding it was first scored; another config
+        may reach further).
         """
 
         panel = self.panel

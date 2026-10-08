@@ -556,6 +556,12 @@ _DATA_KEYS: Final[frozenset[str]] = frozenset(
 )
 
 
+def _column_ref(raw: dict[str, Json], key: str) -> str:
+    """The column name ``data.<key>`` names, validated as an identifier."""
+
+    return _identifier(_require_str(raw[key], f"data.{key}", 64), _COLUMN_NAME, f"data.{key}")
+
+
 def _parse_data(raw: dict[str, Json]) -> DataSpec:
     backend = raw.get("backend")
     symbol_column = traded_column = rank_column = None
@@ -567,21 +573,9 @@ def _parse_data(raw: dict[str, Json]) -> DataSpec:
         )
         parquet_path = _relative_path(_require_str(raw["parquet_path"], "data.parquet_path", 240))
         view = None
-        symbol_column = _identifier(
-            _require_str(raw["symbol_column"], "data.symbol_column", 64),
-            _COLUMN_NAME,
-            "data.symbol_column",
-        )
-        traded_column = _identifier(
-            _require_str(raw["traded_column"], "data.traded_column", 64),
-            _COLUMN_NAME,
-            "data.traded_column",
-        )
-        rank_column = _identifier(
-            _require_str(raw["rank_column"], "data.rank_column", 64),
-            _COLUMN_NAME,
-            "data.rank_column",
-        )
+        symbol_column = _column_ref(raw, "symbol_column")
+        traded_column = _column_ref(raw, "traded_column")
+        rank_column = _column_ref(raw, "rank_column")
     elif backend == "parquet":
         _exact(raw, _DATA_KEYS | {"parquet_path"}, "data")
         parquet_path = _relative_path(_require_str(raw["parquet_path"], "data.parquet_path", 240))
@@ -592,16 +586,8 @@ def _parse_data(raw: dict[str, Json]) -> DataSpec:
         parquet_path = None
     else:
         raise SpecError("data.backend must be parquet, duckdb, or panel.")
-    timestamp_column = _identifier(
-        _require_str(raw["timestamp_column"], "data.timestamp_column", 64),
-        _COLUMN_NAME,
-        "data.timestamp_column",
-    )
-    price_column = _identifier(
-        _require_str(raw["price_column"], "data.price_column", 64),
-        _COLUMN_NAME,
-        "data.price_column",
-    )
+    timestamp_column = _column_ref(raw, "timestamp_column")
+    price_column = _column_ref(raw, "price_column")
     max_gap = _positive_int(raw["max_gap"], "data.max_gap", 10**18)
     max_rows = _positive_int(raw["max_rows"], "data.max_rows", _MAX_ROWS_CAP)
     columns = _parse_columns(raw["columns"], str(backend) == "panel")

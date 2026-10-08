@@ -264,7 +264,7 @@ def decide_source(source: SeriesSource) -> Decision:
         holdout_config = spec.configs[selected_index]
         selected_id = holdout_config.id
         scored = _mark_selected(scores, selected_index)
-        holdout = _confirm_holdout(spec, source, holdout_config, holdout_start, holdout_end)
+        holdout = _confirm_holdout(source, holdout_config, holdout_start, holdout_end)
         label = holdout.label
         reasons = (*reasons, *holdout.reasons)
         holdout_config_id = holdout_config.id
@@ -418,12 +418,12 @@ def summarize(values: Sequence[float]) -> MetricBlock:
 
 
 def _confirm_holdout(
-    spec: HypothesisSpec,
     source: SeriesSource,
     config: ConfigSpec,
     holdout_start: int,
     holdout_end: int,
 ) -> _HoldoutResult:
+    spec = source.spec
     series = source.window(config, holdout_start, holdout_end)
     gross_block = summarize(series.gross)
     net = _net_blocks(spec, series)

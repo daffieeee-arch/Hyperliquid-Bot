@@ -376,14 +376,15 @@ def load_panel(spec: HypothesisSpec, spec_dir: Path) -> PanelTable:
     connection, relation_sql, parameters = _open_source(data, spec_dir)
     try:
         _assert_relation(connection, data, relation_sql, parameters)
-        rows = _fetch_rows(connection, data, relation_sql, parameters)
+        # The rows are handed over, not kept: _panel_from_rows drops them
+        # before it freezes the dense series, so the two are never held at once.
+        return _panel_from_rows(spec, _fetch_rows(connection, data, relation_sql, parameters))
     except IntegrityError:
         raise
     except duckdb.Error as error:
         raise IntegrityError("schema", f"DuckDB read failed: {_short(str(error))}") from error
     finally:
         connection.close()
-    return _panel_from_rows(spec, rows)
 
 
 def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> PanelTable:
@@ -473,6 +474,8 @@ def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Pa
             rates=[[None] * width for _ in symbols],
             flags=[[None] * width for _ in symbols],
         )
+    # A day's ranks are unique, so ``rank <= n`` is at most n symbols.
+    rank_holder: list[dict[int, str]] = [{} for _ in timestamps]
     for row_index, row in enumerate(rows):
         timestamp = row_timestamps[row_index]
         symbol = row_symbols[row_index]
@@ -489,6 +492,11 @@ def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Pa
             rank = _as_int(rank_raw, at.rank.name, row_index)
             if rank < 1:
                 raise IntegrityError("schema", f"Rank at row {row_index} must be at least 1.")
+            holder = rank_holder[column].setdefault(rank, symbol)
+            if holder != symbol:
+                raise IntegrityError(
+                    "duplicate", f"{symbol} and {holder} share rank {rank} at {timestamp}."
+                )
             ranks[line][column] = rank
         signal_raw = row[at.signal.index]
         signals[line][column] = (
@@ -496,8 +504,7 @@ def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Pa
         )
         if funding_cells is not None:
             funding_cells.read(row, row_index, line, column)
-    _audit_ranks(ranks, timestamps, symbols)
-    del rows
+    del rows, rank_holder, row_timestamps, row_symbols
     return PanelTable(
         timestamps=tuple(timestamps),
         symbols=tuple(symbols),
@@ -511,7 +518,7 @@ def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Pa
 
 
 def _freeze[T](series: list[list[T]]) -> tuple[tuple[T, ...], ...]:
-    """The series as tuples, releasing each line as it goes, so the peak is one series."""
+    """The series as tuples, releasing each line as it goes, so the peak is one line over."""
 
     lines: list[tuple[T, ...]] = []
     while series:
@@ -557,22 +564,6 @@ def _audit_even_axis(timestamps: list[int]) -> None:
                 f"Panel date axis is not evenly spaced at row {index}: a day off the grid "
                 "would give every other symbol a day without a row.",
             )
-
-
-def _audit_ranks(ranks: list[list[int | None]], timestamps: list[int], symbols: list[str]) -> None:
-    """A day's ranks are unique, so ``rank <= n`` is at most n symbols."""
-
-    for column, timestamp in enumerate(timestamps):
-        seen: dict[int, str] = {}
-        for line, symbol in enumerate(symbols):
-            rank = ranks[line][column]
-            if rank is None:
-                continue
-            if rank in seen:
-                raise IntegrityError(
-                    "duplicate", f"{symbol} and {seen[rank]} share rank {rank} at {timestamp}."
-                )
-            seen[rank] = symbol
 
 
 @dataclass(frozen=True, slots=True)

@@ -205,7 +205,8 @@ configs:
   `funding_covered`).
   - A **traded** day with **no rate** that a position could hold fails
     the run closed (`failure_kind: funding`) before any window is scored:
-    the run audits every fold's test window and the holdout up front. For
+    the first window scored audits every fold's test window and the
+    holdout. For
     every decision day of a window the symbol is in the universe (traded,
     rank at most `universe_size`, signal known) and can fill from (rows
     through the fill day, traded on it), the traded days from

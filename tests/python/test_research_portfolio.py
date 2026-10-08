@@ -244,6 +244,8 @@ def _four_symbol_spec(**overrides: object) -> HypothesisSpec:
     body["portfolio"] = {"universe_size": 4, "min_names_per_leg": 1}
     # The direct window tests pass their own config; the spec's must validate.
     body["configs"] = [{"id": "q50-h2", "quantile": 0.5, "horizon_bars": 2}]
+    # A split that fits the hand-built panels of a few days.
+    body["split"] = {"method": "expanding", "train_bars": 1, "test_bars": 1, "holdout_bars": 1}
     for key, value in overrides.items():
         body[key] = value
     return _spec(body)
@@ -915,7 +917,9 @@ def test_the_panel_must_match_the_spec_on_funding() -> None:
 
 
 def test_the_portfolio_block_sums_validation_folds_and_names_the_holdout() -> None:
-    spec = _four_symbol_spec()
+    spec = _four_symbol_spec(
+        split={"method": "expanding", "train_bars": 30, "test_bars": 20, "holdout_bars": 60}
+    )
     panel = _table(
         symbols=["A", "B"],
         prices=[
@@ -976,6 +980,10 @@ def test_spec_rules_for_the_panel_backend() -> None:
         ConfigSpec(id="both", threshold=0.1, horizon_bars=4, quantile=0.2)
     with pytest.raises(SpecError, match="exactly one of threshold and quantile"):
         ConfigSpec(id="neither", threshold=None, horizon_bars=4)
+    listed = _spec_body()
+    _mapping(listed["data"])["backend"] = ["panel"]
+    with pytest.raises(SpecError, match=r"data\.backend must be"):
+        _spec(listed)
     sized = _spec_body()
     _mapping(_mapping(sized["data"])["columns"])["vol"] = {"dtype": "float64", "role": "feature"}
     _mapping(sized)["features"] = [

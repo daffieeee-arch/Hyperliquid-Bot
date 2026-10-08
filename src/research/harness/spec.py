@@ -127,11 +127,11 @@ UNIT_SIZING = SizingSpec(method="unit")
 class PortfolioSpec:
     """A cross-sectional portfolio over a panel (``data.backend: panel``).
 
-    On each decision day the universe is the rows whose rank column is at
-    most ``universe_size``; each config goes long the top ``quantile`` of it
-    by the signal and, under ``direction: signed``, short the bottom
-    ``quantile``. A leg needs ``min_names_per_leg`` names or the day is
-    skipped.
+    On each decision day the universe is the symbols that traded with a rank
+    at most ``universe_size`` and a known signal; each config goes long the
+    top ``quantile`` of it by the signal and, under ``direction: signed``,
+    short the bottom ``quantile``. A leg needs ``min_names_per_leg`` names,
+    at the decision and at the fill, or the period is skipped.
     """
 
     universe_size: int
@@ -384,11 +384,7 @@ def _parse_costs(raw: dict[str, Json]) -> CostSpec:
         allow_zero_latency = _require_bool(raw["allow_zero_latency"], "costs.allow_zero_latency")
     funding_column = None
     if "funding_column" in raw:
-        funding_column = _identifier(
-            _require_str(raw["funding_column"], "costs.funding_column", 64),
-            _COLUMN_NAME,
-            "costs.funding_column",
-        )
+        funding_column = _column_ref(raw, "funding_column", "costs")
     return CostSpec(
         fee_bps=fee_bps,
         slippage_bps=slippage_bps,
@@ -556,15 +552,18 @@ _DATA_KEYS: Final[frozenset[str]] = frozenset(
 )
 
 
-def _column_ref(raw: dict[str, Json], key: str) -> str:
-    """The column name ``data.<key>`` names, validated as an identifier."""
+def _column_ref(raw: dict[str, Json], key: str, section: str = "data") -> str:
+    """The column name ``<section>.<key>`` names, validated as an identifier."""
 
-    return _identifier(_require_str(raw[key], f"data.{key}", 64), _COLUMN_NAME, f"data.{key}")
+    label = f"{section}.{key}"
+    return _identifier(_require_str(raw[key], label, 64), _COLUMN_NAME, label)
 
 
 def _parse_data(raw: dict[str, Json]) -> DataSpec:
     backend = raw.get("backend")
     symbol_column = traded_column = rank_column = None
+    if not isinstance(backend, str):
+        raise SpecError("data.backend must be parquet, duckdb, or panel.")
     if backend in {"panel", "parquet"}:
         panel_keys = (
             {"symbol_column", "traded_column", "rank_column"} if backend == "panel" else set()
@@ -661,16 +660,8 @@ def _parse_features(raw: Json, data: DataSpec) -> tuple[FeatureSpec, ...]:
         name = _identifier(
             _require_str(body["name"], f"features[{index}].name", 41), _FEATURE_NAME, "feature name"
         )
-        column_name = _identifier(
-            _require_str(body["column"], f"features[{index}].column", 64),
-            _COLUMN_NAME,
-            "feature column",
-        )
-        available = _identifier(
-            _require_str(body["available_at_column"], f"features[{index}].available_at_column", 64),
-            _COLUMN_NAME,
-            "feature available_at_column",
-        )
+        column_name = _column_ref(body, "column", f"features[{index}]")
+        available = _column_ref(body, "available_at_column", f"features[{index}]")
         if name in seen:
             raise SpecError(f"Duplicate feature name {name}.")
         seen.add(name)

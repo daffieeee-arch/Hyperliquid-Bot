@@ -38,10 +38,10 @@ day; after a skip at the fill it is the fill day, when the non-fill is
 known, so no decision is placed with a later day's knowledge.
 
 With funding declared, a traded day without any rate that a position could
-hold fails the run closed before any window is scored (``audit_split``
-audits every window of the split; a window scored on its own is audited
-first), so the outcome is a property of the panel, the spec's grid and the
-windows, not of which config trades or is selected:
+hold fails the run closed before any window is scored (the first window
+scored audits every window of the split, and any other window is audited
+before it is scored), so the outcome is a property of the panel, the
+spec's grid and the split, not of which config trades or is selected:
 the panel keeps such days only outside its funding runs, and a study's
 range must not hold a position across one. A held day whose rate is there but
 not whole (``funding_covered`` false: at most one settlement missing, or
@@ -114,6 +114,15 @@ class _Skipped:
 
 
 @dataclass(frozen=True, slots=True)
+class _Opened:
+    """A period's positions and how many names each leg holds."""
+
+    positions: list[_Position]
+    long_names: int
+    short_names: int
+
+
+@dataclass(frozen=True, slots=True)
 class _Held:
     value: float
     paid: float
@@ -134,6 +143,7 @@ class PanelSource:
     _ranked: dict[int, list[tuple[float, int]]] = field(default_factory=dict, init=False)
     # The windows whose held days were audited for funding.
     _audited: set[tuple[int, int]] = field(default_factory=set, init=False)
+    _split_audited: bool = field(default=False, init=False)
     _portfolio: PortfolioSpec = field(init=False)
 
     def __post_init__(self) -> None:
@@ -151,14 +161,15 @@ class PanelSource:
         """A traded day without a rate fails closed wherever a window's position could hold it.
 
         A position decided on a day of ``[start, end)`` the symbol is in the
-        universe is charged, as ``_hold`` charges, the days after its fill
-        through its exit: ``decision + latency_bars + 1`` through
-        ``decision + latency_bars + horizon_bars`` for the grid's longest
-        horizon whose exit stays inside the window, and never across a day
-        without a row. A traded day without a rate among those days of any
-        such decision fails the run, whichever config's legs would hold it.
-        The same days matter to every config scored on the window, so this
-        is a property of the panel, the grid and the window.
+        universe and fills from is charged, as ``_hold`` charges, the days
+        after its fill through its exit (``_held_through``): ``decision +
+        latency_bars + 1`` through ``decision + latency_bars +
+        horizon_bars`` for the grid's longest horizon whose exit stays
+        inside the window, and never across a day without a row. A traded
+        day without a rate among those days of any such decision fails the
+        run, whichever config's legs would hold it. The same days matter to
+        every config scored on the window, so this is a property of the
+        panel, the grid and the window.
         """
 
         panel = self.panel
@@ -167,14 +178,9 @@ class PanelSource:
         for symbol in range(len(panel.symbols)):
             # The charged spans of the universe days so far, in day order.
             spans: deque[tuple[int, int]] = deque()
-            prices = panel.prices[symbol]
             traded = panel.traded[symbol]
             rates = funding[symbol]
             for day in range(start, end):
-                if prices[day] is None:
-                    # The contract ends at a gap; nothing holds across it.
-                    spans.clear()
-                    continue
                 while spans and spans[0][1] < day:
                     spans.popleft()
                 if traded[day] is not True:
@@ -190,8 +196,12 @@ class PanelSource:
                     continue
                 longest = next((h for h in horizons if day + latency + h < end), None)
                 # A symbol that cannot fill from this day never holds from it.
-                if longest is not None and self._fills(symbol, day, day + latency):
-                    spans.append((day + latency + 1, day + latency + longest))
+                if longest is None or not self._fills(symbol, day, day + latency):
+                    continue
+                entry = day + latency
+                through = self._held_through(symbol, entry, entry + longest)
+                if through > entry:
+                    spans.append((entry + 1, through))
 
     @property
     def length(self) -> int:
@@ -201,22 +211,23 @@ class PanelSource:
     def portfolio(self) -> PortfolioSpec:
         return self._portfolio
 
-    def audit_split(self) -> None:
+    def _audit_split(self, funding: Sequence[Sequence[float | None]]) -> None:
         """Audit the funding of every window the split will score, before any is.
 
         The folds' test windows and the holdout are the windows a run
-        scores; auditing them here, rather than as each is first scored,
-        makes a hole in the holdout fail the run whether or not validation
-        selects a config to score on it.
+        scores; auditing them all when the first is scored, rather than
+        each as it comes, makes a hole in the holdout fail the run whether
+        or not validation selects a config to score on it.
         """
 
-        if self.panel.funding is None:
-            return
         folds, holdout = walk_forward(self.length, self.spec.split)
         for start, end in (*((fold.test_start, fold.test_end) for fold in folds), holdout):
-            if (start, end) not in self._audited:
-                self._audit_window(self.panel.funding, start, end)
-                self._audited.add((start, end))
+            self._audit_once(funding, start, end)
+
+    def _audit_once(self, funding: Sequence[Sequence[float | None]], start: int, end: int) -> None:
+        if (start, end) not in self._audited:
+            self._audit_window(funding, start, end)
+            self._audited.add((start, end))
 
     def window(self, config: ConfigSpec, start: int, end: int) -> TradeSeries:
         """Non-overlapping periods decided inside ``[start, end)``.
@@ -230,9 +241,11 @@ class PanelSource:
         if config.quantile is None:
             raise HarnessError("invariant", f"Config {config.id} has no quantile.")
         latency = self.spec.costs.latency_bars
-        if self.panel.funding is not None and (start, end) not in self._audited:
-            self._audit_window(self.panel.funding, start, end)
-            self._audited.add((start, end))
+        if self.panel.funding is not None:
+            if not self._split_audited:
+                self._split_audited = True
+                self._audit_split(self.panel.funding)
+            self._audit_once(self.panel.funding, start, end)
         quantile = exact_quantile(config.quantile)
         gross: list[float] = []
         paid: list[float] = []
@@ -241,12 +254,12 @@ class PanelSource:
         decision = start
         while (period := next_period(decision, latency, config.horizon_bars, end)) is not None:
             entry, exit_index = period
-            positions = self._positions(quantile, decision, entry)
-            if isinstance(positions, _Skipped):
+            opened = self._positions(quantile, decision, entry)
+            if isinstance(opened, _Skipped):
                 stats += PeriodStats(skipped_decisions=1)
                 # A non-fill is known on the fill day, not before; the
                 # decision always advances, at zero latency too.
-                decision = max(entry, decision + 1) if positions.at_fill else decision + 1
+                decision = max(entry, decision + 1) if opened.at_fill else decision + 1
                 continue
             period_gross = 0.0
             period_paid = 0.0
@@ -254,7 +267,7 @@ class PanelSource:
             forced = 0
             uncovered = 0
             unfunded = 0
-            for position in positions:
+            for position in opened.positions:
                 held = self._hold(position, entry, exit_index)
                 period_gross += held.value
                 period_paid += held.paid
@@ -267,9 +280,8 @@ class PanelSource:
             received.append(period_received)
             stats += PeriodStats(
                 periods=1,
-                skipped_decisions=0,
-                long_names=sum(1 for position in positions if position.side > 0),
-                short_names=sum(1 for position in positions if position.side < 0),
+                long_names=opened.long_names,
+                short_names=opened.short_names,
                 forced_exits=forced,
                 uncovered_funding_days=uncovered,
                 unfunded_halt_days=unfunded,
@@ -285,9 +297,7 @@ class PanelSource:
             weights=(1.0,) * len(gross),
         )
 
-    def _positions(
-        self, quantile: Fraction, decision: int, entry: int
-    ) -> list[_Position] | _Skipped:
+    def _positions(self, quantile: Fraction, decision: int, entry: int) -> _Opened | _Skipped:
         """The period's positions, or why it is skipped."""
 
         portfolio = self.portfolio
@@ -317,7 +327,7 @@ class PanelSource:
         positions.extend(
             _Position(symbol, -1, capital / len(short_filled)) for symbol in short_filled
         )
-        return positions
+        return _Opened(positions, len(long_filled), len(short_filled))
 
     def _fills(self, symbol: int, decision: int, entry: int) -> bool:
         """Whether the symbol trades at the fill and had a row on every day since the decision.
@@ -332,6 +342,19 @@ class PanelSource:
             return False
         return panel.traded[symbol][entry] is True
 
+    def _held_through(self, symbol: int, entry: int, exit_index: int) -> int:
+        """The last day a position filled at ``entry`` holds: ``exit_index``, or the
+        day before the first without a row, where the contract ends. The hold
+        and the funding audit share this one rule."""
+
+        prices = self.panel.prices[symbol]
+        through = entry
+        for day in range(entry + 1, exit_index + 1):
+            if prices[day] is None:
+                break
+            through = day
+        return through
+
     def _in_universe(self, symbol: int, day: int) -> bool:
         """Whether the symbol can be decided on that day: traded, ranked within the
         universe, signal known. The ranking and the funding audit share this one test."""
@@ -341,7 +364,7 @@ class PanelSource:
         return (
             panel.traded[symbol][day] is True
             and rank is not None
-            and rank <= self._portfolio.universe_size
+            and rank <= self.portfolio.universe_size
             and panel.signals[symbol][day] is not None
         )
 
@@ -390,10 +413,10 @@ class PanelSource:
         uncovered = 0
         unfunded = 0
         last = entry
-        for day in range(entry + 1, exit_index + 1):
+        for day in range(entry + 1, self._held_through(symbol, entry, exit_index) + 1):
             price = prices[day]
             if price is None:
-                break
+                raise HarnessError("invariant", "A held day has a row.")
             if panel.traded[symbol][day] is True:
                 last = day
             if panel.funding is None or panel.covered is None:

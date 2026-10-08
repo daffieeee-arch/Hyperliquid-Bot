@@ -200,7 +200,7 @@ selected. Cash (zero) is the other benchmark. Neither is tested.
 
 ## Decision rules (committed now)
 
-Proceed only if all of these hold:
+A **pass** needs all of these:
 
 1. **Label**: the label is `passes_h1`. That requires a positive holdout net
    mean at 1.0×, 1.5× and 2.0× costs, and p ≤ alpha at 1.0× only. The
@@ -211,32 +211,31 @@ Proceed only if all of these hold:
    years.
 3. **Overfitting**: the deflated Sharpe ratio is ≥ 0.95 and the PBO is
    ≤ 0.5, both as the harness reports them, on validation net returns at
-   1.0×.
+   1.0×. A value the harness reports as not computed fails this rule.
 4. **Not carry alone**: the selected config's holdout gross mean per trade
    (the price return, before costs and funding) is > 0 and at least half of
    its holdout net mean at 1.0×. The hypothesis is that crowding unwinds in
    price. A pass that rests mostly on funding received is carry, which
    belongs to the separate hedged study.
-5. **Forward confirmation**: because the holdout's market was seen (see
-   [Seen before](#seen-before)), a pass leads to a pre-registered forward
-   test on data after 2026-09-30 before any PAPER strategy design, not
-   straight to one.
 
-Any other label (`no_edge`, `interesting_but_fragile`, or `not_enough_data`
-at validation) means this family stops on BTC, as below.
+The outcome is then exactly one of these:
+
+| Result | Outcome |
+| --- | --- |
+| A pass | A pre-registered forward test on data after 2026-09-30, before any PAPER strategy design. The holdout's market was seen (see [Seen before](#seen-before)), so a pass here is not enough on its own. |
+| Validation selected a config, but the holdout has too few trades (`not_enough_data` after a selection) | Neither a pass nor a refutation. Only a pre-registered forward test may follow, with nothing re-tuned. |
+| Anything else: `no_edge`, `interesting_but_fragile`, `not_enough_data` at validation, or `passes_h1` failing rule 2, 3 or 4 | This family stops on BTC. |
+
+On the thin-holdout case: holdout funding averaged about 0.000038 per 8h,
+below neutral and just above 0. The `near` configs are then likely to sit
+long for much of a falling holdout. The `far` configs go long only below 0
+and short only above 0.0002, so they may trade little there.
 
 The harness's `promotion_decision` is not this decision. It says
-`paper_candidate` on rule 1 alone; rules 2 to 5 are applied in the results
+`paper_candidate` on rule 1 alone; rules 2 to 4 are applied in the results
 document, and a `paper_candidate` that fails any of them is not acted on.
 
-A selected config with too few holdout trades (`not_enough_data`) is not a
-pass and not a refutation; it also leads to the forward test, with nothing
-re-tuned. Holdout funding averaged about 0.000038 per 8h, below neutral and
-just above 0. The `near` configs are then likely to sit long for much of a
-falling holdout. The `far` configs go long only below 0 and short only above
-0.0002, so they may trade little there.
-
-Otherwise this family stops on BTC:
+When the family stops:
 
 - Thresholds, the funding window and horizons are not re-tuned on this data.
 - A new variant needs a new pre-registration and evidence from data after
@@ -280,7 +279,9 @@ export STUDY_DIR=...            # must not exist yet; outside the repository
   # Run from main as merged: HEAD is on origin/main, so commit.txt is too.
   git fetch --quiet origin main
   git merge-base --is-ancestor HEAD origin/main
-  test -f docs/experiments/exp_funding_btc.md
+  # ... with this document and spec as they stand on main today.
+  git diff --exit-code origin/main -- \
+    docs/experiments/exp_funding_btc.md docs/experiments/exp_funding_btc.spec.yaml
   # STUDY_DIR stays outside the repository, so the run cannot dirty it.
   study="$(realpath -m "$STUDY_DIR")"
   repo="$(realpath "$REPO_ROOT")"
@@ -290,7 +291,7 @@ export STUDY_DIR=...            # must not exist yet; outside the repository
   # The pre-registered code: no change, tracked, untracked or ignored.
   git diff --exit-code "$pin" -- "${pinned[@]}"
   changed="$(git status --porcelain --ignored --untracked-files=all -- "${pinned[@]}")"
-  stray="$(printf '%s\n' "$changed" | grep -v -e '^$' -e '/__pycache__/' || true)"
+  stray="$(printf '%s\n' "$changed" | grep -v -e '^$' -e '/__pycache__/[^/]*\.pyc$' || true)"
   test -z "$stray"
   # The whole working tree is clean, so commit.txt describes what runs.
   dirty="$(git status --porcelain --untracked-files=all)"
@@ -299,10 +300,11 @@ export STUDY_DIR=...            # must not exist yet; outside the repository
   git rev-parse HEAD > "$STUDY_DIR/commit.txt"
   # Bytecode only from a fresh folder: no cached .pyc from the checkout runs.
   export PYTHONPYCACHEPREFIX="$STUDY_DIR/pycache"
-  # Exit 2 with only gap lines is normal while the current month is open.
-  # Exit 2 with an error line is a data failure, and any other code is a
-  # crash: both stop here. A missing or broken archive inside the range also
-  # fails the fingerprint check below.
+  # Exit 2 is normal while the current month is open, but hist_etl also
+  # reports some data failures as gap lines with exit 2. An `error` line or
+  # any other code stops here; for the rest, the fingerprint check below is
+  # the gate: a missing or broken archive inside the range cannot give the
+  # pinned table, and sync.log names the cause.
   status=0
   PYTHONPATH=src uv run --frozen python -m research.hist_etl sync \
     --dataset bn-um-btcusdt-klines-1h-2020 --dataset bn-um-btcusdt-klines-1h \

@@ -165,9 +165,9 @@ def _month_files(
 def build_panel(files: UniverseFiles, spec: PanelSpec, start: date, end: date) -> list[PanelRow]:
     """Ranked panel rows for every symbol with a bar closing in ``[start, end)``.
 
-    The month files are read whole and checked whole, and rows are cut to the
-    range only then. Features of the first rows can so use bars from earlier
-    in the start's month, which are past data.
+    The month files, warm-up months included, are read whole and checked
+    whole, and rows are cut to the range only then, so a row's features do
+    not depend on ``start``.
     """
 
     bars = _read_bars(files.klines)
@@ -180,7 +180,7 @@ def build_panel(files: UniverseFiles, spec: PanelSpec, start: date, end: date) -
         # Rows look back only, so bars after ``end`` change nothing; skip them.
         kept = [bar for bar in bars[symbol] if bar.ts < end_ms]
         rows.extend(build_symbol_rows(symbol, kept, settlements.get(symbol, []), spec))
-    _check_funding_runs(rows, settlements, files.funding_runs)
+    _check_funding_runs(bars, settlements, files.funding_runs)
     inside = [row for row in rows if start_ms <= row.ts < end_ms]
     if not inside:
         raise BarTableError("The universe has no daily bar inside the panel range.")
@@ -225,34 +225,35 @@ def _missing_day(symbol: str, previous_close: int) -> str:
 
 
 def _check_funding_runs(
-    rows: Sequence[PanelRow], settlements: dict[str, list[Settlement]], runs: Sequence[Run]
+    bars: dict[str, list[DailyBar]],
+    settlements: dict[str, list[Settlement]],
+    runs: Sequence[Run],
 ) -> None:
     """A traded day inside a funding run with a settlement missing fails.
 
-    This is validation, not a feature, so it reads the whole series. Holes
-    are judged between the run's own settlements in its window, and at the
-    window's edges like the bars: only a listing month may start late and
-    only a delisting month may end early. A day that did not trade is not
-    checked: delisted contracts carry default funding.
+    This is validation, not a feature, so it reads the whole series and the
+    whole month files. Holes are judged between the run's own settlements
+    in its window, and at the window's edges like the bars: funding may
+    start late only inside the listing month and stop early only inside the
+    delisting month. A day that did not trade is not checked: delisted
+    contracts carry default funding.
     """
 
-    traded: dict[str, set[int]] = defaultdict(set)
-    for row in rows:
-        if row.traded:
-            traded[row.symbol].add(row.ts)
     for run in runs:
+        traded = {
+            bar.ts for bar in bars.get(run.symbol, []) if bar.trades > 0 and bar.quote_volume > 0.0
+        }
         opens = _close_ms(run.first) - DAY_MS
         high = _close_ms(run.last)
         series = settlements.get(run.symbol, [])
         own = [item for item in series if opens < item.ts + SETTLEMENT_SLACK_MS <= high]
         following = next((item for item in series if item.ts + SETTLEMENT_SLACK_MS > high), None)
-        holes = funding_hole_closes(own) | _edge_holes(run, own, following, opens, high)
-        # A window that is all listing month (or all delisting month) may
-        # hold no settlement yet (or any more).
-        edge_only = (run.late_start or run.early_end) and _same_month(run.first, run.last)
-        if not own and not edge_only:
-            holes |= {ts for ts in traded[run.symbol] if opens < ts <= high}
-        for close in sorted(holes & traded[run.symbol]):
+        if own:
+            edges = _edge_dues(own, following, opens, high)
+        else:
+            edges = {ts for ts in traded if opens < ts <= high}
+        holes = funding_hole_closes(own) | {ts for ts in edges if not _edge_allowed(run, ts)}
+        for close in sorted(holes & traded):
             day = datetime.fromtimestamp(close / 1000, UTC).date()
             raise BarTableError(
                 f"{run.symbol} traded on {day} with a funding settlement missing inside a "
@@ -260,36 +261,36 @@ def _check_funding_runs(
             )
 
 
-def _edge_holes(
-    run: Run,
-    own: Sequence[Settlement],
-    following: Settlement | None,
-    opens: int,
-    high: int,
+def _edge_dues(
+    own: Sequence[Settlement], following: Settlement | None, opens: int, high: int
 ) -> set[int]:
     """Days at the window's edges on which a settlement was due but is missing.
 
-    Like the interior, every due day is marked. The settlement after the
+    Every due day is marked, like the interior. The settlement after the
     window, when loaded, gives the interval at the end.
     """
 
-    if not own:
-        return set()
-    holes: set[int] = set()
+    days: set[int] = set()
     first, last = own[0], own[-1]
-    if not run.late_start:
-        step = first.interval_hours * _HOUR_MS
-        due = first.ts - step
-        while due + SETTLEMENT_SLACK_MS > opens:
-            holes.add(settlement_day_close(due))
-            due -= step
-    if not run.early_end:
-        step = max(last.interval_hours, following.interval_hours if following else 0) * _HOUR_MS
-        due = last.ts + step
-        while due + SETTLEMENT_SLACK_MS <= high:
-            holes.add(settlement_day_close(due))
-            due += step
-    return holes
+    step = first.interval_hours * _HOUR_MS
+    due = first.ts - step
+    while due + SETTLEMENT_SLACK_MS > opens:
+        days.add(settlement_day_close(due))
+        due -= step
+    step = max(last.interval_hours, following.interval_hours if following else 0) * _HOUR_MS
+    due = last.ts + step
+    while due + SETTLEMENT_SLACK_MS <= high:
+        days.add(settlement_day_close(due))
+        due += step
+    return days
+
+
+def _edge_allowed(run: Run, close: int) -> bool:
+    """A missing edge settlement inside the listing or delisting month."""
+
+    in_listing = run.late_start and close <= _close_ms(_month_end(run.first))
+    in_delisting = run.early_end and close >= _close_ms(date(run.last.year, run.last.month, 1))
+    return in_listing or in_delisting
 
 
 def _synced(path: Path) -> bool:

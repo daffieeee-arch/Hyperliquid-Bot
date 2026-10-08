@@ -12,9 +12,10 @@ marks a day with trades and quote volume, and the price features need
 every day of their window traded.
 
 ``volume_rank`` orders the symbols of one day by trailing quote volume
-among the rows that traded and have every feature. A study takes its
-universe on each day from that rank (for example the top 50), which is
-point in time: it never looks at which symbols survive.
+among the rows that traded and have that volume, and needs no other
+feature. A study takes its universe on each day from that rank (for
+example the top 50) and requires the features it uses on top; the rank is
+point in time and never looks at which symbols survive.
 """
 
 from __future__ import annotations
@@ -120,7 +121,7 @@ class PanelRow:
 
     @property
     def complete(self) -> bool:
-        """Rankable and every feature present."""
+        """Rankable with every feature present, a study's usual row filter."""
 
         return (
             self.traded
@@ -359,7 +360,7 @@ def _streaks(flags: Sequence[bool], run_start: Sequence[int]) -> list[int]:
     for index, flag in enumerate(flags):
         if not flag:
             streaks.append(0)
-        elif index and run_start[index] != index:
+        elif run_start[index] != index:
             streaks.append(streaks[-1] + 1)
         else:
             streaks.append(1)

@@ -657,6 +657,41 @@ def test_a_malformed_manifest_is_reported(tmp_path: Path, capsys: CaptureFixture
     assert "Manifest:" in capsys.readouterr().err
 
 
+def test_funding_may_start_late_only_inside_the_listing_month(
+    tmp_path: Path, capsys: CaptureFixture[str]
+) -> None:
+    root, manifest = _universe_root(tmp_path)
+    # NEWUSDT trades from Jan 20, but its funding only begins on Feb 10.
+    _write_month(root, "funding", "NEWUSDT", "2026-01", range(32, 32))
+    _write_month(root, "funding", "NEWUSDT", "2026-02", range(10, 29))
+    assert main(_panel_args(root, manifest, tmp_path / "panel.parquet")) == 2
+    message = capsys.readouterr().err
+    assert "NEWUSDT traded on 2026-02-01 with a funding settlement missing" in message
+
+
+def test_a_hole_after_end_in_a_closed_run_month_still_fails(
+    tmp_path: Path, capsys: CaptureFixture[str]
+) -> None:
+    root, manifest = _universe_root(tmp_path)
+    # DEADUSDT's closed run is checked through January; the panel ends on
+    # Jan 15, and the Jan 20 08:00 settlement is missing on a traded day.
+    directory = root / "parquet" / "hist_etl" / "binance" / "um" / "funding"
+    january = directory / "DEADUSDT-2026-01.parquet"
+    connection = duckdb.connect()
+    try:
+        source = "'" + str(january).replace("'", "''") + "'"
+        connection.execute(
+            f"COPY (SELECT * FROM read_parquet({source}) WHERE NOT (day(calc_time) = 20 "
+            f"AND hour(calc_time) = 8)) TO {source[:-1]}.tmp' (FORMAT PARQUET)"
+        )
+    finally:
+        connection.close()
+    Path(f"{january}.tmp").replace(january)
+    assert main(_panel_args(root, manifest, tmp_path / "panel.parquet", end="2026-01-15")) == 2
+    message = capsys.readouterr().err
+    assert "DEADUSDT traded on 2026-01-20 with a funding settlement missing" in message
+
+
 def test_a_start_inside_a_listing_month_needs_no_bar_on_it(tmp_path: Path) -> None:
     root, manifest = _universe_root(tmp_path)
     args = _panel_args(root, manifest, tmp_path / "panel.parquet")

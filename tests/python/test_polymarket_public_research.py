@@ -973,6 +973,7 @@ async def test_public_subscription_exact_bytes_and_all_normalized_shapes() -> No
     assert not any(marker.get("event") == "coverage_incomplete" for marker in markers)
 
 
+@pytest.mark.timing
 @pytest.mark.asyncio
 async def test_heartbeat_is_periodic_during_busy_market_traffic_and_times_out_without_pong() -> (
     None

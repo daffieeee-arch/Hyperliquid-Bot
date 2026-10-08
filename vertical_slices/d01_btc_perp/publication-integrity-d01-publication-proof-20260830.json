@@ -65,8 +65,8 @@
   "parent_basis": "cf50a77d99893f1f90cd8707ff41e0ce8c8211d9",
   "publication_files": {
     ".github/workflows/ci.yml": {
-      "bytes": 15744,
-      "sha256": "8ddb93276a30389e680f70a2abec8544b070ad549cadba4ddd775ca89879976d"
+      "bytes": 17569,
+      "sha256": "72ce78113e17289a56547c52c0d42e9dbe6e46e3cbbe4993f5fd040a69833f5b"
     },
     "vertical_slices/__init__.py": {
       "bytes": 79,
@@ -143,8 +143,8 @@
       "sha256": "d58ed2c701bff47d57503e554439df97c7a97e165e12c0842bc065792de372a3"
     },
     "pyproject.toml": {
-      "bytes": 960,
-      "sha256": "cac3c06b4bcef4b853165b6b76bac1176f7f3ba1bc85c80d5d99bc0f0c6c8abc"
+      "bytes": 1174,
+      "sha256": "ba240fbc1fdf1b8b8aa1cd3df9dab9ded50071e430e773ccdfdfd7a45ab0412e"
     },
     "src/hyperliquid_bot/__init__.py": {
       "bytes": 182,
@@ -159,8 +159,8 @@
       "sha256": "a7cc753fd5141ea915ed016562914f14dfcfabb149b19dba98449828ff320899"
     },
     "uv.lock": {
-      "bytes": 60335,
-      "sha256": "0aac52ff4f1c19da5ae20f5311bad7b8995afb058904e1078d21fa6cc2feae74"
+      "bytes": 61885,
+      "sha256": "edb4ee09b2effca731043b49ea61477ebc72f8047dc2b7f16317f0b2ae9d905d"
     }
   },
   "run_binding": {

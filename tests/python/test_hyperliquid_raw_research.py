@@ -613,6 +613,7 @@ async def test_one_required_channel_cannot_hide_another_silent_channel() -> None
     assert factory.calls == 2
 
 
+@pytest.mark.timing
 @pytest.mark.asyncio
 async def test_optional_addon_silence_does_not_reconnect_required_btc() -> None:
     stop_event = asyncio.Event()

@@ -19,7 +19,7 @@ from hyperliquid_bot.binance_usdm_stream_contract import (
     UsdmStreamContractError,
     require_usdm_combined_stream_split,
 )
-from hyperliquid_bot.ci_scope import classify_paths
+from hyperliquid_bot.ci_scope import classify_areas
 from hyperliquid_bot.control_service.app import (
     NOT_READY_DETAIL,
     create_control_service,
@@ -157,16 +157,21 @@ def test_mutated_stop_script_hardcoding_hl_capture_fails_closed() -> None:
 
 
 def test_docs_only_paths_skip_heavy_jobs_but_code_paths_do_not() -> None:
-    assert classify_paths(["docs/ROADMAP.md", "README.md"]) == (False, False)
-    assert classify_paths([".github/workflows/ci.yml"]) == (True, True)
-    assert classify_paths(["src/hyperliquid_bot/local_mode.py"]) == (True, True)
-    assert classify_paths(["apps/cockpit/src/app/page.tsx"]) == (True, True)
-    assert classify_paths(["tests/python/test_control_service.py"]) == (True, True)
-    assert classify_paths(["uv.lock"]) == (True, True)
-    assert classify_paths(["pnpm-lock.yaml"]) == (True, True)
-    assert classify_paths(["pyproject.toml"]) == (True, True)
-    assert classify_paths(["package.json"]) == (True, True)
-    assert classify_paths(["docs/ROADMAP.md", "src/hyperliquid_bot/local_mode.py"]) == (
-        True,
-        True,
-    )
+    def areas(*paths: str) -> tuple[bool, bool]:
+        scope = classify_areas(paths)
+        return scope.python, scope.typescript
+
+    assert areas("docs/ROADMAP.md", "docs/ARCHITECTURE.md") == (False, False)
+    # ruff format checks Python code blocks in Markdown outside docs/.
+    assert areas("README.md") == (True, False)
+    assert areas(".github/workflows/ci.yml") == (True, True)
+    assert areas("src/hyperliquid_bot/local_mode.py") == (True, False)
+    assert areas("apps/cockpit/src/app/page.tsx") == (False, True)
+    assert areas("tests/python/test_control_service.py") == (True, False)
+    assert areas("uv.lock") == (True, False)
+    assert areas("pnpm-lock.yaml") == (False, True)
+    assert areas("pyproject.toml") == (True, False)
+    assert areas("package.json") == (False, True)
+    assert areas("docs/ROADMAP.md", "src/hyperliquid_bot/local_mode.py") == (True, False)
+    # The control-service runbook is asserted by test_control_service.py.
+    assert areas("docs/runbooks/control-service-local.md") == (True, False)

@@ -55,10 +55,12 @@ repository change):
    relevant local format/lint/typecheck/test commands.
 6. For every change, judge whether existing CI already covers the new or
    changed behavior. Extend CI only when truly needed; avoid duplicate,
-   redundant, or unnecessarily heavy checks. Prefer the docs-only / path-based
-   skip paths already defined in `docs/CI.md`.
+   redundant, or unnecessarily heavy checks. Prefer the change-set areas and
+   docs-only skip already defined in `docs/CI.md`.
 7. Commit and push the branch.
-8. Open a pull request targeting `main`.
+8. Open a pull request targeting `main`. Open it as a draft while review
+   rounds still change it: a draft skips the heavy CI jobs, and marking it
+   ready for review runs them on the current head (`docs/CI.md`).
 9. Let all required CI checks complete successfully.
 10. **Claude Code code review is standard** for feature PRs on this project.
     After the PR exists (or after material follow-up commits), run Claude

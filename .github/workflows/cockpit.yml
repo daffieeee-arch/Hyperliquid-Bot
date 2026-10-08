@@ -2,6 +2,9 @@ name: Cockpit
 
 on:
   pull_request:
+    # ready_for_review: a draft PR skips the heavy job (see ci_scope.py);
+    # marking it ready runs it on the same head.
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches:
       - main
@@ -18,7 +21,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
-      heavy: ${{ steps.scope.outputs.heavy }}
+      typescript: ${{ steps.scope.outputs.typescript }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -34,42 +37,45 @@ jobs:
 
   first-paper-screen:
     needs: changes
+    # Run even if the changes job failed: its output is then empty, so every
+    # step below runs (fail closed) instead of reporting a skipped success.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - name: Skip docs-only change set
-        if: needs.changes.outputs.heavy != 'true'
-        run: echo "docs-only PR; cockpit first-paper-screen skipped."
+      - name: Skip unaffected change set
+        if: needs.changes.outputs.typescript == 'false'
+        run: echo "TypeScript area not affected (docs-only, Python only, or draft PR); cockpit first-paper-screen skipped."
 
       - name: Check out repository
-        if: needs.changes.outputs.heavy == 'true'
+        if: needs.changes.outputs.typescript != 'false'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
           persist-credentials: false
 
       - name: Set up Node.js and pnpm
-        if: needs.changes.outputs.heavy == 'true'
+        if: needs.changes.outputs.typescript != 'false'
         uses: ./.github/actions/setup-node-pnpm
 
       - name: Install TypeScript dependencies
-        if: needs.changes.outputs.heavy == 'true'
+        if: needs.changes.outputs.typescript != 'false'
         run: pnpm install --frozen-lockfile
 
       - name: Lint cockpit
-        if: needs.changes.outputs.heavy == 'true'
+        if: needs.changes.outputs.typescript != 'false'
         run: pnpm --filter @hyperliquid-bot/cockpit run lint
 
       - name: Type-check cockpit
-        if: needs.changes.outputs.heavy == 'true'
+        if: needs.changes.outputs.typescript != 'false'
         run: pnpm --filter @hyperliquid-bot/cockpit run typecheck
 
       - name: Test cockpit
-        if: needs.changes.outputs.heavy == 'true'
+        if: needs.changes.outputs.typescript != 'false'
         run: pnpm --filter @hyperliquid-bot/cockpit run test
 
       - name: Build cockpit
-        if: needs.changes.outputs.heavy == 'true'
+        if: needs.changes.outputs.typescript != 'false'
         env:
           TRADING_MODE: PAPER
         run: pnpm --filter @hyperliquid-bot/cockpit run build

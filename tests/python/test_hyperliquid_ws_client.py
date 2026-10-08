@@ -3439,6 +3439,7 @@ async def test_raw_sink_failure_is_terminal_sanitized_and_never_retried(
     )
 
 
+@pytest.mark.timing
 @pytest.mark.asyncio
 @pytest.mark.parametrize("fail_late", (False, True), ids=("late-success", "late-failure"))
 async def test_raw_sink_deadline_does_not_wait_for_cancellation_suppression(
@@ -3508,6 +3509,7 @@ async def test_raw_sink_deadline_does_not_wait_for_cancellation_suppression(
             await asyncio.gather(task, return_exceptions=True)
 
 
+@pytest.mark.timing
 @pytest.mark.asyncio
 async def test_outcome_sink_deadline_ignores_late_success_and_commits_nothing() -> None:
     connection = ScriptedConnection()
@@ -3551,6 +3553,7 @@ async def test_outcome_sink_deadline_ignores_late_success_and_commits_nothing() 
     assert collector.health.acknowledged_coins == ()
 
 
+@pytest.mark.timing
 @pytest.mark.asyncio
 async def test_noncooperative_close_cannot_delay_or_mask_primary_protocol_failure() -> None:
     connection = ScriptedConnection()

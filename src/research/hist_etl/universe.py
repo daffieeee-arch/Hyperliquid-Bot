@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import math
 import re
 import sys
 import time
@@ -127,13 +128,11 @@ class BucketLister:
         transport: Transport,
         *,
         limiter: RateLimiter,
-        max_retries: int,
         sleeper: Sleeper,
         base: str = BINANCE_VISION_LISTING,
     ) -> None:
         self._transport = transport
         self._limiter = limiter
-        self._max_retries = max_retries
         self._sleeper = sleeper
         self._base = base
 
@@ -203,7 +202,9 @@ class BucketLister:
             url,
             None,
             limiter=self._limiter,
-            max_retries=self._max_retries,
+            # _page owns the retries, so one page costs at most
+            # _TRANSIENT_ATTEMPTS requests.
+            max_retries=1,
             sleeper=self._sleeper,
         ) as response:
             return response.status, _read_capped(response.iter_bytes(), prefix)
@@ -521,11 +522,17 @@ def expand_universe(
     specs: list[BinanceSpec] = []
     for item in universe.symbols:
         for dataset in datasets:
-            kind = "klines" if dataset == "klines" else "funding"
             runs = item.klines if dataset == "klines" else item.funding
             for position, run in enumerate(runs, start=1):
                 spec = _run_spec(
-                    group, universe, item.symbol, dataset, kind, position, run, start, enabled
+                    group=group,
+                    universe=universe,
+                    symbol=item.symbol,
+                    dataset=dataset,
+                    position=position,
+                    run=run,
+                    start=start,
+                    enabled=enabled,
                 )
                 if spec is not None:
                     specs.append(spec)
@@ -533,11 +540,11 @@ def expand_universe(
 
 
 def _run_spec(
+    *,
     group: str,
     universe: Universe,
     symbol: str,
     dataset: str,
-    kind: str,
     position: int,
     run: MonthRun,
     start: date | None,
@@ -553,6 +560,7 @@ def _run_spec(
         first = start
         open_start = False
     suffix = "" if position == 1 else f"-r{position}"
+    kind = "klines" if dataset == "klines" else "funding"
     if dataset == "klines":
         granularity = "monthly_with_daily_tail" if published else "monthly"
         interval: str | None = universe.interval
@@ -592,17 +600,16 @@ def run_universe(
     if out.exists():
         raise HistEtlError(f"refusing to replace {out}; universe files are dated", exit_code=2)
     try:
-        retries = int(env.get("HIST_ETL_MAX_RETRIES") or 5)
         timeout = float(env.get("HIST_ETL_HTTP_TIMEOUT_SECONDS") or 60.0)
     except ValueError as exc:
-        raise HistEtlError(f"invalid HIST_ETL retry or timeout setting: {exc}") from exc
-    if requests_per_second <= 0 or retries < 1 or timeout <= 0:
-        raise HistEtlError("universe needs a positive rate, retry count, and timeout")
+        raise HistEtlError(f"invalid HIST_ETL_HTTP_TIMEOUT_SECONDS: {exc}") from exc
+    # NaN or inf would switch the throttle or the timeout off.
+    if not all(math.isfinite(value) and value > 0 for value in (requests_per_second, timeout)):
+        raise HistEtlError("universe needs a finite, positive rate and timeout")
     wait = sleeper if sleeper is not None else _sleep
     lister = BucketLister(
         transport if transport is not None else build_transport(timeout),
         limiter=RateLimiter(requests_per_second, wait),
-        max_retries=retries,
         sleeper=wait,
     )
     universe = discover_universe(

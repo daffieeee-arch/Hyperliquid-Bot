@@ -150,9 +150,7 @@ def _bucket_keys() -> list[str]:
 
 
 def _lister(bucket: FakeBucket) -> BucketLister:
-    return BucketLister(
-        bucket, limiter=RateLimiter(0, lambda _s: None), max_retries=2, sleeper=lambda _s: None
-    )
+    return BucketLister(bucket, limiter=RateLimiter(0, lambda _s: None), sleeper=lambda _s: None)
 
 
 def _discovered() -> Universe:
@@ -215,7 +213,6 @@ def test_lister_fails_closed_on_bad_pages(status: int, body: bytes, message: str
     lister = BucketLister(
         _Fixed(status, body),
         limiter=RateLimiter(0, lambda _s: None),
-        max_retries=1,
         sleeper=lambda _s: None,
     )
     if message is None:
@@ -253,9 +250,7 @@ def test_lister_retries_a_spurious_no_such_bucket() -> None:
         ]
     )
     waits: list[float] = []
-    lister = BucketLister(
-        transport, limiter=RateLimiter(0, lambda _s: None), max_retries=1, sleeper=waits.append
-    )
+    lister = BucketLister(transport, limiter=RateLimiter(0, lambda _s: None), sleeper=waits.append)
     assert lister.list(KLINES) == ((), (f"{KLINES}A/",))
     assert transport.calls == 3
     assert waits == [0.5, 1.0]
@@ -271,14 +266,12 @@ def test_lister_retries_a_body_that_drops() -> None:
     good = _listing_xml(KLINES, [f"{KLINES}A/"], {f"{KLINES}A/": True}, truncated=False)
     transport = _Sequence([_DroppedBody(200, good), BytesResponse(200, good)])
     lister = BucketLister(
-        transport, limiter=RateLimiter(0, lambda _s: None), max_retries=1, sleeper=lambda _s: None
+        transport, limiter=RateLimiter(0, lambda _s: None), sleeper=lambda _s: None
     )
     assert lister.list(KLINES) == ((), (f"{KLINES}A/",))
     assert transport.calls == 2
     failing = _Sequence([_DroppedBody(200, good) for _ in range(10)])
-    lister = BucketLister(
-        failing, limiter=RateLimiter(0, lambda _s: None), max_retries=1, sleeper=lambda _s: None
-    )
+    lister = BucketLister(failing, limiter=RateLimiter(0, lambda _s: None), sleeper=lambda _s: None)
     with pytest.raises(HistEtlError, match="connection dropped") as caught:
         lister.list(KLINES)
     assert caught.value.exit_code == 2
@@ -301,7 +294,7 @@ def test_lister_retries_an_incomplete_chunked_body() -> None:
         ]
     )
     lister = BucketLister(
-        transport, limiter=RateLimiter(0, lambda _s: None), max_retries=1, sleeper=lambda _s: None
+        transport, limiter=RateLimiter(0, lambda _s: None), sleeper=lambda _s: None
     )
     assert lister.list(KLINES) == ((), (f"{KLINES}A/",))
     assert transport.calls == 4
@@ -310,7 +303,7 @@ def test_lister_retries_an_incomplete_chunked_body() -> None:
 def test_lister_does_not_retry_another_404() -> None:
     transport = _Sequence([BytesResponse(404, b"<Error><Code>NoSuchKey</Code></Error>")])
     lister = BucketLister(
-        transport, limiter=RateLimiter(0, lambda _s: None), max_retries=1, sleeper=lambda _s: None
+        transport, limiter=RateLimiter(0, lambda _s: None), sleeper=lambda _s: None
     )
     with pytest.raises(HistEtlError, match="HTTP 404"):
         lister.list(KLINES)
@@ -320,7 +313,7 @@ def test_lister_does_not_retry_another_404() -> None:
 def test_lister_gives_up_on_a_lasting_no_such_bucket() -> None:
     transport = _Sequence([BytesResponse(404, _NO_SUCH_BUCKET) for _ in range(10)])
     lister = BucketLister(
-        transport, limiter=RateLimiter(0, lambda _s: None), max_retries=1, sleeper=lambda _s: None
+        transport, limiter=RateLimiter(0, lambda _s: None), sleeper=lambda _s: None
     )
     with pytest.raises(HistEtlError, match="HTTP 404"):
         lister.list(KLINES)
@@ -334,7 +327,6 @@ def test_lister_refuses_a_marker_that_does_not_advance() -> None:
     lister = BucketLister(
         _Fixed(200, page),
         limiter=RateLimiter(0, lambda _s: None),
-        max_retries=1,
         sleeper=lambda _s: None,
     )
     with pytest.raises(HistEtlError, match="did not advance"):
@@ -600,6 +592,17 @@ def test_manifest_universe_is_opt_in_by_default(tmp_path: Path) -> None:
     assert select_binance(manifest, None) == ()
 
 
+def test_manifest_universe_file_may_not_escape_by_symlink(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    _write_universe(outside, _discovered())
+    config = tmp_path / "config"
+    (config / "universe").mkdir(parents=True)
+    (config / "universe" / "u.json").symlink_to(outside / "universe" / "u.json")
+    path = _universe_manifest(config, '[[binance_universe]]\nid = "u"\nfile = "universe/u.json"\n')
+    with pytest.raises(HistEtlError, match="below the manifest directory"):
+        load_manifest(path)
+
+
 def test_manifest_group_id_must_be_unique(tmp_path: Path) -> None:
     _write_universe(tmp_path, _discovered())
     path = _universe_manifest(
@@ -815,11 +818,17 @@ def test_shared_archives_download_once(tmp_path: Path) -> None:
     }
 
 
-def test_cli_rejects_a_bad_retry_setting(tmp_path: Path, capsys: CaptureFixture[str]) -> None:
+def test_cli_rejects_bad_rate_and_timeout_settings(
+    tmp_path: Path, capsys: CaptureFixture[str]
+) -> None:
     out = tmp_path / "u.json"
     args = ["universe", "--out", str(out), "--today", AS_OF.isoformat()]
-    assert main(args, env={"HIST_ETL_MAX_RETRIES": "abc"}) == 1
-    assert "invalid HIST_ETL retry or timeout setting" in capsys.readouterr().err
+    assert main(args, env={"HIST_ETL_HTTP_TIMEOUT_SECONDS": "abc"}) == 1
+    assert "invalid HIST_ETL_HTTP_TIMEOUT_SECONDS" in capsys.readouterr().err
+    for rate in ("nan", "inf", "0"):
+        assert main([*args, "--requests-per-second", rate], env={}) == 1
+        assert "finite, positive rate" in capsys.readouterr().err
+    assert main(args, env={"HIST_ETL_HTTP_TIMEOUT_SECONDS": "nan"}) == 1
     assert not out.exists()
 
 

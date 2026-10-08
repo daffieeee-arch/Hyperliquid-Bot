@@ -201,6 +201,7 @@ def run_verify(
     gaps: list[Gap] = []
     index = index_zips(safe_root)
     plans = tuple(resolve_local(plan, index) for plan in plan_binance(binance, today, safe_root))
+    verified: dict[Path, str | None] = {}
     for plan in plans:
         if plan.local_path is None:
             gaps.append(Gap("missing_archive", plan.dataset_id, plan.filename))
@@ -211,10 +212,16 @@ def run_verify(
                 Gap("checksum_mismatch", plan.dataset_id, f"missing checksum for {plan.filename}")
             )
             continue
-        try:
-            verify_zip(plan.local_path, checksum)
-        except HistEtlError as exc:
-            gaps.append(Gap("checksum_mismatch", plan.dataset_id, str(exc)))
+        # An archive two datasets plan is hashed once.
+        if plan.local_path not in verified:
+            try:
+                verify_zip(plan.local_path, checksum)
+                verified[plan.local_path] = None
+            except HistEtlError as exc:
+                verified[plan.local_path] = str(exc)
+        problem = verified[plan.local_path]
+        if problem is not None:
+            gaps.append(Gap("checksum_mismatch", plan.dataset_id, problem))
     _audit_binance_parquet(binance, plans, safe_root, today, gaps)
     for spec in kraken:
         zips = _kraken_zips(safe_root, spec)

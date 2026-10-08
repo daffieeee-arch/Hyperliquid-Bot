@@ -162,8 +162,9 @@ def _binance_universe(item: object, manifest_dir: Path) -> tuple[str, tuple[Bina
         raise HistEtlError(f"binance_universe entry has unknown keys: {', '.join(extra)}")
     group = _ident(table, "id")
     relative = _required_str(table, "file")
-    parts = Path(relative).parts
-    if Path(relative).is_absolute() or ".." in parts:
+    target = manifest_dir / relative
+    # Resolved, so a symlink cannot lead outside the manifest directory either.
+    if Path(relative).is_absolute() or not target.resolve().is_relative_to(manifest_dir.resolve()):
         raise HistEtlError(f"{group} file must be a path below the manifest directory")
     datasets_raw = table.get("datasets", sorted(UNIVERSE_DATASETS))
     if (
@@ -182,7 +183,7 @@ def _binance_universe(item: object, manifest_dir: Path) -> tuple[str, tuple[Bina
     # start late.
     if start is not None and start.day != 1:
         raise HistEtlError(f"{group} start must be the first day of a month")
-    universe = load_universe(manifest_dir / relative)
+    universe = load_universe(target)
     specs = expand_universe(
         group,
         universe,

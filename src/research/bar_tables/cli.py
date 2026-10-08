@@ -111,7 +111,7 @@ def _panel(args: argparse.Namespace) -> int:
         if end <= start:
             raise BarTableError("--end must be after --start.")
         manifest = Path(args.manifest) if args.manifest else default_manifest_path()
-        files = universe_files(root, manifest, args.group, start, end)
+        files = universe_files(root, manifest, args.group, start, end, spec.warmup_days)
         rows = build_panel(files, spec, start, end)
         write_panel_parquet(rows, spec, Path(args.out))
     except (BarTableError, HistEtlError, duckdb.Error, OSError) as exc:

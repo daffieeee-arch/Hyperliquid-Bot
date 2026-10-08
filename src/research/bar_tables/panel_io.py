@@ -76,9 +76,13 @@ class UniverseFiles:
 
 
 def universe_files(
-    root: Path, manifest_path: Path, group: str, start: date, end: date
+    root: Path, manifest_path: Path, group: str, start: date, end: date, warmup_days: int = 0
 ) -> UniverseFiles:
-    """Every month file of ``group`` inside ``[start, end)``; any missing one fails."""
+    """Every month file of ``group`` from ``warmup_days`` before ``start`` to ``end``.
+
+    Any missing one fails. The warm-up lets a row's features read their whole
+    window whatever ``start`` is, where the universe has the history.
+    """
 
     try:
         manifest = load_manifest(manifest_path)
@@ -93,14 +97,16 @@ def universe_files(
         raise BarTableError(f"{group} must expand into both klines and fundingRate datasets.")
     if any(spec.interval != "1d" for spec in klines):
         raise BarTableError(f"{group} klines must be 1d for a daily panel.")
-    kline_files, kline_runs, missing = _month_files(root, klines, start, end)
-    funding_files, funding_runs, funding_missing = _month_files(root, funding, start, end)
+    reach = start - timedelta(days=warmup_days)
+    kline_files, kline_runs, missing = _month_files(root, klines, reach, end)
+    funding_files, funding_runs, funding_missing = _month_files(root, funding, reach, end)
     missing += funding_missing
     if missing:
         shown = ", ".join(str(path) for path in missing[:_MISSING_SHOWN])
         raise BarTableError(
             f"{len(missing)} month file(s) of {group} are missing or have no sidecar; "
-            f"sync the universe first. First: {shown}"
+            "sync the universe first. Funding is published per month only, so --end "
+            f"cannot pass the newest published month. First: {shown}"
         )
     return UniverseFiles(
         klines=kline_files,

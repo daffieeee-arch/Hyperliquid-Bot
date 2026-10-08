@@ -42,8 +42,12 @@ of latency.
 ## Point-in-time rules
 
 - **No silent zeros.** A feature is empty unless its whole window is there.
-  Warm-up rows at the start and after a listing are kept with empty features,
-  not dropped and not zero-filled.
+  Warm-up rows after a listing are kept with empty features, not dropped and
+  not zero-filled.
+- **A row does not depend on `start`.** The build reads the longest
+  window's worth of days before `start` (whole months) as warm-up, so a
+  row's features are the same whatever `start` is, wherever the universe
+  has that history.
 - **An archive day is not a trading day.** After a delisting, Binance Vision
   keeps publishing flat, zero-volume bars and default-rate funding. Price
   features need every day of their window `traded`. `qv_<V>d` counts an
@@ -53,10 +57,11 @@ of latency.
 - **Funding days.** A settlement belongs to the day whose `(ts - 1 day, ts]`
   holds its time plus a minute, so one stamped just before midnight counts
   for the day it opens. `funding_covered` is judged at the close, from
-  settlements up to it: consecutive settlements, the previous day's last
-  included, are at most the longer of their intervals apart (plus a
-  minute), and the next one is due after the close by the last one's
-  interval. A day that goes from 8h to 4h funding is covered.
+  settlements up to it: the day's consecutive settlements are at most the
+  longer of their intervals apart (plus a minute), the one before the first
+  was due by the open, and the next one is due after the close by the last
+  one's interval. A hole late on one day does not mark the next day. A day
+  that goes from 8h to 4h funding is covered.
   - **Limitation:** Binance's interval label is sometimes the hours since
     the previous settlement and sometimes the new setting (TRBUSDT, GASUSDT
     and LOOMUSDT in 2023-10). On a day that returns from 4h to 8h, a missing
@@ -83,7 +88,7 @@ Nothing is written when any of these fail:
   universe would otherwise drop symbols silently, most likely the delisted
   ones, which is survivorship bias.
   - A still-published run is expected up to `end`, so `end` cannot pass the
-    synced data.
+    synced data, and for funding not the newest published month.
   - A run that the universe keeps open by its grace month, but which never got
     that month, blocks the build until a newer universe file closes it.
 - **A daily bar is missing inside a run.** The month files are read and
@@ -114,10 +119,10 @@ Nothing is written when any of these fail:
 
 ## Limits
 
-- Rows start at `start`. Features can use bars from earlier in `start`'s
-  month, which are past data, but not from before it, so up to the longest
-  window of days is warm-up. Pick `start` that far before the study's first
-  decision.
+- The warm-up months before `start` are checked like the rest, so they
+  must be synced too.
+- Funding is published per month only, so `end` cannot pass the newest
+  published funding month; pick the first day of a month.
 - Size: 1.44M synthetic rows (600 symbols over 2,400 days, about twice the
   2026-10-08 universe) took 51 s and peaked at 1 GB, input included.
 - Daily bars only (`1d` klines). Funding is summed per day, not per position

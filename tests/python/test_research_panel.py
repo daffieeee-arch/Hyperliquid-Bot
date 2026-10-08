@@ -197,6 +197,14 @@ def test_a_relisting_day_is_judged_like_a_fresh_listing() -> None:
     assert with_history[2].funding_covered
 
 
+def test_a_hole_at_the_end_of_a_day_leaves_the_next_day_covered() -> None:
+    bars = _bars([100.0, 101.0, 102.0])
+    # Day two misses its 16:00 settlement; day three has all of its own.
+    settlements = [item for index, item in enumerate(_funding(bars)) if index != 5]
+    rows = _rows(bars, settlements)
+    assert [row.funding_covered for row in rows] == [True, False, True]
+
+
 def test_funding_holes_mark_the_days_a_settlement_was_due() -> None:
     bars = _bars([100.0, 101.0, 102.0, 103.0, 104.0])
     settlements = _funding(bars)
@@ -480,6 +488,31 @@ def test_the_cli_writes_the_panel_with_delisted_symbols(tmp_path: Path) -> None:
     # The 7-day return first exists on day 8.
     assert first_ranked == (_FIRST_CLOSE + 7 * DAY_MS,)
     assert sorted(path.name for path in tmp_path.iterdir()) == ["config", "panel.parquet", "root"]
+
+
+def test_a_row_does_not_depend_on_where_the_panel_starts(tmp_path: Path) -> None:
+    root, manifest = _universe_root(tmp_path)
+    early = tmp_path / "early.parquet"
+    late = tmp_path / "late.parquet"
+    assert main(_panel_args(root, manifest, early)) == 0
+    args = _panel_args(root, manifest, late)
+    args[args.index("--start") + 1] = "2026-02-01"
+    assert main(args) == 0
+    connection = duckdb.connect()
+    try:
+        differing = connection.execute(
+            "SELECT count(*) FROM (SELECT * FROM read_parquet(?) EXCEPT "
+            "SELECT * FROM read_parquet(?) WHERE ts >= ?)",
+            [str(late), str(early), _FIRST_CLOSE + 31 * DAY_MS],
+        ).fetchone()
+        first_ranked = connection.execute(
+            "SELECT min(ts) FROM read_parquet(?) WHERE volume_rank IS NOT NULL", [str(late)]
+        ).fetchone()
+    finally:
+        connection.close()
+    assert differing == (0,)
+    # January is the warm-up, so February's first day already ranks.
+    assert first_ranked == (_FIRST_CLOSE + 31 * DAY_MS,)
 
 
 def test_a_missing_month_file_fails_closed(tmp_path: Path, capsys: CaptureFixture[str]) -> None:

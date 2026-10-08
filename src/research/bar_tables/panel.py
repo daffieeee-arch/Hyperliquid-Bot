@@ -67,6 +67,12 @@ class PanelSpec:
         if len(set(self.lookbacks)) != len(self.lookbacks):
             raise BarTableError("Panel lookbacks must be distinct.")
 
+    @property
+    def warmup_days(self) -> int:
+        """Days of history before a row that its longest window can read."""
+
+        return max(max(self.lookbacks), self.vol_window, self.volume_window, self.funding_window)
+
 
 @dataclass(frozen=True, slots=True)
 class PanelRow:
@@ -277,10 +283,12 @@ def _day_time(settlement: Settlement) -> int:
 def _covered(day: Sequence[Settlement], before: Settlement | None, opens: int, closes: int) -> bool:
     """No settlement due by the close is missing, judged at the close.
 
-    Consecutive settlements, the previous day's last included, are at most
-    the longer of their intervals apart, and the next is due after the close
-    by the last one's interval. Binance's interval label is the hours since
-    the previous settlement or the new setting, so a day that returns from
+    Consecutive settlements of the day are at most the longer of their
+    intervals apart. The settlement before the first was due by the open,
+    judged with the longer label of the first and the previous day's last,
+    and the next is due after the close by the last one's interval.
+    Binance's interval label is the hours since the previous settlement or
+    the new setting, so a day that returns from
     4h to 8h funding can read as short a settlement: the close cannot tell
     yet, and a later settlement must not decide it. ``funding_hole_closes``
     judges holes with the whole series instead.
@@ -289,10 +297,10 @@ def _covered(day: Sequence[Settlement], before: Settlement | None, opens: int, c
     if not day:
         return False
     first, last = day[0], day[-1]
-    if before is not None:
-        if not _close_enough(before, first):
-            return False
-    elif first.ts - first.interval_hours * _HOUR_MS + SETTLEMENT_SLACK_MS > opens:
+    # The settlement before the first was due by the open; a hole before
+    # that belongs to an earlier day.
+    lead = max(first.interval_hours, before.interval_hours if before else 0)
+    if first.ts - lead * _HOUR_MS + SETTLEMENT_SLACK_MS > opens:
         return False
     if last.ts + last.interval_hours * _HOUR_MS + SETTLEMENT_SLACK_MS <= closes:
         return False

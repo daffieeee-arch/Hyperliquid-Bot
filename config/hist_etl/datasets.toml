@@ -165,6 +165,18 @@ end = "today"
 granularity = "daily"
 enabled = false
 
+# Every Binance USDT perp with monthly archives, delisted ones included, as
+# listed on 2026-10-08 by `python -m research.hist_etl universe`. It expands
+# into one 1d klines and one funding dataset per symbol and run of months.
+# Opt-in and VPS-sized; see the "Binance USD-M universe" section of
+# docs/runbooks/hist-etl.md:
+#   python -m research.hist_etl sync --dataset bn-um-usdt-1d
+[[binance_universe]]
+id = "bn-um-usdt-1d"
+file = "universe/binance-um-usdt-1d-2026-10-08.json"
+datasets = ["klines", "fundingRate"]
+enabled = false
+
 [[kraken]]
 id = "kraken-ohlcvt-xbtusd"
 pairs = ["XBTUSD"]

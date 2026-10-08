@@ -17,14 +17,15 @@ from research.hist_etl.models import (
     KLINE_DATASETS,
     KRAKEN_MINUTES_TO_SLUG,
     MONTHLY_ONLY_DATASETS,
+    SYMBOL_PATTERN,
     BinanceSpec,
     HistManifest,
     HyperliquidFundingSpec,
     KrakenSpec,
 )
+from research.hist_etl.universe import UNIVERSE_DATASETS, expand_universe, load_universe
 
 _ID = re.compile(r"[a-z0-9][a-z0-9-]*")
-_SYMBOL = re.compile(r"[A-Z0-9]{2,20}")
 _COIN = re.compile(r"[A-Z0-9]{1,20}")
 _HYPERLIQUID_KEYS = frozenset(
     {
@@ -39,6 +40,7 @@ _HYPERLIQUID_KEYS = frozenset(
     }
 )
 _GRANULARITY = frozenset({"monthly", "daily", "monthly_with_daily_tail"})
+_UNIVERSE_KEYS = frozenset({"id", "file", "datasets", "start", "enabled"})
 
 
 def default_manifest_path() -> Path:
@@ -75,19 +77,30 @@ def load_manifest(path: Path) -> HistManifest:
     binance_raw = payload.get("binance", [])
     kraken_raw = payload.get("kraken", [])
     hyperliquid_raw = payload.get("hyperliquid", [])
+    universe_raw = payload.get("binance_universe", [])
     if (
         not isinstance(binance_raw, list)
         or not isinstance(kraken_raw, list)
         or not isinstance(hyperliquid_raw, list)
+        or not isinstance(universe_raw, list)
     ):
-        raise HistEtlError("binance, kraken and hyperliquid must be arrays of tables")
-    binance = tuple(_binance_spec(item) for item in binance_raw)
+        raise HistEtlError(
+            "binance, binance_universe, kraken and hyperliquid must be arrays of tables"
+        )
+    groups: list[str] = []
+    expanded: list[BinanceSpec] = []
+    for item in universe_raw:
+        group, specs = _binance_universe(item, path.parent)
+        groups.append(group)
+        expanded.extend(specs)
+    binance = tuple(_binance_spec(item) for item in binance_raw) + tuple(expanded)
     kraken = tuple(_kraken_spec(item) for item in kraken_raw)
     hyperliquid = tuple(_hyperliquid_spec(item) for item in hyperliquid_raw)
     ids = (
         [spec.id for spec in binance]
         + [spec.id for spec in kraken]
         + [spec.id for spec in hyperliquid]
+        + groups
     )
     if len(ids) != len(set(ids)):
         raise HistEtlError("dataset ids must be unique")
@@ -100,6 +113,7 @@ def load_manifest(path: Path) -> HistManifest:
         binance=binance,
         kraken=kraken,
         hyperliquid=hyperliquid,
+        binance_groups=tuple(groups),
     )
 
 
@@ -139,6 +153,48 @@ def _binance_spec(item: object) -> BinanceSpec:
     )
 
 
+def _binance_universe(item: object, manifest_dir: Path) -> tuple[str, tuple[BinanceSpec, ...]]:
+    """A committed universe file, expanded into per-symbol USD-M datasets."""
+
+    table = _table(item, "binance_universe")
+    extra = sorted(set(table) - _UNIVERSE_KEYS)
+    if extra:
+        raise HistEtlError(f"binance_universe entry has unknown keys: {', '.join(extra)}")
+    group = _ident(table, "id")
+    relative = _required_str(table, "file")
+    target = manifest_dir / relative
+    # Resolved, so a symlink cannot lead outside the manifest directory either.
+    if Path(relative).is_absolute() or not target.resolve().is_relative_to(manifest_dir.resolve()):
+        raise HistEtlError(f"{group} file must be a path below the manifest directory")
+    datasets_raw = table.get("datasets", sorted(UNIVERSE_DATASETS))
+    if (
+        not isinstance(datasets_raw, list)
+        or not datasets_raw
+        or any(
+            not isinstance(value, str) or value not in UNIVERSE_DATASETS for value in datasets_raw
+        )
+        or len(set(datasets_raw)) != len(datasets_raw)
+    ):
+        raise HistEtlError(f"{group} datasets must name klines and/or fundingRate once each")
+    start = _date_field(table, "start") if "start" in table else None
+    # Month files are shared with other datasets of the same series, and a
+    # run's first month may start late. A cut on the first of a month keeps
+    # both exact: every month is whole, and only a run's own first month may
+    # start late.
+    if start is not None and start.day != 1:
+        raise HistEtlError(f"{group} start must be the first day of a month")
+    universe = load_universe(target)
+    specs = expand_universe(
+        group,
+        universe,
+        datasets=tuple(str(value) for value in datasets_raw),
+        start=start,
+        # Opt-in: a universe is thousands of archives, never a routine sync.
+        enabled=_bool_field(table, "enabled", False),
+    )
+    return group, specs
+
+
 def _kraken_spec(item: object) -> KrakenSpec:
     table = _table(item, "kraken")
     dataset_id = _ident(table, "id")
@@ -147,7 +203,7 @@ def _kraken_spec(item: object) -> KrakenSpec:
         raise HistEtlError(f"{dataset_id} pairs must be a non-empty list")
     pairs: list[str] = []
     for pair in pairs_raw:
-        if not isinstance(pair, str) or not _SYMBOL.fullmatch(pair):
+        if not isinstance(pair, str) or not SYMBOL_PATTERN.fullmatch(pair):
             raise HistEtlError(f"{dataset_id} has an invalid pair")
         pairs.append(pair)
     intervals_raw = table.get("intervals", list(KRAKEN_MINUTES_TO_SLUG.values()))
@@ -238,7 +294,15 @@ def _require_disjoint_funding(specs: tuple[HyperliquidFundingSpec, ...]) -> None
 def select_binance(
     manifest: HistManifest, dataset_ids: tuple[str, ...] | None
 ) -> tuple[BinanceSpec, ...]:
-    return tuple(_select(manifest.binance, dataset_ids))
+    """Enabled specs, or the ones named by id or by their universe group."""
+
+    if dataset_ids:
+        return tuple(
+            spec
+            for spec in manifest.binance
+            if spec.id in dataset_ids or (spec.group is not None and spec.group in dataset_ids)
+        )
+    return tuple(spec for spec in manifest.binance if spec.enabled)
 
 
 def select_kraken(
@@ -253,7 +317,7 @@ def select_hyperliquid(
     return tuple(_select(manifest.hyperliquid, dataset_ids))
 
 
-def _select[T: BinanceSpec | KrakenSpec | HyperliquidFundingSpec](
+def _select[T: KrakenSpec | HyperliquidFundingSpec](
     specs: tuple[T, ...], dataset_ids: tuple[str, ...] | None
 ) -> list[T]:
     if dataset_ids:
@@ -272,6 +336,7 @@ def assert_known_ids(manifest: HistManifest, dataset_ids: tuple[str, ...] | None
         return
     known = (
         {spec.id for spec in manifest.binance}
+        | set(manifest.binance_groups)
         | {spec.id for spec in manifest.kraken}
         | {spec.id for spec in manifest.hyperliquid}
     )
@@ -311,7 +376,7 @@ def _ident(table: dict[str, object], key: str) -> str:
 
 def _symbol(table: dict[str, object], key: str) -> str:
     value = _required_str(table, key)
-    if not _SYMBOL.fullmatch(value):
+    if not SYMBOL_PATTERN.fullmatch(value):
         raise HistEtlError(f"invalid symbol {value}")
     return value
 

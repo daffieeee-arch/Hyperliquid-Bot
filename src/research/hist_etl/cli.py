@@ -11,6 +11,7 @@ from pathlib import Path
 from research.hist_etl.errors import HistEtlError
 from research.hist_etl.manifest import default_manifest_path
 from research.hist_etl.pipeline import parse_today, run_catalog, run_plan, run_sync, run_verify
+from research.hist_etl.universe import run_universe
 
 
 def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None) -> int:
@@ -24,6 +25,17 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
 
 
 def _dispatch(args: argparse.Namespace, env: Mapping[str, str]) -> int:
+    if args.command == "universe":
+        # Needs no archive root and no manifest: the manifest may name the
+        # file this command is about to write.
+        return run_universe(
+            out=Path(args.out),
+            today=parse_today(args.today if isinstance(args.today, str) else None),
+            quote=args.quote,
+            interval=args.interval,
+            requests_per_second=args.requests_per_second,
+            env=env,
+        )
     root_text = args.root if isinstance(args.root, str) else env.get("HIST_ARCHIVES_ROOT")
     if not isinstance(root_text, str) or not root_text:
         raise HistEtlError("set --root or HIST_ARCHIVES_ROOT")
@@ -88,7 +100,7 @@ def _parser() -> argparse.ArgumentParser:
         prog="research.hist_etl",
         description=(
             "Download, verify, and catalog offline Binance Vision, Kraken OHLCVT, and "
-            "Hyperliquid funding history."
+            "Hyperliquid funding history, and list the Binance USD-M universe."
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
@@ -113,5 +125,21 @@ def _parser() -> argparse.ArgumentParser:
         "--replace-legacy-views",
         action="store_true",
         help="Back up catalog.sql, print a diff, and replace legacy hist_* views.",
+    )
+    universe = sub.add_parser(
+        "universe",
+        help="List every USD-M perp with archives, delisted ones included, into a new file.",
+    )
+    universe.add_argument("--out", required=True, help="New universe JSON file to write.")
+    universe.add_argument("--today", help="UTC date YYYY-MM-DD recorded as as_of.")
+    universe.add_argument("--quote", default="USDT", help="Quote asset suffix. Default USDT.")
+    universe.add_argument(
+        "--interval", default="1d", help="Kline interval whose months are listed. Default 1d."
+    )
+    universe.add_argument(
+        "--requests-per-second",
+        type=float,
+        default=4.0,
+        help="Listing request rate. Default 4.",
     )
     return parser

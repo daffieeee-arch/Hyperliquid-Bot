@@ -651,7 +651,20 @@ def _grid_gaps(
     expected_first, expected_last = window
     column = "create_time" if spec.dataset == "metrics" else "open_time"
     step = 300 if spec.dataset == "metrics" else _kline_step(spec)
-    return _regular_holes(connection, column, step, expected_first, expected_last, spec)
+    late_start = spec.open_start and month == date(spec.start.year, spec.start.month, 1)
+    early_end = (
+        spec.open_end and spec.end is not None and month == date(spec.end.year, spec.end.month, 1)
+    )
+    return _regular_holes(
+        connection,
+        column,
+        step,
+        expected_first,
+        expected_last,
+        spec,
+        late_start=late_start,
+        early_end=early_end,
+    )
 
 
 def _kline_step(spec: BinanceSpec) -> int:
@@ -667,7 +680,16 @@ def _regular_holes(
     expected_first: datetime,
     expected_last: datetime,
     spec: BinanceSpec,
+    *,
+    late_start: bool = False,
+    early_end: bool = False,
 ) -> tuple[Gap, ...]:
+    """Holes between bars, and edges that miss the expected range.
+
+    ``late_start`` and ``early_end`` accept a first bar after, or a last bar
+    before, the expected edge: the month a contract was listed or delisted.
+    """
+
     if not _IDENT.fullmatch(column):
         raise HistEtlError("unsafe column", exit_code=2)
     step_us = step_seconds * 1_000_000
@@ -693,7 +715,9 @@ def _regular_holes(
     else:
         first = _naive(edge[0])
         last = _naive(edge[1])
-        if first != expected_first or last != expected_last:
+        first_ok = first == expected_first or (late_start and first > expected_first)
+        last_ok = last == expected_last or (early_end and last < expected_last)
+        if not first_ok or not last_ok:
             details.append(
                 f"coverage {first}..{last} does not match expected "
                 f"{expected_first}..{expected_last}"

@@ -46,7 +46,9 @@ SEALED: Final = "sealed"
 NO_FOLDS: Final = "no_folds"
 TOO_SHORT: Final = "too_short"
 ERROR: Final = "error"
-_STATUSES: Final = frozenset({EVALUATED, SEALED, NO_FOLDS, TOO_SHORT, ERROR})
+NOT_APPLICABLE: Final = "not_applicable"
+_STATUSES: Final = frozenset({EVALUATED, SEALED, NO_FOLDS, TOO_SHORT, ERROR, NOT_APPLICABLE})
+_NOTED: Final = frozenset({ERROR, NOT_APPLICABLE})
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,14 +57,14 @@ class Window:
 
     status: str
     result: BuyAndHold | None = None
-    # Why an error window has no values.
+    # Why an error or not-applicable window has no values.
     note: str | None = None
 
     def __post_init__(self) -> None:
         valid = (
             self.status in _STATUSES
             and (self.status == EVALUATED) == (self.result is not None)
-            and (self.status == ERROR) == (self.note is not None)
+            and (self.status in _NOTED) == (self.note is not None)
         )
         if not valid:
             raise HarnessError("invariant", f"Benchmark window status {self.status!r} is invalid.")
@@ -73,6 +75,14 @@ class Benchmark:
     validation: Window
     # Sealed until validation selects a config, as for the strategy.
     holdout: Window
+
+
+def no_benchmark(note: str) -> Benchmark:
+    """Both windows not applicable, with the reason; the label is unaffected."""
+
+    return Benchmark(
+        validation=Window(NOT_APPLICABLE, note=note), holdout=Window(NOT_APPLICABLE, note=note)
+    )
 
 
 def benchmark(costs: CostSpec, table: BarTable, decision: Decision) -> Benchmark:

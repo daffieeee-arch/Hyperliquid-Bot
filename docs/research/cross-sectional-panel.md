@@ -129,9 +129,9 @@ Nothing is written when any of these fail:
 - Size: 1.44M synthetic rows (600 symbols over 2,400 days, about twice the
   2026-10-08 universe) took 51 s and peaked at 1 GB, input included.
 - Daily bars only (`1d` klines). Funding is summed per day, not per position
-  hold. The harness's cross-sectional mode (S3) decides how a held day's
-  funding is charged, and what an incomplete funding day means for a held
-  position.
+  hold. The harness's [panel portfolio mode](hypothesis-harness.md#panel-portfolios)
+  charges a held day's funding on the notional at that day's close, and
+  fails closed on a traded day without a rate that a position could hold.
 - A ticker that Binance reuses for another asset while it keeps trading,
   with no untraded day between, is not detected: returns then span both
   assets. Price windows restart only after untraded days and gaps.

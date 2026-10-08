@@ -14,20 +14,20 @@ from research.harness.benchmark import (
     ERROR,
     EVALUATED,
     NO_FOLDS,
+    NOT_APPLICABLE,
     SEALED,
     TOO_SHORT,
     Benchmark,
     Window,
 )
 from research.harness.costs import STRESS_MULTIPLIERS, round_trip_cost, stress_key
-from research.harness.data import BarTable
 from research.harness.errors import HarnessError
 from research.harness.evaluate import ConfigScore, Decision, MetricBlock
 from research.harness.overfit import Overfitting
 from research.harness.spec import HypothesisSpec, Json
 from research.harness.splits import Fold
 
-HARNESS_VERSION: Final = "5"
+HARNESS_VERSION: Final = "6"
 _ENVIRONMENTS: Final = frozenset({"DEV", "CI", "VPS_RESEARCH"})
 _IMAGE_DIGEST: Final = re.compile(r"sha256:[0-9a-f]{64}")
 LIMITATIONS: Final[tuple[str, ...]] = (
@@ -46,13 +46,31 @@ LIMITATIONS: Final[tuple[str, ...]] = (
     "pre-registered configs as trials. In each split PBO picks the best positive mean net "
     "per trade among the configs that meet the trade floor pro-rated to the in-sample "
     "folds, and does not re-run the significance and stress gates.",
-    "The buy-and-hold benchmark is one unit long over the validation test folds, and over the "
-    "holdout only when a config was selected. It fills after latency_bars like a trade, is "
-    "context, and never changes the label.",
     "Look-ahead control uses the declared clock. A falsely stamped future value is invisible.",
     "paper_candidate is not LIVE, SHADOW, TESTNET, or an order authorization.",
     "Spot Vision timestamps from 2025-01-01 are microseconds; USD-M examples are milliseconds.",
     "Kraken OHLCVT omits empty intervals and is USD-quoted, not USDT.",
+)
+
+# What a bar series' result must say beyond the shared list.
+BAR_LIMITATIONS: Final[tuple[str, ...]] = (
+    "The buy-and-hold benchmark is one unit long over the validation test folds, and over the "
+    "holdout only when a config was selected. It fills after latency_bars like a trade, is "
+    "context, and never changes the label.",
+)
+
+# What a panel portfolio's result must say beyond the shared list.
+PANEL_LIMITATIONS: Final[tuple[str, ...]] = (
+    "A panel portfolio scores one trade per non-overlapping period: long the top quantile of "
+    "the day's universe by the signal and, when signed, short the bottom quantile, equal "
+    "weight within a leg sized at the decision, one round trip on the capital the fills hold. "
+    "A position is held to "
+    "its exit day; a symbol not trading then is marked at its last traded close, which is "
+    "not the delisting price a holder got, and pays the recorded funding of its untraded "
+    "days to the exit. A held day whose funding is not whole is charged its recorded sum and "
+    "counted as uncovered; a halt day without any is charged nothing and counted as "
+    "unfunded; a traded day without funding that a position could hold fails closed. The "
+    "buy-and-hold benchmark does not apply to a panel.",
 )
 
 
@@ -144,13 +162,18 @@ def failure_document(
 def completed_document(
     spec: HypothesisSpec,
     digest: str,
-    table: BarTable,
+    timestamps: tuple[int, ...],
     decision: Decision,
     data_fingerprint: dict[str, Json],
     benchmark: Benchmark,
     origin: Provenance,
+    portfolio: dict[str, Json] | None = None,
 ) -> dict[str, Json]:
-    timestamps = table.timestamps
+    """The completed record over the series' bar timestamps (a panel's date axis);
+    ``portfolio`` is the panel block, present for a panel only."""
+
+    if (spec.portfolio is None) != (portfolio is None):
+        raise HarnessError("invariant", "A portfolio block is written for a panel spec only.")
     return {
         "harness_version": HARNESS_VERSION,
         "status": "completed",
@@ -206,13 +229,18 @@ def completed_document(
         "primary_config_id": decision.primary_config_id,
         "holdout": _holdout_json(decision),
         "benchmark": {
-            "method": "buy_and_hold",
+            # A panel has no buy-and-hold; its windows say not applicable.
+            "method": "buy_and_hold" if portfolio is None else None,
             "validation": _window_json(benchmark.validation),
             "holdout": _window_json(benchmark.holdout),
         },
         "overfitting": _overfitting_json(decision.overfitting),
+        **({} if portfolio is None else {"portfolio": portfolio}),
         "reasons": list(decision.reasons),
-        "limitations": list(LIMITATIONS),
+        "limitations": [
+            *LIMITATIONS,
+            *(BAR_LIMITATIONS if portfolio is None else PANEL_LIMITATIONS),
+        ],
         "generated_at_utc": _now(),
     }
 
@@ -256,6 +284,9 @@ def render_markdown(document: dict[str, Json]) -> str:
     if status == "completed":
         lines.extend(["", "## Validation", ""])
         lines.extend(_validation_lines(document))
+        if isinstance(document.get("portfolio"), dict):
+            lines.extend(["", "## Portfolio", ""])
+            lines.extend(_portfolio_lines(document))
         lines.extend(["", "## Benchmark", ""])
         lines.extend(_benchmark_lines(document))
         lines.extend(["", "## Overfitting diagnostics", ""])
@@ -327,12 +358,21 @@ def _benchmark_lines(document: dict[str, Json]) -> list[str]:
     block = document.get("benchmark")
     if not isinstance(block, dict):
         return ["- benchmark block missing"]
-    lines = [
-        "Buy-and-hold: one unit long, filled after latency_bars, held to the window's "
-        "last close. Funding is positive when received. Context only; it never changes "
-        "the label.",
-        "",
-    ]
+    windows = [block.get(window) for window in ("validation", "holdout")]
+    applies = any(
+        isinstance(values, dict) and values.get("status") != NOT_APPLICABLE for values in windows
+    )
+    # A panel has no buy-and-hold; its notes say so without the preamble.
+    lines = (
+        [
+            "Buy-and-hold: one unit long, filled after latency_bars, held to the window's "
+            "last close. Funding is positive when received. Context only; it never changes "
+            "the label.",
+            "",
+        ]
+        if applies
+        else []
+    )
     for window in ("validation", "holdout"):
         values = block.get(window)
         if not isinstance(values, dict):
@@ -362,10 +402,62 @@ def _benchmark_lines(document: dict[str, Json]) -> list[str]:
 
 _WINDOW_STATES: Final = {
     SEALED: "sealed (not evaluated)",
+    NOT_APPLICABLE: "not applicable",
     NO_FOLDS: "no validation fold",
     TOO_SHORT: "window too short to hold after the fill",
     ERROR: "not computed (benchmark error; the label stands)",
 }
+
+
+def _portfolio_lines(document: dict[str, Json]) -> list[str]:
+    block = document.get("portfolio")
+    if not isinstance(block, dict):
+        return []
+    lines = [
+        (
+            "Each trade is one period: long the top quantile of the day's universe by the "
+            "signal{short}, equal weight within a leg, one round trip on the capital. A symbol "
+            "that stops trading while held exits at its last traded close (a forced exit); a "
+            "period whose leg fell short at the fill unwinds its fills at cost (unwound)."
+        ).format(short=" and short the bottom quantile" if block.get("signed") is True else ""),
+        "",
+        f"- universe: rank at most {block.get('universe_size')}, "
+        f"at least {block.get('min_names_per_leg')} names per leg",
+        "",
+        (
+            "| config | quantile | window | periods | skipped decisions | mean long names "
+            "| mean short names | forced exits | uncovered funding days | unfunded halt days "
+            "| unwound periods |"
+        ),
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    configs = block.get("configs")
+    if not isinstance(configs, list):
+        return lines
+    for config in configs:
+        if not isinstance(config, dict):
+            continue
+        for window in ("validation", "holdout"):
+            stats = config.get(window)
+            if not isinstance(stats, dict):
+                continue
+            lines.append(
+                "| {id} | {quantile} | {window} | {periods} | {skipped} | {long} | {short} "
+                "| {forced} | {uncovered} | {unfunded} | {unwound} |".format(
+                    id=config.get("id"),
+                    quantile=config.get("quantile"),
+                    window=window,
+                    periods=stats.get("periods"),
+                    skipped=stats.get("skipped_decisions"),
+                    long=_shown(stats.get("mean_long_names")),
+                    short=_shown(stats.get("mean_short_names")),
+                    forced=stats.get("forced_exits"),
+                    uncovered=stats.get("uncovered_funding_days"),
+                    unfunded=stats.get("unfunded_halt_days"),
+                    unwound=stats.get("unwound_periods"),
+                )
+            )
+    return lines
 
 
 def _shown(value: object) -> object:
@@ -453,7 +545,8 @@ def _holdout_json(decision: Decision) -> dict[str, Json] | None:
 
 
 def _window_json(window: Window) -> dict[str, Json]:
-    """``status`` is evaluated, sealed, no_folds, too_short or error; values only when evaluated."""
+    """``status`` is evaluated, sealed, no_folds, too_short, error or not_applicable;
+    values only when evaluated, a note with error and not_applicable."""
 
     result = window.result
     if result is None:
@@ -517,6 +610,7 @@ def _score_json(score: ConfigScore) -> dict[str, Json]:
     return {
         "id": score.config_id,
         "threshold": score.threshold,
+        "quantile": score.quantile,
         "horizon_bars": score.horizon_bars,
         "selected": score.selected,
         "family_p_value": score.family_p_value,

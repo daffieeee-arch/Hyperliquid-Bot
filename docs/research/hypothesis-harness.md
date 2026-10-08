@@ -34,11 +34,13 @@ fields:
 - `hypothesis_id`, `universe`, `dataset_version`, `h0`, `h1`, `alpha`
 - `selection_method`: `bonferroni` (always reported), or `holm` / `bh`
 - one signal feature, known at a declared availability clock
-- one or more configs (`threshold`, `horizon_bars`) — this is the whole grid
+- one or more configs (`threshold`, `horizon_bars`; for a panel `quantile`
+  instead of `threshold`) — this is the whole grid
 - costs in bps (`fee_bps`, `slippage_bps`, `spread_bps`) and `latency_bars`.
   `spread_bps` is the half-spread per side, not the full quoted spread
 - optional `costs.funding_column` for a perp: see [Funding](#funding)
 - optional `sizing`: `unit` (the default) or `vol_target`, see [Sizing](#sizing)
+- optional `portfolio` with `data.backend: panel`, see [Panel portfolios](#panel-portfolios)
 - walk-forward `expanding` or `rolling`, plus a final `holdout_bars` suffix
 - sample floors for folds and for validation / holdout trade counts
 
@@ -139,6 +141,154 @@ with the weight, and each config and the holdout report `mean_weight`.
 Volatility scaling changes what the t-test measures (risk-scaled returns per
 trade), which is the point of pre-registering it.
 
+## Panel portfolios
+
+A spec with `data.backend: panel` scores a cross-sectional portfolio over the
+[cross-sectional panel](cross-sectional-panel.md) instead of one bar series.
+See [examples/panel-template.spec.yaml](examples/panel-template.spec.yaml).
+The panel has one row per symbol and day; the harness splits, gates and
+labels exactly as for a bar series, with one trade per rebalance period.
+
+```yaml
+data:
+  backend: panel
+  parquet_path: panel.parquet
+  timestamp_column: ts
+  symbol_column: symbol        # role: symbol, dtype string
+  price_column: close
+  traded_column: traded        # role: traded, dtype bool
+  rank_column: volume_rank     # role: rank, dtype int64
+  # with costs.funding_column: one role: covered column (dtype bool)
+  max_gap: 86400000            # between consecutive days of the date axis
+  max_rows: 2000000
+  columns: ...
+portfolio:
+  universe_size: 50            # rank at most 50 on the decision day
+  min_names_per_leg: 5
+configs:
+  - id: q20-h7
+    quantile: 0.2              # per leg, in (0, 0.5] when signed, (0, 1] long only
+    horizon_bars: 7
+```
+
+- **Period**: decided on one day of the date axis, filled `latency_bars`
+  days later at that day's close, exited `horizon_bars` days after the fill.
+  The next decision is the exit day, so periods do not overlap, like a bar
+  series' trades. After a period skipped at the decision the next decision
+  is the next day; after one unwound at the fill, or one whose orders all
+  failed to fill, it is the fill day, when the non-fill is known. A
+  validation period never reads a holdout close.
+  The rank and the traded flag are the decision day's own close, so
+  `latency_bars` must be at least 1 unless `allow_zero_latency` is set.
+- **Universe and legs**: on the decision day the universe is every symbol
+  that traded, has a rank at most `universe_size` and a known signal;
+  funding plays no part in it. Sorted by the signal (ties by symbol), the
+  top `quantile` of the universe is the long leg and, under
+  `direction: signed`, the bottom `quantile` the short leg; `long_only`
+  holds the long leg alone. It is one ranking, so the legs are disjoint:
+  ties go to the symbol that sorts first, which puts the alphabetically
+  first of tied names in the long leg's top and the alphabetically last in
+  the short leg's bottom. Both legs have `floor(universe × quantile)`
+  names, with the quantile as written in the spec (100 names at 0.29 give
+  29), at least `min_names_per_leg` at the decision, or no orders are sent
+  and the day is skipped. A config whose quantile cannot fill a leg from a
+  full universe is refused at validation.
+- **Return and costs**: equal weight within a leg, sized at the decision
+  (a leg's capital over its names); each leg holds half the capital under
+  `signed`, the long leg all of it under `long_only`. A name that does not
+  trade on the fill day is not opened and its capital sits idle: the other
+  orders were sized before its non-fill was known. The period's gross
+  return is the weighted sum of its positions' returns and its weight the
+  capital the fills hold, so the round trip is charged on what the period
+  holds, as each position pays entry and exit on its notional. A leg that
+  fills below `min_names_per_leg` unwinds the period's fills at the fill
+  close: no return, no funding, the round trip on the capital they held.
+  It is a trade of the series and a period (it counts toward the sample
+  floors as the cost it was), reported apart as `unwound_periods`; the
+  mean names per leg are over the periods that held. A period whose legs
+  fill nothing at all is a skipped decision, not a trade. `sizing` must be
+  `unit`.
+- **Funding**: the long leg pays each held day's rate on the notional at
+  that day's close and the short leg receives it, position by position, so
+  the stress treats each payment adversely as for a bar trade. With
+  funding, the panel declares one `role: covered` column (the panel's
+  `funding_covered`).
+  - A **traded** day with **no rate** that a position could hold fails
+    the run closed (`failure_kind: funding`) before any window is scored:
+    the panel source audits every fold's test window and the holdout when
+    it is built. For every decision day of a window, the names the grid's
+    legs would open (the top and, when signed, the bottom `leg_size` of
+    the day's ranking for the grid's widest quantile that clears the
+    floor) that can fill (rows through the fill day, traded on it) need a
+    rate on the traded days from `latency_bars + 1` through `latency_bars
+    + horizon_bars` days after it, for the grid's longest horizon whose
+    exit stays inside the window, up to the next day without a row. A
+    universe member outside every leg needs none. Warm-up days before the
+    first fold are never decided on, so a hole there is harmless. The
+    outcome is thus a property of the panel, the grid and the split, not
+    of which config's legs hold the symbol nor of whether a config is
+    selected for the holdout. The panel builder
+    fails on a funding hole inside a funding run, so this happens only on
+    a traded day outside one (a listing month before funding starts, or
+    trading after a funding archive ends); a study's panel range and
+    universe must not reach such a day. A held **halt** day with no rate,
+    which the builder does not check, is charged nothing, and the report
+    counts such position-days per config as `unfunded_halt_days`: a whole
+    day of funding missing each.
+  - A held day whose rate is there but **not covered** (at most one
+    settlement missing, or an interval switch the panel cannot tell apart,
+    see the panel's limitation) is charged its recorded sum, and the
+    report counts such position-days per config as
+    `uncovered_funding_days`. The error is bounded by one settlement per
+    counted day. A pre-registration should say how many it tolerates.
+- **Halts and delistings while held**: a position is held to the period's
+  exit day whatever happens in between, so no exit uses knowledge of a later
+  day. It exits at that day's close when the symbol trades then; otherwise
+  at its last traded close at or before the exit day (no row, or `traded`
+  false), the one price a holder of a halted or delisted contract has, and
+  the period counts a forced exit. That is not the price a holder got at
+  the delisting; a study must say what it assumes. A day without a row
+  ends the contract: the panel builder fails on a day missing inside a run
+  and keeps a gap only between the runs of a relisted symbol, whose rows
+  after the gap are another listing, so the hold stops at the last traded
+  close before the gap and never marks at the relisted price. A day with a
+  row that did not trade is a halt, held through. Funding is charged on
+  every held day that has a row, through the exit day, traded or not, so
+  the charge never depends on whether the halt resumes later: a halt pays
+  its days, and the flat archive days a delisted contract keeps pay their
+  recorded (default) rate until the exit. That overstates a long's cost
+  and a short's income on such a position by at most the horizon's worth
+  of that rate; `forced_exits` counts the positions concerned. The one
+  case the data cannot tell apart is a relisting whose archive follows the
+  old contract's without a missing day; it reads as a halt. A symbol that
+  does not trade on the fill day, or whose rows break between the decision
+  and the fill, is not opened and its capital sits idle; a period with a
+  leg below the floor at the fill unwinds its fills at cost.
+- **Report**: `result.json` has a `portfolio` block with the universe rule,
+  `symbol_count`, and per config the validation (and, when scored, holdout)
+  period count, skipped decisions (decisions that led to no trade: too
+  few names at the decision, or none of the orders filled), mean names
+  per leg, forced exits, uncovered funding days, unfunded halt days and
+  unwound periods;
+  `result.md` has a Portfolio section. `bar_count`, `timestamp_min` and
+  `timestamp_max` describe the date axis (one bar is one day of the panel,
+  not one row); the fingerprint's `row_count` is the rows read. Each
+  config reports its `quantile`
+  and a null `threshold` (a bar series reports the reverse). The
+  buy-and-hold benchmark does not apply: the `benchmark` block's `method`
+  is null and both windows report `not_applicable`.
+- **Nulls and ranks**: price, the traded flag, the symbol and every
+  feature's clock must be present on every row; a rank is at least 1 and
+  unique on its day. The signal, rank and funding may be null
+  where the panel does not know them (warm-up, untraded days); a null is
+  never read as zero. Every declared feature's availability clock is
+  audited on every row, and every declared feature's value where present
+  (a float, finite), though the portfolio reads the signal alone. The date axis is the union of the rows' days and
+  must be evenly spaced: a row stamped off the grid would give every
+  other symbol a day without a row, which ends a contract, so it fails
+  the run (`failure_kind: gap`). On a panel `max_gap` therefore bounds the
+  step of the axis (one day for the daily panel), not a hole in it.
+
 ## Overfitting diagnostics
 
 `result.json` has an `overfitting` block, summarized in `result.md`. Both
@@ -197,7 +347,8 @@ buy-and-hold, one unit long, priced like a strategy trade at unit weight.
   holdout, but only when validation selected a config; while the holdout is
   sealed, the benchmark does not read it either.
 - **Status**: each window has a `status`: `evaluated` (with the values
-  below), `sealed`, `no_folds`, `too_short` (no close left to exit at after
+  below), `sealed`, `no_folds`, `not_applicable` (a panel portfolio, with a
+  `note`), `too_short` (no close left to exit at after
   the fill), or `error`. A numeric failure (overflow, a non-finite value)
   is recorded as `error` with a `note` and never fails the run or changes
   its label. A window outside the table is a harness bug that the
@@ -364,7 +515,7 @@ start of the interval if the print arrives at the end.
 
 ## Reading the artifact
 
-`result.json` is the machine record (`harness_version` 5, `status`, `label`,
+`result.json` is the machine record (`harness_version` 6, `status`, `label`,
 `promotion_decision`, `spec_sha256`, `data_fingerprint`, the `costs` and
 `sizing` blocks, validation family with Bonferroni, Holm, and BH p-values,
 per-config `funding` and `mean_weight`, and holdout gross, funding and net at

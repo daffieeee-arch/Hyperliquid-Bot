@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Final
+from typing import Final, Protocol
 
 from research.harness.costs import STRESS_MULTIPLIERS, round_trip_cost, stress_key
 from research.harness.data import BarTable
@@ -119,10 +119,27 @@ class TradeSeries:
         return math.fsum(self.weights) / len(self.weights)
 
 
+class SeriesSource(Protocol):
+    """Where a config's trades come from: a bar series, or a panel portfolio.
+
+    ``spec`` is the one spec the run follows, ``length`` the number of index
+    positions the walk-forward splits, and ``window`` scores one config on
+    ``[start, end)`` without reading a close outside it.
+    """
+
+    @property
+    def spec(self) -> HypothesisSpec: ...
+
+    @property
+    def length(self) -> int: ...
+
+    def window(self, config: ConfigSpec, start: int, end: int) -> TradeSeries: ...
+
+
 @dataclass(frozen=True, slots=True)
 class ConfigScore:
     config_id: str
-    threshold: float
+    threshold: float | None
     horizon_bars: int
     validation_gross: MetricBlock
     validation_net: dict[str, MetricBlock]
@@ -132,6 +149,7 @@ class ConfigScore:
     # None when the spec declares no funding column.
     validation_funding: MetricBlock | None = None
     mean_weight: float | None = None
+    quantile: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,18 +182,55 @@ class _HoldoutResult:
     mean_weight: float | None
 
 
-def decide(spec: HypothesisSpec, table: BarTable) -> Decision:
-    """Label the pre-registered family. Promotion stays forbidden unless H1 passes OOS."""
+@dataclass(frozen=True, slots=True)
+class BarSource:
+    """``SeriesSource`` over one bar table: the signal's trades, sized and funded."""
 
+    spec: HypothesisSpec
+    table: BarTable
+    feature: tuple[float, ...]
+    vol: tuple[float, ...] | None
+
+    @property
+    def length(self) -> int:
+        return len(self.table.timestamps)
+
+    def window(self, config: ConfigSpec, start: int, end: int) -> TradeSeries:
+        trades = _window_trades(self.spec, self.feature, config=config, start=start, end=end)
+        return trade_series(
+            trades,
+            self.table.prices,
+            funding=self.table.funding,
+            sizing=self.spec.sizing,
+            vol=self.vol,
+        )
+
+
+def bar_source(spec: HypothesisSpec, table: BarTable) -> BarSource:
+    if spec.portfolio is not None:
+        raise HarnessError("invariant", "A portfolio spec is scored on a panel, not a bar table.")
     if (spec.costs.funding_column is None) != (table.funding is None):
         raise HarnessError("invariant", "The bar table's funding does not match the spec.")
     # Audited over the whole series first, after load_bars' point-in-time
     # checks, so every table that reaches a decision gets the same check.
     vol = _vol_series(spec, table)
-    folds, (holdout_start, holdout_end) = walk_forward(len(table.timestamps), spec.split)
     feature = table.features[_feature_column(spec, spec.signal_feature)]
+    return BarSource(spec=spec, table=table, feature=feature, vol=vol)
+
+
+def decide(spec: HypothesisSpec, table: BarTable) -> Decision:
+    """Label the pre-registered family. Promotion stays forbidden unless H1 passes OOS."""
+
+    return decide_source(bar_source(spec, table))
+
+
+def decide_source(source: SeriesSource) -> Decision:
+    """Label the family from any ``SeriesSource``. Selection never reads the holdout."""
+
+    spec = source.spec
+    folds, (holdout_start, holdout_end) = walk_forward(source.length, spec.split)
     fold_series_by_config = [
-        _fold_series(spec, feature, table, vol, config=config, folds=folds)
+        tuple(source.window(config, fold.test_start, fold.test_end) for fold in folds)
         for config in spec.configs
     ]
     series_by_config = [
@@ -209,15 +264,7 @@ def decide(spec: HypothesisSpec, table: BarTable) -> Decision:
         holdout_config = spec.configs[selected_index]
         selected_id = holdout_config.id
         scored = _mark_selected(scores, selected_index)
-        holdout = _confirm_holdout(
-            spec,
-            feature,
-            table,
-            vol,
-            holdout_config,
-            holdout_start,
-            holdout_end,
-        )
+        holdout = _confirm_holdout(source, holdout_config, holdout_start, holdout_end)
         label = holdout.label
         reasons = (*reasons, *holdout.reasons)
         holdout_config_id = holdout_config.id
@@ -263,11 +310,8 @@ def collect_trades(
         raise HarnessError("split", "Trade window is not a valid index range.")
     trades: list[Trade] = []
     decision = start
-    while True:
-        entry = decision + latency_bars
-        exit_index = entry + horizon_bars
-        if decision >= end or exit_index >= end:
-            break
+    while (period := next_period(decision, latency_bars, horizon_bars, end)) is not None:
+        entry, exit_index = period
         side = _side(feature[decision], threshold, direction)
         if side == 0:
             decision += 1
@@ -275,6 +319,23 @@ def collect_trades(
         trades.append(Trade(decision=decision, entry=entry, exit=exit_index, side=side))
         decision = exit_index
     return tuple(trades)
+
+
+def next_period(
+    decision: int, latency_bars: int, horizon_bars: int, end: int
+) -> tuple[int, int] | None:
+    """The fill and exit of a period decided at ``decision``, or None past the window.
+
+    The fill is ``decision + latency_bars`` and the exit ``horizon_bars``
+    later; both stay strictly inside ``[.., end)``, the one rule a bar trade
+    and a panel period share, so neither reads a close outside its window.
+    """
+
+    entry = decision + latency_bars
+    exit_index = entry + horizon_bars
+    if decision >= end or exit_index >= end:
+        return None
+    return entry, exit_index
 
 
 def trade_series(
@@ -357,17 +418,13 @@ def summarize(values: Sequence[float]) -> MetricBlock:
 
 
 def _confirm_holdout(
-    spec: HypothesisSpec,
-    feature: Sequence[float],
-    table: BarTable,
-    vol: Sequence[float] | None,
+    source: SeriesSource,
     config: ConfigSpec,
     holdout_start: int,
     holdout_end: int,
 ) -> _HoldoutResult:
-    series = _window_series(
-        spec, feature, table, vol, config=config, start=holdout_start, end=holdout_end
-    )
+    spec = source.spec
+    series = source.window(config, holdout_start, holdout_end)
     gross_block = summarize(series.gross)
     net = _net_blocks(spec, series)
     funding = _funding_block(spec, series)
@@ -539,6 +596,7 @@ def _build_scores(
                 selected=False,
                 validation_funding=_funding_block(spec, series),
                 mean_weight=series.mean_weight(),
+                quantile=config.quantile,
             )
         )
     return tuple(scores)
@@ -576,6 +634,7 @@ def _copy_score(score: ConfigScore, *, selected: bool) -> ConfigScore:
         selected=selected,
         validation_funding=score.validation_funding,
         mean_weight=score.mean_weight,
+        quantile=score.quantile,
     )
 
 
@@ -616,20 +675,6 @@ def _vol_series(spec: HypothesisSpec, table: BarTable) -> tuple[float, ...] | No
     return values
 
 
-def _window_series(
-    spec: HypothesisSpec,
-    feature: Sequence[float],
-    table: BarTable,
-    vol: Sequence[float] | None,
-    *,
-    config: ConfigSpec,
-    start: int,
-    end: int,
-) -> TradeSeries:
-    trades = _window_trades(spec, feature, config=config, start=start, end=end)
-    return trade_series(trades, table.prices, funding=table.funding, sizing=spec.sizing, vol=vol)
-
-
 def _window_trades(
     spec: HypothesisSpec,
     feature: Sequence[float],
@@ -638,6 +683,8 @@ def _window_trades(
     start: int,
     end: int,
 ) -> tuple[Trade, ...]:
+    if config.threshold is None:
+        raise HarnessError("invariant", f"Config {config.id} has no threshold for a bar series.")
     return collect_trades(
         feature,
         threshold=config.threshold,
@@ -646,25 +693,6 @@ def _window_trades(
         direction=spec.direction,
         start=start,
         end=end,
-    )
-
-
-def _fold_series(
-    spec: HypothesisSpec,
-    feature: Sequence[float],
-    table: BarTable,
-    vol: Sequence[float] | None,
-    *,
-    config: ConfigSpec,
-    folds: tuple[Fold, ...],
-) -> tuple[TradeSeries, ...]:
-    """One config's trades per walk-forward test fold, in fold order."""
-
-    return tuple(
-        _window_series(
-            spec, feature, table, vol, config=config, start=fold.test_start, end=fold.test_end
-        )
-        for fold in folds
     )
 
 
@@ -796,11 +824,26 @@ def _unit_funding(
 
     if funding is None:
         return 0.0, 0.0
-    entry_price = prices[trade.entry]
+    held = slice(trade.entry + 1, trade.exit + 1)
+    return held_funding(trade.side, prices[trade.entry], prices[held], funding[held])
+
+
+def held_funding(
+    side: int, entry_price: float, prices: Sequence[float], rates: Sequence[float]
+) -> tuple[float, float]:
+    """Funding (paid, received) per unit of entry notional over the held settlements.
+
+    ``prices`` and ``rates`` run over the held bars in order; each rate is
+    charged on the notional at its bar's close. Bar trades and panel
+    positions sum their funding through this one function.
+    """
+
     paid: list[float] = []
     received: list[float] = []
-    for index in range(trade.entry + 1, trade.exit + 1):
-        flow = -trade.side * funding[index] * prices[index] / entry_price
+    for price, rate in zip(prices, rates, strict=True):
+        # A long pays a positive rate and a short receives it, on the
+        # notional at the settlement's close.
+        flow = -side * rate * price / entry_price
         if flow < 0.0:
             paid.append(-flow)
         else:

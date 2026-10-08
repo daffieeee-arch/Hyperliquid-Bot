@@ -7,10 +7,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from hyperliquid_bot.local_mode import UnsafeTradingModeError, require_local_paper_mode
-from research.harness.benchmark import benchmark
-from research.harness.data import fingerprint_inputs, load_bars
+from research.harness.benchmark import benchmark, no_benchmark
+from research.harness.data import BarTable, PanelTable, fingerprint_inputs, load_bars, load_panel
 from research.harness.errors import HarnessError, LockError, SpecError
-from research.harness.evaluate import decide
+from research.harness.evaluate import decide, decide_source
+from research.harness.portfolio import PanelSource, portfolio_block
 from research.harness.report import (
     Provenance,
     completed_document,
@@ -71,10 +72,28 @@ def execute(spec_path: Path, output_dir: Path) -> RunOutcome:
         fingerprint = fingerprint_inputs(spec, spec_path.parent)
         if fingerprint != locked_fingerprint:
             raise LockError("Data fingerprint differs from the lock. Re-lock the spec before run.")
-        table = load_bars(spec, spec_path.parent)
-        decision = decide(spec, table)
-        context = benchmark(spec.costs, table, decision)
-        payload = completed_document(spec, digest, table, decision, fingerprint, context, origin)
+        table: BarTable | PanelTable
+        portfolio: dict[str, Json] | None = None
+        if spec.portfolio is None:
+            table = load_bars(spec, spec_path.parent)
+            decision = decide(spec, table)
+            context = benchmark(spec.costs, table, decision)
+        else:
+            table = load_panel(spec, spec_path.parent)
+            source = PanelSource(spec, table)
+            decision = decide_source(source)
+            context = no_benchmark("Buy-and-hold does not apply to a panel portfolio.")
+            portfolio = portfolio_block(source, decision)
+        payload = completed_document(
+            spec,
+            digest,
+            table.timestamps,
+            decision,
+            fingerprint,
+            context,
+            origin,
+            portfolio=portfolio,
+        )
     except (SpecError, LockError, HarnessError) as error:
         reasons = (str(error),)
         payload = _failure(error.failure_kind, reasons, digest, hypothesis_id, "PAPER", origin)

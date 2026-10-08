@@ -7,7 +7,9 @@ import json
 import math
 import re
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
+from typing import Final
 
 from research.harness.errors import LockError, SpecError
 from research.harness.yaml_subset import JsonValue
@@ -40,9 +42,24 @@ _TOP_KEYS = frozenset(
         "configs",
     }
 )
-_OPTIONAL_TOP_KEYS = frozenset({"sizing"})
+_OPTIONAL_TOP_KEYS = frozenset({"sizing", "portfolio"})
 _SIZING_METHODS = frozenset({"unit", "vol_target"})
 _MAX_LEVERAGE_CAP = 100.0
+_MAX_UNIVERSE_SIZE = 10_000
+_BAR_BACKENDS = frozenset({"parquet", "duckdb"})
+_BAR_ROLES = frozenset({"timestamp", "price", "feature", "availability", "funding"})
+_PANEL_ROLES = _BAR_ROLES | {"symbol", "traded", "rank", "covered"}
+_DTYPE_FOR_ROLE = {
+    "timestamp": "int64",
+    "availability": "int64",
+    "rank": "int64",
+    "price": "float64",
+    "feature": "float64",
+    "funding": "float64",
+    "symbol": "string",
+    "traded": "bool",
+    "covered": "bool",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,9 +78,17 @@ class FeatureSpec:
 
 @dataclass(frozen=True, slots=True)
 class ConfigSpec:
+    """One pre-registered config: a signal threshold for a bar series, or a
+    quantile per leg for a panel portfolio; exactly one is set."""
+
     id: str
-    threshold: float
+    threshold: float | None
     horizon_bars: int
+    quantile: float | None = None
+
+    def __post_init__(self) -> None:
+        if (self.threshold is None) == (self.quantile is None):
+            raise SpecError(f"Config {self.id} needs exactly one of threshold and quantile.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +122,23 @@ UNIT_SIZING = SizingSpec(method="unit")
 
 
 @dataclass(frozen=True, slots=True)
+class PortfolioSpec:
+    """A cross-sectional portfolio over a panel (``data.backend: panel``).
+
+    On each decision day the universe is the symbols that traded with a rank
+    at most ``universe_size`` and a known signal; each config goes long the
+    top ``quantile`` of it by the signal and, under ``direction: signed``,
+    short the bottom ``quantile``. A leg needs ``min_names_per_leg`` names:
+    short of them at the decision, no orders are sent and the day is
+    skipped; short of them at the fill, the names that filled are unwound
+    at the fill close for the round trip and no return.
+    """
+
+    universe_size: int
+    min_names_per_leg: int
+
+
+@dataclass(frozen=True, slots=True)
 class SplitSpec:
     method: str
     train_bars: int
@@ -121,6 +163,12 @@ class DataSpec:
     max_gap: int
     max_rows: int
     columns: tuple[ColumnSpec, ...]
+    # Panel backend only: one row per symbol and timestamp.
+    symbol_column: str | None = None
+    traded_column: str | None = None
+    rank_column: str | None = None
+    # With funding on a panel: whether the row's funding day is whole.
+    funding_covered_column: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,6 +189,7 @@ class HypothesisSpec:
     features: tuple[FeatureSpec, ...]
     configs: tuple[ConfigSpec, ...]
     sizing: SizingSpec = UNIT_SIZING
+    portfolio: PortfolioSpec | None = None
 
 
 def load_document(path: Path) -> dict[str, Json]:
@@ -215,7 +264,13 @@ def validate_spec(document: dict[str, Json]) -> HypothesisSpec:
     sample = _parse_sample(_require_mapping(document["sample"], "sample"))
     data = _parse_data(_require_mapping(document["data"], "data"))
     features = _parse_features(document["features"], data)
-    configs = _parse_configs(document["configs"])
+    panel = data.backend == "panel"
+    if panel != ("portfolio" in document):
+        raise SpecError("portfolio is required with data.backend panel and refused otherwise.")
+    portfolio = (
+        _parse_portfolio(_require_mapping(document["portfolio"], "portfolio")) if panel else None
+    )
+    configs = _parse_configs(document["configs"], panel=panel, signed=direction == "signed")
     if signal_feature not in {feature.name for feature in features}:
         raise SpecError("signal_feature must name a declared feature.")
     _require_funding_column(costs, data)
@@ -224,10 +279,14 @@ def validate_spec(document: dict[str, Json]) -> HypothesisSpec:
         if "sizing" in document
         else UNIT_SIZING
     )
+    if panel and sizing.method != "unit":
+        raise SpecError("A panel portfolio sizes each period at unit weight; sizing must be unit.")
+    if portfolio is not None:
+        _require_reachable_legs(portfolio, configs)
     decision_features = (signal_feature,) + (
         () if sizing.vol_feature is None else (sizing.vol_feature,)
     )
-    _require_latency_floor(costs, features, data, decision_features)
+    _require_latency_floor(costs, features, data, decision_features, panel)
     return HypothesisSpec(
         hypothesis_id=hypothesis_id,
         universe=universe,
@@ -245,6 +304,7 @@ def validate_spec(document: dict[str, Json]) -> HypothesisSpec:
         features=features,
         configs=configs,
         sizing=sizing,
+        portfolio=portfolio,
     )
 
 
@@ -324,11 +384,7 @@ def _parse_costs(raw: dict[str, Json]) -> CostSpec:
         allow_zero_latency = _require_bool(raw["allow_zero_latency"], "costs.allow_zero_latency")
     funding_column = None
     if "funding_column" in raw:
-        funding_column = _identifier(
-            _require_str(raw["funding_column"], "costs.funding_column", 64),
-            _COLUMN_NAME,
-            "costs.funding_column",
-        )
+        funding_column = _column_ref(raw, "funding_column", "costs")
     return CostSpec(
         fee_bps=fee_bps,
         slippage_bps=slippage_bps,
@@ -388,15 +444,23 @@ def _require_latency_floor(
     features: tuple[FeatureSpec, ...],
     data: DataSpec,
     decision_features: tuple[str, ...],
+    panel: bool,
 ) -> None:
     """Bar-timestamp clocks fill on a later bar unless zero latency is explicit.
 
-    Every feature read at the decision bar counts: the signal, and the sizing
-    volatility, which would otherwise size a fill with that bar's own close.
+    Every input read at the decision bar counts: the signal, the sizing
+    volatility, which would otherwise size a fill with that bar's own close,
+    and on a panel the universe (rank, traded), which is the decision day's
+    own close.
     """
 
     if costs.latency_bars >= 1 or costs.allow_zero_latency:
         return
+    if panel:
+        raise SpecError(
+            "costs.latency_bars must be >= 1 on a panel: the universe (rank, traded) is known "
+            "at the decision day's close. latency_bars 0 requires costs.allow_zero_latency: true."
+        )
     for feature in features:
         if feature.name in decision_features and (
             feature.available_at_column == data.timestamp_column
@@ -440,57 +504,103 @@ def _parse_sample(raw: dict[str, Json]) -> SampleSpec:
     )
 
 
+def _require_reachable_legs(portfolio: PortfolioSpec, configs: tuple[ConfigSpec, ...]) -> None:
+    """Every config must be able to fill a leg from a full universe, or it never trades."""
+
+    for config in configs:
+        # Panel configs always carry a quantile (_parse_configs with panel=True).
+        if config.quantile is None:
+            raise SpecError(f"Config {config.id} has no quantile.")
+        names = leg_size(portfolio.universe_size, exact_quantile(config.quantile))
+        if names < portfolio.min_names_per_leg:
+            raise SpecError(
+                f"Config {config.id} fills at most {names} names per leg from a universe of "
+                f"{portfolio.universe_size}, under portfolio.min_names_per_leg "
+                f"{portfolio.min_names_per_leg}."
+            )
+
+
+def exact_quantile(quantile: float) -> Fraction:
+    """The quantile as written in the spec, so 100 names at 0.29 give 29, not 28."""
+
+    return Fraction(repr(quantile))
+
+
+def leg_size(count: int, quantile: Fraction) -> int:
+    """How many of ``count`` names a leg takes: the floor of the exact quantile.
+
+    Validation and scoring both size legs here, so a config the spec
+    accepts can fill.
+    """
+
+    return math.floor(count * quantile)
+
+
+def _parse_portfolio(raw: dict[str, Json]) -> PortfolioSpec:
+    _exact(raw, {"universe_size", "min_names_per_leg"}, "portfolio")
+    universe_size = _positive_int(
+        raw["universe_size"], "portfolio.universe_size", _MAX_UNIVERSE_SIZE
+    )
+    min_names = _positive_int(
+        raw["min_names_per_leg"], "portfolio.min_names_per_leg", universe_size
+    )
+    return PortfolioSpec(universe_size=universe_size, min_names_per_leg=min_names)
+
+
+_DATA_KEYS: Final[frozenset[str]] = frozenset(
+    {"backend", "timestamp_column", "price_column", "max_gap", "max_rows", "columns"}
+)
+
+
+def _column_ref(raw: dict[str, Json], key: str, section: str = "data") -> str:
+    """The column name ``<section>.<key>`` names, validated as an identifier."""
+
+    label = f"{section}.{key}"
+    return _identifier(_require_str(raw[key], label, 64), _COLUMN_NAME, label)
+
+
 def _parse_data(raw: dict[str, Json]) -> DataSpec:
     backend = raw.get("backend")
-    if backend == "parquet":
-        _exact(
-            raw,
-            {
-                "backend",
-                "parquet_path",
-                "timestamp_column",
-                "price_column",
-                "max_gap",
-                "max_rows",
-                "columns",
-            },
-            "data",
+    symbol_column = traded_column = rank_column = None
+    if not isinstance(backend, str):
+        raise SpecError("data.backend must be parquet, duckdb, or panel.")
+    if backend in {"panel", "parquet"}:
+        panel_keys = (
+            {"symbol_column", "traded_column", "rank_column"} if backend == "panel" else set()
         )
+        _exact(raw, _DATA_KEYS | {"parquet_path"} | panel_keys, "data")
         parquet_path = _relative_path(_require_str(raw["parquet_path"], "data.parquet_path", 240))
         view = None
+        if backend == "panel":
+            symbol_column = _column_ref(raw, "symbol_column")
+            traded_column = _column_ref(raw, "traded_column")
+            rank_column = _column_ref(raw, "rank_column")
     elif backend == "duckdb":
-        _exact(
-            raw,
-            {
-                "backend",
-                "view",
-                "timestamp_column",
-                "price_column",
-                "max_gap",
-                "max_rows",
-                "columns",
-            },
-            "data",
-        )
+        _exact(raw, _DATA_KEYS | {"view"}, "data")
         view = _identifier(_require_str(raw["view"], "data.view", 64), _VIEW_NAME, "data.view")
         parquet_path = None
     else:
-        raise SpecError("data.backend must be parquet or duckdb.")
-    timestamp_column = _identifier(
-        _require_str(raw["timestamp_column"], "data.timestamp_column", 64),
-        _COLUMN_NAME,
-        "data.timestamp_column",
-    )
-    price_column = _identifier(
-        _require_str(raw["price_column"], "data.price_column", 64),
-        _COLUMN_NAME,
-        "data.price_column",
-    )
+        raise SpecError("data.backend must be parquet, duckdb, or panel.")
+    timestamp_column = _column_ref(raw, "timestamp_column")
+    price_column = _column_ref(raw, "price_column")
     max_gap = _positive_int(raw["max_gap"], "data.max_gap", 10**18)
     max_rows = _positive_int(raw["max_rows"], "data.max_rows", _MAX_ROWS_CAP)
-    columns = _parse_columns(raw["columns"], timestamp_column, price_column)
+    columns = _parse_columns(raw["columns"], backend == "panel")
+    _require_role_column(columns, "timestamp", timestamp_column, "data.timestamp_column")
+    _require_role_column(columns, "price", price_column, "data.price_column")
+    funding_covered_column = None
+    if backend == "panel":
+        _require_role_column(columns, "symbol", symbol_column, "data.symbol_column")
+        _require_role_column(columns, "traded", traded_column, "data.traded_column")
+        _require_role_column(columns, "rank", rank_column, "data.rank_column")
+        funding_covered_column = _optional_role_column(columns, "covered")
+        if (funding_covered_column is None) != (_optional_role_column(columns, "funding") is None):
+            raise SpecError(
+                "A panel with a funding-role column declares exactly one covered-role column, "
+                "and one without funding declares none."
+            )
     return DataSpec(
-        backend=str(backend),
+        backend=backend,
         parquet_path=parquet_path,
         view=view,
         timestamp_column=timestamp_column,
@@ -498,13 +608,18 @@ def _parse_data(raw: dict[str, Json]) -> DataSpec:
         max_gap=max_gap,
         max_rows=max_rows,
         columns=columns,
+        symbol_column=symbol_column,
+        traded_column=traded_column,
+        rank_column=rank_column,
+        funding_covered_column=funding_covered_column,
     )
 
 
-def _parse_columns(raw: Json, timestamp_column: str, price_column: str) -> tuple[ColumnSpec, ...]:
+def _parse_columns(raw: Json, panel: bool) -> tuple[ColumnSpec, ...]:
     mapping = _require_mapping(raw, "data.columns")
     if not mapping:
         raise SpecError("data.columns must name at least one column.")
+    roles = _PANEL_ROLES if panel else _BAR_ROLES
     columns: list[ColumnSpec] = []
     for name, value in mapping.items():
         column_name = _identifier(name, _COLUMN_NAME, "data.columns key")
@@ -512,28 +627,31 @@ def _parse_columns(raw: Json, timestamp_column: str, price_column: str) -> tuple
         _exact(body, {"dtype", "role"}, f"data.columns.{column_name}")
         dtype = _require_str(body["dtype"], f"data.columns.{column_name}.dtype", 16)
         role = _require_str(body["role"], f"data.columns.{column_name}.role", 16)
-        if dtype not in {"int64", "float64"}:
-            raise SpecError(f"data.columns.{column_name}.dtype must be int64 or float64.")
-        if role not in {"timestamp", "price", "feature", "availability", "funding"}:
-            raise SpecError(
-                f"Column {column_name} role must be timestamp, price, feature, availability, "
-                "or funding."
-            )
-        if role in {"timestamp", "availability"} and dtype != "int64":
-            raise SpecError(f"data.columns.{column_name} must be int64.")
-        if role in {"price", "feature", "funding"} and dtype != "float64":
-            raise SpecError(f"data.columns.{column_name} must be float64.")
+        if role not in roles:
+            raise SpecError(f"Column {column_name} role must be one of {', '.join(sorted(roles))}.")
+        if dtype != _DTYPE_FOR_ROLE[role]:
+            raise SpecError(f"data.columns.{column_name} must be {_DTYPE_FOR_ROLE[role]}.")
         columns.append(ColumnSpec(name=column_name, dtype=dtype, role=role))
     names = [column.name for column in columns]
-    timestamp_hits = [column for column in columns if column.role == "timestamp"]
-    price_hits = [column for column in columns if column.role == "price"]
-    if len(timestamp_hits) != 1 or timestamp_hits[0].name != timestamp_column:
-        raise SpecError("data.timestamp_column must be the unique timestamp-role column.")
-    if len(price_hits) != 1 or price_hits[0].name != price_column:
-        raise SpecError("data.price_column must be the unique price-role column.")
     if len(names) != len(set(names)):
         raise SpecError("data.columns has a duplicate name.")
     return tuple(columns)
+
+
+def _require_role_column(
+    columns: tuple[ColumnSpec, ...], role: str, name: str | None, label: str
+) -> None:
+    if name is None or _optional_role_column(columns, role) != name:
+        raise SpecError(f"{label} must be the unique {role}-role column.")
+
+
+def _optional_role_column(columns: tuple[ColumnSpec, ...], role: str) -> str | None:
+    """The name of the one column with the role, or None; two is a spec error."""
+
+    hits = [column.name for column in columns if column.role == role]
+    if len(hits) > 1:
+        raise SpecError(f"At most one column may carry the {role} role.")
+    return hits[0] if hits else None
 
 
 def _parse_features(raw: Json, data: DataSpec) -> tuple[FeatureSpec, ...]:
@@ -548,16 +666,8 @@ def _parse_features(raw: Json, data: DataSpec) -> tuple[FeatureSpec, ...]:
         name = _identifier(
             _require_str(body["name"], f"features[{index}].name", 41), _FEATURE_NAME, "feature name"
         )
-        column_name = _identifier(
-            _require_str(body["column"], f"features[{index}].column", 64),
-            _COLUMN_NAME,
-            "feature column",
-        )
-        available = _identifier(
-            _require_str(body["available_at_column"], f"features[{index}].available_at_column", 64),
-            _COLUMN_NAME,
-            "feature available_at_column",
-        )
+        column_name = _column_ref(body, "column", f"features[{index}]")
+        available = _column_ref(body, "available_at_column", f"features[{index}]")
         if name in seen:
             raise SpecError(f"Duplicate feature name {name}.")
         seen.add(name)
@@ -573,14 +683,17 @@ def _parse_features(raw: Json, data: DataSpec) -> tuple[FeatureSpec, ...]:
     return tuple(features)
 
 
-def _parse_configs(raw: Json) -> tuple[ConfigSpec, ...]:
+def _parse_configs(raw: Json, *, panel: bool, signed: bool) -> tuple[ConfigSpec, ...]:
     if not isinstance(raw, list) or not raw:
         raise SpecError("configs must be a non-empty list.")
+    knob = "quantile" if panel else "threshold"
+    # Two legs of the same quantile must not overlap; one leg may take all.
+    quantile_cap = 0.5 if signed else 1.0
     configs: list[ConfigSpec] = []
     seen: set[str] = set()
     for index, item in enumerate(raw):
         body = _require_mapping(item, f"configs[{index}]")
-        _exact(body, {"id", "threshold", "horizon_bars"}, f"configs[{index}]")
+        _exact(body, {"id", knob, "horizon_bars"}, f"configs[{index}]")
         config_id = _identifier(
             _require_str(body["id"], f"configs[{index}].id", 41),
             _CONFIG_ID,
@@ -589,10 +702,20 @@ def _parse_configs(raw: Json) -> tuple[ConfigSpec, ...]:
         if config_id in seen:
             raise SpecError(f"Duplicate config id {config_id}.")
         seen.add(config_id)
+        horizon_bars = _positive_int(body["horizon_bars"], f"configs[{index}].horizon_bars", 10_000)
+        if panel:
+            quantile = _require_number(body["quantile"], f"configs[{index}].quantile")
+            if not 0.0 < quantile <= quantile_cap:
+                raise SpecError(f"configs[{index}].quantile must lie in (0, {quantile_cap}].")
+            configs.append(
+                ConfigSpec(
+                    id=config_id, threshold=None, horizon_bars=horizon_bars, quantile=quantile
+                )
+            )
+            continue
         threshold = _non_negative(
             _require_number(body["threshold"], f"configs[{index}].threshold"), "threshold"
         )
-        horizon_bars = _positive_int(body["horizon_bars"], f"configs[{index}].horizon_bars", 10_000)
         configs.append(ConfigSpec(id=config_id, threshold=threshold, horizon_bars=horizon_bars))
     return tuple(configs)
 

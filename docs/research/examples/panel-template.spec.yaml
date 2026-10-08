@@ -1,0 +1,84 @@
+# Template only. This file does not claim an edge. Copy it next to a panel
+# built by `python -m research.bar_tables panel`, lock it, then run it. See
+# docs/research/hypothesis-harness.md, section "Panel portfolios".
+
+hypothesis_id: xs-template
+universe: binance-um-usdt-panel-top50
+dataset_version: bn-um-usdt-1d panel, lookbacks 7/30/90, vol 30, volume 30, funding 7
+h0: Mean net return per period of the long-short portfolio is less than or equal to zero after costs and funding.
+h1: Mean net return per period of the long-short portfolio is greater than zero after costs and funding on the untouched holdout.
+alpha: 0.05
+selection_method: holm
+direction: signed
+signal_feature: momentum
+costs:
+  fee_bps: 4.5
+  slippage_bps: 2.0
+  spread_bps: 1.0
+  latency_bars: 1
+  funding_column: funding_rate
+# With 1-day latency a 30-day horizon is a 31-day period: 5 per 180-day
+# fold (30 over the 6-fold minimum) and 23 in a 720-day holdout, so these
+# floors leave q20-h30 some slack for skipped periods on roughly 2,400 days
+# of panel.
+split:
+  method: expanding
+  train_bars: 180
+  test_bars: 180
+  holdout_bars: 720
+sample:
+  min_trades_validation: 24
+  min_trades_holdout: 15
+  min_folds: 6
+data:
+  backend: panel
+  parquet_path: panel.parquet
+  timestamp_column: ts
+  symbol_column: symbol
+  price_column: close
+  traded_column: traded
+  rank_column: volume_rank
+  max_gap: 86400000
+  max_rows: 2000000
+  columns:
+    ts:
+      dtype: int64
+      role: timestamp
+    symbol:
+      dtype: string
+      role: symbol
+    close:
+      dtype: float64
+      role: price
+    traded:
+      dtype: bool
+      role: traded
+    volume_rank:
+      dtype: int64
+      role: rank
+    ret_30d:
+      dtype: float64
+      role: feature
+    funding_rate:
+      dtype: float64
+      role: funding
+    funding_covered:
+      dtype: bool
+      role: covered
+    available_ts:
+      dtype: int64
+      role: availability
+features:
+  - name: momentum
+    column: ret_30d
+    available_at_column: available_ts
+portfolio:
+  universe_size: 50
+  min_names_per_leg: 5
+configs:
+  - id: q20-h7
+    quantile: 0.2
+    horizon_bars: 7
+  - id: q20-h30
+    quantile: 0.2
+    horizon_bars: 30

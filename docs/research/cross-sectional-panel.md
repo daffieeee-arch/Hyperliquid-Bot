@@ -108,7 +108,9 @@ Nothing is written when any of these fail:
   including the end of a still-published run, a late start or early stop
   is a hole, on every day a settlement was due. The funding file of the
   month after the window is read when it exists, so the settlement after
-  the window gives the interval at its end. A window that lies wholly in a listing (or
+  the window gives the interval at its end. When that month is not
+  published yet, only whole days without any settlement count at the end,
+  because the last label may still be the old setting. A window that lies wholly in a listing (or
   delisting) month may hold no settlement at all. Untraded days are not checked, because delisted contracts
   carry default-rate funding.
 - The funding file of the month before the first month is needed too, when

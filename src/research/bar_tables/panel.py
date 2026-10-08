@@ -42,6 +42,12 @@ class DailyBar:
     quote_volume: float
     trades: int
 
+    @property
+    def traded(self) -> bool:
+        """Trades and quote volume: a delisted contract's flat bars have neither."""
+
+        return self.trades > 0 and self.quote_volume > 0.0
+
 
 @dataclass(frozen=True, slots=True)
 class Settlement:
@@ -148,7 +154,7 @@ def build_symbol_rows(
     _check_bars(symbol, bars)
     _check_settlements(symbol, settlements)
     funding = _daily_funding(bars, settlements)
-    traded = [bar.trades > 0 and bar.quote_volume > 0.0 for bar in bars]
+    traded = [bar.traded for bar in bars]
     # run_start[i]: index of the first bar of the consecutive-day stretch holding i.
     run_start = _run_starts(bars)
     traded_streak = _streaks(traded, run_start)

@@ -692,6 +692,39 @@ def test_a_hole_after_end_in_a_closed_run_month_still_fails(
     assert "DEADUSDT traded on 2026-01-20 with a funding settlement missing" in message
 
 
+def test_funding_may_not_stop_early_inside_a_listing_month(
+    tmp_path: Path, capsys: CaptureFixture[str]
+) -> None:
+    root, manifest = _universe_root(tmp_path)
+    # NEWUSDT lists on Jan 20 and stays published; its funding stops after Jan 25.
+    _write_month(root, "funding", "NEWUSDT", "2026-01", range(20, 26))
+    assert main(_panel_args(root, manifest, tmp_path / "panel.parquet", end="2026-02-01")) == 2
+    message = capsys.readouterr().err
+    assert "NEWUSDT traded on 2026-01-26 with a funding settlement missing" in message
+
+
+def test_the_last_day_needs_no_next_month_to_be_covered(tmp_path: Path) -> None:
+    root, manifest = _universe_root(tmp_path)
+    # Mar 31 runs 4h funding to 16:00 and April is not published yet.
+    directory = root / "parquet" / "hist_etl" / "binance" / "um" / "funding"
+    march = directory / "AAAUSDT-2026-03.parquet"
+    march_open_us = (date(2026, 3, 1) - date(1970, 1, 1)).days * 86_400_000_000
+    last_day_us = march_open_us + 30 * 86_400_000_000
+    connection = duckdb.connect()
+    try:
+        target = "'" + str(march).replace("'", "''") + "'"
+        connection.execute(
+            "COPY (SELECT make_timestamp(? + i * 28800000000) AS calc_time, 8 AS "
+            "funding_interval_hours, 0.0001 AS last_funding_rate, 'AAAUSDT' AS symbol "
+            "FROM range(0, 90) t(i) UNION ALL SELECT make_timestamp(? + h * 3600000000), 4, "
+            f"0.0001, 'AAAUSDT' FROM unnest([0, 4, 8, 12, 16]) t(h)) TO {target} (FORMAT PARQUET)",
+            [march_open_us, last_day_us],
+        )
+    finally:
+        connection.close()
+    assert main(_panel_args(root, manifest, tmp_path / "panel.parquet")) == 0
+
+
 def test_a_start_inside_a_listing_month_needs_no_bar_on_it(tmp_path: Path) -> None:
     root, manifest = _universe_root(tmp_path)
     args = _panel_args(root, manifest, tmp_path / "panel.parquet")

@@ -173,6 +173,7 @@ def build_panel(files: UniverseFiles, spec: PanelSpec, start: date, end: date) -
     bars = _read_bars(files.klines)
     _check_kline_runs(bars, files.kline_runs)
     settlements = _read_settlements(files.funding)
+    _check_funding_runs(bars, settlements, files.funding_runs)
     start_ms = _day_ms(start)
     end_ms = _day_ms(end)
     rows: list[PanelRow] = []
@@ -180,7 +181,6 @@ def build_panel(files: UniverseFiles, spec: PanelSpec, start: date, end: date) -
         # Rows look back only, so bars after ``end`` change nothing; skip them.
         kept = [bar for bar in bars[symbol] if bar.ts < end_ms]
         rows.extend(build_symbol_rows(symbol, kept, settlements.get(symbol, []), spec))
-    _check_funding_runs(bars, settlements, files.funding_runs)
     inside = [row for row in rows if start_ms <= row.ts < end_ms]
     if not inside:
         raise BarTableError("The universe has no daily bar inside the panel range.")
@@ -240,19 +240,34 @@ def _check_funding_runs(
     """
 
     for run in runs:
-        traded = {
-            bar.ts for bar in bars.get(run.symbol, []) if bar.trades > 0 and bar.quote_volume > 0.0
-        }
+        traded = {bar.ts for bar in bars.get(run.symbol, []) if bar.traded}
         opens = _close_ms(run.first) - DAY_MS
         high = _close_ms(run.last)
         series = settlements.get(run.symbol, [])
         own = [item for item in series if opens < item.ts + SETTLEMENT_SLACK_MS <= high]
         following = next((item for item in series if item.ts + SETTLEMENT_SLACK_MS > high), None)
+        listing_end = _close_ms(_month_end(run.first))
+        delisting_start = _close_ms(date(run.last.year, run.last.month, 1))
         if own:
-            edges = _edge_dues(own, following, opens, high)
+            starts = {
+                ts
+                for ts in _start_dues(own[0], opens)
+                if not (run.late_start and ts <= listing_end)
+            }
+            ends = {
+                ts
+                for ts in _end_dues(own[-1], following, high)
+                if not (run.early_end and ts >= delisting_start)
+            }
+            holes = funding_hole_closes(own) | starts | ends
         else:
-            edges = {ts for ts in traded if opens < ts <= high}
-        holes = funding_hole_closes(own) | {ts for ts in edges if not _edge_allowed(run, ts)}
+            holes = {
+                ts
+                for ts in traded
+                if opens < ts <= high
+                and not (run.late_start and ts <= listing_end)
+                and not (run.early_end and ts >= delisting_start)
+            }
         for close in sorted(holes & traded):
             day = datetime.fromtimestamp(close / 1000, UTC).date()
             raise BarTableError(
@@ -261,36 +276,40 @@ def _check_funding_runs(
             )
 
 
-def _edge_dues(
-    own: Sequence[Settlement], following: Settlement | None, opens: int, high: int
-) -> set[int]:
-    """Days at the window's edges on which a settlement was due but is missing.
-
-    Every due day is marked, like the interior. The settlement after the
-    window, when loaded, gives the interval at the end.
-    """
+def _start_dues(first: Settlement, opens: int) -> set[int]:
+    """Days before the window's first settlement on which one was due."""
 
     days: set[int] = set()
-    first, last = own[0], own[-1]
     step = first.interval_hours * _HOUR_MS
     due = first.ts - step
     while due + SETTLEMENT_SLACK_MS > opens:
         days.add(settlement_day_close(due))
         due -= step
-    step = max(last.interval_hours, following.interval_hours if following else 0) * _HOUR_MS
+    return days
+
+
+def _end_dues(last: Settlement, following: Settlement | None, high: int) -> set[int]:
+    """Days after the window's last settlement on which one was due.
+
+    The settlement after the window gives the interval. Without one (its
+    month is not published yet), the label of the last may be the old
+    setting on a day that changes it, so only whole days without any
+    settlement count.
+    """
+
+    days: set[int] = set()
+    if following is None:
+        day = settlement_day_close(last.ts) + DAY_MS
+        while day <= high:
+            days.add(day)
+            day += DAY_MS
+        return days
+    step = max(last.interval_hours, following.interval_hours) * _HOUR_MS
     due = last.ts + step
     while due + SETTLEMENT_SLACK_MS <= high:
         days.add(settlement_day_close(due))
         due += step
     return days
-
-
-def _edge_allowed(run: Run, close: int) -> bool:
-    """A missing edge settlement inside the listing or delisting month."""
-
-    in_listing = run.late_start and close <= _close_ms(_month_end(run.first))
-    in_delisting = run.early_end and close >= _close_ms(date(run.last.year, run.last.month, 1))
-    return in_listing or in_delisting
 
 
 def _synced(path: Path) -> bool:

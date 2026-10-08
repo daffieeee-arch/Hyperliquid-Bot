@@ -129,10 +129,12 @@ PYTHONPATH=src uv run --frozen python -m research.hist_etl universe \
 - Per symbol, it records the runs of consecutive months with a monthly
   `--interval` kline zip (default `1d`) and a monthly fundingRate zip.
 - `latest_month` is the newest month the planner expects by `as_of`. A run
-  that reaches it, or ends the month before it, is still published. The
-  month of grace covers Binance still uploading the newest month after the
-  first Monday: an open run that has ended shows up as a gap, while a
-  closed one that still trades would lose its data silently.
+  that reaches it is still published. So is a run that ends the month
+  before, while no series of its symbol has `latest_month` yet: Binance can
+  still be uploading that month after the first Monday, and an open run that
+  has ended shows up as a gap, while a closed one that still trades would
+  lose its data silently. In the 2026-10-08 file, seven funding runs end in
+  2026-08 while their klines reach 2026-09, so they are closed.
 - It never replaces an existing file; a refresh is a new dated file.
 - The regional endpoint now and then answers `NoSuchBucket` for this bucket
   (about one listing in eight on 2026-10-08). That answer, a dropped or

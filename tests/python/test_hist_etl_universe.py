@@ -393,6 +393,26 @@ def test_a_run_one_month_short_stays_open_after_the_first_monday() -> None:
     assert "u-klines-relusdt-r2" not in specs
 
 
+def test_a_run_one_month_short_closes_once_its_symbol_has_the_month() -> None:
+    # BTCUSDT klines have September, its funding stops in August: the
+    # upload reached BTCUSDT, so the funding run has ended.
+    keys = [
+        key for key in _bucket_keys() if not ("fundingRate/BTCUSDT" in key and "2026-09" in key)
+    ]
+    universe = discover_universe(
+        _lister(FakeBucket(keys)), as_of=AS_OF, quote="USDT", interval="1d"
+    )
+    specs = {
+        spec.id: spec
+        for spec in expand_universe(
+            "u", universe, datasets=("klines", "fundingRate"), start=None, enabled=True
+        )
+    }
+    assert specs["u-klines-btcusdt"].end is None
+    funding = specs["u-funding-btcusdt"]
+    assert (funding.end, funding.open_end) == (date(2026, 8, 31), True)
+
+
 def test_render_round_trips_one_line_per_symbol(tmp_path: Path) -> None:
     universe = _discovered()
     text = render_universe(universe)

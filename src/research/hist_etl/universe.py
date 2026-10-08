@@ -490,16 +490,23 @@ def _load_month(value: object, path: Path) -> date:
     return month
 
 
-def still_published(run: MonthRun, universe: Universe) -> bool:
+def still_published(run: MonthRun, universe: Universe, item: UniverseSymbol) -> bool:
     """Whether Binance Vision may still add months to this run (see ``Universe``).
 
-    A run that ends the month before ``latest_month`` also counts: Binance
-    can still be uploading the newest month after the first Monday, and a
-    run wrongly kept open shows up as a gap where a run wrongly closed would
-    cut a trading contract's data off silently.
+    A run that ends the month before ``latest_month`` also counts while no
+    series of the symbol has that month yet: Binance can still be uploading
+    it after the first Monday, and a run wrongly kept open shows up as a gap
+    where a run wrongly closed would cut a trading contract's data off
+    silently. Once another series of the symbol has the month, the upload
+    reached the symbol, and the shorter run has ended.
     """
 
-    return run.last >= previous_month(universe.latest_month)
+    latest = universe.latest_month
+    if run.last >= latest:
+        return True
+    if run.last != previous_month(latest):
+        return False
+    return not any(runs and runs[-1].last >= latest for runs in (item.klines, item.funding))
 
 
 def expand_universe(
@@ -527,7 +534,7 @@ def expand_universe(
                 spec = _run_spec(
                     group=group,
                     universe=universe,
-                    symbol=item.symbol,
+                    item=item,
                     dataset=dataset,
                     position=position,
                     run=run,
@@ -543,14 +550,15 @@ def _run_spec(
     *,
     group: str,
     universe: Universe,
-    symbol: str,
+    item: UniverseSymbol,
     dataset: str,
     position: int,
     run: MonthRun,
     start: date | None,
     enabled: bool,
 ) -> BinanceSpec | None:
-    published = still_published(run, universe)
+    symbol = item.symbol
+    published = still_published(run, universe, item)
     end = None if published else next_month(run.last) - timedelta(days=1)
     first = run.first
     open_start = True
@@ -628,7 +636,10 @@ def run_universe(
     published = sum(
         1
         for item in universe.symbols
-        if any(runs and still_published(runs[-1], universe) for runs in (item.klines, item.funding))
+        if any(
+            runs and still_published(runs[-1], universe, item)
+            for runs in (item.klines, item.funding)
+        )
     )
     print(
         f"universe\t{len(universe.symbols)} symbols\t{published} still published\t"

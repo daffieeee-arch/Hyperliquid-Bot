@@ -405,6 +405,7 @@ def _describe(
         # An archive two datasets plan is probed and counted once, as sync
         # downloads it once.
         if item.canonical_path in seen:
+            lines.append(f"{_format_plan(item)}\tshared")
             continue
         seen.add(item.canonical_path)
         current = item

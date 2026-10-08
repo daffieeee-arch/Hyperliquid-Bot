@@ -9,7 +9,7 @@ seen before it is listed under [Seen before](#seen-before).
 
 - Spec: [`exp_funding_btc.spec.yaml`](exp_funding_btc.spec.yaml).
 - Canonical sha256, from `python -m research.harness hash`:
-  `82adefb45610195ca26c2e62033cd09d393033bfefb1eb0f32f6c6ea198e1cb9`.
+  `85d38e7ecc2f1a1dad7080f60f0913dbc4441f4d7cdf16334de1fb890ebb9ed1`.
 
 Any change to the spec is a new pre-registration with a new hash, not a
 re-run.
@@ -120,15 +120,31 @@ stated so the reader can judge their weight:
   | --- | --- | --- | --- | --- |
   | 0.00005 | 1 day | 785 | 503 | 282 |
   | 0.00005 | 3 days | 288 | 188 | 100 |
+  | 0.00005 | 1 week | 135 | 90 | 45 |
   | 0.0001 | 1 day | 336 | 114 | 222 |
   | 0.0001 | 3 days | 127 | 46 | 81 |
+  | 0.0001 | 1 week | 64 | 26 | 38 |
   | 0.0002 | 3 days | 63 | 4 | 59 |
   | 0.0003 | 3 days | 41 | 0 | 41 |
 
   Thresholds of 0.0002 and up trade almost only short, which would test a
   short-BTC bet rather than crowding in both directions, so the grid stops at
   0.0001. A mean of 3 settlements gave similar counts and was dropped for
-  noise, as above, not on any result.
+  noise, as above.
+- **The grid is not independent of what was known.** Validation was a
+  strong bull market in which longs paid funding above neutral (58.1%
+  against about 46% at the neutral rate). Dropping the mostly-short
+  thresholds therefore also dropped the configs that market would punish.
+  The reason given above is the real one, but the choice was not blind to
+  that market.
+- **More was looked at than the four configs.** Six threshold and hold
+  combinations and two funding windows were counted before the grid was
+  fixed. The deflated Sharpe ratio counts only the four pre-registered
+  configs as trials, so it deflates less than the full search would.
+- **A first draft of the grid held for 1 day.** Review pointed out that a
+  1-day hold on a 7-day signal mostly re-buys the same position every day at
+  a full round trip, so those configs would mainly test costs. They were
+  replaced by 1-week holds before anything was run.
 
 Because of the first point, a pass on this holdout is not enough on its own;
 see the decision rules.
@@ -139,17 +155,18 @@ These four configs are the whole family:
 
 | id | threshold | horizon | Meaning |
 | --- | --- | --- | --- |
-| `near-1d` | 0.00005 | 24 | Long when the weekly mean is below 0.00005, short above 0.00015; hold 1 day |
-| `near-3d` | 0.00005 | 72 | The same; hold 3 days |
-| `far-1d` | 0.0001 | 24 | Long when the weekly mean is below 0, short above 0.0002; hold 1 day |
-| `far-3d` | 0.0001 | 72 | The same; hold 3 days |
+| `near-3d` | 0.00005 | 72 | Long when the weekly mean is below 0.00005, short above 0.00015; hold 3 days |
+| `near-1w` | 0.00005 | 168 | The same; hold 1 week |
+| `far-3d` | 0.0001 | 72 | Long when the weekly mean is below 0, short above 0.0002; hold 3 days |
+| `far-1w` | 0.0001 | 168 | The same; hold 1 week |
 
 - **Direction**: `signed`. Long when the tilt is above the threshold, short
   when it is below minus the threshold.
 - **Multiple testing**: Holm across the four configs; the deflated Sharpe
   ratio counts them as four trials.
-- **Horizons**: a day and three days, short enough for positioning to unwind
-  and long enough that 12 bps a round trip is not the whole story.
+- **Horizons**: three days and a week. The signal is a 7-day mean, so it
+  moves slowly; a hold near its own length lets positioning unwind without
+  paying a round trip every day for the same position.
 
 ## Costs and funding
 
@@ -184,17 +201,27 @@ selected. Cash (zero) is the other benchmark. Neither is tested.
 
 Proceed only if all of these hold:
 
-1. **Label**: the label is `passes_h1`. That already requires a positive
-   holdout net mean at 1.0×, 1.5× and 2.0× costs, with p ≤ alpha.
+1. **Label**: the label is `passes_h1`. That requires a positive holdout net
+   mean at 1.0×, 1.5× and 2.0× costs, and p ≤ alpha at 1.0× only. The
+   holdout is one pre-selected config, so there is no Holm step there.
 2. **Annualized Sharpe**: the holdout net Sharpe at 1.0× is ≥ 0.5, as
    `sharpe_per_trade × sqrt(trades / 1.748)`, with the selected config's
    holdout trade count and the holdout's length in years.
 3. **Overfitting**: the deflated Sharpe ratio is ≥ 0.95 and the PBO is
    ≤ 0.5.
-4. **Forward confirmation**: because the holdout's market was seen (see
+4. **Not carry alone**: the selected config's holdout gross mean per trade
+   (the price return, before costs and funding) is > 0. The hypothesis is
+   that crowding unwinds in price. A pass that rests only on funding
+   received is carry, which belongs to the separate hedged study.
+5. **Forward confirmation**: because the holdout's market was seen (see
    [Seen before](#seen-before)), a pass leads to a pre-registered forward
    test on data after 2026-09-30 before any PAPER strategy design, not
    straight to one.
+
+A selected config with too few holdout trades (`not_enough_data`) is not a
+pass and not a refutation. Holdout funding sat near neutral, so the `far`
+configs, which trade only below 0 or above 0.0002, may trade little there.
+That outcome also leads to the forward test, with nothing re-tuned.
 
 Otherwise this family stops on BTC:
 
@@ -268,7 +295,7 @@ import json, sys
 lock = json.load(open(sys.argv[1]))
 found = (lock.get("spec_sha256"), (lock.get("data_fingerprint") or {}).get("fingerprint_sha256"))
 expected = (
-    "82adefb45610195ca26c2e62033cd09d393033bfefb1eb0f32f6c6ea198e1cb9",
+    "85d38e7ecc2f1a1dad7080f60f0913dbc4441f4d7cdf16334de1fb890ebb9ed1",
     "33d21ae1eea95941c1910d2e137ab9e08cf8171650a90bf2c838434a052dc833",
 )
 sys.exit(0 if found == expected else f"not the pre-registered spec and table: {found}")

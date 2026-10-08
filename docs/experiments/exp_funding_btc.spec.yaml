@@ -68,15 +68,15 @@ features:
     column: realized_vol
     available_at_column: available_ts
 configs:
-  - id: near-1d
-    threshold: 0.00005
-    horizon_bars: 24
   - id: near-3d
     threshold: 0.00005
     horizon_bars: 72
-  - id: far-1d
-    threshold: 0.0001
-    horizon_bars: 24
+  - id: near-1w
+    threshold: 0.00005
+    horizon_bars: 168
   - id: far-3d
     threshold: 0.0001
     horizon_bars: 72
+  - id: far-1w
+    threshold: 0.0001
+    horizon_bars: 168

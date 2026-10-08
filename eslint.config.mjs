@@ -35,6 +35,18 @@ export default tseslint.config(
         "error",
         { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
       ],
+      // Fonts are vendored: a network fetch at build time fails CI when Google Fonts does.
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              name: "next/font/google",
+              message: "Vendor the font under src/app/fonts and use next/font/local.",
+            },
+          ],
+        },
+      ],
     },
   },
 );

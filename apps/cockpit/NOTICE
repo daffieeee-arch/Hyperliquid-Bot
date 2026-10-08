@@ -42,3 +42,23 @@ shadcn/ui blocks (MIT) and the Tabler admin template (MIT). No paid component
 pack is used: shadcnblocks.com Pro, TailAdmin PRO and paid Tremor blocks are
 deliberately out of scope. ApexCharts is deliberately not used — releases from
 6.0.0 moved to a revenue-gated dual license.
+
+---
+
+IBM Plex Sans: Copyright 2019 IBM Corp. All rights reserved.
+IBM Plex Mono: Copyright 2017 IBM Corp. All rights reserved.
+License: SIL Open Font License, Version 1.1
+https://github.com/IBM/plex
+
+The latin 400, 500 and 600 weights are vendored as woff2 files from
+Fontsource 5.3.0 (@fontsource/ibm-plex-sans, @fontsource/ibm-plex-mono) in
+src/app/fonts/, next to each family's full license text
+(OFL-IBM-Plex-Sans.txt, OFL-IBM-Plex-Mono.txt). They are the package's
+files/ibm-plex-<family>-latin-<weight>-normal.woff2, byte for byte. sha256:
+
+  08949f728dc52d528e69b1667d15c89a5686a4ee9a296ff90983985f99c380f7  ibm-plex-mono-latin-400-normal.woff2
+  01d285447409c8a588692162439a038b8cbd7871309ee20267b0d2d91c6e8e22  ibm-plex-mono-latin-500-normal.woff2
+  0d1f0b8d0722224e32e9f28261bdc86c79115be73444ae5eceb73976a1bcdf83  ibm-plex-mono-latin-600-normal.woff2
+  3b646991d30055a93a4ecc499713d4347953a74a947ecab435ab72070cbdab0e  ibm-plex-sans-latin-400-normal.woff2
+  0717336fb31fcdcde4b8deb3675bb4a0f7f6d484864afcd6751ac29975962203  ibm-plex-sans-latin-500-normal.woff2
+  8960851d691c054ed38e259bdcf1a6190d157b4203ed5bb32c632a863fb8ec2f  ibm-plex-sans-latin-600-normal.woff2

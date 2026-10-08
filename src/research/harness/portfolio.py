@@ -170,49 +170,71 @@ class PanelSource:
     ) -> None:
         """A traded day without a rate fails closed wherever a window's position could hold it.
 
-        A position decided on a day of ``[start, end)`` the symbol is in the
-        universe and fills from is charged, as ``_hold`` charges, the days
-        after its fill through its exit (``_held_through``): ``decision +
-        latency_bars + 1`` through ``decision + latency_bars +
-        horizon_bars`` for the grid's longest horizon whose exit stays
-        inside the window, and never across a day without a row. A traded
-        day without a rate among those days of any such decision fails the
-        run, whichever config's legs would hold it. The same days matter to
-        every config scored on the window, so this is a property of the
-        panel, the grid and the window.
+        On each decision day of ``[start, end)`` the grid's legs are what
+        ``_positions`` would open: the top and, when signed, the bottom
+        ``leg_size`` names of the day's ranking, for the grid's widest
+        quantile that clears the floor. A name among them that fills is
+        charged, as ``_hold`` charges, the days after its fill through its
+        exit (``_held_through``): ``decision + latency_bars + 1`` through
+        ``decision + latency_bars + horizon_bars`` for the grid's longest
+        horizon whose exit stays inside the window, and never across a day
+        without a row. A traded day without a rate among those days of any
+        such decision fails the run, whichever config's legs would hold it.
+        The same days matter to every config scored on the window, so this
+        is a property of the panel, the grid and the window.
         """
 
-        panel = self.panel
-        universe_size = self.portfolio.universe_size
         latency = self.spec.costs.latency_bars
         horizons = sorted({config.horizon_bars for config in self.spec.configs}, reverse=True)
-        for symbol in range(len(panel.symbols)):
-            # The charged spans of the universe days so far, in day order.
-            spans: deque[tuple[int, int]] = deque()
-            traded = panel.traded[symbol]
-            rates = funding[symbol]
-            for day in range(start, end):
-                while spans and spans[0][1] < day:
-                    spans.popleft()
-                if traded[day] is not True:
-                    continue
-                if spans and spans[0][0] <= day and rates[day] is None:
-                    raise IntegrityError(
-                        "funding",
-                        f"{panel.symbols[symbol]} has no funding on {panel.timestamps[day]}, a "
-                        "traded day a position could hold; a study's range must not hold "
-                        "across one.",
-                    )
-                if not self._in_universe(symbol, day, universe_size):
-                    continue
-                longest = next((h for h in horizons if day + latency + h < end), None)
+        quantiles = [
+            exact_quantile(config.quantile) for config in self.spec.configs if config.quantile
+        ]
+        floor = self.portfolio.min_names_per_leg
+        signed = self.spec.direction == "signed"
+        # Per symbol, the spans its fills are charged over, in day order.
+        spans_by_symbol: dict[int, list[tuple[int, int]]] = {}
+        for day in range(start, end):
+            longest = next((h for h in horizons if day + latency + h < end), None)
+            if longest is None:
+                continue
+            eligible = self._eligible(day)
+            sizes = [leg_size(len(eligible), quantile) for quantile in quantiles]
+            widest = max((size for size in sizes if size >= floor), default=0)
+            if widest == 0:
+                continue
+            legs = eligible[:widest] + (eligible[len(eligible) - widest :] if signed else [])
+            entry = day + latency
+            for _signal, symbol in legs:
                 # A symbol that cannot fill from this day never holds from it.
-                if longest is None or not self._fills(symbol, day, day + latency):
+                if not self._fills(symbol, day, entry):
                     continue
-                entry = day + latency
                 through = self._held_through(symbol, entry, entry + longest)
                 if through > entry:
-                    spans.append((entry + 1, through))
+                    spans_by_symbol.setdefault(symbol, []).append((entry + 1, through))
+        for symbol, spans in spans_by_symbol.items():
+            self._audit_spans(funding[symbol], symbol, deque(spans))
+
+    def _audit_spans(
+        self, rates: Sequence[float | None], symbol: int, spans: deque[tuple[int, int]]
+    ) -> None:
+        """Every traded day inside one of the symbol's spans has a rate."""
+
+        panel = self.panel
+        traded = panel.traded[symbol]
+        first_day = spans[0][0]
+        last_day = max(span_end for _start, span_end in spans)
+        for day in range(first_day, last_day + 1):
+            while spans and spans[0][1] < day:
+                spans.popleft()
+            if not spans or spans[0][0] > day or traded[day] is not True:
+                continue
+            if rates[day] is None:
+                raise IntegrityError(
+                    "funding",
+                    f"{panel.symbols[symbol]} has no funding on {panel.timestamps[day]}, a "
+                    "traded day a position could hold; a study's range must not hold "
+                    "across one.",
+                )
 
     @property
     def length(self) -> int:
@@ -381,18 +403,15 @@ class PanelSource:
         position = bisect_left(gaps, day)
         return gaps[position] if position < len(gaps) else self.length
 
-    def _in_universe(self, symbol: int, day: int, universe_size: int) -> bool:
-        """Whether the symbol can be decided on that day: traded, ranked within the
-        universe, signal known. The ranking and the funding audit share this one test."""
+    def _universe_signal(self, symbol: int, day: int, universe_size: int) -> float | None:
+        """The symbol's signal when it can be decided on that day (traded, ranked
+        within the universe, signal known), else None."""
 
         panel = self.panel
         rank = panel.ranks[symbol][day]
-        return (
-            panel.traded[symbol][day] is True
-            and rank is not None
-            and rank <= universe_size
-            and panel.signals[symbol][day] is not None
-        )
+        if panel.traded[symbol][day] is not True or rank is None or rank > universe_size:
+            return None
+        return panel.signals[symbol][day]
 
     def _eligible(self, decision: int) -> list[tuple[float, int]]:
         """The decision day's universe ranked by signal, cached across configs."""
@@ -404,12 +423,9 @@ class PanelSource:
         universe_size = self.portfolio.universe_size
         eligible: list[tuple[float, int]] = []
         for symbol in range(len(panel.symbols)):
-            if not self._in_universe(symbol, decision, universe_size):
-                continue
-            signal = panel.signals[symbol][decision]
-            if signal is None:
-                raise HarnessError("invariant", "A universe member has a signal.")
-            eligible.append((signal, symbol))
+            signal = self._universe_signal(symbol, decision, universe_size)
+            if signal is not None:
+                eligible.append((signal, symbol))
         # One ranking, ties by symbol, so the legs are deterministic and
         # disjoint: the long leg is its top and the short leg its bottom.
         eligible.sort(key=lambda item: (-item[0], panel.symbols[item[1]]))
@@ -441,15 +457,17 @@ class PanelSource:
         uncovered = 0
         unfunded = 0
         last = entry
+        funding = None if panel.funding is None else panel.funding[symbol]
+        covered = None if panel.covered is None else panel.covered[symbol]
         for day in range(entry + 1, self._held_through(symbol, entry, exit_index) + 1):
             price = prices[day]
             if price is None:
                 raise HarnessError("invariant", "A held day has a row.")
             if panel.traded[symbol][day] is True:
                 last = day
-            if panel.funding is None or panel.covered is None:
+            if funding is None or covered is None:
                 continue
-            rate = panel.funding[symbol][day]
+            rate = funding[day]
             if rate is None and panel.traded[symbol][day] is True:
                 raise IntegrityError(
                     "funding",
@@ -458,7 +476,7 @@ class PanelSource:
                 )
             if rate is None:
                 unfunded += 1
-            elif panel.covered[symbol][day] is not True:
+            elif covered[day] is not True:
                 uncovered += 1
             held_prices.append(price)
             held_rates.append(0.0 if rate is None else rate)

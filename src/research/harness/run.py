@@ -85,7 +85,14 @@ def execute(spec_path: Path, output_dir: Path) -> RunOutcome:
             context = no_benchmark("Buy-and-hold does not apply to a panel portfolio.")
             portfolio = portfolio_block(source, decision)
         payload = completed_document(
-            spec, digest, table, decision, fingerprint, context, origin, portfolio=portfolio
+            spec,
+            digest,
+            table.timestamps,
+            decision,
+            fingerprint,
+            context,
+            origin,
+            portfolio=portfolio,
         )
     except (SpecError, LockError, HarnessError) as error:
         reasons = (str(error),)

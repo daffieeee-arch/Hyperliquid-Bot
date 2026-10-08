@@ -820,6 +820,84 @@ def test_a_config_beyond_the_grid_still_fails_closed_on_a_held_day_without_a_rat
         source.window(_config(0.5, 4), 0, 6)
 
 
+def test_the_funding_audit_spans_the_grid_legs_only() -> None:
+    # Six names, quantile 0.34 under a floor of one: legs of two each. C
+    # ranks in the middle of the signal on every day, so no leg ever opens
+    # it; its missing rate on day 2 is harmless. A, in the long leg, needs
+    # one.
+    spec = _four_symbol_spec(
+        funding=True,
+        portfolio={"universe_size": 6, "min_names_per_leg": 1},
+        configs=[{"id": "q34-h2", "quantile": 0.34, "horizon_bars": 2}],
+    )
+    symbols = ["A", "B", "C", "D", "E", "F"]
+    signals = [[3.0] * 5, [2.0] * 5, [1.0] * 5, [-1.0] * 5, [-2.0] * 5, [-3.0] * 5]
+    middle = _table(
+        symbols=symbols,
+        prices=[[100.0] * 5] * 6,
+        signals=signals,
+        funding=[[0.0] * 5, [0.0] * 5, [0.0, 0.0, None, 0.0, 0.0], [0.0] * 5, [0.0] * 5, [0.0] * 5],
+    )
+    PanelSource(spec, middle).window(_config(0.34, 2), 0, 5)
+    top = _table(
+        symbols=symbols,
+        prices=[[100.0] * 5] * 6,
+        signals=signals,
+        funding=[[0.0, 0.0, None, 0.0, 0.0], [0.0] * 5, [0.0] * 5, [0.0] * 5, [0.0] * 5, [0.0] * 5],
+    )
+    with pytest.raises(IntegrityError, match="a traded day a position could hold"):
+        PanelSource(spec, top).window(_config(0.34, 2), 0, 5)
+
+
+def test_the_funding_audit_takes_the_longest_horizon_that_fits_the_window() -> None:
+    # Grid horizons 1 and 3 at latency 1, window [0, 10). A is in the
+    # universe on day 5 only in the first panel: horizon 3 fits (exit 9), so
+    # days 7 to 9 need a rate. In the second it is in on day 6 only: horizon
+    # 3 would exit on day 10, outside, so horizon 1 holds day 8 alone.
+    spec = _four_symbol_spec(
+        funding=True,
+        configs=[
+            {"id": "q50-h1", "quantile": 0.5, "horizon_bars": 1},
+            {"id": "q50-h3", "quantile": 0.5, "horizon_bars": 3},
+        ],
+    )
+    prices = [[100.0] * 10, [100.0] * 10]
+    signals = [[1.0] * 10, [-1.0] * 10]
+    rates: list[list[float | None]] = [[0.0] * 10, [0.0] * 10]
+    rates[0][9] = None
+    early = _table(
+        symbols=["A", "B"],
+        prices=prices,
+        ranks=[[7, 7, 7, 7, 7, 1, 7, 7, 7, 7], [2] * 10],
+        signals=signals,
+        funding=rates,
+    )
+    with pytest.raises(IntegrityError, match="a traded day a position could hold"):
+        PanelSource(spec, early).window(_config(0.5, 3), 0, 10)
+    late = _table(
+        symbols=["A", "B"],
+        prices=prices,
+        ranks=[[7, 7, 7, 7, 7, 7, 1, 7, 7, 7], [2] * 10],
+        signals=signals,
+        funding=rates,
+    )
+    PanelSource(spec, late).window(_config(0.5, 1), 0, 10)
+
+
+def test_a_two_config_grid_runs_end_to_end_with_overfitting_diagnostics(tmp_path: Path) -> None:
+    body = _spec_body(funding=True)
+    body["configs"] = [
+        {"id": "q25-h4", "quantile": 0.25, "horizon_bars": 4},
+        {"id": "q25-h2", "quantile": 0.25, "horizon_bars": 2},
+    ]
+    document = _run_panel(tmp_path, _planted_rows(300, funding=0.0001), body)
+    assert document["label"] == "passes_h1"
+    configs = _sequence(_mapping(document["portfolio"])["configs"])
+    assert [_mapping(config)["id"] for config in configs] == ["q25-h4", "q25-h2"]
+    pbo = _mapping(_mapping(document["overfitting"])["pbo"])
+    assert pbo["value"] is not None
+
+
 def test_a_traded_day_without_funding_beyond_the_universe_reach_is_tolerated() -> None:
     # The spec's grid is q50-h2 at latency 1: a position opened from day d
     # holds through day d + 3. A is in the universe only on days 0 and 1, so

@@ -641,9 +641,13 @@ def _audit_clock(timestamps: list[int], max_gap: int, *, axis: bool = False) -> 
         if delta < 0:
             raise IntegrityError("order", f"Timestamp moves backwards at {where}.")
         if delta > max_gap:
+            remedy = (
+                "A day absent for every symbol cannot be bridged."
+                if axis
+                else "Rows are not zero-filled."
+            )
             raise IntegrityError(
-                "gap",
-                f"Gap {delta} exceeds max_gap {max_gap} at {where}. Rows are not zero-filled.",
+                "gap", f"Gap {delta} exceeds max_gap {max_gap} at {where}. {remedy}"
             )
 
 

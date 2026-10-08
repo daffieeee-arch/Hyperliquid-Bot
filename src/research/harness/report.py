@@ -21,7 +21,6 @@ from research.harness.benchmark import (
     Window,
 )
 from research.harness.costs import STRESS_MULTIPLIERS, round_trip_cost, stress_key
-from research.harness.data import BarTable, PanelTable
 from research.harness.errors import HarnessError
 from research.harness.evaluate import ConfigScore, Decision, MetricBlock
 from research.harness.overfit import Overfitting
@@ -163,16 +162,16 @@ def failure_document(
 def completed_document(
     spec: HypothesisSpec,
     digest: str,
-    table: BarTable | PanelTable,
+    timestamps: tuple[int, ...],
     decision: Decision,
     data_fingerprint: dict[str, Json],
     benchmark: Benchmark,
     origin: Provenance,
     portfolio: dict[str, Json] | None = None,
 ) -> dict[str, Json]:
-    """The completed record; ``portfolio`` is the panel block, present for a panel only."""
+    """The completed record over the series' bar timestamps (a panel's date axis);
+    ``portfolio`` is the panel block, present for a panel only."""
 
-    timestamps = table.timestamps
     if (spec.portfolio is None) != (portfolio is None):
         raise HarnessError("invariant", "A portfolio block is written for a panel spec only.")
     return {

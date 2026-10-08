@@ -215,13 +215,14 @@ configs:
   - A **traded** day with **no rate** that a position could hold fails
     the run closed (`failure_kind: funding`) before any window is scored:
     the panel source audits every fold's test window and the holdout when
-    it is built. For
-    every decision day of a window the symbol is in the universe (traded,
-    rank at most `universe_size`, signal known) and can fill from (rows
-    through the fill day, traded on it), the traded days from
-    `latency_bars + 1` through `latency_bars + horizon_bars` days after it
-    need a rate, for the grid's longest horizon whose exit stays inside
-    the window, up to the next day without a row. Warm-up days before the
+    it is built. For every decision day of a window, the names the grid's
+    legs would open (the top and, when signed, the bottom `leg_size` of
+    the day's ranking for the grid's widest quantile that clears the
+    floor) that can fill (rows through the fill day, traded on it) need a
+    rate on the traded days from `latency_bars + 1` through `latency_bars
+    + horizon_bars` days after it, for the grid's longest horizon whose
+    exit stays inside the window, up to the next day without a row. A
+    universe member outside every leg needs none. Warm-up days before the
     first fold are never decided on, so a hole there is harmless. The
     outcome is thus a property of the panel, the grid and the split, not
     of which config's legs hold the symbol nor of whether a config is

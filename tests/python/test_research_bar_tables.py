@@ -142,6 +142,95 @@ def test_bad_inputs_are_refused() -> None:
         _build(prices, [*valid[:5], (valid[5][0], math.nan), *valid[6:]])
 
 
+def test_funding_tilts_read_only_settlements_known_at_the_close() -> None:
+    prices = [100.0 + index for index in range(12)]
+    closes = _closes(prices)
+    # Settlements every 2 bars, the first at the very first close.
+    rates = [0.0001, 0.0003, -0.0002, 0.0005, 0.0004, 0.0009]
+    funding = [(closes[2 * index][0], rate) for index, rate in enumerate(rates)]
+    funding.append((closes[11][0] + 1, 9.0))  # after the last close: never read
+    rows = build_trend_rows(
+        closes,
+        funding,
+        lookbacks=(4,),
+        vol_window=3,
+        bar_ms=_HOUR,
+        max_funding_gap_ms=3 * _HOUR,
+        funding_means=(1, 3),
+        funding_baseline=0.0001,
+        funding_intervals_ms=[2 * _HOUR] * len(funding),
+    )
+    # Rows are bars 4..11. Bar 4 knows the settlements at bars 0, 2 and 4;
+    # bar 5 still only those, and bar 6 adds the one at its own close.
+    by_bar = {(row.ts - _START) // _HOUR: row.funding_tilts for row in rows}
+    assert by_bar[4] == pytest.approx((0.0001 + 0.0002, 0.0001 - 0.0002 / 3))
+    assert by_bar[5] == by_bar[4]
+    assert by_bar[6] == pytest.approx((0.0001 - 0.0005, 0.0001 - 0.0006 / 3))
+    assert by_bar[11] == pytest.approx((0.0001 - 0.0009, 0.0001 - 0.0018 / 3))
+    # The default adds no tilt, and the per-bar funding is unchanged.
+    plain = build_trend_rows(
+        closes, funding, lookbacks=(4,), vol_window=3, bar_ms=_HOUR, max_funding_gap_ms=3 * _HOUR
+    )
+    assert all(row.funding_tilts == () for row in plain)
+    assert [row.funding_rate for row in plain] == [row.funding_rate for row in rows]
+
+
+def test_funding_tilts_fail_closed_without_enough_or_continuous_settlements() -> None:
+    prices = [100.0 + index for index in range(12)]
+    closes = _closes(prices)
+    funding = [(closes[2 * index][0], 0.0001) for index in range(6)]
+
+    def build(
+        entries: list[tuple[int, float]],
+        means: tuple[int, ...],
+        intervals: list[int] | None = None,
+        max_gap: int = 3 * _HOUR,
+    ) -> list[TrendRow]:
+        return build_trend_rows(
+            closes,
+            entries,
+            lookbacks=(4,),
+            vol_window=3,
+            bar_ms=_HOUR,
+            max_funding_gap_ms=max_gap,
+            funding_means=means,
+            funding_baseline=0.0,
+            funding_intervals_ms=[2 * _HOUR] * len(entries) if intervals is None else intervals,
+        )
+
+    # Bar 4 knows three settlements; a mean over four cannot be formed yet.
+    with pytest.raises(BarTableError, match="Only 3 funding settlements"):
+        build(funding, (4,))
+    # A gap inside the settlements a mean reads fails closed; one older than
+    # every mean is ignored. Bar 4 is the first row and settles at bar 4.
+    gapped = [entry for entry in funding if entry != funding[1]]
+    assert len(build(gapped, (1,))) == 8
+    with pytest.raises(BarTableError, match="No funding settlement"):
+        build(gapped, (2,))
+    with pytest.raises(BarTableError, match="must not repeat"):
+        build(funding, (2, 2))
+    with pytest.raises(BarTableError, match="positive settlement counts"):
+        build(funding, (0,))
+    # A missing settlement is measured against the interval, not the looser
+    # max gap: 4h between 2h settlements fails even with a 9h max gap.
+    with pytest.raises(BarTableError, match="the gap exceeds 7260000 ms"):
+        build(gapped, (2,), max_gap=9 * _HOUR)
+    # The settlements a mean reads must share one interval; an older one may differ.
+    mixed = [3 * _HOUR] + [2 * _HOUR] * 5
+    assert len(build(funding, (2,), mixed)) == 8
+    with pytest.raises(BarTableError, match="one settlement interval"):
+        build(funding, (3,), mixed)
+    with pytest.raises(BarTableError, match="one settlement interval per settlement"):
+        build(funding, (1,), [2 * _HOUR])
+    # Settlements closer than their labelled interval are refused too: 2h
+    # prints labelled 3h would let K of them span less time than claimed.
+    with pytest.raises(BarTableError, match="closer than"):
+        build(funding, (2,), [3 * _HOUR] * 6, max_gap=9 * _HOUR)
+    # Older settlements out of order do not matter; they are sorted first.
+    shuffled = [funding[1], funding[0], *funding[2:]]
+    assert build(shuffled, (2,)) == build(funding, (2,))
+
+
 def test_the_cli_writes_a_harness_ready_table(tmp_path: Path) -> None:
     root = tmp_path / "root"
     klines = root / "parquet" / "hist_etl" / "binance" / "um" / "klines_1h"
@@ -244,3 +333,73 @@ def test_the_cli_reports_a_failure_and_writes_nothing(tmp_path: Path) -> None:
     )
     assert code == 2
     assert not out.exists()
+
+
+def test_the_cli_adds_funding_tilt_columns_only_when_asked(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    klines = root / "parquet" / "hist_etl" / "binance" / "um" / "klines_1h"
+    funding = root / "parquet" / "hist_etl" / "binance" / "um" / "funding"
+    klines.mkdir(parents=True)
+    funding.mkdir(parents=True)
+    connection = duckdb.connect()
+    try:
+        connection.execute(
+            "COPY (SELECT make_timestamp(1577836800000000 + i * 3600000000 + 3599999000) AS ts, "
+            "100.0 + i + (i % 3) AS close FROM range(48) t(i)) TO ? (FORMAT PARQUET)",
+            [str(klines / "BTCUSDT-2020-01.parquet")],
+        )
+        # Settlements from 2019-12-31 00:00, 8 hours apart; i * 0.0001 each.
+        # A missing interval reads as 8 hours, as in hist_etl.
+        connection.execute(
+            "COPY (SELECT make_timestamp(1577750400000000 + i * 28800000000) AS calc_time, "
+            "CASE WHEN i = 4 THEN NULL ELSE 8 END::INTEGER AS funding_interval_hours, "
+            "0.0001 * i AS last_funding_rate FROM range(10) t(i)) TO ? (FORMAT PARQUET)",
+            [str(funding / "BTCUSDT-2020-01.parquet")],
+        )
+    finally:
+        connection.close()
+    base = ["trend", "--root", str(root), "--symbol", "BTCUSDT", "--start", "2020-01-01"]
+    base += ["--end", "2020-01-03", "--lookbacks", "4,8", "--vol-window", "6"]
+    out = tmp_path / "tilted.parquet"
+    # Four settlements reach back before --start: the funding read does too.
+    tilt = ["--funding-means", "1,4", "--funding-baseline", "0.0001"]
+    assert main([*base, *tilt, "--out", str(out)]) == 0
+    connection = duckdb.connect()
+    try:
+        columns = [
+            row[0]
+            for row in connection.execute(
+                "DESCRIBE SELECT * FROM read_parquet(?)", [str(out)]
+            ).fetchall()
+        ]
+        first = connection.execute(
+            "SELECT funding_tilt_1, funding_tilt_4 FROM read_parquet(?) ORDER BY ts LIMIT 1",
+            [str(out)],
+        ).fetchone()
+    finally:
+        connection.close()
+    assert columns[-3:] == ["funding_rate", "funding_tilt_1", "funding_tilt_4"]
+    # The first row closes on Jan 1 at 08:59:59.999. Its last four settlements
+    # are Dec 31 08:00 and 16:00 and Jan 1 00:00 and 08:00, rates 1 to 4 x 0.0001.
+    assert first == pytest.approx((0.0001 - 0.0004, 0.0001 - 0.00025))
+    # The two options go together.
+    lone = tmp_path / "lone.parquet"
+    assert main([*base, "--funding-means", "1", "--out", str(lone)]) == 2
+    assert not lone.exists()
+    # A 4h settlement among the 8h ones a mean reads fails closed.
+    connection = duckdb.connect()
+    try:
+        connection.execute(
+            "COPY (SELECT make_timestamp(1577908800000000) AS calc_time, "
+            "4 AS funding_interval_hours, 0.0 AS last_funding_rate) TO ? (FORMAT PARQUET)",
+            [str(funding / "BTCUSDT-2020-01-b.parquet")],
+        )
+    finally:
+        connection.close()
+    mixed = tmp_path / "mixed.parquet"
+    assert main([*base, *tilt, "--out", str(mixed)]) == 2
+    assert not mixed.exists()
+    # Counts are checked before they size any read.
+    bad = tmp_path / "bad.parquet"
+    assert main([*base, "--funding-means", "-5", "--funding-baseline", "0", "--out", str(bad)]) == 2
+    assert not bad.exists()

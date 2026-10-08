@@ -5,6 +5,10 @@
         --start 2020-01-01 --end 2026-10-01 \
         --lookbacks 168,672,2016 --vol-window 168 --out bars.parquet
 
+``--funding-means 3,21 --funding-baseline 0.0001`` adds a
+``funding_tilt_<K>`` column per count: the baseline minus the mean of the
+last ``K`` funding settlements known at the bar's close.
+
 Bars with a close time in ``[start, end)`` are read; the first output bar
 follows the warm-up (the longest lookback or the vol window, whichever is
 longer). Nothing is written when the inputs fail a point-in-time check.
@@ -23,7 +27,12 @@ from pathlib import Path
 
 import duckdb
 
-from research.bar_tables.trend import BarTableError, TrendRow, build_trend_rows
+from research.bar_tables.trend import (
+    BarTableError,
+    TrendRow,
+    build_trend_rows,
+    check_funding_means,
+)
 from research.hist_etl.models import INTERVAL_SECONDS, parquet_slug
 
 _HOUR_MS = 3_600_000
@@ -34,6 +43,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         root = _root(args.root)
         lookbacks = _lookbacks(args.lookbacks)
+        funding_means, funding_baseline = _funding_tilt_options(
+            args.funding_means, args.funding_baseline
+        )
         start_ms = _date_ms(args.start, "--start")
         end_ms = _date_ms(args.end, "--end")
         if end_ms <= start_ms:
@@ -41,16 +53,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.interval not in INTERVAL_SECONDS:
             raise BarTableError(f"Unknown interval {args.interval}.")
         closes = _read_closes(root, args.market, args.symbol, args.interval, start_ms, end_ms)
-        funding = _read_funding(root, args.market, args.symbol, start_ms, end_ms)
+        max_gap_ms = args.max_funding_gap_hours * _HOUR_MS
+        intervals_ms: list[int] = []
+        if funding_means:
+            # A tilt's mean may reach back before --start, so read that far back.
+            reach_ms = max(funding_means) * max_gap_ms
+            funding, intervals_ms = _read_funding_with_intervals(
+                root, args.market, args.symbol, start_ms - reach_ms, end_ms
+            )
+        else:
+            funding = _read_funding(root, args.market, args.symbol, start_ms, end_ms)
         rows = build_trend_rows(
             closes,
             funding,
             lookbacks=lookbacks,
             vol_window=args.vol_window,
             bar_ms=INTERVAL_SECONDS[args.interval] * 1000,
-            max_funding_gap_ms=args.max_funding_gap_hours * _HOUR_MS,
+            max_funding_gap_ms=max_gap_ms,
+            funding_means=funding_means,
+            funding_baseline=funding_baseline,
+            funding_intervals_ms=intervals_ms,
         )
-        write_trend_parquet(rows, lookbacks, Path(args.out))
+        write_trend_parquet(rows, lookbacks, Path(args.out), funding_means)
     except (BarTableError, duckdb.Error, OSError) as exc:
         print(f"bar_tables: {exc}", file=sys.stderr)
         return 2
@@ -58,7 +82,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
-def write_trend_parquet(rows: Sequence[TrendRow], lookbacks: Sequence[int], out: Path) -> None:
+def write_trend_parquet(
+    rows: Sequence[TrendRow],
+    lookbacks: Sequence[int],
+    out: Path,
+    funding_means: Sequence[int] = (),
+) -> None:
     """Write the rows; ``available_ts`` equals ``ts``, the close the values were known at.
 
     The rows go through a CSV of shortest round-trip floats, which DuckDB reads
@@ -68,6 +97,9 @@ def write_trend_parquet(rows: Sequence[TrendRow], lookbacks: Sequence[int], out:
 
     names = ["ts", "available_ts", "close", *(f"ret_{lookback}" for lookback in lookbacks)]
     names += ["trend_score", "realized_vol", "funding_rate"]
+    names += [f"funding_tilt_{count}" for count in funding_means]
+    if any(len(row.funding_tilts) != len(funding_means) for row in rows):
+        raise BarTableError("Each row needs one funding tilt per funding mean count.")
     types = ", ".join(
         f"'{name}': '{'BIGINT' if name in {'ts', 'available_ts'} else 'DOUBLE'}'" for name in names
     )
@@ -93,6 +125,7 @@ def write_trend_parquet(rows: Sequence[TrendRow], lookbacks: Sequence[int], out:
                         repr(row.trend_score),
                         repr(row.realized_vol),
                         repr(row.funding_rate),
+                        *(repr(value) for value in row.funding_tilts),
                     ]
                 )
         connection = duckdb.connect()
@@ -140,6 +173,29 @@ def _read_funding(
     return [(_int(ts), _float(rate)) for ts, rate in rows]
 
 
+def _read_funding_with_intervals(
+    root: Path, market: str, symbol: str, start_ms: int, end_ms: int
+) -> tuple[list[tuple[int, float]], list[int]]:
+    """Settlements with each one's interval in ms; a missing interval is 8h, as in hist_etl."""
+
+    files = _files(root, market, parquet_slug("fundingRate", None), symbol)
+    rows = _query(
+        "SELECT epoch_ms(calc_time), CAST(last_funding_rate AS DOUBLE), "
+        "coalesce(funding_interval_hours, 8) FROM read_parquet(?) "
+        "WHERE calc_time >= make_timestamp(?) AND calc_time < make_timestamp(?) "
+        "ORDER BY calc_time",
+        [files, start_ms * 1000, end_ms * 1000],
+    )
+    funding = [(_int(ts), _float(rate)) for ts, rate, _hours in rows]
+    return funding, [_interval_ms(hours) for _ts, _rate, hours in rows]
+
+
+def _interval_ms(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise BarTableError(f"Expected a positive whole funding_interval_hours, got {value!r}.")
+    return value * _HOUR_MS
+
+
 def _files(root: Path, market: str, slug: str, symbol: str) -> list[str]:
     directory = root / "parquet" / "hist_etl" / "binance" / market / slug
     files = sorted(str(path) for path in directory.glob(f"{symbol}-*.parquet"))
@@ -176,10 +232,27 @@ def _root(value: str | None) -> Path:
 
 
 def _lookbacks(value: str) -> tuple[int, ...]:
+    return _counts(value, "--lookbacks", "bar counts")
+
+
+def _counts(value: str, flag: str, what: str) -> tuple[int, ...]:
     try:
         return tuple(int(token) for token in value.split(","))
     except ValueError as exc:
-        raise BarTableError(f"--lookbacks must be comma-separated bar counts: {value}") from exc
+        raise BarTableError(f"{flag} must be comma-separated {what}: {value}") from exc
+
+
+def _funding_tilt_options(
+    means: str | None, baseline: float | None
+) -> tuple[tuple[int, ...], float]:
+    if means is None and baseline is None:
+        return (), 0.0
+    if means is None or baseline is None:
+        raise BarTableError("--funding-means and --funding-baseline go together.")
+    counts = _counts(means, "--funding-means", "settlement counts")
+    # Checked before the counts size any read.
+    check_funding_means(counts, baseline)
+    return counts, baseline
 
 
 def _date_ms(value: str, flag: str) -> int:
@@ -214,6 +287,15 @@ def _parser() -> argparse.ArgumentParser:
         type=int,
         default=9,
         help="Longest allowed time without a funding settlement (default 9).",
+    )
+    trend.add_argument(
+        "--funding-means",
+        help="Comma-separated settlement counts K; adds funding_tilt_<K> columns.",
+    )
+    trend.add_argument(
+        "--funding-baseline",
+        type=float,
+        help="The rate each funding_tilt_<K> is measured from (baseline - mean).",
     )
     trend.add_argument("--out", required=True, help="Output Parquet path.")
     return parser

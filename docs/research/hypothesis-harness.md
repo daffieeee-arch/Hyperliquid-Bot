@@ -270,8 +270,22 @@ PYTHONPATH=src uv run --frozen python -m research.bar_tables trend \
   returns, per bar.
 - `funding_rate`: the Binance settlements in `(previous close, close]`,
   summed, which is the harness funding convention.
-- `available_ts`, equal to `ts`. Every value uses closes at or before its bar,
-  so a spec reading it needs `latency_bars >= 1`.
+- `funding_tilt_<K>`, only with `--funding-means K1,K2,...` and
+  `--funding-baseline B`: `B` minus the mean of the last `K` funding
+  settlements at or before the bar's close, one column per `K`. It is
+  positive when longs paid less than the baseline, so under
+  `direction: signed` a positive threshold goes long when funding is low and
+  short when it is high. A settlement that lands exactly on a close counts
+  for that bar. The mean may reach back before the first output bar; the
+  funding read reaches back too. The settlements any mean reads must share
+  one `funding_interval_hours` (a missing value reads as 8, as in hist_etl),
+  since one baseline cannot fit 8h and 4h rates. Each must follow the last
+  within that interval, give or take a minute, so a missing settlement or a
+  mislabelled interval fails closed. Older settlements no mean reads are not
+  checked, and a tilt table cannot span an interval switch. Without the two options the
+  table is unchanged.
+- `available_ts`, equal to `ts`. Every value uses closes and settlements at or
+  before its bar, so a spec reading it needs `latency_bars >= 1`.
 
 Bars with a close in `[start, end)` are read. The first `max(longest
 lookback, vol window)` bars are warm-up and are not written. A missing bar, a

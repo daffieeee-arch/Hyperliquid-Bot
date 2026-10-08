@@ -1,0 +1,659 @@
+{
+  "alpha": 0.05,
+  "bar_count": 57144,
+  "benchmark": {
+    "holdout": {
+      "status": "sealed"
+    },
+    "method": "buy_and_hold",
+    "validation": {
+      "bars_held": 36718,
+      "end": 41040,
+      "funding": -2.4628617036376452,
+      "funding_constant_notional": -0.58064251,
+      "gross_return": 7.749146291178021,
+      "log_return": 2.168956128887068,
+      "mean_log_return_per_bar": 5.907065005956391e-05,
+      "net": {
+        "1.0": 5.285084587540376,
+        "1.5": 3.972675651771103,
+        "2.0": 2.6763423327919216
+      },
+      "sharpe_per_bar": 0.00873045563794804,
+      "start": 4320,
+      "status": "evaluated",
+      "stdev_log_return_per_bar": 0.0067660443520044695
+    }
+  },
+  "costs": {
+    "allow_zero_latency": false,
+    "fee_bps": 4.5,
+    "funding_column": "funding_rate",
+    "latency_bars": 1,
+    "round_trip_cost": {
+      "1.0": 0.0012,
+      "1.5": 0.0018,
+      "2.0": 0.0024
+    },
+    "slippage_bps": 1.0,
+    "spread_bps": 0.5
+  },
+  "data_fingerprint": {
+    "fingerprint_sha256": "33d21ae1eea95941c1910d2e137ab9e08cf8171650a90bf2c838434a052dc833",
+    "inputs": [
+      {
+        "backend": "parquet",
+        "checksum_algorithm": "sha256",
+        "content_checksum": "b277f5a612799d0adb41d25076d7a0788699105e899bbd7cd8897bb96e1ec696",
+        "locator": "bars.parquet",
+        "row_count": 57144,
+        "timestamp_max": 1790812799999,
+        "timestamp_min": 1585097999999
+      }
+    ]
+  },
+  "dataset_version": "bn-um-btcusdt-klines-1h+funding 2020-01-01..2026-10-01, bar_tables trend 168/672/2016, vol 168, funding tilt 21 vs 0.0001",
+  "failure_kind": null,
+  "generated_at_utc": "2026-10-08T07:26:06Z",
+  "h0": "Mean net return per trade of the contrarian funding rule is less than or equal to zero after costs and funding.",
+  "h1": "Mean net return per trade of the contrarian funding rule is greater than zero after costs and funding on the holdout, scored once.",
+  "harness_version": "5",
+  "holdout": null,
+  "hypothesis_id": "funding-contrarian-btc-1h-w21",
+  "image_digest": null,
+  "label": "no_edge",
+  "limitations": [
+    "The gate uses the larger of the iid t p-value and a Newey-West HAC t p-value.",
+    "Sharpe is per trade, not annualized. Drawdown sums simple returns.",
+    "spread_bps is the half-spread per side. Costs are flat bps at 1.0x, 1.5x, and 2.0x.",
+    "Funding accrues only from a declared costs.funding_column, per bar held, on the notional at each bar close. Under stress, each bar's funding paid is multiplied and each bar's funding received divided by the multiplier; payments inside one bar are netted first.",
+    "Sizing is one unit per trade unless sizing.method is vol_target: target_vol / vol at the decision bar, capped at max_leverage. Costs and funding scale with the weight.",
+    "Latency fills at decision_bar + latency_bars. Zero latency requires allow_zero_latency.",
+    "The deflated Sharpe ratio and the probability of backtest overfitting are diagnostics and never change the label. They use net returns at 1.0x and count only the pre-registered configs as trials. In each split PBO picks the best positive mean net per trade among the configs that meet the trade floor pro-rated to the in-sample folds, and does not re-run the significance and stress gates.",
+    "The buy-and-hold benchmark is one unit long over the validation test folds, and over the holdout only when a config was selected. It fills after latency_bars like a trade, is context, and never changes the label.",
+    "Look-ahead control uses the declared clock. A falsely stamped future value is invisible.",
+    "paper_candidate is not LIVE, SHADOW, TESTNET, or an order authorization.",
+    "Spot Vision timestamps from 2025-01-01 are microseconds; USD-M examples are milliseconds.",
+    "Kraken OHLCVT omits empty intervals and is USD-quoted, not USDT."
+  ],
+  "multiple_testing": {
+    "configs": [
+      {
+        "adjusted_p": {
+          "bh": 0.15068862426316204,
+          "bonferroni": 0.5541891459115376,
+          "holm": 0.32540190409379477
+        },
+        "family_p_value": 0.1385472864778844,
+        "funding": {
+          "expectancy": 0.0006272041261931897,
+          "hac_lag": 5,
+          "hac_p_value": 0.001256256252020802,
+          "hac_t_stat": 3.049394445943801,
+          "max_drawdown": 0.03972989796723833,
+          "mean_return": 0.0006272041261931897,
+          "naive_p_value": 1.2278638824913055e-09,
+          "p_value": 0.001256256252020802,
+          "profit_factor": 3.6740737501138026,
+          "sharpe_per_trade": 0.367756634660575,
+          "stdev": 0.0017054869092221125,
+          "sum_return": 0.1762443594602863,
+          "t_stat": 6.164724551564404,
+          "trade_count": 281,
+          "win_rate": 0.47330960854092524
+        },
+        "gross": {
+          "expectancy": 0.0036669880614254194,
+          "hac_lag": 5,
+          "hac_p_value": 0.11459432066625413,
+          "hac_t_stat": 1.2050833160483951,
+          "max_drawdown": 0.5915391043848668,
+          "mean_return": 0.0036669880614254194,
+          "naive_p_value": 0.10588565366069991,
+          "p_value": 0.11459432066625413,
+          "profit_factor": 1.2449567263517949,
+          "sharpe_per_trade": 0.07466238591277145,
+          "stdev": 0.0491142630468518,
+          "sum_return": 1.0304236452605429,
+          "t_stat": 1.2515696526852669,
+          "trade_count": 281,
+          "win_rate": 0.49110320284697506
+        },
+        "horizon_bars": 72,
+        "id": "near-3d",
+        "mean_weight": 0.8962415940404905,
+        "net": {
+          "1.0": {
+            "expectancy": 0.003218702274770021,
+            "hac_lag": 5,
+            "hac_p_value": 0.1385472864778844,
+            "hac_t_stat": 1.0889902413477486,
+            "max_drawdown": 0.5159893976116967,
+            "mean_return": 0.003218702274770021,
+            "naive_p_value": 0.13398147390147191,
+            "p_value": 0.1385472864778844,
+            "profit_factor": 1.2138685789965802,
+            "sharpe_per_trade": 0.06621544508146317,
+            "stdev": 0.04860953922170475,
+            "sum_return": 0.9044553392103759,
+            "t_stat": 1.1099731222067903,
+            "trade_count": 281,
+            "win_rate": 0.4875444839857651
+          },
+          "1.5": {
+            "expectancy": 0.0022416209067384475,
+            "hac_lag": 5,
+            "hac_p_value": 0.22450997643452147,
+            "hac_t_stat": 0.7581146478603774,
+            "max_drawdown": 0.5559799490177342,
+            "mean_return": 0.0022416209067384475,
+            "naive_p_value": 0.2200660911447937,
+            "p_value": 0.22450997643452147,
+            "profit_factor": 1.1439490330351936,
+            "sharpe_per_trade": 0.04611757959957482,
+            "stdev": 0.048606646883938245,
+            "sum_return": 0.6298954747935037,
+            "t_stat": 0.773071505504243,
+            "trade_count": 281,
+            "win_rate": 0.47330960854092524
+          },
+          "2.0": {
+            "expectancy": 0.001415127233647648,
+            "hac_lag": 5,
+            "hac_p_value": 0.31591831601271336,
+            "hac_t_stat": 0.47966984097271886,
+            "max_drawdown": 0.587153823436998,
+            "mean_return": 0.001415127233647648,
+            "naive_p_value": 0.3127858693427644,
+            "p_value": 0.31591831601271336,
+            "profit_factor": 1.0883804104883275,
+            "sharpe_per_trade": 0.029142002189721385,
+            "stdev": 0.04855971200725442,
+            "sum_return": 0.3976507526549891,
+            "t_stat": 0.4885089742746074,
+            "trade_count": 281,
+            "win_rate": 0.46619217081850534
+          }
+        },
+        "selected": false,
+        "threshold": 5e-05
+      },
+      {
+        "adjusted_p": {
+          "bh": 0.15068862426316204,
+          "bonferroni": 0.32540190409379477,
+          "holm": 0.32540190409379477
+        },
+        "family_p_value": 0.08135047602344869,
+        "funding": {
+          "expectancy": 0.001288976491438401,
+          "hac_lag": 4,
+          "hac_p_value": 0.016050090907695973,
+          "hac_t_stat": 2.166637598272271,
+          "max_drawdown": 0.04999587825944013,
+          "mean_return": 0.001288976491438401,
+          "naive_p_value": 0.0001795959228208302,
+          "p_value": 0.016050090907695973,
+          "profit_factor": 3.1522897697132213,
+          "sharpe_per_trade": 0.32150046428206214,
+          "stdev": 0.004009252348411985,
+          "sum_return": 0.16756694388699214,
+          "t_stat": 3.665669285323704,
+          "trade_count": 130,
+          "win_rate": 0.4230769230769231
+        },
+        "gross": {
+          "expectancy": 0.009470665189179195,
+          "hac_lag": 4,
+          "hac_p_value": 0.092519380991605,
+          "hac_t_stat": 1.3325188401761667,
+          "max_drawdown": 0.6181418579568991,
+          "mean_return": 0.009470665189179195,
+          "naive_p_value": 0.08596326421846584,
+          "p_value": 0.092519380991605,
+          "profit_factor": 1.472574509222166,
+          "sharpe_per_trade": 0.12047885409879475,
+          "stdev": 0.07860852645073371,
+          "sum_return": 1.2311864745932952,
+          "t_stat": 1.373670286875503,
+          "trade_count": 130,
+          "win_rate": 0.5153846153846153
+        },
+        "horizon_bars": 168,
+        "id": "near-1w",
+        "mean_weight": 0.8998635727446203,
+        "net": {
+          "1.0": {
+            "expectancy": 0.009679805393324052,
+            "hac_lag": 4,
+            "hac_p_value": 0.08135047602344869,
+            "hac_t_stat": 1.4040700355026614,
+            "max_drawdown": 0.580911133313876,
+            "mean_return": 0.009679805393324052,
+            "naive_p_value": 0.0787885670752203,
+            "p_value": 0.08135047602344869,
+            "profit_factor": 1.4939479639918711,
+            "sharpe_per_trade": 0.12467602992294169,
+            "stdev": 0.0776396665767015,
+            "sum_return": 1.2583747011321267,
+            "t_stat": 1.4215254541706288,
+            "trade_count": 130,
+            "win_rate": 0.5076923076923077
+          },
+          "1.5": {
+            "expectancy": 0.008124231108633558,
+            "hac_lag": 4,
+            "hac_p_value": 0.120258082352654,
+            "hac_t_stat": 1.1791310914717286,
+            "max_drawdown": 0.6091670344087663,
+            "mean_return": 0.008124231108633558,
+            "naive_p_value": 0.11753135351344801,
+            "p_value": 0.120258082352654,
+            "profit_factor": 1.398013123721525,
+            "sharpe_per_trade": 0.10463218491437934,
+            "stdev": 0.07764562228421042,
+            "sum_return": 1.0561500441223626,
+            "t_stat": 1.1929904591380407,
+            "trade_count": 130,
+            "win_rate": 0.5
+          },
+          "2.0": {
+            "expectancy": 0.00690068570129565,
+            "hac_lag": 4,
+            "hac_p_value": 0.15845827120674028,
+            "hac_t_stat": 1.0047117855715628,
+            "max_drawdown": 0.6362653724342383,
+            "mean_return": 0.00690068570129565,
+            "naive_p_value": 0.1561616938172905,
+            "p_value": 0.15845827120674028,
+            "profit_factor": 1.3279511756190858,
+            "sharpe_per_trade": 0.0889627415009857,
+            "stdev": 0.0775682671741764,
+            "sum_return": 0.8970891411684345,
+            "t_stat": 1.0143313160887109,
+            "trade_count": 130,
+            "win_rate": 0.49230769230769234
+          }
+        },
+        "selected": false,
+        "threshold": 5e-05
+      },
+      {
+        "adjusted_p": {
+          "bh": 0.15068862426316204,
+          "bonferroni": 0.6027544970526482,
+          "holm": 0.32540190409379477
+        },
+        "family_p_value": 0.15068862426316204,
+        "funding": {
+          "expectancy": 0.0016526583672704894,
+          "hac_lag": 4,
+          "hac_p_value": 1.0680339529681625e-07,
+          "hac_t_stat": 5.4936957357667815,
+          "max_drawdown": 0.002073816427285713,
+          "mean_return": 0.0016526583672704894,
+          "naive_p_value": 6.286266997109075e-16,
+          "p_value": 1.0680339529681625e-07,
+          "profit_factor": 26.92872439421945,
+          "sharpe_per_trade": 0.8204674588443597,
+          "stdev": 0.0020142887441243346,
+          "sum_return": 0.20658229590881116,
+          "t_stat": 9.173105056512497,
+          "trade_count": 125,
+          "win_rate": 0.776
+        },
+        "gross": {
+          "expectancy": 0.003563772962926274,
+          "hac_lag": 4,
+          "hac_p_value": 0.20430629226822355,
+          "hac_t_stat": 0.8291503595952681,
+          "max_drawdown": 0.5575939756867687,
+          "mean_return": 0.003563772962926274,
+          "naive_p_value": 0.18529797860703306,
+          "p_value": 0.20430629226822355,
+          "profit_factor": 1.2291036158928166,
+          "sharpe_per_trade": 0.08037514630761769,
+          "stdev": 0.044339240755926455,
+          "sum_return": 0.44547162036578425,
+          "t_stat": 0.8986214542266219,
+          "trade_count": 125,
+          "win_rate": 0.488
+        },
+        "horizon_bars": 72,
+        "id": "far-3d",
+        "mean_weight": 0.7353954141597472,
+        "net": {
+          "1.0": {
+            "expectancy": 0.0043339568332050665,
+            "hac_lag": 4,
+            "hac_p_value": 0.15068862426316204,
+            "hac_t_stat": 1.037811690560429,
+            "max_drawdown": 0.4786688926107223,
+            "mean_return": 0.0043339568332050665,
+            "naive_p_value": 0.13594791334071094,
+            "p_value": 0.15068862426316204,
+            "profit_factor": 1.2883139016977905,
+            "sharpe_per_trade": 0.09871062912375278,
+            "stdev": 0.04390567532268098,
+            "sum_return": 0.5417446041506333,
+            "t_stat": 1.1036183841124085,
+            "trade_count": 125,
+            "win_rate": 0.504
+          },
+          "1.5": {
+            "expectancy": 0.0032572604250606014,
+            "hac_lag": 4,
+            "hac_p_value": 0.21977959817852444,
+            "hac_t_stat": 0.7754346543556988,
+            "max_drawdown": 0.5214292179366352,
+            "mean_return": 0.0032572604250606014,
+            "naive_p_value": 0.20474105346258814,
+            "p_value": 0.21977959817852444,
+            "profit_factor": 1.2086640033102591,
+            "sharpe_per_trade": 0.0740235646795026,
+            "stdev": 0.044003020378219494,
+            "sum_return": 0.4071575531325752,
+            "t_stat": 0.8276086128011012,
+            "trade_count": 125,
+            "win_rate": 0.488
+          },
+          "2.0": {
+            "expectancy": 0.0024729216855729095,
+            "hac_lag": 4,
+            "hac_p_value": 0.2789779040697796,
+            "hac_t_stat": 0.5874707883600928,
+            "max_drawdown": 0.5515879208243988,
+            "mean_return": 0.0024729216855729095,
+            "naive_p_value": 0.2656680264464849,
+            "p_value": 0.2789779040697796,
+            "profit_factor": 1.1541898554597678,
+            "sharpe_per_trade": 0.0561457534348267,
+            "stdev": 0.04404467897012811,
+            "sum_return": 0.3091152106966137,
+            "t_stat": 0.6277286066410741,
+            "trade_count": 125,
+            "win_rate": 0.48
+          }
+        },
+        "selected": false,
+        "threshold": 0.0001
+      },
+      {
+        "adjusted_p": {
+          "bh": 0.15068862426316204,
+          "bonferroni": 0.411273810701166,
+          "holm": 0.32540190409379477
+        },
+        "family_p_value": 0.1028184526752915,
+        "funding": {
+          "expectancy": 0.003361208834983145,
+          "hac_lag": 3,
+          "hac_p_value": 6.408779396529978e-05,
+          "hac_t_stat": 4.090585420136464,
+          "max_drawdown": 0.004612942339512344,
+          "mean_return": 0.003361208834983145,
+          "naive_p_value": 3.910878658567973e-07,
+          "p_value": 6.408779396529978e-05,
+          "profit_factor": 17.85722286626337,
+          "sharpe_per_trade": 0.6989978371676608,
+          "stdev": 0.004808611209160193,
+          "sum_return": 0.208394947768955,
+          "t_stat": 5.503914473775387,
+          "trade_count": 62,
+          "win_rate": 0.7258064516129032
+        },
+        "gross": {
+          "expectancy": 0.009329971363505196,
+          "hac_lag": 3,
+          "hac_p_value": 0.15588005380038417,
+          "hac_t_stat": 1.0199931376089544,
+          "max_drawdown": 0.56257711614735,
+          "mean_return": 0.009329971363505196,
+          "naive_p_value": 0.16370694185180262,
+          "p_value": 0.16370694185180262,
+          "profit_factor": 1.4423653749709968,
+          "sharpe_per_trade": 0.12538246820501858,
+          "stdev": 0.07441208884362792,
+          "sum_return": 0.5784582245373221,
+          "t_stat": 0.9872625419093519,
+          "trade_count": 62,
+          "win_rate": 0.46774193548387094
+        },
+        "horizon_bars": 168,
+        "id": "far-1w",
+        "mean_weight": 0.7416443086436223,
+        "net": {
+          "1.0": {
+            "expectancy": 0.011801207028115993,
+            "hac_lag": 3,
+            "hac_p_value": 0.09184779899985734,
+            "hac_t_stat": 1.3447168027265421,
+            "max_drawdown": 0.49696149013629726,
+            "mean_return": 0.011801207028115993,
+            "naive_p_value": 0.1028184526752915,
+            "p_value": 0.1028184526752915,
+            "profit_factor": 1.611339506355308,
+            "sharpe_per_trade": 0.16247106178176485,
+            "stdev": 0.07263574755218666,
+            "sum_return": 0.7316748357431916,
+            "t_stat": 1.2792984197686759,
+            "trade_count": 62,
+            "win_rate": 0.4838709677419355
+          },
+          "1.5": {
+            "expectancy": 0.009969069187475754,
+            "hac_lag": 3,
+            "hac_p_value": 0.131818793982294,
+            "hac_t_stat": 1.1282375034012335,
+            "max_drawdown": 0.5235186181387707,
+            "mean_return": 0.009969069187475754,
+            "naive_p_value": 0.1431357883565898,
+            "p_value": 0.1431357883565898,
+            "profit_factor": 1.4891313866187186,
+            "sharpe_per_trade": 0.13662152048833348,
+            "stdev": 0.07296851295347019,
+            "sum_return": 0.6180822896234968,
+            "t_stat": 1.0757589280846036,
+            "trade_count": 62,
+            "win_rate": 0.46774193548387094
+          },
+          "2.0": {
+            "expectancy": 0.008750482481424644,
+            "hac_lag": 3,
+            "hac_p_value": 0.16337435761742775,
+            "hac_t_stat": 0.9886317988758392,
+            "max_drawdown": 0.538202757939644,
+            "mean_return": 0.008750482481424644,
+            "naive_p_value": 0.17473719814232214,
+            "p_value": 0.17473719814232214,
+            "profit_factor": 1.4146551906218037,
+            "sharpe_per_trade": 0.11974271085306286,
+            "stdev": 0.07307737079848162,
+            "sum_return": 0.5425299138483279,
+            "t_stat": 0.9428550481125364,
+            "trade_count": 62,
+            "win_rate": 0.46774193548387094
+          }
+        },
+        "selected": false,
+        "threshold": 0.0001
+      }
+    ],
+    "family_size": 4
+  },
+  "overfitting": {
+    "deflated_sharpe": {
+      "config_id": "far-1w",
+      "dsr": 0.5932074735710523,
+      "expected_max_sharpe": 0.13471052371538486,
+      "kurtosis": 4.856885678401136,
+      "note": null,
+      "null_sharpe_variance": 0.01639344262295082,
+      "selected": false,
+      "sharpe_per_trade": 0.16247106178176485,
+      "skewness": 1.1079439351621896,
+      "trades": 62,
+      "trials": 4
+    },
+    "pbo": {
+      "blocks": 16,
+      "folds_used": 16,
+      "in_sample_floor": 19,
+      "median_logit": 0.4054651081081642,
+      "note": null,
+      "skipped_splits": 850,
+      "splits": 12020,
+      "value": 0.4247920133111481
+    }
+  },
+  "primary_config_id": "near-3d",
+  "promotion_decision": "forbidden",
+  "reasons": [
+    "No config had positive after-cost validation expectancy that survived holm at alpha 0.05 and the 1.5x/2.0x cost stress."
+  ],
+  "selected_config_id": null,
+  "selection_method": "holm",
+  "sizing": {
+    "max_leverage": 2.0,
+    "method": "vol_target",
+    "target_vol": 0.005,
+    "vol_feature": "realized_vol"
+  },
+  "source_commit": "19a452441cd589eb06dd847e6d3b48b0c5657a47",
+  "source_environment": "DEV",
+  "spec_sha256": "52eb9a64ff094b80ed6c350a1d51a9ae95c5b33d84cdad907f39bcc2a2ad8d5d",
+  "split": {
+    "folds": [
+      {
+        "index": 0,
+        "test_end": 6480,
+        "test_start": 4320,
+        "train_end": 4320,
+        "train_start": 0
+      },
+      {
+        "index": 1,
+        "test_end": 8640,
+        "test_start": 6480,
+        "train_end": 6480,
+        "train_start": 0
+      },
+      {
+        "index": 2,
+        "test_end": 10800,
+        "test_start": 8640,
+        "train_end": 8640,
+        "train_start": 0
+      },
+      {
+        "index": 3,
+        "test_end": 12960,
+        "test_start": 10800,
+        "train_end": 10800,
+        "train_start": 0
+      },
+      {
+        "index": 4,
+        "test_end": 15120,
+        "test_start": 12960,
+        "train_end": 12960,
+        "train_start": 0
+      },
+      {
+        "index": 5,
+        "test_end": 17280,
+        "test_start": 15120,
+        "train_end": 15120,
+        "train_start": 0
+      },
+      {
+        "index": 6,
+        "test_end": 19440,
+        "test_start": 17280,
+        "train_end": 17280,
+        "train_start": 0
+      },
+      {
+        "index": 7,
+        "test_end": 21600,
+        "test_start": 19440,
+        "train_end": 19440,
+        "train_start": 0
+      },
+      {
+        "index": 8,
+        "test_end": 23760,
+        "test_start": 21600,
+        "train_end": 21600,
+        "train_start": 0
+      },
+      {
+        "index": 9,
+        "test_end": 25920,
+        "test_start": 23760,
+        "train_end": 23760,
+        "train_start": 0
+      },
+      {
+        "index": 10,
+        "test_end": 28080,
+        "test_start": 25920,
+        "train_end": 25920,
+        "train_start": 0
+      },
+      {
+        "index": 11,
+        "test_end": 30240,
+        "test_start": 28080,
+        "train_end": 28080,
+        "train_start": 0
+      },
+      {
+        "index": 12,
+        "test_end": 32400,
+        "test_start": 30240,
+        "train_end": 30240,
+        "train_start": 0
+      },
+      {
+        "index": 13,
+        "test_end": 34560,
+        "test_start": 32400,
+        "train_end": 32400,
+        "train_start": 0
+      },
+      {
+        "index": 14,
+        "test_end": 36720,
+        "test_start": 34560,
+        "train_end": 34560,
+        "train_start": 0
+      },
+      {
+        "index": 15,
+        "test_end": 38880,
+        "test_start": 36720,
+        "train_end": 36720,
+        "train_start": 0
+      },
+      {
+        "index": 16,
+        "test_end": 41040,
+        "test_start": 38880,
+        "train_end": 38880,
+        "train_start": 0
+      }
+    ],
+    "holdout_bars": 15312,
+    "holdout_end": 57144,
+    "holdout_start": 41832,
+    "method": "expanding",
+    "test_bars": 2160,
+    "train_bars": 4320
+  },
+  "status": "completed",
+  "timestamp_max": 1790812799999,
+  "timestamp_min": 1585097999999,
+  "trading_mode": "PAPER",
+  "universe": "binance-um-btcusdt-perp-1h"
+}

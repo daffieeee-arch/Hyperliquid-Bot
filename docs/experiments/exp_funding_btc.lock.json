@@ -1,0 +1,120 @@
+{
+  "canonical_spec": {
+    "alpha": 0.05,
+    "configs": [
+      {
+        "horizon_bars": 72,
+        "id": "near-3d",
+        "threshold": 5e-05
+      },
+      {
+        "horizon_bars": 168,
+        "id": "near-1w",
+        "threshold": 5e-05
+      },
+      {
+        "horizon_bars": 72,
+        "id": "far-3d",
+        "threshold": 0.0001
+      },
+      {
+        "horizon_bars": 168,
+        "id": "far-1w",
+        "threshold": 0.0001
+      }
+    ],
+    "costs": {
+      "fee_bps": 4.5,
+      "funding_column": "funding_rate",
+      "latency_bars": 1,
+      "slippage_bps": 1.0,
+      "spread_bps": 0.5
+    },
+    "data": {
+      "backend": "parquet",
+      "columns": {
+        "available_ts": {
+          "dtype": "int64",
+          "role": "availability"
+        },
+        "close": {
+          "dtype": "float64",
+          "role": "price"
+        },
+        "funding_rate": {
+          "dtype": "float64",
+          "role": "funding"
+        },
+        "funding_tilt_21": {
+          "dtype": "float64",
+          "role": "feature"
+        },
+        "realized_vol": {
+          "dtype": "float64",
+          "role": "feature"
+        },
+        "ts": {
+          "dtype": "int64",
+          "role": "timestamp"
+        }
+      },
+      "max_gap": 3600000,
+      "max_rows": 100000,
+      "parquet_path": "bars.parquet",
+      "price_column": "close",
+      "timestamp_column": "ts"
+    },
+    "dataset_version": "bn-um-btcusdt-klines-1h+funding 2020-01-01..2026-10-01, bar_tables trend 168/672/2016, vol 168, funding tilt 21 vs 0.0001",
+    "direction": "signed",
+    "features": [
+      {
+        "available_at_column": "available_ts",
+        "column": "funding_tilt_21",
+        "name": "funding_tilt_21"
+      },
+      {
+        "available_at_column": "available_ts",
+        "column": "realized_vol",
+        "name": "realized_vol"
+      }
+    ],
+    "h0": "Mean net return per trade of the contrarian funding rule is less than or equal to zero after costs and funding.",
+    "h1": "Mean net return per trade of the contrarian funding rule is greater than zero after costs and funding on the holdout, scored once.",
+    "hypothesis_id": "funding-contrarian-btc-1h-w21",
+    "sample": {
+      "min_folds": 8,
+      "min_trades_holdout": 25,
+      "min_trades_validation": 40
+    },
+    "selection_method": "holm",
+    "signal_feature": "funding_tilt_21",
+    "sizing": {
+      "max_leverage": 2.0,
+      "method": "vol_target",
+      "target_vol": 0.005,
+      "vol_feature": "realized_vol"
+    },
+    "split": {
+      "holdout_bars": 15312,
+      "method": "expanding",
+      "test_bars": 2160,
+      "train_bars": 4320
+    },
+    "universe": "binance-um-btcusdt-perp-1h"
+  },
+  "data_fingerprint": {
+    "fingerprint_sha256": "33d21ae1eea95941c1910d2e137ab9e08cf8171650a90bf2c838434a052dc833",
+    "inputs": [
+      {
+        "backend": "parquet",
+        "checksum_algorithm": "sha256",
+        "content_checksum": "b277f5a612799d0adb41d25076d7a0788699105e899bbd7cd8897bb96e1ec696",
+        "locator": "bars.parquet",
+        "row_count": 57144,
+        "timestamp_max": 1790812799999,
+        "timestamp_min": 1585097999999
+      }
+    ]
+  },
+  "spec_sha256": "52eb9a64ff094b80ed6c350a1d51a9ae95c5b33d84cdad907f39bcc2a2ad8d5d"
+}

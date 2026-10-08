@@ -212,8 +212,8 @@ source checkout, disposable development services and durable runtime volumes.
 
 GitHub Actions Phase A, cockpit lint, and the PAPER API/browser regress
 suite are documented in [CI](CI.md). Local checks stay the same: `uv run
-pytest` (or, faster, `uv run pytest -n auto -m "not timing"` followed by
-`uv run pytest -m timing`, as CI does), `pnpm run lint`,
+pytest` (or, faster, `uv run pytest -m timing` followed by
+`uv run pytest -n auto -m "not timing"`, as CI does), `pnpm run lint`,
 `pnpm --filter @hyperliquid-bot/cockpit run test`.
 
 Keep consistent across local, CI and every runtime profile:

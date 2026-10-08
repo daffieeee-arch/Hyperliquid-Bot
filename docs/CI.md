@@ -88,14 +88,14 @@ Pushes to `main` always run everything.
 `python-foundation` runs the suite with pytest-xdist over the runner's cores:
 
 ```bash
-uv run --frozen pytest -q -n auto --dist worksteal -m "not timing"
 uv run --frozen pytest -q -m timing
+uv run --frozen pytest -q -n auto --dist worksteal -m "not timing"
 ```
 
 The `timing` marker (registered in `pyproject.toml`) names tests that assert
 a real-clock deadline with only tens of milliseconds of slack. They run
-alone, after the parallel pass, so CPU contention between workers cannot
-flake them. Mark a new test `timing` when it asserts a wall-clock budget
+alone, before the parallel pass, so neither CPU contention between workers
+nor the memory and disk clean-up after a parallel pass can flake them. Mark a new test `timing` when it asserts a wall-clock budget
 under about half a second. Tests share no fixed paths, environment or ports
 (each worker is a process; use `tmp_path` and `monkeypatch`), so any other
 test may run in any worker in any order.

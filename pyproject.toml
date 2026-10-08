@@ -45,7 +45,7 @@ mypy_path = "src:."
 [tool.pytest.ini_options]
 addopts = ["--strict-config", "--strict-markers"]
 markers = [
-    "timing: asserts a real-clock deadline with tens of milliseconds of slack; CI runs these serially after the parallel (xdist) pass, so CPU contention cannot flake them",
+    "timing: asserts a real-clock deadline with tens of milliseconds of slack; CI runs these serially before the parallel (xdist) pass, so CPU contention cannot flake them",
 ]
 pythonpath = ["src", "."]
 testpaths = ["tests/python"]

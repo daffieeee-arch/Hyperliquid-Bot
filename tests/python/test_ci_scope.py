@@ -112,6 +112,10 @@ def test_events_other_than_a_ready_pull_request(monkeypatch: pytest.MonkeyPatch)
 def test_a_moved_file_counts_in_its_old_and_new_area(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Ignore the host's git config (commit signing, hooks, templates).
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "no-global-config"))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+
     def git(*args: str) -> None:
         subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
 
@@ -170,6 +174,7 @@ def test_main_writes_the_outputs_the_workflows_read(
     monkeypatch.setenv("GITHUB_BASE_REF", "main")
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
     monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "1")
     assert ci_scope.main([]) == 0
     written = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
     assert written["python"] == "false"
@@ -183,25 +188,60 @@ def test_main_writes_the_outputs_the_workflows_read(
         assert read <= exported <= set(written), workflow.name
 
 
-def _docs_paths_read_by_python() -> set[str]:
-    """Docs paths named in Python tests, as literals or as ``"docs" / ...`` joins."""
+# The classifier and its own tests name docs paths as data; they read none.
+_CLASSIFIER_FILES = frozenset({"src/hyperliquid_bot/ci_scope.py", "tests/python/test_ci_scope.py"})
+_SCANNED_TREES = ("tests", "src", "vertical_slices", "fit_gates", "scripts")
 
-    found: set[str] = set()
-    literal = re.compile(r"""["'](docs/[A-Za-z0-9_./-]+)["']""")
-    joined = re.compile(r'"docs"((?:\s*/\s*"[A-Za-z0-9_.-]+")+)')
-    for source in sorted((REPO_ROOT / "tests" / "python").glob("*.py")):
-        text = source.read_text(encoding="utf-8")
-        if "ci_scope" in text:
-            # The classifier's own tests name paths as data; they read none.
-            continue
-        found.update(match.group(1) for match in literal.finditer(text))
-        for match in joined.finditer(text):
-            parts = re.findall(r'"([A-Za-z0-9_.-]+)"', match.group(1))
-            found.add("docs/" + "/".join(parts))
+
+def test_a_rerun_of_a_draft_run_does_not_skip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A re-run replays the draft-era payload; it must classify the diff instead.
+    event = tmp_path / "event.json"
+    event.write_text(json.dumps({"pull_request": {"draft": True}}), encoding="utf-8")
+    output = tmp_path / "output.txt"
+    monkeypatch.setattr(ci_scope, "_git_changed_paths", lambda base_ref: ["src/a.py"])
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    monkeypatch.setenv("GITHUB_BASE_REF", "main")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "2")
+    assert ci_scope.main([]) == 0
+    written = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
+    assert (written["python"], written["typescript"]) == ("true", "false")
+
+
+_DOCS_LITERAL = re.compile(r"""["'](docs/[A-Za-z0-9_./-]+)["']""")
+_DOCS_COMPONENT = re.compile(r"""["']docs["']((?:\s*/\s*["'][A-Za-z0-9_.-]+["'])*)""")
+
+
+def _docs_reads_in(text: str) -> set[str]:
+    """Docs paths named in source text, as literals or ``"docs" / ...`` joins.
+
+    A bare ``"docs"`` component not followed by literal parts (a path built
+    through a variable) is recorded as ``docs`` itself, which no area table
+    covers, so the guard fails until the read is spelled out or covered.
+    """
+
+    found = {match.group(1) for match in _DOCS_LITERAL.finditer(text)}
+    for match in _DOCS_COMPONENT.finditer(text):
+        parts = re.findall(r"""["']([A-Za-z0-9_.-]+)["']""", match.group(1))
+        found.add("/".join(["docs", *parts]))
     return found
 
 
-def test_every_doc_python_tests_read_is_a_python_path() -> None:
+def _docs_paths_read_by_python() -> set[str]:
+    found: set[str] = set()
+    for tree in _SCANNED_TREES:
+        for source in sorted((REPO_ROOT / tree).rglob("*")):
+            relative = source.relative_to(REPO_ROOT).as_posix()
+            if source.suffix not in {".py", ".sh"} or relative in _CLASSIFIER_FILES:
+                continue
+            found |= _docs_reads_in(source.read_text(encoding="utf-8"))
+    return found
+
+
+def test_every_doc_python_code_reads_is_a_python_path() -> None:
     read = _docs_paths_read_by_python()
     # The scan must see the reads it guards, or it guards nothing.
     assert "docs/DATA.md" in read
@@ -209,4 +249,9 @@ def test_every_doc_python_tests_read_is_a_python_path() -> None:
     for path in sorted(read):
         # A directory read covers every file under it.
         probe = path if "." in path.rsplit("/", 1)[-1] else f"{path}/any.md"
-        assert path_areas(probe)[0], f"{path} is read by a Python test but skips Python CI"
+        assert path_areas(probe)[0], f"{path} is read by Python code but skips Python CI"
+
+
+def test_the_docs_scan_sees_single_quotes_and_bare_components() -> None:
+    sample = "A = ROOT / 'docs' / 'RISK.md'\nDOCS = ROOT / \"docs\"\nB = \"docs/x/y.md\"\n"
+    assert _docs_reads_in(sample) == {"docs/RISK.md", "docs", "docs/x/y.md"}

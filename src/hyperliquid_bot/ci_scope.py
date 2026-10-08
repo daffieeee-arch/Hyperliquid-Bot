@@ -21,8 +21,11 @@ skips the checks that read them.
 
 A draft pull request sets neither area: its heavy jobs run once it is marked
 ready for review (the workflows also trigger on ``ready_for_review``), so
-pushing work-in-progress commits costs no heavy CI. Pushes to main and any
-other event run everything. The secret scan always runs; it is not gated.
+pushing work-in-progress commits costs no heavy CI. Only the first attempt of
+a run skips for a draft: a re-run replays the event payload it started with,
+so a re-run of a draft-era run after the PR is ready must not report skipped
+successes again. Pushes to main and any other event run everything. The
+secret scan always runs; it is not gated.
 """
 
 from __future__ import annotations
@@ -120,6 +123,13 @@ class Scope:
 
 FULL: Final = Scope(python=True, typescript=True, reason="full CI")
 
+_REASONS: Final = {
+    (False, False): "docs-only change set",
+    (True, True): "Python and TypeScript paths changed",
+    (True, False): "only Python-area paths changed",
+    (False, True): "only TypeScript-area paths changed",
+}
+
 
 def _normalize(path: str) -> str:
     normalized = path.strip().replace("\\", "/")
@@ -175,19 +185,10 @@ def classify_areas(paths: Iterable[str]) -> Scope:
     changed = [path for path in (_normalize(path) for path in paths) if path]
     if not changed:
         return Scope(python=True, typescript=True, reason="no changed paths; full CI")
-    python = False
-    typescript = False
-    for path in changed:
-        path_python, path_typescript = path_areas(path)
-        python = python or path_python
-        typescript = typescript or path_typescript
-    if not python and not typescript:
-        return Scope(python=False, typescript=False, reason="docs-only change set")
-    if python and typescript:
-        return Scope(python=True, typescript=True, reason="Python and TypeScript paths changed")
-    if python:
-        return Scope(python=True, typescript=False, reason="only Python-area paths changed")
-    return Scope(python=False, typescript=True, reason="only TypeScript-area paths changed")
+    areas = [path_areas(path) for path in changed]
+    python = any(path_python for path_python, _ in areas)
+    typescript = any(path_typescript for _, path_typescript in areas)
+    return Scope(python=python, typescript=typescript, reason=_REASONS[(python, typescript)])
 
 
 def _git_changed_paths(base_ref: str) -> list[str]:
@@ -265,7 +266,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.parse_args(argv)
     event_name = os.environ.get("GITHUB_EVENT_NAME", "")
     base_ref = os.environ.get("GITHUB_BASE_REF") or None
-    draft = pull_request_is_draft(os.environ.get("GITHUB_EVENT_PATH"))
+    # A re-run (attempt 2 and up) replays the original payload; never skip it.
+    first_attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "1") == "1"
+    draft = first_attempt and pull_request_is_draft(os.environ.get("GITHUB_EVENT_PATH"))
     scope = classify_github_event(event_name=event_name, base_ref=base_ref, draft=draft)
     output_path = os.environ.get("GITHUB_OUTPUT")
     handle = Path(output_path) if output_path else None

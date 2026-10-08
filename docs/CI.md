@@ -59,16 +59,20 @@ The tables in `ci_scope.py` come from what each job actually reads:
   skips every heavy job (docs-only).
 - **Unknown** paths set both.
 
-`tests/python/test_ci_scope.py` fails if a Python test starts reading a doc
-the tables treat as neutral, and if a workflow reads an output the classifier
-does not write. The diff is taken with `--no-renames`, so moving a file out of
+`tests/python/test_ci_scope.py` fails if Python code (tests, `src/`,
+`vertical_slices/`, `fit_gates/`, `scripts/`) starts reading a doc the tables
+treat as neutral, and if a workflow reads an output the classifier does not
+write. The diff is taken with `--no-renames`, so moving a file out of
 an area counts for that area too.
 
 **Draft pull requests** set neither flag: push work in progress to a draft
 PR without paying for heavy CI. Both workflows also trigger on
 `ready_for_review`, so marking the PR ready runs the full selection on the
 same head. Wait for that run before merging; a draft's skipped jobs report
-success.
+success. Only a run's first attempt skips for a draft: re-running a
+draft-era run replays its original payload, so the re-run classifies the
+diff instead. A PR marked ready with the Actions `GITHUB_TOKEN` starts no
+workflow run; mark it ready as a person or app, or push a commit.
 
 **Fail closed**: every gated job has `if: ${{ !cancelled() }}` and its steps
 run unless the flag is exactly `false`. If the `changes` job fails, its
@@ -133,7 +137,7 @@ New names (add if branch protection requires them):
 | `changes` | every CI / Cockpit run | cheap path classifier; not a quality gate |
 | `dependency-review` | `pull_request` only | skipped on `push` to `main` |
 | `actionlint` | every CI run | workflow YAML |
-| `regress` | every CI run except docs-only skip-success | API + browser regress |
+| `regress` | every CI run; its Python step needs the `python` area, its browser steps the `typescript` area (both skip on docs-only and draft PRs) | API + browser regress |
 
 A job whose area is not affected (docs-only, the other area only, or a
 draft PR) still reports `python-foundation`, `d01-publication`,

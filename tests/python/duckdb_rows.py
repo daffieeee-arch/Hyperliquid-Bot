@@ -3,9 +3,13 @@
 ``executemany`` binds every row on its own and takes seconds for a few
 thousand rows, which made row-building fixtures the bulk of the research
 harness tests' run time. Writing the rows to a CSV file and copying it in
-takes milliseconds and yields the same table: floats round-trip through
-their shortest ``repr`` (NaN, infinities and -0.0 included), ``None`` is
-NULL and an empty string stays an empty string.
+takes milliseconds and yields the same table when each value's Python type
+matches its column (int for integer columns, float for DOUBLE, str for
+VARCHAR, bool for BOOLEAN): floats round-trip through their shortest
+``repr`` (NaN, infinities and -0.0 included), ``None`` is NULL and an empty
+string stays an empty string. Values are cast from text, so a mismatched
+type (a bool or a float in an integer column) can fail or differ where
+``executemany`` would coerce it; BLOB values are refused.
 """
 
 from __future__ import annotations

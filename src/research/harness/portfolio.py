@@ -23,33 +23,34 @@ exit day, the one price a holder of a halted or delisted contract has, and
 the period records a forced exit. A day without a row ends the contract:
 the panel keeps such gaps only between the runs of a relisted symbol, and
 the rows after the gap are another listing, so the hold stops at the last
-traded close before it. A day with a row that did not trade is a halt, held
-through. Funding is charged on every held day up to that last traded day,
-so a halt that resumes pays its days and a delisting pays nothing after its
-last trade. A symbol that does not trade on the fill day is not opened, and
-its leg is spread over the names that filled. A period with a leg short of
-``min_names_per_leg`` names, at the decision or at the fill, is skipped.
+traded close before it, and a symbol whose rows break between the decision
+and the fill is not opened. A day with a row that did not trade is a halt,
+held through. Funding is charged on every held day up to that last traded
+day, so a halt that resumes pays its days and a delisting pays nothing
+after its last trade. A symbol that does not trade on the fill day is not
+opened, and its leg is spread over the names that filled. A period with a
+leg short of ``min_names_per_leg`` names, at the decision or at the fill,
+is skipped.
 
-With funding declared, a held day without any rate fails the run closed:
-the panel keeps such days only outside its funding runs, and a study's
-range must not hold a position across one. A held day whose rate is there
-but not whole (``funding_covered`` false: at most one settlement missing,
-or an interval switch the panel cannot tell apart) is charged the recorded
-sum and counted, so the report shows how much of the funding rests on such
-days.
+With funding declared, a held traded day without any rate fails the run
+closed: the panel keeps such days only outside its funding runs, and a
+study's range must not hold a position across one. A held day whose rate
+is there but not whole (``funding_covered`` false: at most one settlement
+missing, or an interval switch the panel cannot tell apart) is charged the
+recorded sum and counted, so the report shows how much of the funding
+rests on such days. A halt day without any rate, which the panel builder
+does not check, is charged nothing and counted the same way.
 """
 
 from __future__ import annotations
 
-import math
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from fractions import Fraction
 
 from research.harness.data import PanelTable
 from research.harness.errors import HarnessError, IntegrityError
 from research.harness.evaluate import Decision, TradeSeries, held_funding, next_period
-from research.harness.spec import ConfigSpec, HypothesisSpec, Json, PortfolioSpec
+from research.harness.spec import ConfigSpec, HypothesisSpec, Json, PortfolioSpec, leg_size
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,14 +102,12 @@ class PanelSource:
     spec: HypothesisSpec
     panel: PanelTable
     stats: dict[tuple[str, int, int], PeriodStats] = field(default_factory=dict)
-    portfolio: PortfolioSpec = field(init=False)
     # The day's eligible symbols, best signal first; the same for every config.
     _ranked: dict[int, list[tuple[float, int]]] = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
         if self.spec.portfolio is None:
             raise HarnessError("invariant", "PanelSource needs a portfolio spec.")
-        self.portfolio = self.spec.portfolio
         if (self.spec.costs.funding_column is None) != (self.panel.funding is None):
             raise HarnessError("invariant", "The panel's funding does not match the spec.")
         if (self.panel.funding is None) != (self.panel.covered is None):
@@ -117,6 +116,12 @@ class PanelSource:
     @property
     def length(self) -> int:
         return len(self.panel.timestamps)
+
+    @property
+    def portfolio(self) -> PortfolioSpec:
+        if self.spec.portfolio is None:
+            raise HarnessError("invariant", "PanelSource needs a portfolio spec.")
+        return self.spec.portfolio
 
     def window(self, config: ConfigSpec, start: int, end: int) -> TradeSeries:
         """Non-overlapping periods decided inside ``[start, end)``.
@@ -130,13 +135,10 @@ class PanelSource:
         if config.quantile is None:
             raise HarnessError("invariant", f"Config {config.id} has no quantile.")
         latency = self.spec.costs.latency_bars
-        # The quantile as written in the spec, so 100 names at 0.29 give 29 and
-        # not the 28 its binary float would.
-        quantile = Fraction(repr(config.quantile))
+        quantile = config.quantile
         gross: list[float] = []
         paid: list[float] = []
         received: list[float] = []
-        weights: list[float] = []
         stats = EMPTY_STATS
         decision = start
         while (period := next_period(decision, latency, config.horizon_bars, end)) is not None:
@@ -161,8 +163,6 @@ class PanelSource:
             gross.append(period_gross)
             paid.append(period_paid)
             received.append(period_received)
-            # The deployed capital: both legs together, or the long leg alone.
-            weights.append(1.0)
             stats += PeriodStats(
                 periods=1,
                 skipped_decisions=0,
@@ -177,16 +177,17 @@ class PanelSource:
             gross=tuple(gross),
             funding_paid=tuple(paid),
             funding_received=tuple(received),
-            weights=tuple(weights),
+            # Each period deploys the capital: both legs together, or the long
+            # leg alone, so one period pays one round trip on it.
+            weights=(1.0,) * len(gross),
         )
 
-    def _positions(self, quantile: Fraction, decision: int, entry: int) -> list[_Position] | None:
+    def _positions(self, quantile: float, decision: int, entry: int) -> list[_Position] | None:
         """The period's positions, or None when it is skipped."""
 
         portfolio = self.portfolio
-        panel = self.panel
         eligible = self._eligible(decision)
-        names = math.floor(len(eligible) * quantile)
+        names = leg_size(len(eligible), quantile)
         if names < portfolio.min_names_per_leg:
             return None
         long_leg = [symbol for _signal, symbol in eligible[:names]]
@@ -198,8 +199,8 @@ class PanelSource:
         # A symbol that does not trade on the fill day is not opened; a leg
         # that fills below the floor skips the period, as at the decision.
         floor = portfolio.min_names_per_leg
-        long_filled = [symbol for symbol in long_leg if panel.traded[symbol][entry] is True]
-        short_filled = [symbol for symbol in short_leg if panel.traded[symbol][entry] is True]
+        long_filled = [symbol for symbol in long_leg if self._fills(symbol, decision, entry)]
+        short_filled = [symbol for symbol in short_leg if self._fills(symbol, decision, entry)]
         if len(long_filled) < floor or (short_leg and len(short_filled) < floor):
             return None
         capital = 0.5 if short_leg else 1.0
@@ -208,6 +209,19 @@ class PanelSource:
             _Position(symbol, -1, capital / len(short_filled)) for symbol in short_filled
         )
         return positions
+
+    def _fills(self, symbol: int, decision: int, entry: int) -> bool:
+        """Whether the symbol trades at the fill and had a row on every day since the decision.
+
+        A day without a row ends the contract, so rows after one are another
+        listing, which the decision day's signal says nothing about.
+        """
+
+        panel = self.panel
+        prices = panel.prices[symbol]
+        if any(prices[day] is None for day in range(decision + 1, entry + 1)):
+            return False
+        return panel.traded[symbol][entry] is True
 
     def _eligible(self, decision: int) -> list[tuple[float, int]]:
         """The decision day's universe ranked by signal, cached across configs."""
@@ -242,7 +256,8 @@ class PanelSource:
         before the first day without a row, where the contract ends. Funding
         is paid on every day up to that last traded day, on the notional at
         the day's close: a halt that resumes pays its days, a delisting pays
-        nothing after its last trade.
+        nothing after its last trade. A halt day without a rate, which the
+        panel builder does not check, pays nothing and counts as uncovered.
         """
 
         panel = self.panel
@@ -268,16 +283,16 @@ class PanelSource:
                 if price is None:
                     raise HarnessError("invariant", "A held day before the last trade has a row.")
                 rate = panel.funding[symbol][day]
-                if rate is None:
+                if rate is None and panel.traded[symbol][day] is True:
                     raise IntegrityError(
                         "funding",
                         f"{panel.symbols[symbol]} has no funding on a held day at "
                         f"{panel.timestamps[day]}; a study's range must not hold across one.",
                     )
-                if panel.covered[symbol][day] is not True:
+                if rate is None or panel.covered[symbol][day] is not True:
                     uncovered += 1
                 held_prices.append(price)
-                held_rates.append(rate)
+                held_rates.append(0.0 if rate is None else rate)
             paid, received = held_funding(position.side, entry_price, held_prices, held_rates)
         exit_price = prices[last]
         if exit_price is None:

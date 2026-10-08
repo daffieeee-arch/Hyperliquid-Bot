@@ -506,13 +506,26 @@ def _require_reachable_legs(portfolio: PortfolioSpec, configs: tuple[ConfigSpec,
 
     for config in configs:
         # Panel configs always carry a quantile (_parse_configs with panel=True).
-        names = math.floor(portfolio.universe_size * Fraction(repr(config.quantile or 0.0)))
+        if config.quantile is None:
+            raise SpecError(f"Config {config.id} has no quantile.")
+        names = leg_size(portfolio.universe_size, config.quantile)
         if names < portfolio.min_names_per_leg:
             raise SpecError(
                 f"Config {config.id} fills at most {names} names per leg from a universe of "
                 f"{portfolio.universe_size}, under portfolio.min_names_per_leg "
                 f"{portfolio.min_names_per_leg}."
             )
+
+
+def leg_size(count: int, quantile: float) -> int:
+    """How many of ``count`` names a leg takes: the floor of the exact quantile.
+
+    The quantile as written in the spec, so 100 names at 0.29 give 29 and
+    not the 28 its binary float would. Validation and scoring both size
+    legs here, so a config the spec accepts can fill.
+    """
+
+    return math.floor(count * Fraction(repr(quantile)))
 
 
 def _parse_portfolio(raw: dict[str, Json]) -> PortfolioSpec:

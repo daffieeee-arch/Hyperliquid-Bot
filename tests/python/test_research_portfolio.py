@@ -475,6 +475,44 @@ def test_a_halt_that_resumes_before_the_exit_is_held_through_and_pays_funding() 
     assert source.stats[("c", 0, 5)].forced_exits == 0
 
 
+def test_a_symbol_whose_rows_break_before_the_fill_is_not_opened() -> None:
+    spec = _four_symbol_spec(
+        costs={"fee_bps": 2.0, "slippage_bps": 1.0, "spread_bps": 1.0, "latency_bars": 2}
+    )
+    panel = _table(
+        symbols=["A", "B", "C", "D"],
+        prices=[
+            [100.0] * 6,
+            [100.0, None, 300.0, 310.0, 320.0, 330.0],
+            [100.0] * 6,
+            [100.0] * 6,
+        ],
+        signals=[[-1.0] * 6, [2.0] * 6, [1.0] * 6, [-2.0] * 6],
+    )
+    source = PanelSource(spec, panel)
+    series = source.window(_config(0.5, 2), 0, 6)
+    # Decided on day 0, filled on day 2: B's row is missing on day 1, so the
+    # 300 it trades at on day 2 is another listing. The long leg is C alone
+    # and B's later rise is never booked.
+    assert series.gross == pytest.approx((0.0,))
+    assert source.stats[("c", 0, 6)].long_names == 1
+
+
+def test_a_halt_day_without_a_rate_pays_nothing_and_counts_as_uncovered() -> None:
+    spec = _four_symbol_spec(funding=True)
+    panel = _table(
+        symbols=["A", "B"],
+        prices=[[100.0] * 5, [100.0, 100.0, 110.0, 50.0, 90.0]],
+        traded=[[True] * 5, [True, True, True, False, True]],
+        signals=[[-1.0] * 5, [1.0] * 5],
+        funding=[[0.0] * 5, [0.0, 0.0, 0.001, None, 0.001]],
+    )
+    source = PanelSource(spec, panel)
+    series = source.window(_config(0.5, 3), 0, 5)
+    assert series.funding_paid == pytest.approx((0.5 * 0.001 * (1.1 + 0.9),))
+    assert source.stats[("c", 0, 5)].uncovered_funding_days == 1
+
+
 def test_a_relisting_inside_the_horizon_exits_before_the_gap() -> None:
     spec = _four_symbol_spec(funding=True)
     panel = _table(

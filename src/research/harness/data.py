@@ -418,8 +418,9 @@ def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Pa
     required_at = tuple(index_by_name[name] for name in required)
     with_funding = at.funding is not None and at.covered is not None
     # First pass: the axes and every row-level check; second pass: the series.
-    timestamp_set: set[int] = set()
-    symbol_set: set[str] = set()
+    # The parsed cells are kept, as references into the rows, for the second.
+    row_timestamps: list[int] = []
+    row_symbols: list[str] = []
     for row_index, row in enumerate(rows):
         if len(row) != len(data.columns):
             raise IntegrityError("schema", f"Row {row_index} does not match the declared width.")
@@ -437,11 +438,11 @@ def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Pa
                     f"Feature {feature_name} row {row_index} is available at {clock}, "
                     f"after bar {timestamp}.",
                 )
-        timestamp_set.add(timestamp)
-        symbol_set.add(_as_str(row[at.symbol.index], at.symbol.name, row_index))
-    timestamps = sorted(timestamp_set)
+        row_timestamps.append(timestamp)
+        row_symbols.append(_as_str(row[at.symbol.index], at.symbol.name, row_index))
+    timestamps = sorted(set(row_timestamps))
     _audit_clock(timestamps, data.max_gap)
-    symbols = sorted(symbol_set)
+    symbols = sorted(set(row_symbols))
     if len(symbols) > _PANEL_MAX_SYMBOLS:
         raise IntegrityError("too_many_rows", f"Panel has more than {_PANEL_MAX_SYMBOLS} symbols.")
     date_index = {timestamp: index for index, timestamp in enumerate(timestamps)}
@@ -454,9 +455,8 @@ def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Pa
     funding: list[list[float | None]] = [[None] * width for _ in symbols] if with_funding else []
     covered: list[list[bool | None]] = [[None] * width for _ in symbols] if with_funding else []
     for row_index, row in enumerate(rows):
-        # Both cells passed the first pass; read again rather than keep a copy.
-        timestamp = _as_int(row[at.timestamp.index], at.timestamp.name, row_index)
-        symbol = _as_str(row[at.symbol.index], at.symbol.name, row_index)
+        timestamp = row_timestamps[row_index]
+        symbol = row_symbols[row_index]
         column = date_index[timestamp]
         line = symbol_index[symbol]
         if prices[line][column] is not None:

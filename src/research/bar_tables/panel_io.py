@@ -82,7 +82,7 @@ class UniverseFiles:
 
 
 def universe_files(
-    root: Path, manifest_path: Path, group: str, start: date, end: date, spec: PanelSpec
+    root: Path, manifest_path: Path, group: str, start: date, end: date, panel_spec: PanelSpec
 ) -> UniverseFiles:
     """Every month file of ``group`` from the spec's warm-up before ``start`` to ``end``.
 
@@ -104,14 +104,15 @@ def universe_files(
         raise BarTableError(f"{group} must expand into both klines and fundingRate datasets.")
     if any(spec.interval != "1d" for spec in klines):
         raise BarTableError(f"{group} klines must be 1d for a daily panel.")
-    reach = start - timedelta(days=spec.warmup_days)
+    reach = start - timedelta(days=panel_spec.warmup_days)
     kline_files, kline_runs, missing = _month_files(root, klines, reach, end)
     funding_files, funding_runs, funding_missing = _month_files(root, funding, reach, end)
     missing += funding_missing
     if missing:
         shown = ", ".join(str(path) for path in missing[:_MISSING_SHOWN])
         hint = (
-            " Funding is published per month only, so --end cannot pass the newest published month."
+            " If the missing funding month is the newest one: funding is published per "
+            "month only, so --end cannot pass the newest published month."
             if funding_missing
             else ""
         )

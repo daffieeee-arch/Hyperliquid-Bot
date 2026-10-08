@@ -262,7 +262,7 @@ def _check_settlements(symbol: str, settlements: Sequence[Settlement]) -> None:
         if later.ts <= earlier.ts:
             raise BarTableError(f"{symbol} funding is not in strictly increasing time order.")
     for settlement in settlements:
-        if not math.isfinite(settlement.rate) or settlement.interval_hours < 1:
+        if not math.isfinite(settlement.rate) or not 1 <= settlement.interval_hours <= 24:
             raise BarTableError(f"{symbol} funding at {settlement.ts} is not usable.")
 
 

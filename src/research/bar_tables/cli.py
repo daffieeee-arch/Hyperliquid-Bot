@@ -114,7 +114,8 @@ def _panel(args: argparse.Namespace) -> int:
         files = universe_files(root, manifest, args.group, start, end, spec)
         rows = build_panel(files, spec, start, end)
         write_panel_parquet(rows, spec, Path(args.out))
-    except (BarTableError, HistEtlError, duckdb.Error, OSError, OverflowError) as exc:
+    # OverflowError and ValueError come from date arithmetic on extreme dates.
+    except (BarTableError, HistEtlError, duckdb.Error, OSError, OverflowError, ValueError) as exc:
         print(f"bar_tables: {exc}", file=sys.stderr)
         return 2
     symbols = len({row.symbol for row in rows})

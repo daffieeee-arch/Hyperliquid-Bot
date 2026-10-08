@@ -394,17 +394,6 @@ def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Pa
         feature for feature in spec.features if feature.name == spec.signal_feature
     )
     clocks = [(feature.available_at_column, feature.name) for feature in spec.features]
-    required = [
-        name
-        for name in (
-            data.timestamp_column,
-            data.symbol_column,
-            data.price_column,
-            data.traded_column,
-            *(column for column, _name in clocks),
-        )
-        if name is not None
-    ]
     at = _PanelColumns(
         timestamp=_role_column(index_by_name, data.timestamp_column),
         symbol=_role_column(index_by_name, data.symbol_column),
@@ -424,7 +413,14 @@ def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> Pa
         ),
     )
     clock_at = [(index_by_name[column], name) for column, name in clocks]
-    required_at = tuple(index_by_name[name] for name in required)
+    # Present on every row: the axes, the price, the traded flag, every clock.
+    required_at = (
+        at.timestamp.index,
+        at.symbol.index,
+        at.price.index,
+        at.traded.index,
+        *(index for index, _name in clock_at),
+    )
     # First pass: the axes and every row-level check; second pass: the series.
     axes = _panel_axes(rows, at, clock_at, required_at, len(data.columns), data.max_gap)
     timestamps = axes.timestamps

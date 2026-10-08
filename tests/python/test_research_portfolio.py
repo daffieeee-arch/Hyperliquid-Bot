@@ -596,7 +596,7 @@ def test_a_period_is_skipped_when_a_leg_cannot_fill_or_is_too_small() -> None:
     assert series.gross == pytest.approx((0.0, 0.0))
     assert series.weights == pytest.approx((0.5, 1.0))
     stats = source.stats[("c", 0, 4)]
-    assert (stats.periods, stats.skipped_decisions, stats.unwound_periods) == (1, 1, 1)
+    assert (stats.periods, stats.skipped_decisions, stats.unwound_periods) == (2, 0, 1)
     # Three eligible names at quantile 0.5 give one per leg, under a floor of two.
     small = _four_symbol_spec(portfolio={"universe_size": 4, "min_names_per_leg": 2})
     three = _table(
@@ -879,7 +879,7 @@ def test_a_period_skipped_at_the_fill_is_followed_by_a_decision_on_the_fill_day(
     # decision on day 1 would have been placed with day 2's knowledge.
     assert series.gross == pytest.approx((0.0,)) and series.weights == pytest.approx((0.5,))
     stats = source.stats[("c", 0, 6)]
-    assert (stats.periods, stats.skipped_decisions, stats.unwound_periods) == (0, 1, 1)
+    assert (stats.periods, stats.skipped_decisions, stats.unwound_periods) == (1, 0, 1)
 
 
 def test_a_hole_in_the_holdout_fails_the_run_without_a_selected_config(tmp_path: Path) -> None:

@@ -37,10 +37,10 @@ opened; its capital sits idle, since the other orders were sized before
 its non-fill was known. A period with a leg short of ``min_names_per_leg``
 names at the decision sends no orders and is skipped; one with a leg short
 of them at the fill unwinds the names that did fill at the fill close,
-paying the round trip on them for no return (an unwound period, counted
-apart). After a skip at the decision the next decision is the next day;
-after one at the fill it is the fill day, when the non-fill is known, so
-no decision is placed with a later day's knowledge.
+paying the round trip on them for no return: a trade of the series, a
+period, counted apart as unwound. After a skip at the decision the next
+decision is the next day; after an unwind it is the fill day, when the
+non-fill is known, so no decision is placed with a later day's knowledge.
 
 With funding declared, a traded day without any rate that a position could
 hold fails the run closed before any window is scored (the first window
@@ -58,6 +58,7 @@ does not check, is charged nothing and counted as unfunded.
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass, field, fields
@@ -90,7 +91,8 @@ class PeriodStats:
     uncovered_funding_days: int = 0
     # Held position-days of a halt without any rate, charged nothing.
     unfunded_halt_days: int = 0
-    # Periods whose fills were unwound at the fill close: a leg fell short.
+    # Of the periods, those whose fills were unwound at the fill close
+    # because a leg fell short: a trade of the round trip and no return.
     unwound_periods: int = 0
 
     def __add__(self, other: PeriodStats) -> PeriodStats:
@@ -150,7 +152,7 @@ class PanelSource:
     _ranked: dict[int, list[tuple[float, int]]] = field(default_factory=dict, init=False)
     # The windows whose held days were audited for funding.
     _audited: set[tuple[int, int]] = field(default_factory=set, init=False)
-    # Per symbol, the first day at or after each day without a row.
+    # Per symbol, its days without a row, in order.
     _gaps: dict[int, list[int]] = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
@@ -271,9 +273,10 @@ class PanelSource:
                 continue
             if opened.unwound:
                 # The fills are closed at the fill close: no return, no
-                # funding, the round trip on the capital they held. The
-                # non-fill is known on the fill day, so the next decision is
-                # there; the decision always advances, at zero latency too.
+                # funding, the round trip on the capital they held, one trade
+                # of the series like a held period. The non-fill is known on
+                # the fill day, so the next decision is there; the decision
+                # always advances, at zero latency too.
                 if opened.positions:
                     gross.append(0.0)
                     paid.append(0.0)
@@ -336,11 +339,16 @@ class PanelSource:
         positions.extend(_Position(symbol, -1, weight) for symbol in short_filled)
         floor = portfolio.min_names_per_leg
         unwound = len(long_filled) < floor or (bool(short_leg) and len(short_filled) < floor)
-        stats = (
-            PeriodStats(skipped_decisions=1, unwound_periods=1 if positions else 0)
-            if unwound
-            else PeriodStats(periods=1, long_names=len(long_filled), short_names=len(short_filled))
-        )
+        if not unwound:
+            stats = PeriodStats(
+                periods=1, long_names=len(long_filled), short_names=len(short_filled)
+            )
+        elif positions:
+            # A trade of the series that held nothing.
+            stats = PeriodStats(periods=1, unwound_periods=1)
+        else:
+            # Nothing filled, so nothing was traded: a skipped decision.
+            stats = PeriodStats(skipped_decisions=1)
         return _Opened(positions, stats, weight * len(positions), unwound)
 
     def _fills(self, symbol: int, decision: int, entry: int) -> bool:
@@ -366,13 +374,12 @@ class PanelSource:
 
         gaps = self._gaps.get(symbol)
         if gaps is None:
-            # One backward pass per symbol, so every lookup after it is O(1).
+            # The symbol's days without a row, once; a few per symbol at most.
             prices = self.panel.prices[symbol]
-            gaps = [self.length] * (self.length + 1)
-            for index in range(self.length - 1, -1, -1):
-                gaps[index] = index if prices[index] is None else gaps[index + 1]
+            gaps = [index for index, price in enumerate(prices) if price is None]
             self._gaps[symbol] = gaps
-        return gaps[min(day, self.length)]
+        position = bisect_left(gaps, day)
+        return gaps[position] if position < len(gaps) else self.length
 
     def _in_universe(self, symbol: int, day: int, universe_size: int) -> bool:
         """Whether the symbol can be decided on that day: traded, ranked within the
@@ -518,12 +525,14 @@ def portfolio_block(source: PanelSource, decision: Decision) -> dict[str, Json]:
 
 
 def _stats_json(stats: PeriodStats) -> dict[str, Json]:
-    periods = stats.periods
+    # The names per leg are a mean over the periods that held, so the
+    # unwound ones, which held nothing, do not dilute it.
+    held = stats.periods - stats.unwound_periods
     return {
-        "periods": periods,
+        "periods": stats.periods,
         "skipped_decisions": stats.skipped_decisions,
-        "mean_long_names": None if periods == 0 else stats.long_names / periods,
-        "mean_short_names": None if periods == 0 else stats.short_names / periods,
+        "mean_long_names": None if held == 0 else stats.long_names / held,
+        "mean_short_names": None if held == 0 else stats.short_names / held,
         "forced_exits": stats.forced_exits,
         "uncovered_funding_days": stats.uncovered_funding_days,
         "unfunded_halt_days": stats.unfunded_halt_days,

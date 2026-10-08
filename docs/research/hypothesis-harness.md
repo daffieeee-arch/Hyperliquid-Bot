@@ -201,9 +201,12 @@ configs:
   capital the fills hold, so the round trip is charged on what the period
   holds, as each position pays entry and exit on its notional. A leg that
   fills below `min_names_per_leg` unwinds the period's fills at the fill
-  close: no return, no funding, the round trip on the capital they held,
-  recorded as a trade and counted as an `unwound_periods` (it is also a
-  skipped decision). `sizing` must be `unit`.
+  close: no return, no funding, the round trip on the capital they held.
+  It is a trade of the series and a period (it counts toward the sample
+  floors as the cost it was), reported apart as `unwound_periods`; the
+  mean names per leg are over the periods that held. A period whose legs
+  fill nothing at all is a skipped decision, not a trade. `sizing` must be
+  `unit`.
 - **Funding**: the long leg pays each held day's rate on the notional at
   that day's close and the short leg receives it, position by position, so
   the stress treats each payment adversely as for a bar trade. With
@@ -278,7 +281,8 @@ configs:
   audited on every row. The date axis is the union of the rows' days and
   must be evenly spaced: a row stamped off the grid would give every
   other symbol a day without a row, which ends a contract, so it fails
-  the run (`failure_kind: gap`).
+  the run (`failure_kind: gap`). On a panel `max_gap` therefore bounds the
+  step of the axis (one day for the daily panel), not a hole in it.
 
 ## Overfitting diagnostics
 

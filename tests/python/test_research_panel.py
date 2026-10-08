@@ -19,6 +19,7 @@ from research.bar_tables.panel import (
     PanelSpec,
     Settlement,
     build_symbol_rows,
+    funding_hole_closes,
     rank_by_volume,
 )
 from research.bar_tables.trend import BarTableError
@@ -155,18 +156,44 @@ def test_a_day_that_changes_the_funding_interval_is_covered() -> None:
     assert rows[2].funding_covered
 
 
-def test_a_day_that_returns_to_eight_hour_funding_is_covered() -> None:
-    bars = _bars([100.0, 101.0, 102.0])
+def _returning_to_eight_hours(bars: list[DailyBar]) -> list[Settlement]:
+    # Day two runs 4h funding and returns to 8h at the next midnight. Each
+    # settlement carries the hours since the one before it.
     opens = bars[1].ts + 1 - DAY_MS
-    # Each settlement carries the hours since the one before it.
-    settlements = [
+    return [
         *[item for item in _funding(bars) if item.ts < opens],
         *(Settlement(opens + hour * 3_600_000, 0.001, 4) for hour in (0, 4, 8, 12, 16)),
         *[item for item in _funding(bars) if item.ts >= opens + DAY_MS],
     ]
+
+
+def test_a_day_returning_to_eight_hour_funding_is_judged_at_its_close() -> None:
+    bars = _bars([100.0, 101.0, 102.0])
+    settlements = _returning_to_eight_hours(bars)
     rows = _rows(bars, settlements)
-    assert (rows[1].funding_settlements, rows[1].funding_covered) == (5, True)
+    # At the close, a missing 20:00 settlement and a return to 8h look alike.
+    assert (rows[1].funding_settlements, rows[1].funding_covered) == (5, False)
     assert rows[2].funding_covered
+    # With the next day known, nothing is missing.
+    assert funding_hole_closes(settlements) == set()
+
+
+def test_funding_features_never_read_past_the_close() -> None:
+    bars = _bars([100.0, 101.0, 102.0, 103.0, 104.0])
+    settlements = _returning_to_eight_hours(bars)
+    full = _rows(bars, settlements)
+    for count in range(1, len(bars)):
+        known = [item for item in settlements if item.ts + 60_000 <= bars[count - 1].ts]
+        assert _rows(bars[:count], known) == full[:count]
+
+
+def test_funding_holes_mark_the_days_a_settlement_was_due() -> None:
+    bars = _bars([100.0, 101.0, 102.0, 103.0, 104.0])
+    settlements = _funding(bars)
+    # Drop day two's 16:00 and day four's 00:00 to 16:00.
+    dropped = [item for index, item in enumerate(settlements) if index not in {5, 9, 10, 11}]
+    assert funding_hole_closes(dropped) == {bars[1].ts, bars[3].ts}
+    assert funding_hole_closes(settlements) == set()
 
 
 def test_a_settlement_stamped_just_before_midnight_opens_the_next_day() -> None:
@@ -496,7 +523,8 @@ def test_a_funding_hole_on_a_traded_day_fails_closed(
     _write_month(root, "funding", "AAAUSDT", "2026-02", range(1, 21))
     out = tmp_path / "panel.parquet"
     assert main(_panel_args(root, manifest, out)) == 2
-    assert "AAAUSDT traded on 2026-02-21 without full funding" in capsys.readouterr().err
+    message = capsys.readouterr().err
+    assert "AAAUSDT traded on 2026-02-21 with a funding settlement missing" in message
     assert not out.exists()
 
 

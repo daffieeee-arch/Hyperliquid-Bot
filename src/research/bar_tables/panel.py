@@ -221,8 +221,6 @@ def _check_bars(symbol: str, bars: Sequence[DailyBar]) -> None:
     for earlier, later in pairwise(bars):
         if later.ts <= earlier.ts:
             raise BarTableError(f"{symbol} bars are not in strictly increasing time order.")
-        if (later.ts - earlier.ts) % DAY_MS:
-            raise BarTableError(f"{symbol} bar at {later.ts} is off the daily grid.")
     for bar in bars:
         if bar.ts % DAY_MS != DAY_MS - 1:
             raise BarTableError(f"{symbol} bar at {bar.ts} does not close at the end of a UTC day.")
@@ -262,9 +260,8 @@ def _daily_funding(
             probe += 1
         day = settlements[cursor:probe]
         before = settlements[cursor - 1] if cursor else None
-        after = settlements[probe] if probe < len(settlements) else None
         rate = math.fsum(item.rate for item in day) if day else None
-        result.append(_FundingDay(rate, len(day), _covered(day, before, after, opens, bar.ts)))
+        result.append(_FundingDay(rate, len(day), _covered(day, before, opens, bar.ts)))
     return result
 
 
@@ -272,31 +269,27 @@ def _day_time(settlement: Settlement) -> int:
     return settlement.ts + SETTLEMENT_SLACK_MS
 
 
-def _covered(
-    day: Sequence[Settlement],
-    before: Settlement | None,
-    after: Settlement | None,
-    opens: int,
-    closes: int,
-) -> bool:
-    """No settlement due inside the day is missing.
+def _covered(day: Sequence[Settlement], before: Settlement | None, opens: int, closes: int) -> bool:
+    """No settlement due by the close is missing, judged at the close.
 
-    Consecutive settlements of the day are at most the longer of their
-    intervals apart. The settlement before the first was due before the day
-    opened, and the one after the last after it closes, each judged with the
-    longer interval of the edge settlement and its neighbour: on a day that
-    changes the interval either way, the neighbour carries the other one.
-    A hole after the day's last settlement belongs to the next day.
+    Consecutive settlements, the previous day's last included, are at most
+    the longer of their intervals apart, and the next is due after the close
+    by the last one's interval. Binance's interval label is the hours since
+    the previous settlement or the new setting, so a day that returns from
+    4h to 8h funding can read as short a settlement: the close cannot tell
+    yet, and a later settlement must not decide it. ``funding_hole_closes``
+    judges holes with the whole series instead.
     """
 
     if not day:
         return False
     first, last = day[0], day[-1]
-    lead = max(first.interval_hours, before.interval_hours if before else 0)
-    if first.ts - lead * _HOUR_MS + SETTLEMENT_SLACK_MS > opens:
+    if before is not None:
+        if not _close_enough(before, first):
+            return False
+    elif first.ts - first.interval_hours * _HOUR_MS + SETTLEMENT_SLACK_MS > opens:
         return False
-    trail = max(last.interval_hours, after.interval_hours if after else 0)
-    if last.ts + trail * _HOUR_MS + SETTLEMENT_SLACK_MS <= closes:
+    if last.ts + last.interval_hours * _HOUR_MS + SETTLEMENT_SLACK_MS <= closes:
         return False
     return all(_close_enough(earlier, later) for earlier, later in pairwise(day))
 
@@ -304,6 +297,28 @@ def _covered(
 def _close_enough(earlier: Settlement, later: Settlement) -> bool:
     longer = max(earlier.interval_hours, later.interval_hours)
     return later.ts - earlier.ts <= longer * _HOUR_MS + SETTLEMENT_SLACK_MS
+
+
+def funding_hole_closes(settlements: Sequence[Settlement]) -> set[int]:
+    """Close times of the days in which a settlement was due but is missing.
+
+    Validation, not a feature: it reads the whole series, later settlements
+    included. Between two settlements farther apart than the longer of their
+    intervals, settlements were due every shorter interval after the first
+    expected one; each due time marks the day it would have opened.
+    """
+
+    closes: set[int] = set()
+    for earlier, later in pairwise(settlements):
+        if _close_enough(earlier, later):
+            continue
+        step = min(earlier.interval_hours, later.interval_hours) * _HOUR_MS
+        due = earlier.ts + max(earlier.interval_hours, later.interval_hours) * _HOUR_MS
+        while due + SETTLEMENT_SLACK_MS < later.ts:
+            shifted = due + SETTLEMENT_SLACK_MS
+            closes.add(shifted - shifted % DAY_MS + DAY_MS - 1)
+            due += step
+    return closes
 
 
 def _run_starts(bars: Sequence[DailyBar]) -> list[int]:

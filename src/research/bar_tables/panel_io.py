@@ -29,14 +29,15 @@ from research.bar_tables.panel import (
     PanelSpec,
     Settlement,
     build_symbol_rows,
+    funding_hole_closes,
     rank_by_volume,
 )
-from research.bar_tables.trend import BarTableError
+from research.bar_tables.trend import SETTLEMENT_SLACK_MS, BarTableError
 from research.hist_etl.binance_convert import binance_parquet_path
 from research.hist_etl.errors import HistEtlError
 from research.hist_etl.manifest import load_manifest
 from research.hist_etl.models import BinanceSpec
-from research.hist_etl.planning import next_month
+from research.hist_etl.planning import next_month, previous_month
 
 _MISSING_SHOWN: Final = 10
 
@@ -60,6 +61,7 @@ class Run:
     last: date
     late_start: bool
     early_end: bool
+    published: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,12 +130,13 @@ def _month_files(
                 last=last,
                 late_start=spec.open_start and _same_month(first, spec.start),
                 early_end=spec.open_end and spec.end is not None and _same_month(last, spec.end),
+                published=spec.end is None,
             )
         )
         month = date(first.year, first.month, 1)
         if spec.dataset == "fundingRate" and month > date(spec.start.year, spec.start.month, 1):
             # A midnight settlement stamped just early sits in the month before.
-            month = _month_before(month)
+            month = previous_month(month)
         while month <= last:
             path = binance_parquet_path(root, spec, f"{month.year:04d}-{month.month:02d}")
             # hist_etl writes the sidecar last; a file without one is not its output.
@@ -156,12 +159,14 @@ def build_panel(files: UniverseFiles, spec: PanelSpec, start: date, end: date) -
     bars = _read_bars(files.klines)
     _check_kline_runs(bars, files.kline_runs)
     settlements = _read_settlements(files.funding)
-    rows: list[PanelRow] = []
-    for symbol in sorted(bars):
-        rows.extend(build_symbol_rows(symbol, bars[symbol], settlements.get(symbol, []), spec))
-    _check_funding_runs(rows, files.funding_runs)
     start_ms = _day_ms(start)
     end_ms = _day_ms(end)
+    rows: list[PanelRow] = []
+    for symbol in sorted(bars):
+        # Rows look back only, so bars after ``end`` change nothing; skip them.
+        kept = [bar for bar in bars[symbol] if bar.ts < end_ms]
+        rows.extend(build_symbol_rows(symbol, kept, settlements.get(symbol, []), spec))
+    _check_funding_runs(rows, settlements, files.funding_runs)
     inside = [row for row in rows if start_ms <= row.ts < end_ms]
     if not inside:
         raise BarTableError("The universe has no daily bar inside the panel range.")
@@ -178,7 +183,7 @@ def _check_kline_runs(bars: dict[str, list[DailyBar]], runs: Sequence[Run]) -> N
         if not inside:
             # A still-published run's window can end inside its listing
             # month, before the listing.
-            if run.late_start and _same_month(run.first, run.last):
+            if run.published and run.late_start and _same_month(run.first, run.last):
                 continue
             raise BarTableError(
                 f"{run.symbol} has no daily bar from {run.first} to {run.last}; "
@@ -200,46 +205,35 @@ def _missing_day(symbol: str, previous_close: int) -> str:
     return f"{symbol} misses the daily bar of {missing} inside a run; run hist_etl verify and sync."
 
 
-def _check_funding_runs(rows: Sequence[PanelRow], runs: Sequence[Run]) -> None:
-    """Inside a funding run, a traded day without full funding is a hole.
+def _check_funding_runs(
+    rows: Sequence[PanelRow], settlements: dict[str, list[Settlement]], runs: Sequence[Run]
+) -> None:
+    """A traded day inside a funding run with a settlement missing fails.
 
-    In a listing month, traded days before the run's first covered day may
-    be partial, and in a delisting month, traded days after its last one,
-    as funding starts and stops mid-day. A day that did not trade is not
-    checked: delisted contracts carry default funding.
+    Holes are judged between the run's own settlements in its window, with
+    the whole series (validation may read past a day's close). The days
+    before a run's first settlement and after its last are its listing and
+    delisting edges, not holes. A day that did not trade is not checked:
+    delisted contracts carry default funding.
     """
 
-    by_symbol: dict[str, list[PanelRow]] = defaultdict(list)
+    traded: dict[str, set[int]] = defaultdict(set)
     for row in rows:
-        by_symbol[row.symbol].append(row)
+        if row.traded:
+            traded[row.symbol].add(row.ts)
     for run in runs:
-        low = _close_ms(run.first)
+        opens = _close_ms(run.first) - DAY_MS
         high = _close_ms(run.last)
-        inside = [row for row in by_symbol.get(run.symbol, []) if low <= row.ts <= high]
-        covered = [row.ts for row in inside if row.funding_covered]
-        starts = covered[0] if covered else None
-        stops = covered[-1] if covered else None
-        listing_month_end = _close_ms(_month_end(run.first))
-        delisting_month_start = _close_ms(date(run.last.year, run.last.month, 1))
-        for row in inside:
-            if not row.traded or row.funding_covered:
-                continue
-            if (
-                run.late_start
-                and row.ts <= listing_month_end
-                and (starts is None or row.ts < starts)
-            ):
-                continue
-            if (
-                run.early_end
-                and row.ts >= delisting_month_start
-                and (stops is None or row.ts > stops)
-            ):
-                continue
-            day = datetime.fromtimestamp(row.ts / 1000, UTC).date()
+        own = [
+            item
+            for item in settlements.get(run.symbol, [])
+            if opens < item.ts + SETTLEMENT_SLACK_MS <= high
+        ]
+        for close in sorted(funding_hole_closes(own) & traded[run.symbol]):
+            day = datetime.fromtimestamp(close / 1000, UTC).date()
             raise BarTableError(
-                f"{run.symbol} traded on {day} without full funding inside a funding run "
-                f"({row.funding_settlements} settlement(s)); run hist_etl verify and sync."
+                f"{run.symbol} traded on {day} with a funding settlement missing inside a "
+                "funding run; run hist_etl verify and sync."
             )
 
 
@@ -249,11 +243,6 @@ def _same_month(left: date, right: date) -> bool:
 
 def _month_end(day: date) -> date:
     return next_month(date(day.year, day.month, 1)) - timedelta(days=1)
-
-
-def _month_before(day: date) -> date:
-    first = date(day.year, day.month, 1)
-    return date(first.year - 1, 12, 1) if first.month == 1 else date(first.year, first.month - 1, 1)
 
 
 def _close_ms(day: date) -> int:
@@ -272,7 +261,10 @@ def _read_bars(files: Sequence[Path]) -> dict[str, list[DailyBar]]:
     )
     bars: dict[str, list[DailyBar]] = defaultdict(list)
     for symbol, ts, close, volume, trades in rows:
-        bars[_str(symbol)].append(
+        name = _str(symbol)
+        if close is None or volume is None or trades is None:
+            raise BarTableError(f"{name} bar at {ts} has an empty close, volume or trade count.")
+        bars[name].append(
             DailyBar(
                 ts=_int(ts), close=_float(close), quote_volume=_float(volume), trades=_int(trades)
             )

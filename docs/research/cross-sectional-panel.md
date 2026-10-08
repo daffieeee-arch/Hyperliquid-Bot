@@ -52,13 +52,17 @@ of latency.
   no window spans it.
 - **Funding days.** A settlement belongs to the day whose `(ts - 1 day, ts]`
   holds its time plus a minute, so one stamped just before midnight counts
-  for the day it opens. A day is covered when no settlement is missing,
-  judged as hist_etl does: consecutive settlements are at most the longer
-  of their intervals apart (plus a minute), and the settlements just before
-  and after the day were due outside it, judged with the longer interval of
-  the edge settlement and its neighbour. A day on which Binance changes the
-  interval, either way, is covered; a hole after a day's last settlement
-  counts against the next day.
+  for the day it opens. `funding_covered` is judged at the close, from
+  settlements up to it: consecutive settlements, the previous day's last
+  included, are at most the longer of their intervals apart (plus a
+  minute), and the next one is due after the close by the last one's
+  interval. A day that goes from 8h to 4h funding is covered.
+  - **Limitation:** Binance's interval label is sometimes the hours since
+    the previous settlement and sometimes the new setting (TRBUSDT, GASUSDT
+    and LOOMUSDT in 2023-10). On a day that returns from 4h to 8h, a missing
+    20:00 settlement and the return look alike at the close, so such a day
+    can read as not covered. Its `funding_<K>d` stays empty for `K` days. A
+    later settlement must not decide a feature.
 - **The universe comes from the rank, not from survival.** A row is complete
   when it traded and has every feature. `volume_rank` orders the complete
   rows of one day, ties going to the symbol that sorts first. A study takes
@@ -84,12 +88,14 @@ Nothing is written when any of these fail:
   and in its delisting month its last bar may. Every other day has to be
   there, through `end` for a still-published run. Run `hist_etl verify` and
   `sync`.
-- **A traded day inside a funding run is not covered.** That is a funding
-  hole, and it would silently drop the symbol from the rank. In a funding
-  run's listing month, traded days before its first covered day may be
-  partial. In its delisting month, traded days after its last covered day
-  may be too, since funding starts and stops mid-day. Untraded days are not
-  checked, because delisted contracts carry default-rate funding.
+- **A settlement is missing on a traded day inside a funding run.** That
+  is a funding hole, and it would silently drop the symbol from the rank.
+  This check is validation, not a feature, so it reads the whole series:
+  between two of a run's settlements farther apart than the longer of
+  their intervals, each day on which a settlement was due is a hole. Days
+  before a run's first settlement and after its last are its listing and
+  delisting edges. Untraded days are not checked, because delisted
+  contracts carry default-rate funding.
 - The funding file of the month before the first month is needed too, when
   the run has it, for a midnight settlement stamped just before the month
   opens.

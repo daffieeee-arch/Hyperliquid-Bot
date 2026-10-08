@@ -683,7 +683,7 @@ def test_any_non_positive_volatility_fails_the_run_closed(tmp_path: Path) -> Non
 
 def test_spec_without_funding_or_sizing_reports_unit_weight(tmp_path: Path) -> None:
     document = _run_rows(tmp_path, _regime_rows(420), configs=_two_configs())
-    assert document["harness_version"] == "5"
+    assert document["harness_version"] == "6"
     assert document["label"] == "passes_h1"
     assert _mapping(document["costs"])["funding_column"] is None
     assert _mapping(document["sizing"])["method"] == "unit"

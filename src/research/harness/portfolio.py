@@ -2,7 +2,7 @@
 
 Each period is decided on one day of the date axis: the universe is the
 symbols that traded that day with a rank at most ``universe_size`` and a
-known signal. Sorted by the signal, the top ``quantile`` of them is the
+known signal; funding plays no part in it. Sorted by the signal, the top ``quantile`` of them is the
 long leg and, under ``direction: signed``, the bottom ``quantile`` the
 short leg. The legs fill ``latency_bars`` days later at that day's close and
 exit ``horizon_bars`` days after the fill; the next decision is the exit
@@ -20,8 +20,10 @@ A position whose symbol does not trade on a held day is closed at its last
 traded close, as a holder of a delisted contract is; the period records a
 forced exit. A symbol that does not trade on the fill day is not opened, and
 its leg is spread over the names that filled. A period with a leg short of
-``min_names_per_leg`` names at the decision, or empty at the fill, is
-skipped.
+``min_names_per_leg`` names, at the decision or at the fill, is skipped. A
+held day without a funding rate, when funding is declared, fails the run
+closed: the panel keeps such days only outside its funding runs, and a
+study's range must not hold a position across one.
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from typing import Final
 
 from research.harness.data import PanelTable
 from research.harness.errors import HarnessError, IntegrityError
@@ -57,6 +60,9 @@ class PeriodStats:
 
 
 EMPTY_STATS = PeriodStats(0, 0, 0, 0, 0)
+# A binary product like 100 * 0.29 lands just under 29; this rounding restores
+# the floor the spec's own arithmetic gives.
+_LEG_ROUNDING: Final = 9
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,13 +164,12 @@ class PanelSource:
                 or rank is None
                 or rank > portfolio.universe_size
                 or signal is None
-                or (panel.funding is not None and panel.funding[symbol][decision] is None)
             ):
                 continue
             eligible.append((signal, symbol))
         # Ties go to the symbol that sorts first, so the legs are deterministic.
         eligible.sort(key=lambda item: (-item[0], panel.symbols[item[1]]))
-        names = int(len(eligible) * quantile)
+        names = math.floor(round(len(eligible) * quantile, _LEG_ROUNDING))
         if names < portfolio.min_names_per_leg:
             return None
         long_leg = [symbol for _signal, symbol in eligible[:names]]
@@ -173,10 +178,12 @@ class PanelSource:
             if self.spec.direction == "signed"
             else []
         )
-        # A symbol that does not trade on the fill day is not opened.
+        # A symbol that does not trade on the fill day is not opened; a leg
+        # that fills below the floor skips the period, as at the decision.
+        floor = portfolio.min_names_per_leg
         long_filled = [symbol for symbol in long_leg if panel.traded[symbol][entry] is True]
         short_filled = [symbol for symbol in short_leg if panel.traded[symbol][entry] is True]
-        if not long_filled or (short_leg and not short_filled):
+        if len(long_filled) < floor or (short_leg and len(short_filled) < floor):
             return None
         capital = 0.5 if short_leg else 1.0
         positions = [_Position(symbol, 1, capital / len(long_filled)) for symbol in long_filled]

@@ -17,15 +17,18 @@ costs:
   spread_bps: 1.0
   latency_bars: 1
   funding_column: funding_rate
+# With 1-day latency a 30-day horizon is a 31-day period: about 5 per
+# 180-day fold and 23 in a 720-day holdout, so these floors are reachable
+# for both configs on roughly 2,400 days of panel.
 split:
   method: expanding
   train_bars: 180
-  test_bars: 90
-  holdout_bars: 540
+  test_bars: 180
+  holdout_bars: 720
 sample:
-  min_trades_validation: 40
-  min_trades_holdout: 20
-  min_folds: 8
+  min_trades_validation: 30
+  min_trades_holdout: 15
+  min_folds: 6
 data:
   backend: panel
   parquet_path: panel.parquet

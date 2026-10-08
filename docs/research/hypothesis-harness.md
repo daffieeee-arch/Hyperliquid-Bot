@@ -175,12 +175,13 @@ configs:
   The next decision is the exit day, so periods do not overlap, like a bar
   series' trades. A validation period never reads a holdout close.
 - **Universe and legs**: on the decision day the universe is every symbol
-  that traded, has a rank at most `universe_size`, a known signal, and, when
-  funding is declared, a known funding rate. Sorted by the signal (ties by
-  symbol), the top `quantile` of the universe is the long leg and, under
+  that traded, has a rank at most `universe_size` and a known signal;
+  funding plays no part in it. Sorted by the signal (ties by symbol), the
+  top `quantile` of the universe is the long leg and, under
   `direction: signed`, the bottom `quantile` the short leg; `long_only`
   holds the long leg alone. Both legs have `floor(universe × quantile)`
-  names, at least `min_names_per_leg`, or the day is skipped.
+  names, at least `min_names_per_leg` at the decision and again at the
+  fill, or the day is skipped.
 - **Return and costs**: equal weight within a leg; each leg holds half the
   capital under `signed`, the long leg all of it under `long_only`. The
   period's gross return is the capital-weighted sum of its positions'
@@ -190,8 +191,11 @@ configs:
 - **Funding**: the long leg pays each held day's rate on the notional at
   that day's close and the short leg receives it, position by position, so
   the stress treats each payment adversely as for a bar trade. A held day
-  without a funding rate fails the run closed (`failure_kind: funding`); the
-  panel builder validates funding holes, so this is a data problem.
+  without a funding rate fails the run closed (`failure_kind: funding`). The
+  panel builder fails on a funding hole inside a funding run, so this
+  happens only on a traded day outside one (a listing month before funding
+  starts, or trading after a funding archive ends); a study's panel range
+  and universe must not hold a position across such a day.
 - **Delisting while held**: a position whose symbol does not trade on a
   held day (no row, or `traded` false) is closed at its last traded close,
   and the period counts a forced exit. That is not the price a holder got at
@@ -201,9 +205,10 @@ configs:
 - **Report**: `result.json` has a `portfolio` block with the universe rule,
   `symbol_count`, and per config the validation (and, when scored, holdout)
   period count, skipped decisions, mean names per leg and forced exits;
-  `result.md` has a Portfolio section. Each config reports `quantile`
-  instead of `threshold`. The buy-and-hold benchmark does not apply: both
-  windows report `not_applicable`.
+  `result.md` has a Portfolio section. Each config reports its `quantile`
+  and a null `threshold` (a bar series reports the reverse). The
+  buy-and-hold benchmark does not apply: both windows report
+  `not_applicable`.
 - **Nulls**: price, the traded flag, the symbol and the clock must be
   present on every row. The signal, rank and funding may be null where the
   panel does not know them (warm-up, untraded days); a null is never read

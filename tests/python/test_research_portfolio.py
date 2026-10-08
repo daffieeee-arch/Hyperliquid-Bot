@@ -430,6 +430,15 @@ def test_a_period_is_skipped_when_a_leg_cannot_fill_or_is_too_small() -> None:
     assert source.stats[("c", 0, 4)].skipped_decisions == 1
     small = _four_symbol_spec(portfolio={"universe_size": 4, "min_names_per_leg": 3})
     assert len(PanelSource(small, panel).window(_config(0.5, 1), 0, 4).gross) == 0
+    # A leg that fills below the floor skips the period too.
+    floored = _four_symbol_spec(portfolio={"universe_size": 4, "min_names_per_leg": 2})
+    thin = _table(
+        symbols=["A", "B", "C", "D"],
+        prices=[[100.0] * 3] * 4,
+        traded=[[True] * 3, [True] * 3, [True] * 3, [True, False, True]],
+        signals=[[2.0] * 3, [1.0] * 3, [-1.0] * 3, [-2.0] * 3],
+    )
+    assert len(PanelSource(floored, thin).window(_config(0.5, 1), 0, 3).gross) == 0
 
 
 def test_the_universe_is_read_at_the_decision_day() -> None:
@@ -446,18 +455,45 @@ def test_the_universe_is_read_at_the_decision_day() -> None:
     assert series.gross == pytest.approx((0.5 * 0.10 + 0.5 * 0.10,))
 
 
-def test_a_null_signal_or_funding_at_the_decision_makes_a_symbol_ineligible() -> None:
+def test_a_null_signal_at_the_decision_makes_a_symbol_ineligible() -> None:
     spec = _four_symbol_spec(funding=True)
     panel = _table(
         symbols=["A", "B", "C"],
         prices=[[100.0] * 3] * 3,
-        signals=[[None, 1.0, 1.0], [1.0] * 3, [-1.0] * 3],
+        signals=[[None, 1.0, 1.0], [None, 1.0, 1.0], [-1.0] * 3],
         funding=[[0.0] * 3, [None, 0.0, 0.0], [0.0] * 3],
     )
     source = PanelSource(spec, panel)
     source.window(_config(0.5, 1), 0, 3)
     # Only C is eligible on day 0: one name, quantile 0.5 gives 0 per leg, skipped.
     assert source.stats[("c", 0, 3)].skipped_decisions == 1
+
+
+def test_funding_unknown_at_the_decision_does_not_shape_the_universe() -> None:
+    spec = _four_symbol_spec(funding=True)
+    panel = _table(
+        symbols=["A", "B"],
+        prices=[[100.0] * 3, [100.0] * 3],
+        signals=[[1.0] * 3, [-1.0] * 3],
+        funding=[[None, 0.0, 0.0], [None, 0.0, 0.0]],
+    )
+    source = PanelSource(spec, panel)
+    assert len(source.window(_config(0.5, 1), 0, 3).gross) == 1
+
+
+def test_the_leg_size_is_the_exact_floor_of_universe_times_quantile() -> None:
+    spec = _four_symbol_spec(portfolio={"universe_size": 100, "min_names_per_leg": 1})
+    symbols = [f"S{index:03d}" for index in range(100)]
+    panel = _table(
+        symbols=symbols,
+        prices=[[100.0, 100.0, 100.0]] * 100,
+        ranks=[[index + 1] * 3 for index in range(100)],
+        signals=[[float(100 - index)] * 3 for index in range(100)],
+    )
+    source = PanelSource(spec, panel)
+    # 100 * 0.29 is 28.999999999999996 in binary; the leg still has 29 names.
+    source.window(_config(0.29, 1), 0, 3)
+    assert source.stats[("c", 0, 3)].long_names == 29
 
 
 def test_funding_is_paid_by_the_long_leg_and_received_by_the_short_leg() -> None:

@@ -28,7 +28,7 @@ from research.harness.overfit import Overfitting
 from research.harness.spec import HypothesisSpec, Json
 from research.harness.splits import Fold
 
-HARNESS_VERSION: Final = "5"
+HARNESS_VERSION: Final = "6"
 _ENVIRONMENTS: Final = frozenset({"DEV", "CI", "VPS_RESEARCH"})
 _IMAGE_DIGEST: Final = re.compile(r"sha256:[0-9a-f]{64}")
 LIMITATIONS: Final[tuple[str, ...]] = (
@@ -515,7 +515,8 @@ def _holdout_json(decision: Decision) -> dict[str, Json] | None:
 
 
 def _window_json(window: Window) -> dict[str, Json]:
-    """``status`` is evaluated, sealed, no_folds, too_short or error; values only when evaluated."""
+    """``status`` is evaluated, sealed, no_folds, too_short, error or not_applicable;
+    values only when evaluated, a note with error and not_applicable."""
 
     result = window.result
     if result is None:

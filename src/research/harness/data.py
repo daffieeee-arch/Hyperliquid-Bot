@@ -40,7 +40,8 @@ _TYPES_FOR_DTYPE = {
     "bool": _BOOL_TYPES,
     "string": _STRING_TYPES,
 }
-_PANEL_MAX_SYMBOLS = 20_000
+# Bounds the dense symbol-by-day series a panel is held in.
+_PANEL_MAX_SYMBOLS = 5_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -380,14 +381,11 @@ def load_panel(spec: HypothesisSpec, spec_dir: Path) -> PanelTable:
 def _panel_from_rows(spec: HypothesisSpec, rows: list[tuple[object, ...]]) -> PanelTable:
     data = spec.data
     index_by_name = {column.name: index for index, column in enumerate(data.columns)}
-    signal_column = next(
-        feature.column for feature in spec.features if feature.name == spec.signal_feature
+    signal_feature = next(
+        feature for feature in spec.features if feature.name == spec.signal_feature
     )
-    clock_column = next(
-        feature.available_at_column
-        for feature in spec.features
-        if feature.name == spec.signal_feature
-    )
+    signal_column = signal_feature.column
+    clock_column = signal_feature.available_at_column
     required = [
         name
         for name in (

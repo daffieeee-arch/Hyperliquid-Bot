@@ -26,6 +26,7 @@ from research.bar_tables.panel import (
     funding_hole_closes,
     rank_by_volume,
 )
+from research.bar_tables.panel_io import load_exclusions
 from research.bar_tables.trend import BarTableError
 from research.hist_etl.manifest import load_manifest
 from research.hist_etl.universe import MonthRun, Universe, UniverseSymbol, render_universe
@@ -918,39 +919,83 @@ def test_carry_needs_a_rate_on_every_day_of_its_window_covered_or_not() -> None:
     assert _rows(relisted, _funding(relisted))[3].carry is None
 
 
+def test_carry_skips_an_uncovered_day_the_build_did_not_vouch_for() -> None:
+    bars = _bars([100.0, 101.0, 102.0, 103.0, 104.0], trades=[10, 10, 10, 10, 10])
+    # Day two holds only its 00:00 settlement: partial, at a listing or
+    # delisting edge, or untraded, the build allowed it.
+    partial = [item for item in _funding(bars) if settlements_index(item, bars) not in (4, 5)]
+    at_edge = build_symbol_rows("AAAUSDT", bars, partial, _SPEC, frozenset({bars[1].ts}))
+    assert [row.carry is None for row in at_edge] == [True, True, True, False, False]
+    halted = [replace(bar, trades=0) if index == 1 else bar for index, bar in enumerate(bars)]
+    assert [row.carry is None for row in _rows(halted, partial)] == [
+        True,
+        True,
+        True,
+        False,
+        False,
+    ]
+    # Off the edges and traded, the build refused any hole, so the day counts.
+    assert _rows(bars, partial)[1].carry is not None
+    # A covered day counts at an edge too.
+    covered = build_symbol_rows("AAAUSDT", bars, _funding(bars), _SPEC, frozenset({bars[1].ts}))
+    assert covered[1].carry is not None
+
+
 def settlements_index(item: Settlement, bars: list[DailyBar]) -> int:
     """The index of an 8-hourly settlement of ``_funding(bars)``."""
 
     return (item.ts - (bars[0].ts + 1 - DAY_MS)) // (8 * 3_600_000)
 
 
-def test_carry_orders_distinct_means_as_minus_funding() -> None:
-    means = [0.0009, -0.0004, 0.0003, 0.0003 + 2e-9, 0.0, -0.0004 - 2e-9]
-    carries = [carry_value("AAAUSDT", _FIRST_CLOSE, mean) for mean in means]
-    by_funding = sorted(range(len(means)), key=lambda index: means[index])
-    by_carry = sorted(range(len(means)), key=lambda index: -carries[index])
+def test_carry_orders_distinct_sums_as_minus_funding() -> None:
+    sums = [0.0063, -0.0028, 0.0021, 0.0021 + 1e-8, 0.0, -0.0028 - 1e-8]
+    carries = [
+        carry_value(f"S{index}USDT", _FIRST_CLOSE, total, 7) for index, total in enumerate(sums)
+    ]
+    by_funding = sorted(range(len(sums)), key=lambda index: sums[index])
+    by_carry = sorted(range(len(sums)), key=lambda index: -carries[index])
     assert by_carry == by_funding
-    for mean, carry in zip(means, carries, strict=True):
-        assert carry == pytest.approx(-mean, abs=1e-10)
-    # A zero mean never writes -0.0.
-    assert math.copysign(1.0, carry_value("AAAUSDT", _FIRST_CLOSE, 0.0)) == 1.0
-    assert math.copysign(1.0, carry_value("ZZZUSDT", _FIRST_CLOSE, -0.0)) == 1.0
+    for total, carry in zip(sums, carries, strict=True):
+        assert carry == pytest.approx(-total / 7, abs=1e-13)
+    # A zero sum never writes -0.0.
+    assert math.copysign(1.0, carry_value("AAAUSDT", _FIRST_CLOSE, 0.0, 7)) == 1.0
+    assert math.copysign(1.0, carry_value("ZZZUSDT", _FIRST_CLOSE, -0.0, 7)) == 1.0
+
+
+def test_carry_keeps_8_decimal_sums_apart_and_tied_for_any_window() -> None:
+    for window in (2, 7, 8, 200, 3_650):
+        for count in range(1, 400, 7):
+            # The same 8-decimal sum, added up from different settlement splits.
+            whole = count * 1e-8
+            split = math.fsum(
+                [(count // 3) * 1e-8, (count // 3) * 1e-8, (count - 2 * (count // 3)) * 1e-8]
+            )
+            naive = sum([1e-8] * count)
+            values = {
+                carry_value("AAAUSDT", _FIRST_CLOSE, total, window)
+                for total in (whole, split, naive)
+            }
+            assert len(values) == 1
+            # The next 8-decimal sum stays below it, whatever the draws.
+            for symbol in ("BBBUSDT", "CCCUSDT", "1000XUSDT"):
+                above = carry_value(symbol, _FIRST_CLOSE, whole + 1e-8, window)
+                assert above < min(values)
 
 
 def test_carry_ties_are_broken_by_symbol_and_day_not_by_the_alphabet() -> None:
-    # Means a floating-point rounding apart, all at the neutral rate.
-    means = [0.0003, 0.0003 + 3e-13, 0.0003 - 2e-12, math.fsum([0.0000125] * 24)]
-    assert len(set(means)) > 1
+    # Sums a floating-point rounding apart, all at the neutral rate.
+    sums = [0.0003, 0.0001 + 0.0001 + 0.0001, 0.0002 + 0.0001, math.fsum([0.0000125] * 24)]
+    assert len(set(sums)) > 1
     symbols = [f"{name}USDT" for name in ("1000PEPE", "AAA", "MMM", "ZZZ")]
     orders = set()
     for day in range(20):
         ts = _FIRST_CLOSE + day * DAY_MS
         carries = {
-            symbol: carry_value(symbol, ts, mean)
-            for symbol, mean in zip(symbols, means, strict=True)
+            symbol: carry_value(symbol, ts, total, 1)
+            for symbol, total in zip(symbols, sums, strict=True)
         }
         # Equal to the step, so the draw alone decides the order...
-        assert max(carries.values()) - min(carries.values()) < 1e-11
+        assert max(carries.values()) - min(carries.values()) < 1e-13
         order = tuple(sorted(symbols, key=lambda symbol: -carries[symbol]))
         draws = {
             symbol: int.from_bytes(hashlib.sha256(f"{symbol}|{ts}".encode()).digest()[:8], "big")
@@ -1131,6 +1176,23 @@ def test_the_manifest_keeps_each_universe_file_as_written(tmp_path: Path) -> Non
     _root, manifest = _universe_root(tmp_path)
     loaded = load_manifest(manifest)
     assert loaded.binance_universe_files == (("u", "universe/u.json"),)
+    assert loaded.binance_groups == ("u",)
+
+
+def test_an_excluded_symbol_is_checked_against_the_universe_file(tmp_path: Path) -> None:
+    _root, manifest = _universe_root(tmp_path)
+    # A start after DEADUSDT's only month drops its datasets, not its universe entry.
+    manifest.write_text(
+        '[[binance_universe]]\nid = "u"\nfile = "universe/u.json"\nstart = "2026-02-01"\n',
+        encoding="utf-8",
+    )
+    assert not any(spec.symbol == "DEADUSDT" for spec in load_manifest(manifest).binance)
+    path = _exclusions(tmp_path, _exclusion_body(symbols={"DEADUSDT": "index"}))
+    loaded = load_exclusions(path, manifest, "u")
+    assert loaded.symbols == frozenset({"DEADUSDT"})
+    assert loaded.sha256 == hashlib.sha256(path.read_bytes()).hexdigest()
+    with pytest.raises(BarTableError, match="not a binance_universe entry"):
+        load_exclusions(path, manifest, "v")
 
 
 def test_a_traded_day_without_funding_ranks_only_without_the_rule(

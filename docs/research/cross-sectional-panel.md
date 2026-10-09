@@ -47,7 +47,7 @@ of latency.
 | `vol_<W>d` | Sample stdev of the last `W` daily log returns; empty unless positive |
 | `qv_<V>d` | Mean quote volume over `V` days, untraded days counting as 0 |
 | `funding_<K>d` | Mean daily `funding_rate` over `K` covered days |
-| `carry_<K>d` | Minus the mean daily `funding_rate` over `K` days with a rate, covered or not; see [Carry](#carry) |
+| `carry_<K>d` | Minus the mean daily `funding_rate` over `K` carry days; see [Carry](#carry) |
 | `volume_rank` | Rank by `qv_<V>d` among the day's rows that traded and have it; 1 is the largest |
 
 ## Point-in-time rules
@@ -97,19 +97,24 @@ of its signal, so a signed spec on `carry_<K>d` longs the lowest funding and
 shorts the highest. It uses the same `--funding-window` as `funding_<K>d`
 and the same clock.
 
-- **Rate days, not covered days.** Its window needs `K` consecutive days in
-  one stretch that each have a `funding_rate`, whether or not the close
-  could prove the day whole. A day that returns from 4h to 8h funding reads
-  as not covered at its close and blanks `funding_<K>d` for `K` days, and
-  Binance changes an interval mostly when funding runs at its cap or floor,
-  so a carry ranking on `funding_<K>d` would lose names on exactly the tails
-  it sorts on. Such a day enters at its recorded sum, which is what the
-  harness charges a position held through it. On a traded day inside a
-  funding run the build has already refused a real hole.
-- **Steps of 1e-10 a day.** The mean is counted in steps of 1e-10, so means
-  that differ only by floating-point rounding are exact ties. Binance prints
-  rates with at most 8 decimals, so distinct 7-day means are about 1.4e-9 or
-  more apart and never merge.
+- **Carry days, not covered days.** Its window needs `K` consecutive days in
+  one stretch that are each a carry day: a day with a `funding_rate` that is
+  covered, or that traded outside its funding run's listing and delisting
+  months (and outside a run's first day at a manifest `start`). A day that
+  returns from 4h to 8h funding reads as not covered at its close and
+  blanks `funding_<K>d` for `K` days, and Binance changes an interval mostly
+  when funding runs at its cap or floor, so a carry ranking on
+  `funding_<K>d` would lose names on exactly the tails it sorts on. On a
+  traded day off those edges the build has refused any missing settlement,
+  so an uncovered day there is such a switch, and it enters at its
+  recorded sum, which is what the harness charges a position held through
+  it. An uncovered day at an edge, or one that did not trade, may hold only
+  part of the day's funding, so it is not a carry day.
+- **Steps of 1e-12 of the window's sum.** Binance prints rates with at most
+  8 decimals, so the window's funding sum is a multiple of 1e-8 up to
+  floating-point rounding. Counted in steps of 1e-12, equal sums are exact
+  ties however their settlements split, and distinct sums stay 10,000 steps
+  apart, for any window length.
 - **Ties broken by a draw.** A tie is ordered by a number drawn from the
   sha256 of the symbol and the row's `ts`, which moves the value by less
   than a tenth of a step. It reads no market data, is the same in every

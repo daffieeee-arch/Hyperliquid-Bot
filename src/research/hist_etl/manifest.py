@@ -115,7 +115,6 @@ def load_manifest(path: Path) -> HistManifest:
         binance=binance,
         kraken=kraken,
         hyperliquid=hyperliquid,
-        binance_groups=tuple(groups),
         binance_universe_files=tuple(universe_files),
     )
 

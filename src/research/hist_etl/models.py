@@ -154,10 +154,14 @@ class HistManifest:
     binance: tuple[BinanceSpec, ...]
     kraken: tuple[KrakenSpec, ...]
     hyperliquid: tuple[HyperliquidFundingSpec, ...] = ()
-    # Ids of binance_universe entries; each selects the specs it expanded into.
-    binance_groups: tuple[str, ...] = ()
     # (id, file) of each binance_universe entry, the file as the manifest writes it.
     binance_universe_files: tuple[tuple[str, str], ...] = ()
+
+    @property
+    def binance_groups(self) -> tuple[str, ...]:
+        """Ids of binance_universe entries; each selects the specs it expanded into."""
+
+        return tuple(group for group, _file in self.binance_universe_files)
 
 
 @dataclass(frozen=True, slots=True)

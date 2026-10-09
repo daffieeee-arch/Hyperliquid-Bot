@@ -36,9 +36,10 @@ DAY_MS: Final = 86_400_000
 # Ten years: longer than any archive, and short enough for date arithmetic.
 MAX_WINDOW_DAYS: Final = 3_650
 _HOUR_MS: Final = 3_600_000
-# carry_<K>d counts the mean daily funding in steps of 1e-10: means closer
-# than that are ties, and a tie is broken below the step.
-_CARRY_STEPS_PER_UNIT: Final = 10_000_000_000
+# carry_<K>d counts its window's funding sum in steps of 1e-12. Binance prints
+# rates with at most 8 decimals, so equal sums are exact ties and distinct
+# ones stay 10,000 steps apart, whatever the window length.
+_CARRY_STEPS_PER_UNIT: Final = 1_000_000_000_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,8 +114,9 @@ class PanelRow:
     - ``mean_funding``: the mean daily ``funding_rate`` over the funding
       window, every day of it covered.
     - ``carry``: minus the mean daily ``funding_rate`` over the funding
-      window, every day of it with a rate, covered or not; see
-      ``carry_value``. A study that ranks by low funding sorts on it.
+      window, every day of it a carry day (see ``build_symbol_rows``) and
+      ordered as ``carry_value`` says. A study that ranks by low funding
+      sorts on it.
     """
 
     ts: int
@@ -156,12 +158,21 @@ def build_symbol_rows(
     bars: Sequence[DailyBar],
     settlements: Sequence[Settlement],
     spec: PanelSpec,
+    edge_closes: frozenset[int] = frozenset(),
 ) -> list[PanelRow]:
     """Rows for one symbol, without ``volume_rank``.
 
     ``bars`` may have gaps (between runs of a relisted symbol); a window that
     spans one gives ``None``. ``settlements`` may reach back before the first
     bar; only those inside a bar's day are used.
+
+    ``edge_closes`` are the closes of days on which the build let settlements
+    be missing: a funding run's listing and delisting months, and its first
+    day at a manifest start. ``carry`` needs every day of its window to be a
+    carry day: one with a rate that is covered, or that traded off those
+    edges. On such a day the build has refused a missing settlement, so an
+    uncovered one is an interval switch whose recorded sum is the whole
+    day's funding. ``mean_funding`` keeps needing covered days.
     """
 
     _check_bars(symbol, bars)
@@ -174,7 +185,13 @@ def build_symbol_rows(
     run_start = _run_starts(bars)
     traded_streak = _streaks(traded, run_start)
     covered_streak = _streaks([day.covered for day in funding], run_start)
-    rate_streak = _streaks([day.rate is not None for day in funding], run_start)
+    carry_streak = _streaks(
+        [
+            day.rate is not None and (day.covered or (flag and bar.ts not in edge_closes))
+            for day, flag, bar in zip(funding, traded, bars, strict=True)
+        ],
+        run_start,
+    )
     # one_day[i]: the log return into bar i, for bars inside one stretch.
     one_day = [
         math.log(bar.close / bars[index - 1].close) if run_start[index] != index else 0.0
@@ -183,6 +200,14 @@ def build_symbol_rows(
     rows: list[PanelRow] = []
     for index, bar in enumerate(bars):
         span = index - run_start[index] + 1
+        # A covered day is a carry day, so this sum serves both funding features.
+        funding_sum = (
+            math.fsum(
+                _known(day.rate) for day in funding[index - spec.funding_window + 1 : index + 1]
+            )
+            if carry_streak[index] >= spec.funding_window
+            else None
+        )
         rows.append(
             PanelRow(
                 ts=bar.ts,
@@ -210,49 +235,38 @@ def build_symbol_rows(
                     else None
                 ),
                 mean_funding=(
-                    math.fsum(
-                        _known(day.rate)
-                        for day in funding[index - spec.funding_window + 1 : index + 1]
-                    )
-                    / spec.funding_window
+                    _known(funding_sum) / spec.funding_window
                     if covered_streak[index] >= spec.funding_window
                     else None
                 ),
                 carry=(
-                    carry_value(
-                        symbol,
-                        bar.ts,
-                        math.fsum(
-                            _known(day.rate)
-                            for day in funding[index - spec.funding_window + 1 : index + 1]
-                        )
-                        / spec.funding_window,
-                    )
-                    if rate_streak[index] >= spec.funding_window
-                    else None
+                    None
+                    if funding_sum is None
+                    else carry_value(symbol, bar.ts, funding_sum, spec.funding_window)
                 ),
             )
         )
     return rows
 
 
-def carry_value(symbol: str, ts: int, mean_funding: float) -> float:
-    """Minus ``mean_funding``, in steps of 1e-10 a day, ties broken below a step.
+def carry_value(symbol: str, ts: int, funding_sum: float, window: int) -> float:
+    """Minus the window's mean daily funding, ties broken by a draw.
 
-    Sorting by it puts the lowest funding first. Means that differ only by
-    floating-point rounding (three 8h settlements of 0.0001 against six 4h
-    ones of 0.00005) round to the same step, an exact tie. A tie is then
-    ordered by a draw from the symbol and the day alone: it moves a value by
-    less than a tenth of a step, so it never reorders distinct steps, reads
-    no market data, and favours no symbol across days, where a tie-break by
-    symbol would always favour the same end of the alphabet.
+    Sorting by it puts the lowest funding first. The window's sum is counted
+    in steps of 1e-12, so sums that differ only by floating-point rounding
+    (one settlement of 0.0003 against three of 0.0001) are an exact tie,
+    and distinct 8-decimal sums never merge. A tie is ordered by a draw from
+    the symbol and the day alone: it moves a value by less than a tenth of
+    a step, so it never reorders distinct sums, reads no market data, and
+    favours no symbol across days, where a tie-break by symbol would always
+    favour the same end of the alphabet.
     """
 
-    steps = round(mean_funding * _CARRY_STEPS_PER_UNIT)
+    steps = round(funding_sum * _CARRY_STEPS_PER_UNIT)
     digest = hashlib.sha256(f"{symbol}|{ts}".encode()).digest()
     draw = int.from_bytes(digest[:8], "big") / 2**64
     # draw / 10 - steps is never -0.0: it is at least 0 when steps is 0.
-    return (draw / 10 - steps) / _CARRY_STEPS_PER_UNIT
+    return (draw / 10 - steps) / (window * _CARRY_STEPS_PER_UNIT)
 
 
 @dataclass(frozen=True, slots=True)

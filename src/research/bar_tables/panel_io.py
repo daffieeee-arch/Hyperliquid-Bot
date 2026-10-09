@@ -17,7 +17,7 @@ import hashlib
 import json
 import os
 import tempfile
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -43,8 +43,9 @@ from research.bar_tables.trend import SETTLEMENT_SLACK_MS, BarTableError
 from research.hist_etl.binance_convert import binance_parquet_path
 from research.hist_etl.errors import HistEtlError
 from research.hist_etl.manifest import load_manifest
-from research.hist_etl.models import BinanceSpec
+from research.hist_etl.models import BinanceSpec, HistManifest
 from research.hist_etl.planning import next_month, previous_month
+from research.hist_etl.universe import load_universe
 
 _MISSING_SHOWN: Final = 10
 _HOUR_MS: Final = 3_600_000
@@ -116,13 +117,7 @@ def universe_files(
     window whatever ``start`` is, where the universe has the history.
     """
 
-    try:
-        manifest = load_manifest(manifest_path)
-    except (HistEtlError, ValueError) as exc:
-        # tomllib's decode error is a ValueError.
-        raise BarTableError(f"Manifest: {exc}") from exc
-    if group not in manifest.binance_groups:
-        raise BarTableError(f"{group} is not a binance_universe entry of {manifest_path}.")
+    manifest = _group_manifest(manifest_path, group)
     specs = [spec for spec in manifest.binance if spec.group == group]
     klines = [spec for spec in specs if spec.dataset == "klines"]
     funding = [spec for spec in specs if spec.dataset == "fundingRate"]
@@ -189,20 +184,19 @@ def load_exclusions(path: Path, manifest_path: Path, group: str) -> Exclusions:
         raise BarTableError(
             f"Exclusion list {path} has unknown categories: {', '.join(unknown[:_MISSING_SHOWN])}."
         )
-    try:
-        manifest = load_manifest(manifest_path)
-    except (HistEtlError, ValueError) as exc:
-        raise BarTableError(f"Manifest: {exc}") from exc
-    files = dict(manifest.binance_universe_files)
-    if group not in files:
-        raise BarTableError(f"{group} is not a binance_universe entry of {manifest_path}.")
-    expected = Path(files[group]).name
+    relative = dict(_group_manifest(manifest_path, group).binance_universe_files)[group]
+    expected = Path(relative).name
     if document["universe"] != expected:
         raise BarTableError(
             f"Exclusion list {path} is for universe {document['universe']!r}, "
             f"but {group} reads {expected!r}."
         )
-    members = {spec.symbol for spec in manifest.binance if spec.group == group}
+    # The universe file itself, not the datasets the entry kept after its start.
+    try:
+        universe = load_universe(manifest_path.parent / relative)
+    except HistEtlError as exc:
+        raise BarTableError(f"Universe of {group}: {exc}") from exc
+    members = {item.symbol for item in universe.symbols}
     strangers = sorted(symbol for symbol in symbols if symbol not in members)
     if strangers:
         raise BarTableError(
@@ -212,9 +206,20 @@ def load_exclusions(path: Path, manifest_path: Path, group: str) -> Exclusions:
     return Exclusions(symbols=frozenset(symbols), sha256=hashlib.sha256(raw).hexdigest())
 
 
+def _group_manifest(manifest_path: Path, group: str) -> HistManifest:
+    try:
+        manifest = load_manifest(manifest_path)
+    except (HistEtlError, ValueError) as exc:
+        # tomllib's decode error is a ValueError.
+        raise BarTableError(f"Manifest: {exc}") from exc
+    if group not in manifest.binance_groups:
+        raise BarTableError(f"{group} is not a binance_universe entry of {manifest_path}.")
+    return manifest
+
+
 def _refuse_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    keys = [key for key, _value in pairs]
-    duplicates = sorted({key for key in keys if keys.count(key) > 1})
+    counts = Counter(key for key, _value in pairs)
+    duplicates = sorted(key for key, count in counts.items() if count > 1)
     if duplicates:
         raise ValueError(f"duplicate keys: {', '.join(duplicates[:_MISSING_SHOWN])}")
     return dict(pairs)
@@ -289,11 +294,16 @@ def build_panel(
     _check_funding_runs(bars, settlements, files.funding_runs)
     start_ms = _day_ms(start)
     end_ms = _day_ms(end)
+    edges = _edge_closes(bars, files.funding_runs)
     rows: list[PanelRow] = []
     for symbol in sorted(bars):
         # Rows look back only, so bars after ``end`` change nothing; skip them.
         kept = [bar for bar in bars[symbol] if bar.ts < end_ms]
-        rows.extend(build_symbol_rows(symbol, kept, settlements.get(symbol, []), spec))
+        rows.extend(
+            build_symbol_rows(
+                symbol, kept, settlements.get(symbol, []), spec, edges.get(symbol, frozenset())
+            )
+        )
     inside = [row for row in rows if start_ms <= row.ts < end_ms]
     if not inside:
         raise BarTableError("The universe has no daily bar inside the panel range.")
@@ -385,6 +395,22 @@ def _check_funding_runs(
                 f"{run.symbol} traded on {day} with a funding settlement missing inside a "
                 "funding run; run hist_etl verify and sync."
             )
+
+
+def _edge_closes(bars: dict[str, list[DailyBar]], runs: Sequence[Run]) -> dict[str, frozenset[int]]:
+    """Per symbol, the closes on which ``_check_funding_runs`` lets settlements be missing."""
+
+    by_symbol: dict[str, list[Run]] = defaultdict(list)
+    for run in runs:
+        by_symbol[run.symbol].append(run)
+    return {
+        symbol: frozenset(
+            bar.ts
+            for bar in bars.get(symbol, [])
+            if any(_late_start_ok(run, bar.ts) or _early_end_ok(run, bar.ts) for run in own)
+        )
+        for symbol, own in by_symbol.items()
+    }
 
 
 def _late_start_ok(run: Run, close: int) -> bool:

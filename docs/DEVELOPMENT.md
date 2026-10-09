@@ -141,9 +141,9 @@ resolve blocking findings on the same branch; re-run CI
         ↓
 Cursor / Codex stop at Ready (do NOT merge feature PRs)
         ↓
-Claude Code /code-review + Squash and Merge when OK
-(execution, risk limits, secrets, LIVE gates, infra: Chupa OK first;
- Dependabot: on green CI)
+Claude Code /code-review + Squash and Merge on its own after a clean last round
+(enabling LIVE/SHADOW/TESTNET, real capital, real credentials, live risk
+ limits: Chupa OK first; Dependabot: on green CI)
         ↓
 delete merged branch / worktree only if no leftover work
         ↓
@@ -160,9 +160,12 @@ Rules:
 - default merge method is Squash and Merge;
 - **Cursor Cloud Agents and Codex do not merge feature PRs**; they leave PRs
   Ready after CI and review fixes;
-- **Claude Code reviews feature PRs and squash-merges** when OK; changes to
-  execution, risk limits, secrets, LIVE gates or infra/runtime need Chupa's OK
-  first; Dependabot may be merged on green CI; LIVE/capital needs Chupa OK;
+- **Claude Code reviews feature PRs and squash-merges** them on its own once
+  CI is green and its last review round finds no correctness bug; high-risk
+  changes (execution, risk, secrets, CI, infra/runtime) get a separate
+  security round first; only a change that enables LIVE, SHADOW or TESTNET
+  trading, moves real capital, or adds or changes real credentials or live
+  risk limits needs Chupa's OK first; Dependabot may be merged on green CI;
 - extend CI only when existing workflows do not already cover the change;
   prefer the change-set areas and docs-only skip behavior in [CI](CI.md);
 - open a PR as a draft while review rounds still change it: a draft runs only

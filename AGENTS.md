@@ -80,19 +80,25 @@ repository change):
 13. Cursor Cloud Agents and Codex stop at Ready: they open PRs and fix CI and
     review findings only, and do **not** merge feature PRs.
 14. **Claude Code reviews and merges** (it took over from the Chief of Staff /
-    Grok Bot). It squash-merges a feature PR when:
+    Grok Bot). It squash-merges a feature PR on its own, without asking, when:
     - CI is green on the current head, and the PR is mergeable and not a draft;
-    - `/code-review` ran on the final diff, and every finding is fixed or
-      declined with its reason in the PR;
+    - `/code-review` ran on the final diff, its last round found no
+      correctness bug, and every finding is fixed or declined with its reason
+      in the PR;
     - when PRs merge in a row, the next one still passes format, lint,
       typecheck and its affected tests on top of the new `main`.
 
-    It asks Chupa first, and merges only after an explicit OK, for changes to
-    order execution or risk limits, secrets, LIVE gates, or infra/runtime and
-    deploys. LIVE or capital changes are never merged without Chupa's explicit
-    approval. Dependabot PRs may be merged on green CI after a look at the
-    changelog and diff. Claude Code acts when a session runs (on request, or on
-    events for PRs it follows); it does not watch the repository on its own.
+    Chupa does not read code: the review rounds, the tests and CI are the
+    gate. This covers every change, including PAPER execution and risk code,
+    secrets handling, CI and infra/runtime; for those high-risk changes the
+    review adds a separate security round before the merge. The one
+    exception: a change that enables LIVE, SHADOW or TESTNET trading, moves
+    real capital, or adds or changes real credentials or live risk limits is
+    never merged without Chupa's explicit approval (no agent self-promotes to
+    LIVE). A merge never deploys. Dependabot PRs may be merged on green CI
+    after a look at the changelog and diff. Claude Code acts when a session
+    runs (on request, or on events for PRs it follows); it does not watch the
+    repository on its own.
 15. After a merge, delete the merged feature branch and any associated
     worktree only after confirming they hold no uncommitted or unmerged work.
     VPS operations stay with the operator (Chupa) or an agent on the VPS:

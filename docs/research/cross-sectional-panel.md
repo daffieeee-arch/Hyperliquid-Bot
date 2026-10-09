@@ -116,10 +116,12 @@ and the same clock.
   - Whether a day counts never depends on a later settlement or on the
     build's validation, which reads the whole series: a feature must not
     know whether a contract delists later that month.
-  - A run's first day at a manifest `start` counts only when covered:
-    hist_etl keeps no settlement stamped before the start, so that day's
-    midnight settlement may be cut away. A listing month has nothing before
-    it to lose, so its first day counts at what it charged.
+  - A run's first day at its dataset's start (the first of its first
+    month, or a manifest `start`) counts only when covered: hist_etl keeps
+    no settlement stamped before a dataset's start, so that day's midnight
+    settlement may be cut away. The build lets exactly these days be
+    partial too. A contract that lists on the first of a month loses that
+    day from carry, which is the cautious side.
   - The build's validation shares the panel's limitation: one settlement
     missing right where an interval changes is not caught, so such a day
     enters short by that settlement.

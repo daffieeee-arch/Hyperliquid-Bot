@@ -200,7 +200,10 @@ def load_exclusions(
         raise BarTableError(
             f"Exclusion list {path} has unknown categories: {', '.join(unknown[:_MISSING_SHOWN])}."
         )
-    relative = dict(manifest.binance_universe_files)[group]
+    files = dict(manifest.binance_universe_files)
+    if group not in files:
+        raise BarTableError(f"{group} is not a binance_universe entry of {manifest_path}.")
+    relative = files[group]
     expected = Path(relative).name
     if document["universe"] != expected:
         raise BarTableError(
@@ -297,12 +300,12 @@ def build_panel(
     _check_kline_runs(bars, files.kline_runs)
     settlements = _read_settlements(files.funding)
     _check_funding_runs(bars, settlements, files.funding_runs)
-    # hist_etl keeps no settlement stamped before a manifest start. A
-    # listing month's first day has none to lose, so it is not cut.
+    # The same first days that validation lets be partial.
     cut: dict[str, set[int]] = defaultdict(set)
     for run in files.funding_runs:
-        if run.at_spec_start and not run.late_start:
-            cut[run.symbol].add(_close_ms(run.first))
+        close = _cut_first_close(run)
+        if close is not None:
+            cut[run.symbol].add(close)
     start_ms = _day_ms(start)
     end_ms = _day_ms(end)
     rows: list[PanelRow] = []
@@ -415,7 +418,17 @@ def _late_start_ok(run: Run, close: int) -> bool:
     """
 
     in_listing = run.late_start and close <= _close_ms(_month_end(run.first))
-    return in_listing or (run.at_spec_start and close == _close_ms(run.first))
+    return in_listing or close == _cut_first_close(run)
+
+
+def _cut_first_close(run: Run) -> int | None:
+    """The close of a run's first day when hist_etl may have cut its funding.
+
+    hist_etl keeps no settlement stamped before a dataset's first day, so the
+    day's midnight settlement, stamped just before it, may be missing.
+    """
+
+    return _close_ms(run.first) if run.at_spec_start else None
 
 
 def _early_end_ok(run: Run, close: int) -> bool:

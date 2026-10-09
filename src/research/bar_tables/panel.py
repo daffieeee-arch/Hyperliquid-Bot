@@ -171,10 +171,9 @@ def build_symbol_rows(
     day (and what the harness charges), known at its close. Like the price
     features it reads no archive day that did not trade, whose funding no
     one paid and the build does not check. ``cut_closes`` are days whose
-    settlements the data range may have cut (a run's first day at a
-    manifest start, where hist_etl keeps no settlement stamped before it);
-    they count only when covered. ``mean_funding`` keeps needing covered
-    days.
+    settlements the data range may have cut (a funding dataset's first day:
+    hist_etl keeps no settlement stamped before it); they count only when
+    covered. ``mean_funding`` keeps needing covered days.
     """
 
     _check_bars(symbol, bars)

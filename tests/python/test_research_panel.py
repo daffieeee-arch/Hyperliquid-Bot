@@ -1178,6 +1178,8 @@ def test_an_excluded_symbol_is_checked_against_the_universe_file(tmp_path: Path)
     assert loaded.sha256 == hashlib.sha256(path.read_bytes()).hexdigest()
     with pytest.raises(BarTableError, match="not a binance_universe entry"):
         load_panel_manifest(manifest, "v")
+    with pytest.raises(BarTableError, match="not a binance_universe entry"):
+        load_exclusions(path, load_panel_manifest(manifest, "u"), manifest, "v")
     loaded_manifest = load_panel_manifest(manifest, "u")
     with pytest.raises(BarTableError, match="not a binance_universe entry"):
         universe_files(tmp_path, loaded_manifest, "v", date(2026, 1, 1), date(2026, 2, 1), _SPEC)
@@ -1301,9 +1303,9 @@ def test_an_untraded_day_restarts_the_carry_window() -> None:
     assert [row.carry is None for row in rows] == [True, True, True, False, False]
 
 
-def test_a_listing_month_first_day_counts_at_what_it_charged(tmp_path: Path) -> None:
+def test_a_run_first_day_counts_only_when_covered(tmp_path: Path) -> None:
     root, manifest = _universe_root(tmp_path)
-    # AAAUSDT's first settlement is at 08:00 on Jan 1, the day it lists.
+    # AAAUSDT's Jan 1 00:00 settlement, stamped before the dataset starts, is gone.
     _write_month(root, "funding", "AAAUSDT", "2026-01", range(1, 32), slots=range(1, 93))
     out = tmp_path / "panel.parquet"
     assert main(_panel_args(root, manifest, out)) == 0
@@ -1317,6 +1319,6 @@ def test_a_listing_month_first_day_counts_at_what_it_charged(tmp_path: Path) -> 
         ).fetchone()
     finally:
         connection.close()
-    # carry_3d takes Jan 1 at its two settlements; funding_3d waits for three
-    # covered days.
-    assert first == (_FIRST_CLOSE + 2 * DAY_MS, _FIRST_CLOSE + 3 * DAY_MS)
+    # Jan 1 may be short of its midnight settlement, so neither feature
+    # reads it: both start on Jan 4.
+    assert first == (_FIRST_CLOSE + 3 * DAY_MS, _FIRST_CLOSE + 3 * DAY_MS)

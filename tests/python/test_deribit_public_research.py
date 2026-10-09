@@ -1071,6 +1071,7 @@ async def test_capture_duration_is_hard_bounded(duration: object) -> None:
         await collector.capture_for(cast(float, duration))
 
 
+@pytest.mark.timing
 @pytest.mark.asyncio
 async def test_hanging_connection_enter_is_cancelled_at_the_hard_deadline() -> None:
     cancelled = asyncio.Event()

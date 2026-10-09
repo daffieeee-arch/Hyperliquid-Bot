@@ -164,7 +164,10 @@ Rules:
   execution, risk limits, secrets, LIVE gates or infra/runtime need Chupa's OK
   first; Dependabot may be merged on green CI; LIVE/capital needs Chupa OK;
 - extend CI only when existing workflows do not already cover the change;
-  prefer the path-based / docs-only skip behavior in [CI](CI.md);
+  prefer the change-set areas and docs-only skip behavior in [CI](CI.md);
+- open a PR as a draft while review rounds still change it: a draft runs only
+  the cheap checks, and marking it ready for review runs the full CI on its
+  head, which must be green before merge;
 - independent review is required for material or high-risk changes (execution,
   risk, secrets, LIVE gates, infra/runtime, non-trivial strategy/data
   contracts); trivial docs/chore PRs may skip it unless requested;
@@ -209,7 +212,9 @@ source checkout, disposable development services and durable runtime volumes.
 
 GitHub Actions Phase A, cockpit lint, and the PAPER API/browser regress
 suite are documented in [CI](CI.md). Local checks stay the same: `uv run
-pytest`, `pnpm run lint`, `pnpm --filter @hyperliquid-bot/cockpit run test`.
+pytest` (or, faster, `uv run pytest -m timing` followed by
+`uv run pytest -n auto -m "not timing"`, as CI does), `pnpm run lint`,
+`pnpm --filter @hyperliquid-bot/cockpit run test`.
 
 Keep consistent across local, CI and every runtime profile:
 

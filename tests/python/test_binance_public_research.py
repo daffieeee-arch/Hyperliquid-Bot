@@ -869,6 +869,7 @@ async def test_mid_run_required_stream_starvation_fails_closed_when_reconnects_e
     assert float(cast(float, starved[0]["silence_seconds"])) >= 0.05
 
 
+@pytest.mark.timing
 @pytest.mark.asyncio
 async def test_mid_run_required_stream_starvation_force_reconnects_profile() -> None:
     stop_event = asyncio.Event()
@@ -1079,6 +1080,7 @@ async def test_append_backpressure_keeps_sibling_socket_readable() -> None:
     assert public_recvs >= 8
 
 
+@pytest.mark.timing
 @pytest.mark.asyncio
 async def test_slow_append_does_not_starve_a_socket_that_still_has_frames() -> None:
     stop_event = asyncio.Event()
@@ -2773,6 +2775,7 @@ def test_profile_is_fresh_only_after_required_recovery_conditions(
     )
 
 
+@pytest.mark.timing
 def test_live_status_publish_does_not_scan_the_parquet_directory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

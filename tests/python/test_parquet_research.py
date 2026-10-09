@@ -283,6 +283,7 @@ async def test_failed_rotation_preserves_published_part_and_buffer(
     assert count_row == (4,)
 
 
+@pytest.mark.timing
 @pytest.mark.asyncio
 async def test_delayed_flush_does_not_serialize_the_next_append(
     tmp_path: Path,

@@ -2,6 +2,9 @@ name: CI
 
 on:
   pull_request:
+    # ready_for_review: a draft PR skips the heavy jobs (see ci_scope.py);
+    # marking it ready runs them on the same head.
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches:
       - main
@@ -17,9 +20,12 @@ jobs:
   changes:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
-      heavy: ${{ steps.scope.outputs.heavy }}
-      secrets: ${{ steps.scope.outputs.secrets }}
+      python: ${{ steps.scope.outputs.python }}
+      typescript: ${{ steps.scope.outputs.typescript }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -31,26 +37,31 @@ jobs:
         id: scope
         env:
           PYTHONPATH: src
+          # Read-only: the live draft state of the pull request.
+          GITHUB_TOKEN: ${{ github.token }}
         run: python3 src/hyperliquid_bot/ci_scope.py
 
   python-foundation:
     needs: changes
+    # Run even if the changes job failed: its outputs are then empty, so every
+    # step below runs (fail closed) instead of reporting a skipped success.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - name: Skip docs-only change set
-        if: needs.changes.outputs.heavy != 'true'
-        run: echo "docs-only PR; heavy Python foundation skipped."
+      - name: Skip unaffected change set
+        if: needs.changes.outputs.python == 'false'
+        run: echo "Python area not affected (docs-only, TypeScript only, or draft PR); Python foundation skipped."
 
       - name: Check out repository
-        if: needs.changes.outputs.heavy == 'true'
+        if: needs.changes.outputs.python != 'false'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
           persist-credentials: false
 
       - name: Set up uv and Python
-        if: needs.changes.outputs.heavy == 'true'
+        if: needs.changes.outputs.python != 'false'
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           enable-cache: true
@@ -61,51 +72,68 @@ jobs:
           version: "0.12.5"
 
       - name: Validate lockfile
-        if: needs.changes.outputs.heavy == 'true'
+        if: needs.changes.outputs.python != 'false'
         run: uv lock --check
 
       - name: Install Python dependencies
-        if: needs.changes.outputs.heavy == 'true'
+        if: needs.changes.outputs.python != 'false'
         run: uv sync --frozen --all-groups
 
       - name: Check Python formatting
-        if: needs.changes.outputs.heavy == 'true'
+        if: needs.changes.outputs.python != 'false'
         run: uv run --frozen ruff format --check .
 
       - name: Lint Python
-        if: needs.changes.outputs.heavy == 'true'
+        if: needs.changes.outputs.python != 'false'
         run: uv run --frozen ruff check .
 
       - name: Type-check Python
-        if: needs.changes.outputs.heavy == 'true'
+        if: needs.changes.outputs.python != 'false'
         run: uv run --frozen mypy src tests/python vertical_slices/course1_exit_gate
 
+      - name: Test Python real-clock deadlines (serial)
+        if: needs.changes.outputs.python != 'false'
+        # Tests marked timing assert deadlines with tens of milliseconds of
+        # slack, so they run alone and before the parallel pass: no workers
+        # compete for the CPU, and none of the memory and disk clean-up a
+        # parallel pass leaves behind can stall them. Exit code 5 means no
+        # test is marked timing: nothing to run serially.
+        run: |
+          rc=0
+          uv run --frozen pytest -q -m timing || rc=$?
+          if [ "${rc}" -ne 0 ] && [ "${rc}" -ne 5 ]; then exit "${rc}"; fi
+
       - name: Test Python
-        if: needs.changes.outputs.heavy == 'true'
-        run: uv run --frozen pytest -q
+        if: needs.changes.outputs.python != 'false'
+        # Parallel over the runner's cores; the slowest tests are listed so
+        # a regression in test time shows in the log.
+        run: uv run --frozen pytest -q -n auto --dist worksteal -m "not timing" --durations=15
 
       - name: Verify COURSE-1 exit-gate evidence
-        if: needs.changes.outputs.heavy == 'true'
+        if: needs.changes.outputs.python != 'false'
         run: uv run --frozen python -m vertical_slices.course1_exit_gate.verify verify
 
   d01-publication:
     needs: changes
+    # Run even if the changes job failed: its outputs are then empty, so every
+    # step below runs (fail closed) instead of reporting a skipped success.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - name: Skip docs-only change set
-        if: needs.changes.outputs.heavy != 'true'
-        run: echo "docs-only PR; D01 publication gate skipped."
+      - name: Skip unaffected change set
+        if: needs.changes.outputs.python == 'false'
+        run: echo "Python area not affected (docs-only, TypeScript only, or draft PR); D01 publication gate skipped."
 
       - name: Check out repository
-        if: needs.changes.outputs.heavy == 'true'
+        if: needs.changes.outputs.python != 'false'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
           persist-credentials: false
 
       - name: Set up uv and Python
-        if: needs.changes.outputs.heavy == 'true'
+        if: needs.changes.outputs.python != 'false'
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           enable-cache: true
@@ -117,7 +145,7 @@ jobs:
           version: "0.12.5"
 
       - name: Build exact isolated D01 environment
-        if: needs.changes.outputs.heavy == 'true'
+        if: needs.changes.outputs.python != 'false'
         run: |
           set -euo pipefail
           d01_venv="${RUNNER_TEMP}/d01-venv"
@@ -129,7 +157,7 @@ jobs:
           uv pip check --python "${d01_venv}/bin/python"
 
       - name: Run exactly 13 D01 tests
-        if: needs.changes.outputs.heavy == 'true'
+        if: needs.changes.outputs.python != 'false'
         env:
           PYTHONDONTWRITEBYTECODE: "1"
           PYTHONPATH: src:.
@@ -165,7 +193,7 @@ jobs:
           PY
 
       - name: Run exactly 7 D22-A tests
-        if: needs.changes.outputs.heavy == 'true'
+        if: needs.changes.outputs.python != 'false'
         env:
           PYTHONDONTWRITEBYTECODE: "1"
           PYTHONPATH: src:.
@@ -201,7 +229,7 @@ jobs:
           PY
 
       - name: Run exactly 10 COURSE-1 live-public PAPER soak tests
-        if: needs.changes.outputs.heavy == 'true'
+        if: needs.changes.outputs.python != 'false'
         env:
           PYTHONDONTWRITEBYTECODE: "1"
           PYTHONPATH: src:.
@@ -239,7 +267,7 @@ jobs:
           PY
 
       - name: Verify D01 publication and dependency closure
-        if: needs.changes.outputs.heavy == 'true'
+        if: needs.changes.outputs.python != 'false'
         env:
           PYTHONDONTWRITEBYTECODE: "1"
           PYTHONPATH: src:.
@@ -250,62 +278,68 @@ jobs:
 
   typescript-foundation:
     needs: changes
+    # Run even if the changes job failed: its outputs are then empty, so every
+    # step below runs (fail closed) instead of reporting a skipped success.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - name: Skip docs-only change set
-        if: needs.changes.outputs.heavy != 'true'
-        run: echo "docs-only PR; TypeScript foundation skipped."
+      - name: Skip unaffected change set
+        if: needs.changes.outputs.typescript == 'false'
+        run: echo "TypeScript area not affected (docs-only, Python only, or draft PR); TypeScript foundation skipped."
 
       - name: Check out repository
-        if: needs.changes.outputs.heavy == 'true'
+        if: needs.changes.outputs.typescript != 'false'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
           persist-credentials: false
 
       - name: Set up Node.js and pnpm
-        if: needs.changes.outputs.heavy == 'true'
+        if: needs.changes.outputs.typescript != 'false'
         uses: ./.github/actions/setup-node-pnpm
 
       - name: Install TypeScript dependencies
-        if: needs.changes.outputs.heavy == 'true'
+        if: needs.changes.outputs.typescript != 'false'
         run: pnpm install --frozen-lockfile
 
       - name: Check TypeScript formatting
-        if: needs.changes.outputs.heavy == 'true'
+        if: needs.changes.outputs.typescript != 'false'
         run: pnpm run format:check
 
       - name: Lint TypeScript
-        if: needs.changes.outputs.heavy == 'true'
+        if: needs.changes.outputs.typescript != 'false'
         run: pnpm run lint
 
       - name: Type-check TypeScript
-        if: needs.changes.outputs.heavy == 'true'
+        if: needs.changes.outputs.typescript != 'false'
         run: pnpm run typecheck
 
       - name: Test TypeScript
-        if: needs.changes.outputs.heavy == 'true'
+        if: needs.changes.outputs.typescript != 'false'
         run: pnpm run test
 
   regress:
     needs: changes
+    # Run even if the changes job failed: its outputs are then empty, so every
+    # step below runs (fail closed) instead of reporting a skipped success.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - name: Skip docs-only change set
-        if: needs.changes.outputs.heavy != 'true'
-        run: echo "docs-only PR; PAPER API/browser regress skipped."
+      - name: Skip unaffected change set
+        if: needs.changes.outputs.python == 'false' && needs.changes.outputs.typescript == 'false'
+        run: echo "Neither area affected (docs-only or draft PR); PAPER API/browser regress skipped."
 
       - name: Check out repository
-        if: needs.changes.outputs.heavy == 'true'
+        if: needs.changes.outputs.python != 'false' || needs.changes.outputs.typescript != 'false'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
           persist-credentials: false
 
       - name: Set up uv and Python
-        if: needs.changes.outputs.heavy == 'true'
+        if: needs.changes.outputs.python != 'false'
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           enable-cache: true
@@ -316,40 +350,40 @@ jobs:
           version: "0.12.5"
 
       - name: Set up Node.js and pnpm
-        if: needs.changes.outputs.heavy == 'true'
+        if: needs.changes.outputs.typescript != 'false'
         uses: ./.github/actions/setup-node-pnpm
 
       - name: Install Python dependencies
-        if: needs.changes.outputs.heavy == 'true'
+        if: needs.changes.outputs.python != 'false'
         run: uv sync --frozen --all-groups
 
       - name: Run API and stream-contract regress
-        if: needs.changes.outputs.heavy == 'true'
+        if: needs.changes.outputs.python != 'false'
         run: uv run --frozen pytest -q tests/python/test_ci_regression_contracts.py tests/python/test_control_service.py
 
       - name: Install TypeScript dependencies
-        if: needs.changes.outputs.heavy == 'true'
+        if: needs.changes.outputs.typescript != 'false'
         run: pnpm install --frozen-lockfile
 
       - name: Cache Playwright Chromium
-        if: needs.changes.outputs.heavy == 'true'
+        if: needs.changes.outputs.typescript != 'false'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ms-playwright
           key: ${{ runner.os }}-playwright-chromium-${{ hashFiles('pnpm-lock.yaml') }}
 
       - name: Install Playwright Chromium
-        if: needs.changes.outputs.heavy == 'true'
+        if: needs.changes.outputs.typescript != 'false'
         run: pnpm --filter @hyperliquid-bot/cockpit exec playwright install --with-deps chromium
 
       - name: Build cockpit
-        if: needs.changes.outputs.heavy == 'true'
+        if: needs.changes.outputs.typescript != 'false'
         env:
           TRADING_MODE: PAPER
         run: pnpm --filter @hyperliquid-bot/cockpit run build
 
       - name: Run cockpit browser regress
-        if: needs.changes.outputs.heavy == 'true'
+        if: needs.changes.outputs.typescript != 'false'
         env:
           TRADING_MODE: PAPER
         run: pnpm --filter @hyperliquid-bot/cockpit run regress:browser

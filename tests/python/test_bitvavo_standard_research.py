@@ -671,6 +671,7 @@ async def test_first_connect_retries_then_succeeds() -> None:
     )
 
 
+@pytest.mark.timing
 @pytest.mark.asyncio
 async def test_application_idle_emits_gap_and_reconnects(
     monkeypatch: pytest.MonkeyPatch,

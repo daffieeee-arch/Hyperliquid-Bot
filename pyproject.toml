@@ -16,6 +16,7 @@ dev = [
     "mypy==2.3.1",
     "pytest==9.1.1",
     "pytest-asyncio==1.4.0",
+    "pytest-xdist==3.8.0",
     "ruff==0.16.6",
 ]
 
@@ -43,5 +44,8 @@ mypy_path = "src:."
 
 [tool.pytest.ini_options]
 addopts = ["--strict-config", "--strict-markers"]
+markers = [
+    "timing: asserts a real-clock deadline with tens of milliseconds of slack; CI runs these serially before the parallel (xdist) pass, so CPU contention cannot flake them",
+]
 pythonpath = ["src", "."]
 testpaths = ["tests/python"]

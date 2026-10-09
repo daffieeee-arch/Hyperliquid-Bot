@@ -18,6 +18,7 @@ from pathlib import Path
 import duckdb
 import pytest
 
+from duckdb_rows import insert_rows
 from research.harness.benchmark import Window, benchmark, buy_and_hold
 from research.harness.data import BarTable
 from research.harness.errors import HarnessError, IntegrityError, SpecError
@@ -398,7 +399,7 @@ def test_duckdb_view_backend(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
         "CREATE TABLE bars (ts BIGINT, close DOUBLE, taker_imbalance DOUBLE, "
         "imbalance_available_ts BIGINT)"
     )
-    connection.executemany("INSERT INTO bars VALUES (?, ?, ?, ?)", rows)
+    insert_rows(connection, "bars", rows)
     connection.execute("CREATE VIEW hist_bn_um_bars AS SELECT * FROM bars")
     connection.close()
     monkeypatch.setenv("RESEARCH_DUCKDB_PATH", str(database))
@@ -1253,8 +1254,7 @@ def _write_parquet_with(
         (*row, *(column[index] for _kind, column in extra.values()))
         for index, row in enumerate(rows)
     ]
-    placeholders = ", ".join("?" for _ in names)
-    connection.executemany(f"INSERT INTO bars VALUES ({placeholders})", values)
+    insert_rows(connection, "bars", values)
     destination = str(path).replace("'", "''")
     connection.execute(f"COPY bars TO '{destination}' (FORMAT PARQUET)")
     connection.close()
@@ -1486,7 +1486,7 @@ def _write_integer_close(path: Path, rows: Sequence[tuple[int, float, float, int
     integer_rows = [
         (timestamp, int(price), feature, available) for timestamp, price, feature, available in rows
     ]
-    connection.executemany("INSERT INTO bars VALUES (?, ?, ?, ?)", integer_rows)
+    insert_rows(connection, "bars", integer_rows)
     destination = str(path).replace("'", "''")
     connection.execute(f"COPY bars TO '{destination}' (FORMAT PARQUET)")
     connection.close()
@@ -1499,7 +1499,7 @@ def _write_parquet(path: Path, rows: Sequence[tuple[int, float, float, int]]) ->
         "CREATE TABLE bars (ts BIGINT, close DOUBLE, taker_imbalance DOUBLE, "
         "imbalance_available_ts BIGINT)"
     )
-    connection.executemany("INSERT INTO bars VALUES (?, ?, ?, ?)", list(rows))
+    insert_rows(connection, "bars", rows)
     destination = str(path).replace("'", "''")
     connection.execute(f"COPY bars TO '{destination}' (FORMAT PARQUET)")
     connection.close()

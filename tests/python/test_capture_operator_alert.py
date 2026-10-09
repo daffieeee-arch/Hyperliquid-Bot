@@ -296,6 +296,7 @@ def test_alert_lane_delivers_before_shutdown_returns() -> None:
     assert delivered.is_set()
 
 
+@pytest.mark.timing
 def test_alert_lane_shutdown_returns_while_webhook_is_still_blocked() -> None:
     started = threading.Event()
     release = threading.Event()

@@ -10,6 +10,7 @@ from pathlib import Path
 import duckdb
 import pytest
 
+from duckdb_rows import insert_rows
 from research.harness.costs import round_trip_cost
 from research.harness.data import PanelTable, load_panel
 from research.harness.errors import HarnessError, IntegrityError, SpecError
@@ -137,10 +138,7 @@ def _write_panel(path: Path, rows: Sequence[Row], *, funding: bool) -> None:
         "volume_rank BIGINT, signal DOUBLE, available_ts BIGINT, funding_rate DOUBLE, "
         "funding_covered BOOLEAN)"
     )
-    connection.executemany(
-        "INSERT INTO panel VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        [(*row, row[7] is not None) for row in rows],
-    )
+    insert_rows(connection, "panel", [(*row, row[7] is not None) for row in rows])
     kept = "*" if funding else "* EXCLUDE (funding_rate, funding_covered)"
     destination = str(path).replace("'", "''")
     connection.execute(f"COPY (SELECT {kept} FROM panel) TO '{destination}' (FORMAT PARQUET)")

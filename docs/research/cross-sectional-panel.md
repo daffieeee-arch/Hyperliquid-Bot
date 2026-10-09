@@ -48,7 +48,7 @@ of latency.
 | `qv_<V>d` | Mean quote volume over `V` days, untraded days counting as 0 |
 | `funding_<K>d` | Mean daily `funding_rate` over `K` covered days |
 | `carry_<K>d` | Minus the mean daily `funding_rate` over `K` days with a rate, covered or not; see [Carry](#carry) |
-| `volume_rank` | Rank by `qv_<V>d` among the day's rows that traded and have it; 1 is the largest |
+| `volume_rank` | Rank by `qv_<V>d` among the day's rows that traded and have it (and, with the options above, are not excluded and have a rate); 1 is the largest |
 
 ## Point-in-time rules
 
@@ -217,6 +217,19 @@ Nothing is written when any of these fail:
 
 ## Limits
 
+- `carry_<K>d` takes an uncovered day at its recorded sum. At the close, a
+  day cut short because the contract stopped trading or settling (a
+  delisting) cannot be told from one short of an archived settlement
+  inside a delisting month, which the build allows; telling them apart
+  needs a later day. Both are what the harness charges a holder. The error
+  is at most the missing part of one day's funding in `K` days, and it
+  makes such a name's funding look lower, so a low-funding long leg may
+  favour it. A study counts how many of its ranked rows have an uncovered
+  day in their carry window, and says how many it tolerates.
+- The carry tie-break lives in a float64. With very many names tied at a
+  large sum, two draws can round to the same value; such a pair falls
+  back to the harness's order by symbol. At a 7-day window near the
+  neutral rate the draw has about 2e8 distinct values.
 - The warm-up months before `start` are checked like the rest, so they
   must be synced too.
 - Funding is published per month only, so `end` cannot pass the newest

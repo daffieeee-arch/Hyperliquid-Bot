@@ -87,12 +87,10 @@ def load_manifest(path: Path) -> HistManifest:
         raise HistEtlError(
             "binance, binance_universe, kraken and hyperliquid must be arrays of tables"
         )
-    groups: list[str] = []
     universe_files: list[tuple[str, str]] = []
     expanded: list[BinanceSpec] = []
     for item in universe_raw:
         group, relative, specs = _binance_universe(item, path.parent)
-        groups.append(group)
         universe_files.append((group, relative))
         expanded.extend(specs)
     binance = tuple(_binance_spec(item) for item in binance_raw) + tuple(expanded)
@@ -102,7 +100,7 @@ def load_manifest(path: Path) -> HistManifest:
         [spec.id for spec in binance]
         + [spec.id for spec in kraken]
         + [spec.id for spec in hyperliquid]
-        + groups
+        + [group for group, _file in universe_files]
     )
     if len(ids) != len(set(ids)):
         raise HistEtlError("dataset ids must be unique")

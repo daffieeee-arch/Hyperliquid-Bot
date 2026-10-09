@@ -41,6 +41,7 @@ from research.bar_tables.panel_io import (
     Exclusions,
     build_panel,
     load_exclusions,
+    load_panel_manifest,
     universe_files,
     write_panel_parquet,
 )
@@ -124,9 +125,10 @@ def _panel(args: argparse.Namespace) -> int:
             raise BarTableError(
                 f"Panel dates must lie from {_PANEL_FIRST_DAY} to {_PANEL_LAST_DAY}."
             )
-        manifest = Path(args.manifest) if args.manifest else default_manifest_path()
+        manifest_path = Path(args.manifest) if args.manifest else default_manifest_path()
+        manifest = load_panel_manifest(manifest_path, args.group)
         exclusions = (
-            load_exclusions(Path(args.exclude_symbols), manifest, args.group)
+            load_exclusions(Path(args.exclude_symbols), manifest, manifest_path, args.group)
             if args.exclude_symbols
             else None
         )

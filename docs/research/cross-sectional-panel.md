@@ -99,17 +99,18 @@ and the same clock.
 
 - **Carry days, not covered days.** Its window needs `K` consecutive days in
   one stretch that are each a carry day: a day with a `funding_rate` that is
-  covered, or that traded outside its funding run's listing and delisting
-  months (and outside a run's first day at a manifest `start`). A day that
-  returns from 4h to 8h funding reads as not covered at its close and
-  blanks `funding_<K>d` for `K` days, and Binance changes an interval mostly
-  when funding runs at its cap or floor, so a carry ranking on
-  `funding_<K>d` would lose names on exactly the tails it sorts on. On a
-  traded day off those edges the build has refused any missing settlement,
-  so an uncovered day there is such a switch, and it enters at its
-  recorded sum, which is what the harness charges a position held through
-  it. An uncovered day at an edge, or one that did not trade, may hold only
-  part of the day's funding, so it is not a carry day.
+  covered, or that the build checked for a missing settlement. The build
+  checks the traded days of a funding run, except the run's listing and
+  delisting months, its first day at a manifest `start`, and the day of its
+  last settlement when no later one is published yet. A day that returns
+  from 4h to 8h funding reads as not covered at its close and blanks
+  `funding_<K>d` for `K` days, and Binance changes an interval mostly when
+  funding runs at its cap or floor, so a carry ranking on `funding_<K>d`
+  would lose names on exactly the tails it sorts on. A checked day the
+  close cannot prove whole is such a switch, and it enters at its recorded
+  sum, which is what the harness charges a position held through it. An
+  unchecked uncovered day may hold only part of the day's funding, so it
+  is not a carry day.
 - **Steps of 1e-12 of the window's sum.** Binance prints rates with at most
   8 decimals, so the window's funding sum is a multiple of 1e-8 up to
   floating-point rounding. Counted in steps of 1e-12, equal sums are exact

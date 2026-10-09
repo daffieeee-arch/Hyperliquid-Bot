@@ -158,7 +158,7 @@ def build_symbol_rows(
     bars: Sequence[DailyBar],
     settlements: Sequence[Settlement],
     spec: PanelSpec,
-    edge_closes: frozenset[int] = frozenset(),
+    vouched_closes: frozenset[int] = frozenset(),
 ) -> list[PanelRow]:
     """Rows for one symbol, without ``volume_rank``.
 
@@ -166,13 +166,14 @@ def build_symbol_rows(
     spans one gives ``None``. ``settlements`` may reach back before the first
     bar; only those inside a bar's day are used.
 
-    ``edge_closes`` are the closes of days on which the build let settlements
-    be missing: a funding run's listing and delisting months, and its first
-    day at a manifest start. ``carry`` needs every day of its window to be a
-    carry day: one with a rate that is covered, or that traded off those
-    edges. On such a day the build has refused a missing settlement, so an
-    uncovered one is an interval switch whose recorded sum is the whole
-    day's funding. ``mean_funding`` keeps needing covered days.
+    ``vouched_closes`` are the closes of days on which the build checked
+    that no settlement is missing (``_check_funding_runs``: traded days of a
+    funding run, off its listing and delisting allowances). ``carry`` needs
+    every day of its window to be a carry day: one with a rate that is
+    covered or vouched for. A vouched day the close cannot prove whole is an
+    interval switch, and its recorded sum is the whole day's funding.
+    Without vouched days only covered ones count. ``mean_funding`` keeps
+    needing covered days.
     """
 
     _check_bars(symbol, bars)
@@ -187,8 +188,8 @@ def build_symbol_rows(
     covered_streak = _streaks([day.covered for day in funding], run_start)
     carry_streak = _streaks(
         [
-            day.rate is not None and (day.covered or (flag and bar.ts not in edge_closes))
-            for day, flag, bar in zip(funding, traded, bars, strict=True)
+            day.rate is not None and (day.covered or bar.ts in vouched_closes)
+            for day, bar in zip(funding, bars, strict=True)
         ],
         run_start,
     )

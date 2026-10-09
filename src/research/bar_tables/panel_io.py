@@ -108,8 +108,21 @@ class UniverseFiles:
     funding_runs: tuple[Run, ...]
 
 
+def load_panel_manifest(manifest_path: Path, group: str) -> HistManifest:
+    """The hist_etl manifest, which must have ``group`` as a binance_universe entry."""
+
+    try:
+        manifest = load_manifest(manifest_path)
+    except (HistEtlError, ValueError) as exc:
+        # tomllib's decode error is a ValueError.
+        raise BarTableError(f"Manifest: {exc}") from exc
+    if group not in manifest.binance_groups:
+        raise BarTableError(f"{group} is not a binance_universe entry of {manifest_path}.")
+    return manifest
+
+
 def universe_files(
-    root: Path, manifest_path: Path, group: str, start: date, end: date, panel_spec: PanelSpec
+    root: Path, manifest: HistManifest, group: str, start: date, end: date, panel_spec: PanelSpec
 ) -> UniverseFiles:
     """Every month file of ``group`` from the spec's warm-up before ``start`` to ``end``.
 
@@ -117,7 +130,6 @@ def universe_files(
     window whatever ``start`` is, where the universe has the history.
     """
 
-    manifest = _group_manifest(manifest_path, group)
     specs = [spec for spec in manifest.binance if spec.group == group]
     klines = [spec for spec in specs if spec.dataset == "klines"]
     funding = [spec for spec in specs if spec.dataset == "fundingRate"]
@@ -149,7 +161,9 @@ def universe_files(
     )
 
 
-def load_exclusions(path: Path, manifest_path: Path, group: str) -> Exclusions:
+def load_exclusions(
+    path: Path, manifest: HistManifest, manifest_path: Path, group: str
+) -> Exclusions:
     """Read and check an exclusion list against the group's universe entry.
 
     The file is ``{"format": 1, "universe": <the universe file's name>,
@@ -184,7 +198,7 @@ def load_exclusions(path: Path, manifest_path: Path, group: str) -> Exclusions:
         raise BarTableError(
             f"Exclusion list {path} has unknown categories: {', '.join(unknown[:_MISSING_SHOWN])}."
         )
-    relative = dict(_group_manifest(manifest_path, group).binance_universe_files)[group]
+    relative = dict(manifest.binance_universe_files)[group]
     expected = Path(relative).name
     if document["universe"] != expected:
         raise BarTableError(
@@ -204,17 +218,6 @@ def load_exclusions(path: Path, manifest_path: Path, group: str) -> Exclusions:
             f"{', '.join(strangers[:_MISSING_SHOWN])}."
         )
     return Exclusions(symbols=frozenset(symbols), sha256=hashlib.sha256(raw).hexdigest())
-
-
-def _group_manifest(manifest_path: Path, group: str) -> HistManifest:
-    try:
-        manifest = load_manifest(manifest_path)
-    except (HistEtlError, ValueError) as exc:
-        # tomllib's decode error is a ValueError.
-        raise BarTableError(f"Manifest: {exc}") from exc
-    if group not in manifest.binance_groups:
-        raise BarTableError(f"{group} is not a binance_universe entry of {manifest_path}.")
-    return manifest
 
 
 def _refuse_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -291,17 +294,16 @@ def build_panel(
     bars = _read_bars(files.klines)
     _check_kline_runs(bars, files.kline_runs)
     settlements = _read_settlements(files.funding)
-    _check_funding_runs(bars, settlements, files.funding_runs)
+    vouched = _check_funding_runs(bars, settlements, files.funding_runs)
     start_ms = _day_ms(start)
     end_ms = _day_ms(end)
-    edges = _edge_closes(bars, files.funding_runs)
     rows: list[PanelRow] = []
     for symbol in sorted(bars):
         # Rows look back only, so bars after ``end`` change nothing; skip them.
         kept = [bar for bar in bars[symbol] if bar.ts < end_ms]
         rows.extend(
             build_symbol_rows(
-                symbol, kept, settlements.get(symbol, []), spec, edges.get(symbol, frozenset())
+                symbol, kept, settlements.get(symbol, []), spec, vouched.get(symbol, frozenset())
             )
         )
     inside = [row for row in rows if start_ms <= row.ts < end_ms]
@@ -357,7 +359,7 @@ def _check_funding_runs(
     bars: dict[str, list[DailyBar]],
     settlements: dict[str, list[Settlement]],
     runs: Sequence[Run],
-) -> None:
+) -> dict[str, frozenset[int]]:
     """A traded day inside a funding run with a settlement missing fails.
 
     This is validation, not a feature, so it reads the whole series and the
@@ -366,8 +368,14 @@ def _check_funding_runs(
     start late only inside the listing month and stop early only inside the
     delisting month. A day that did not trade is not checked: delisted
     contracts carry default funding.
+
+    Returns, per symbol, the closes this check vouches for: the traded days
+    of a run's window outside its listing and delisting allowances, less
+    the day of the window's last settlement when no settlement follows it
+    (later ones of that day may be missing, and nothing tells yet).
     """
 
+    vouched: dict[str, set[int]] = defaultdict(set)
     for run in runs:
         traded = {bar.ts for bar in bars.get(run.symbol, []) if bar.traded}
         opens = _close_ms(run.first) - DAY_MS
@@ -395,22 +403,17 @@ def _check_funding_runs(
                 f"{run.symbol} traded on {day} with a funding settlement missing inside a "
                 "funding run; run hist_etl verify and sync."
             )
-
-
-def _edge_closes(bars: dict[str, list[DailyBar]], runs: Sequence[Run]) -> dict[str, frozenset[int]]:
-    """Per symbol, the closes on which ``_check_funding_runs`` lets settlements be missing."""
-
-    by_symbol: dict[str, list[Run]] = defaultdict(list)
-    for run in runs:
-        by_symbol[run.symbol].append(run)
-    return {
-        symbol: frozenset(
-            bar.ts
-            for bar in bars.get(symbol, [])
-            if any(_late_start_ok(run, bar.ts) or _early_end_ok(run, bar.ts) for run in own)
+        if not own:
+            continue
+        unchecked = {settlement_day_close(own[-1].ts)} if following is None else set()
+        vouched[run.symbol].update(
+            ts
+            for ts in traded
+            if opens < ts <= high
+            and ts not in unchecked
+            and not (_late_start_ok(run, ts) or _early_end_ok(run, ts))
         )
-        for symbol, own in by_symbol.items()
-    }
+    return {symbol: frozenset(closes) for symbol, closes in vouched.items()}
 
 
 def _late_start_ok(run: Run, close: int) -> bool:

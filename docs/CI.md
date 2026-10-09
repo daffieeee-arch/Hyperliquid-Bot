@@ -68,10 +68,11 @@ an area counts for that area too.
 **Draft pull requests** set neither flag: push work in progress to a draft
 PR without paying for heavy CI. Both workflows also trigger on
 `ready_for_review`, so marking the PR ready runs the full selection on the
-same head. The `changes` job reads the draft state live from the GitHub API
-(`pull-requests: read`), not from the event payload, so a late run of a
-draft-era push or a re-run cannot skip on a PR that is already ready; if the
-state cannot be read, the PR counts as ready. A draft's skipped jobs report
+same head. The `changes` job confirms a draft flag of the event payload live
+from the GitHub API (`pull-requests: read`), so a late run of a draft-era
+push or a re-run cannot skip on a PR that is already ready. Only a PR that
+both the payload and the API call a draft skips; if the state cannot be
+read, the PR counts as ready. A draft's skipped jobs report
 success, so before merging confirm the latest run on the head ran its heavy
 steps (its `changes` job does not say draft). A PR marked ready with the
 Actions `GITHUB_TOKEN` starts no workflow run; mark it ready as a person or

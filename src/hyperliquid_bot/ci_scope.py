@@ -21,17 +21,21 @@ skips the checks that read them.
 
 A draft pull request sets neither area: its heavy jobs run once it is marked
 ready for review (the workflows also trigger on ``ready_for_review``), so
-pushing work-in-progress commits costs no heavy CI. The draft state is read
-live from the GitHub API, not from the event payload: a payload is a snapshot
+pushing work-in-progress commits costs no heavy CI. A payload is a snapshot
 from when the event fired, so a late run of a draft-era push, or a re-run,
-would otherwise skip on a PR that is already ready. If the live state cannot
-be read, the PR is treated as ready and everything runs. Pushes to main and
-any other event run everything. The secret scan always runs; it is not gated.
+would skip on a PR that is already ready; a draft flag in the payload is
+therefore confirmed live from the GitHub API. Only a PR that both the payload
+and the API call a draft skips: a payload that says ready runs (so a stale
+API read right after ``ready_for_review`` cannot skip it), and if the live
+state cannot be read, the PR is treated as ready and everything runs. Pushes
+to main and any other event run everything. The secret scan always runs; it
+is not gated.
 """
 
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import subprocess
@@ -237,18 +241,28 @@ def classify_github_event(
     return classify_areas(changed)
 
 
-def pull_request_number(event_path: str | None) -> int | None:
-    """The pull request number in the webhook payload at ``event_path``, if any."""
-
+def _event_pull_request(event_path: str | None) -> dict[str, object]:
     if not event_path:
-        return None
+        return {}
     try:
         payload = json.loads(Path(event_path).read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return None
+        return {}
     pull_request = payload.get("pull_request") if isinstance(payload, dict) else None
-    number = pull_request.get("number") if isinstance(pull_request, dict) else None
+    return pull_request if isinstance(pull_request, dict) else {}
+
+
+def pull_request_number(event_path: str | None) -> int | None:
+    """The pull request number in the webhook payload at ``event_path``, if any."""
+
+    number = _event_pull_request(event_path).get("number")
     return number if isinstance(number, int) and not isinstance(number, bool) else None
+
+
+def pull_request_was_draft(event_path: str | None) -> bool:
+    """Whether the webhook payload at ``event_path`` says the pull request is a draft."""
+
+    return _event_pull_request(event_path).get("draft") is True
 
 
 def live_draft_state(repository: str, number: int, token: str | None) -> bool | None:
@@ -268,10 +282,12 @@ def live_draft_state(repository: str, number: int, token: str | None) -> bool | 
             "X-GitHub-Api-Version": "2022-11-28",
         },
     )
+    # HTTPException covers a cut-off body (IncompleteRead) and a malformed
+    # status line, which are not OSErrors.
     try:
         with urllib.request.urlopen(request, timeout=15) as response:
             body = json.loads(response.read().decode("utf-8"))
-    except (OSError, ValueError):
+    except (OSError, ValueError, http.client.HTTPException):
         return None
     draft = body.get("draft") if isinstance(body, dict) else None
     return draft if isinstance(draft, bool) else None
@@ -292,8 +308,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     event_name = os.environ.get("GITHUB_EVENT_NAME", "")
     base_ref = os.environ.get("GITHUB_BASE_REF") or None
     draft = False
-    number = pull_request_number(os.environ.get("GITHUB_EVENT_PATH"))
-    if event_name == "pull_request" and number is not None:
+    event_path = os.environ.get("GITHUB_EVENT_PATH")
+    number = pull_request_number(event_path)
+    if event_name == "pull_request" and number is not None and pull_request_was_draft(event_path):
         live = live_draft_state(
             os.environ.get("GITHUB_REPOSITORY", ""), number, os.environ.get("GITHUB_TOKEN")
         )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import re
 import subprocess
@@ -18,6 +19,7 @@ from hyperliquid_bot.ci_scope import (
     live_draft_state,
     path_areas,
     pull_request_number,
+    pull_request_was_draft,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -153,19 +155,25 @@ def test_a_failed_diff_runs_everything(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "full CI" in scope.reason
 
 
-def test_the_pull_request_number_is_read_from_the_event_payload(tmp_path: Path) -> None:
+def test_the_pull_request_is_read_from_the_event_payload(tmp_path: Path) -> None:
     event = tmp_path / "event.json"
     event.write_text(json.dumps({"pull_request": {"number": 139}}), encoding="utf-8")
+    draft = tmp_path / "draft.json"
+    draft.write_text(json.dumps({"pull_request": {"number": 7, "draft": True}}), encoding="utf-8")
     broken = tmp_path / "broken.json"
     broken.write_text("{", encoding="utf-8")
     assert pull_request_number(str(event)) == 139
     assert pull_request_number(str(broken)) is None
     assert pull_request_number(str(tmp_path / "missing.json")) is None
     assert pull_request_number(None) is None
+    assert pull_request_was_draft(str(draft)) is True
+    assert pull_request_was_draft(str(event)) is False
+    assert pull_request_was_draft(str(broken)) is False
+    assert pull_request_was_draft(None) is False
 
 
 class _Response:
-    def __init__(self, body: bytes) -> None:
+    def __init__(self, body: bytes | Exception) -> None:
         self.body = body
 
     def __enter__(self) -> _Response:
@@ -175,11 +183,21 @@ class _Response:
         return None
 
     def read(self) -> bytes:
+        if isinstance(self.body, Exception):
+            raise self.body
         return self.body
 
 
 def test_the_live_draft_state_fails_to_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    bodies = iter([b'{"draft": true}', b'{"draft": false}', b"not json", b'{"draft": "yes"}'])
+    responses: list[bytes | Exception] = [
+        b'{"draft": true}',
+        b'{"draft": false}',
+        b"not json",
+        b'{"draft": "yes"}',
+        b"\xff",
+        http.client.IncompleteRead(b'{"dra', 20),
+    ]
+    bodies = iter(responses)
     seen: list[str] = []
 
     def fake_urlopen(request: urllib.request.Request, timeout: float) -> _Response:
@@ -189,16 +207,26 @@ def test_the_live_draft_state_fails_to_none(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
     assert live_draft_state("o/r", 7, "token") is True
     assert live_draft_state("o/r", 7, "token") is False
-    assert live_draft_state("o/r", 7, "token") is None
-    assert live_draft_state("o/r", 7, "token") is None
+    # Not JSON, not a bool, not UTF-8, a body cut off mid-read.
+    for _ in range(4):
+        assert live_draft_state("o/r", 7, "token") is None
     assert seen[0] == "https://api.github.com/repos/o/r/pulls/7"
     assert live_draft_state("o/r", 7, None) is None
 
-    def failing_urlopen(request: urllib.request.Request, timeout: float) -> _Response:
-        raise urllib.error.URLError("unreachable")
+    for error in (
+        urllib.error.URLError("unreachable"),
+        TimeoutError("timed out"),
+        http.client.BadStatusLine("garbage"),
+        http.client.RemoteDisconnected("closed"),
+    ):
 
-    monkeypatch.setattr(urllib.request, "urlopen", failing_urlopen)
-    assert live_draft_state("o/r", 7, "token") is None
+        def failing_urlopen(
+            request: urllib.request.Request, timeout: float, error: Exception = error
+        ) -> _Response:
+            raise error
+
+        monkeypatch.setattr(urllib.request, "urlopen", failing_urlopen)
+        assert live_draft_state("o/r", 7, "token") is None, type(error).__name__
 
 
 def _run_main(
@@ -225,19 +253,21 @@ def _run_main(
     return dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
 
 
-def test_main_follows_the_live_draft_state_not_the_payload(
+def test_main_skips_only_when_payload_and_live_state_both_say_draft(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def areas(payload_draft: bool, live: bool | None) -> tuple[str, str]:
         written = _run_main(tmp_path, monkeypatch, payload_draft=payload_draft, live=live)
         return written["python"], written["typescript"]
 
-    # A draft now: skip, whatever the payload said.
-    assert areas(payload_draft=False, live=True) == ("false", "false")
+    # A draft in the event and now: skip.
+    assert areas(payload_draft=True, live=True) == ("false", "false")
     # Ready now, though the event fired while it was a draft (a late run or a re-run).
     assert areas(payload_draft=True, live=False) == ("true", "false")
     # The live state cannot be read: run as ready.
     assert areas(payload_draft=True, live=None) == ("true", "false")
+    # Ready in the event (ready_for_review): run, even if the API still says draft.
+    assert areas(payload_draft=False, live=True) == ("true", "false")
 
 
 def test_main_writes_the_outputs_the_workflows_read(

@@ -18,6 +18,16 @@ PYTHONPATH=src uv run --frozen python -m research.bar_tables panel \
 The universe has to be synced first (see the "Binance USD-M universe" section
 of [hist-etl.md](../runbooks/hist-etl.md)). Do not commit the Parquet.
 
+Two options narrow who takes a `volume_rank`; both are off by default:
+
+- `--exclude-symbols PATH`: a committed JSON list of contracts that never
+  rank (see [Excluded symbols](#excluded-symbols)).
+- `--rank-requires-funding`: a row ranks only on a day with a funding rate.
+
+The build prints how many symbols the list held and its sha256, and whether
+the rank required funding, so the build log records which rule made the
+table.
+
 ## Columns
 
 Every value is known at the row's daily kline close, `ts` (epoch ms), and
@@ -37,6 +47,7 @@ of latency.
 | `vol_<W>d` | Sample stdev of the last `W` daily log returns; empty unless positive |
 | `qv_<V>d` | Mean quote volume over `V` days, untraded days counting as 0 |
 | `funding_<K>d` | Mean daily `funding_rate` over `K` covered days |
+| `carry_<K>d` | Minus the mean daily `funding_rate` over `K` days with a rate, covered or not; see [Carry](#carry) |
 | `volume_rank` | Rank by `qv_<V>d` among the day's rows that traded and have it; 1 is the largest |
 
 ## Point-in-time rules
@@ -78,6 +89,68 @@ of latency.
   its universe per day from that rank, for example `volume_rank <= 50`,
   requires the features it uses on top, and writes both rules into its
   pre-registration.
+
+## Carry
+
+`carry_<K>d` is how a study ranks by low funding: the harness longs the top
+of its signal, so a signed spec on `carry_<K>d` longs the lowest funding and
+shorts the highest. It uses the same `--funding-window` as `funding_<K>d`
+and the same clock.
+
+- **Rate days, not covered days.** Its window needs `K` consecutive days in
+  one stretch that each have a `funding_rate`, whether or not the close
+  could prove the day whole. A day that returns from 4h to 8h funding reads
+  as not covered at its close and blanks `funding_<K>d` for `K` days, and
+  Binance changes an interval mostly when funding runs at its cap or floor,
+  so a carry ranking on `funding_<K>d` would lose names on exactly the tails
+  it sorts on. Such a day enters at its recorded sum, which is what the
+  harness charges a position held through it. On a traded day inside a
+  funding run the build has already refused a real hole.
+- **Steps of 1e-10 a day.** The mean is counted in steps of 1e-10, so means
+  that differ only by floating-point rounding are exact ties. Binance prints
+  rates with at most 8 decimals, so distinct 7-day means are about 1.4e-9 or
+  more apart and never merge.
+- **Ties broken by a draw.** A tie is ordered by a number drawn from the
+  sha256 of the symbol and the row's `ts`, which moves the value by less
+  than a tenth of a step. It reads no market data, is the same in every
+  build, and changes from day to day, so no symbol is favoured. Without it
+  the harness would break the tie by symbol, and the contracts that sort
+  first (the "1000x" ones) would always take the long leg's ties.
+- A zero is never written as `-0.0`.
+
+## Excluded symbols
+
+A study that leaves contracts out of its universe, such as contracts whose
+underlying is not a crypto asset, commits a list before any result and
+passes it with `--exclude-symbols`:
+
+```json
+{
+  "format": 1,
+  "universe": "binance-um-usdt-1d-2026-10-08.json",
+  "rule": "One line: why these contracts are left out.",
+  "symbols": {"BTCDOMUSDT": "index", "XAUUSDT": "commodity"}
+}
+```
+
+- A listed contract keeps its rows and features, but `volume_rank` is
+  empty on every row, so the next contract moves up. A filter applied after
+  the rank would shrink the top 50 instead.
+- The categories are `index`, `fiat_pegged_or_fx`, `commodity`,
+  `etf_or_etp`, `equity`, `private_company` and `unverified`.
+- The build fails, writing nothing, on an unknown or missing key, a format
+  other than 1, an empty rule, an unknown category, a duplicate key, a
+  `universe` that is not the file name of the group's universe entry, or a
+  symbol the group does not hold.
+- The list is fixed by asset class, which is known at a contract's
+  listing, so it is point in time. The data fingerprint pins its effect.
+
+`--rank-requires-funding` drops every traded day without a rate from the
+rank: listing months before funding starts, trading after a funding archive
+ends, gaps between funding runs, and the first or last days of a run that
+the build allows to lack funding. It reads only the day's own settlements.
+It does not stop a position decided on a ranked day from holding into such
+a day; the harness still fails that run closed.
 
 ## What fails the build
 

@@ -180,6 +180,9 @@ configs:
   validation period never reads a holdout close.
   The rank and the traded flag are the decision day's own close, so
   `latency_bars` must be at least 1 unless `allow_zero_latency` is set.
+- **Signal sign**: the top of the signal is the long leg. To rank by the
+  opposite of a column, use a negated panel column, such as `carry_<K>d`
+  for low funding (see the panel's [Carry](cross-sectional-panel.md#carry)).
 - **Universe and legs**: on the decision day the universe is every symbol
   that traded, has a rank at most `universe_size` and a known signal;
   funding plays no part in it. Sorted by the signal (ties by symbol), the

@@ -36,8 +36,14 @@ from pathlib import Path
 
 import duckdb
 
-from research.bar_tables.panel import PanelSpec
-from research.bar_tables.panel_io import build_panel, universe_files, write_panel_parquet
+from research.bar_tables.panel import PanelSpec, RankRule
+from research.bar_tables.panel_io import (
+    Exclusions,
+    build_panel,
+    load_exclusions,
+    universe_files,
+    write_panel_parquet,
+)
 from research.bar_tables.trend import (
     BarTableError,
     TrendRow,
@@ -119,8 +125,17 @@ def _panel(args: argparse.Namespace) -> int:
                 f"Panel dates must lie from {_PANEL_FIRST_DAY} to {_PANEL_LAST_DAY}."
             )
         manifest = Path(args.manifest) if args.manifest else default_manifest_path()
+        exclusions = (
+            load_exclusions(Path(args.exclude_symbols), manifest, args.group)
+            if args.exclude_symbols
+            else None
+        )
+        rule = RankRule(
+            excluded=exclusions.symbols if exclusions else frozenset(),
+            require_funding=args.rank_requires_funding,
+        )
         files = universe_files(root, manifest, args.group, start, end, spec)
-        rows = build_panel(files, spec, start, end)
+        rows = build_panel(files, spec, start, end, rule)
         write_panel_parquet(rows, spec, Path(args.out))
     except (BarTableError, HistEtlError, duckdb.Error, OSError) as exc:
         print(f"bar_tables: {exc}", file=sys.stderr)
@@ -129,9 +144,20 @@ def _panel(args: argparse.Namespace) -> int:
     ranked = len({row.symbol for row in rows if row.volume_rank is not None})
     print(
         f"bar_tables\twrote\t{len(rows)}\trows\t{symbols}\tsymbols\t"
-        f"{ranked}\tever ranked\t{args.out}"
+        f"{ranked}\tever ranked\t{_rule_note(exclusions, rule)}{args.out}"
     )
     return 0
+
+
+def _rule_note(exclusions: Exclusions | None, rule: RankRule) -> str:
+    """The rank rule a build used, for its log; empty for the default rule."""
+
+    note = ""
+    if exclusions is not None:
+        note += f"{len(exclusions.symbols)}\texcluded\tsha256:{exclusions.sha256}\t"
+    if rule.require_funding:
+        note += "rank requires funding\t"
+    return note
 
 
 def write_trend_parquet(
@@ -372,6 +398,15 @@ def _parser() -> argparse.ArgumentParser:
     )
     panel.add_argument(
         "--funding-window", type=int, required=True, help="Trailing funding mean window, days."
+    )
+    panel.add_argument(
+        "--exclude-symbols",
+        help="JSON list of symbols that never rank, checked against the group's universe file.",
+    )
+    panel.add_argument(
+        "--rank-requires-funding",
+        action="store_true",
+        help="Rank a row only on a day with a funding rate.",
     )
     panel.add_argument("--out", required=True, help="Output Parquet path.")
     return parser

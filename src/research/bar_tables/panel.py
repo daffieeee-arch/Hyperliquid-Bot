@@ -15,11 +15,14 @@ every day of their window traded.
 among the rows that traded and have that volume, and needs no other
 feature. A study takes its universe on each day from that rank (for
 example the top 50) and requires the features it uses on top; the rank is
-point in time and never looks at which symbols survive.
+point in time and never looks at which symbols survive. A ``RankRule`` can
+narrow who ranks: a committed list of symbols that never rank, and a day
+without funding.
 """
 
 from __future__ import annotations
 
+import hashlib
 import math
 from collections import defaultdict
 from collections.abc import Sequence
@@ -33,6 +36,9 @@ DAY_MS: Final = 86_400_000
 # Ten years: longer than any archive, and short enough for date arithmetic.
 MAX_WINDOW_DAYS: Final = 3_650
 _HOUR_MS: Final = 3_600_000
+# carry_<K>d counts the mean daily funding in steps of 1e-10: means closer
+# than that are ties, and a tie is broken below the step.
+_CARRY_STEPS_PER_UNIT: Final = 10_000_000_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +112,9 @@ class PanelRow:
       counting as their (zero) volume.
     - ``mean_funding``: the mean daily ``funding_rate`` over the funding
       window, every day of it covered.
+    - ``carry``: minus the mean daily ``funding_rate`` over the funding
+      window, every day of it with a rate, covered or not; see
+      ``carry_value``. A study that ranks by low funding sorts on it.
     """
 
     ts: int
@@ -122,6 +131,7 @@ class PanelRow:
     mean_quote_volume: float | None
     mean_funding: float | None
     volume_rank: int | None = None
+    carry: float | None = None
 
     @property
     def rankable(self) -> bool:
@@ -164,6 +174,7 @@ def build_symbol_rows(
     run_start = _run_starts(bars)
     traded_streak = _streaks(traded, run_start)
     covered_streak = _streaks([day.covered for day in funding], run_start)
+    rate_streak = _streaks([day.rate is not None for day in funding], run_start)
     # one_day[i]: the log return into bar i, for bars inside one stretch.
     one_day = [
         math.log(bar.close / bars[index - 1].close) if run_start[index] != index else 0.0
@@ -207,22 +218,77 @@ def build_symbol_rows(
                     if covered_streak[index] >= spec.funding_window
                     else None
                 ),
+                carry=(
+                    carry_value(
+                        symbol,
+                        bar.ts,
+                        math.fsum(
+                            _known(day.rate)
+                            for day in funding[index - spec.funding_window + 1 : index + 1]
+                        )
+                        / spec.funding_window,
+                    )
+                    if rate_streak[index] >= spec.funding_window
+                    else None
+                ),
             )
         )
     return rows
 
 
-def rank_by_volume(rows: Sequence[PanelRow]) -> list[PanelRow]:
-    """Set ``volume_rank`` per day among rankable rows: 1 is the largest volume.
+def carry_value(symbol: str, ts: int, mean_funding: float) -> float:
+    """Minus ``mean_funding``, in steps of 1e-10 a day, ties broken below a step.
 
-    The rank needs only trading and trailing volume, so the universe never
-    depends on a feature's data, funding included; a study requires the
-    features it uses on top.
+    Sorting by it puts the lowest funding first. Means that differ only by
+    floating-point rounding (three 8h settlements of 0.0001 against six 4h
+    ones of 0.00005) round to the same step, an exact tie. A tie is then
+    ordered by a draw from the symbol and the day alone: it moves a value by
+    less than a tenth of a step, so it never reorders distinct steps, reads
+    no market data, and favours no symbol across days, where a tie-break by
+    symbol would always favour the same end of the alphabet.
+    """
+
+    steps = round(mean_funding * _CARRY_STEPS_PER_UNIT)
+    digest = hashlib.sha256(f"{symbol}|{ts}".encode()).digest()
+    draw = int.from_bytes(digest[:8], "big") / 2**64
+    # draw / 10 - steps is never -0.0: it is at least 0 when steps is 0.
+    return (draw / 10 - steps) / _CARRY_STEPS_PER_UNIT
+
+
+@dataclass(frozen=True, slots=True)
+class RankRule:
+    """Which rows may take a volume rank, on top of trading with a trailing volume.
+
+    - ``excluded``: symbols that never rank, such as a study's committed list
+      of contracts whose underlying is not a crypto asset. Their rows and
+      features stay; the next symbol moves up. The list is fixed before
+      any result, so it is point in time.
+    - ``require_funding``: a row ranks only with a funding rate that day,
+      known at its close, so a study that charges funding never takes a
+      name into its universe on a day the name has none.
+    """
+
+    excluded: frozenset[str] = frozenset()
+    require_funding: bool = False
+
+    def admits(self, row: PanelRow) -> bool:
+        if not row.rankable or row.symbol in self.excluded:
+            return False
+        return row.funding_rate is not None or not self.require_funding
+
+
+def rank_by_volume(rows: Sequence[PanelRow], rule: RankRule | None = None) -> list[PanelRow]:
+    """Set ``volume_rank`` per day among the rows ``rule`` admits: 1 is the largest volume.
+
+    By default the rank needs only trading and trailing volume, so the
+    universe never depends on a feature's data, funding included; a study
+    requires the features it uses on top. A ``RankRule`` narrows it.
 
     Ties go to the symbol that sorts first, so the rank is deterministic.
     Rows come back ordered by ``ts`` and then symbol.
     """
 
+    admitted = rule or RankRule()
     by_day: dict[int, list[PanelRow]] = defaultdict(list)
     for row in rows:
         by_day[row.ts].append(row)
@@ -233,7 +299,7 @@ def rank_by_volume(rows: Sequence[PanelRow]) -> list[PanelRow]:
         if len(set(symbols)) != len(symbols):
             raise BarTableError(f"A symbol appears twice on the day closing at {ts}.")
         eligible = sorted(
-            (row for row in day if row.rankable),
+            (row for row in day if admitted.admits(row)),
             key=lambda row: (-_known(row.mean_quote_volume), row.symbol),
         )
         ranks = {row.symbol: position for position, row in enumerate(eligible, start=1)}

@@ -156,6 +156,8 @@ class HistManifest:
     hyperliquid: tuple[HyperliquidFundingSpec, ...] = ()
     # Ids of binance_universe entries; each selects the specs it expanded into.
     binance_groups: tuple[str, ...] = ()
+    # (id, file) of each binance_universe entry, the file as the manifest writes it.
+    binance_universe_files: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

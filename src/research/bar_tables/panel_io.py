@@ -5,11 +5,16 @@ month file that is missing, or a day missing inside a run, fails the build:
 a half-synced universe would otherwise drop symbols without a trace, and
 the symbols most likely to be missing are the delisted ones, which is
 survivorship bias by accident.
+
+A study may leave contracts out of the rank with a committed exclusion
+list, checked against the same universe entry (``load_exclusions``).
 """
 
 from __future__ import annotations
 
 import csv
+import hashlib
+import json
 import os
 import tempfile
 from collections import defaultdict
@@ -27,6 +32,7 @@ from research.bar_tables.panel import (
     DailyBar,
     PanelRow,
     PanelSpec,
+    RankRule,
     Settlement,
     build_symbol_rows,
     funding_hole_closes,
@@ -42,6 +48,18 @@ from research.hist_etl.planning import next_month, previous_month
 
 _MISSING_SHOWN: Final = 10
 _HOUR_MS: Final = 3_600_000
+EXCLUSION_CATEGORIES: Final = frozenset(
+    {
+        "index",
+        "fiat_pegged_or_fx",
+        "commodity",
+        "etf_or_etp",
+        "equity",
+        "private_company",
+        "unverified",
+    }
+)
+_EXCLUSION_KEYS: Final = frozenset({"format", "universe", "rule", "symbols"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +87,14 @@ class Run:
     at_spec_start: bool
     # The window closes on the run's own last day: nothing after it is this run's.
     reaches_end: bool
+
+
+@dataclass(frozen=True, slots=True)
+class Exclusions:
+    """A committed list of symbols that never rank, and the sha256 of its bytes."""
+
+    symbols: frozenset[str]
+    sha256: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,6 +154,72 @@ def universe_files(
     )
 
 
+def load_exclusions(path: Path, manifest_path: Path, group: str) -> Exclusions:
+    """Read and check an exclusion list against the group's universe entry.
+
+    The file is ``{"format": 1, "universe": <the universe file's name>,
+    "rule": <why>, "symbols": {<symbol>: <category>}}``. Every key, category
+    and symbol is checked, and a duplicate key anywhere is refused, so a
+    typo cannot keep a contract in the rank silently.
+    """
+
+    try:
+        raw = path.read_bytes()
+        document = json.loads(raw, object_pairs_hook=_refuse_duplicate_keys)
+    except (OSError, ValueError) as exc:
+        # json's decode error, and a duplicate key, are ValueErrors.
+        raise BarTableError(f"Exclusion list {path}: {exc}") from exc
+    if not isinstance(document, dict) or set(document) != _EXCLUSION_KEYS:
+        keys = ", ".join(sorted(_EXCLUSION_KEYS))
+        raise BarTableError(f"Exclusion list {path} must have exactly the keys {keys}.")
+    if type(document["format"]) is not int or document["format"] != 1:
+        raise BarTableError(f"Exclusion list {path} must be format 1.")
+    rule = document["rule"]
+    if not isinstance(rule, str) or not rule.strip():
+        raise BarTableError(f"Exclusion list {path} must state its rule.")
+    symbols = document["symbols"]
+    if not isinstance(symbols, dict):
+        raise BarTableError(f"Exclusion list {path}: symbols must map symbols to categories.")
+    unknown = sorted(
+        str(category)
+        for category in symbols.values()
+        if not isinstance(category, str) or category not in EXCLUSION_CATEGORIES
+    )
+    if unknown:
+        raise BarTableError(
+            f"Exclusion list {path} has unknown categories: {', '.join(unknown[:_MISSING_SHOWN])}."
+        )
+    try:
+        manifest = load_manifest(manifest_path)
+    except (HistEtlError, ValueError) as exc:
+        raise BarTableError(f"Manifest: {exc}") from exc
+    files = dict(manifest.binance_universe_files)
+    if group not in files:
+        raise BarTableError(f"{group} is not a binance_universe entry of {manifest_path}.")
+    expected = Path(files[group]).name
+    if document["universe"] != expected:
+        raise BarTableError(
+            f"Exclusion list {path} is for universe {document['universe']!r}, "
+            f"but {group} reads {expected!r}."
+        )
+    members = {spec.symbol for spec in manifest.binance if spec.group == group}
+    strangers = sorted(symbol for symbol in symbols if symbol not in members)
+    if strangers:
+        raise BarTableError(
+            f"Exclusion list {path} names symbols that {group} does not hold: "
+            f"{', '.join(strangers[:_MISSING_SHOWN])}."
+        )
+    return Exclusions(symbols=frozenset(symbols), sha256=hashlib.sha256(raw).hexdigest())
+
+
+def _refuse_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    keys = [key for key, _value in pairs]
+    duplicates = sorted({key for key in keys if keys.count(key) > 1})
+    if duplicates:
+        raise ValueError(f"duplicate keys: {', '.join(duplicates[:_MISSING_SHOWN])}")
+    return dict(pairs)
+
+
 def _month_files(
     root: Path, specs: Sequence[BinanceSpec], start: date, end: date
 ) -> tuple[tuple[Path, ...], tuple[Run, ...], list[Path]]:
@@ -177,12 +269,18 @@ def _month_files(
     return tuple(sorted(set(files))), tuple(runs), sorted(set(missing))
 
 
-def build_panel(files: UniverseFiles, spec: PanelSpec, start: date, end: date) -> list[PanelRow]:
+def build_panel(
+    files: UniverseFiles,
+    spec: PanelSpec,
+    start: date,
+    end: date,
+    rule: RankRule | None = None,
+) -> list[PanelRow]:
     """Ranked panel rows for every symbol with a bar closing in ``[start, end)``.
 
     The month files, warm-up months included, are read whole and checked
     whole, and rows are cut to the range only then, so a row's features do
-    not depend on ``start``.
+    not depend on ``start``. ``rule`` narrows who ranks (``RankRule``).
     """
 
     bars = _read_bars(files.klines)
@@ -199,7 +297,7 @@ def build_panel(files: UniverseFiles, spec: PanelSpec, start: date, end: date) -
     inside = [row for row in rows if start_ms <= row.ts < end_ms]
     if not inside:
         raise BarTableError("The universe has no daily bar inside the panel range.")
-    return rank_by_volume(inside)
+    return rank_by_volume(inside, rule)
 
 
 def _check_kline_runs(bars: dict[str, list[DailyBar]], runs: Sequence[Run]) -> None:
@@ -417,6 +515,7 @@ def write_panel_parquet(rows: Sequence[PanelRow], spec: PanelSpec, out: Path) ->
         f"vol_{spec.vol_window}d",
         f"qv_{spec.volume_window}d",
         f"funding_{spec.funding_window}d",
+        f"carry_{spec.funding_window}d",
     ]
     names = ["ts", "available_ts", "symbol", "close", "quote_volume", "trades", "traded"]
     names += ["funding_rate", "funding_settlements", "funding_covered", *features, "volume_rank"]
@@ -454,6 +553,7 @@ def write_panel_parquet(rows: Sequence[PanelRow], spec: PanelSpec, out: Path) ->
                         _cell(row.realized_vol),
                         _cell(row.mean_quote_volume),
                         _cell(row.mean_funding),
+                        _cell(row.carry),
                         "" if row.volume_rank is None else row.volume_rank,
                     ]
                 )

@@ -115,8 +115,10 @@ class PanelRow:
     - ``mean_funding``: the mean daily ``funding_rate`` over the funding
       window, every day of it covered.
     - ``carry``: minus the mean daily ``funding_rate`` over the funding
-      window, every day of it with a rate, covered or not, and ordered as
-      ``carry_value`` says. A study that ranks by low funding sorts on it.
+      window, every day of it traded and with a rate, covered or not (a
+      funding dataset's first day only when covered; see
+      ``build_symbol_rows``), and ordered as ``carry_value`` says. A study
+      that ranks by low funding sorts on it.
     """
 
     ts: int

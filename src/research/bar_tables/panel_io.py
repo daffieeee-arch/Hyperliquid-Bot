@@ -297,10 +297,11 @@ def build_panel(
     _check_kline_runs(bars, files.kline_runs)
     settlements = _read_settlements(files.funding)
     _check_funding_runs(bars, settlements, files.funding_runs)
-    # hist_etl keeps no settlement stamped before a dataset's first day.
+    # hist_etl keeps no settlement stamped before a manifest start. A
+    # listing month's first day has none to lose, so it is not cut.
     cut: dict[str, set[int]] = defaultdict(set)
     for run in files.funding_runs:
-        if run.at_spec_start:
+        if run.at_spec_start and not run.late_start:
             cut[run.symbol].add(_close_ms(run.first))
     start_ms = _day_ms(start)
     end_ms = _day_ms(end)

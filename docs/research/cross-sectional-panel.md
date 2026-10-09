@@ -84,8 +84,10 @@ of latency.
     is judged like a fresh listing, whatever `start` the panel reads from.
 - **The universe comes from the rank, not from survival.** `volume_rank`
   orders the rows of one day that traded and have `qv_<V>d`, ties going to
-  the symbol that sorts first. It needs no other feature, so the universe
-  never depends on another feature's data, funding included. A study takes
+  the symbol that sorts first. By default it needs no other feature, so the
+  universe never depends on another feature's data, funding included;
+  `--rank-requires-funding` adds the day's own funding rate, a fact of the
+  day rather than a feature. A study takes
   its universe per day from that rank, for example `volume_rank <= 50`,
   requires the features it uses on top, and writes both rules into its
   pre-registration.
@@ -97,11 +99,14 @@ of its signal, so a signed spec on `carry_<K>d` longs the lowest funding and
 shorts the highest. It uses the same `--funding-window` as `funding_<K>d`
 and the same clock.
 
-- **Rate days, not covered days.** Its window needs `K` consecutive days in
-  one stretch that each have a `funding_rate`, covered or not. A day's
-  recorded sum is the funding a holder was charged that day, known at its
-  close, and it is what the harness charges a position held through it. A
-  day that returns from 4h to 8h funding reads as not covered at its close
+- **Traded rate days, not covered days.** Its window needs `K` consecutive
+  days in one stretch that each traded and have a `funding_rate`, covered or
+  not. A day's recorded sum is the funding a holder was charged that day,
+  known at its close, and it is what the harness charges a position held
+  through it. Like the price features, carry reads no archive day that did
+  not trade: no one paid its funding (a delisted contract's flat archive
+  carries the default rate), and the build does not check it. A day that
+  returns from 4h to 8h funding reads as not covered at its close
   and blanks `funding_<K>d` for `K` days, and Binance changes an interval
   mostly when funding runs at its cap or floor, so a carry ranking on
   `funding_<K>d` would lose names on exactly the tails it sorts on.
@@ -111,18 +116,20 @@ and the same clock.
   - Whether a day counts never depends on a later settlement or on the
     build's validation, which reads the whole series: a feature must not
     know whether a contract delists later that month.
-  - A dataset's first day (a run's first month, or a manifest `start`)
-    counts only when covered: hist_etl keeps no settlement stamped before
-    it, so its midnight settlement may be cut away.
+  - A run's first day at a manifest `start` counts only when covered:
+    hist_etl keeps no settlement stamped before the start, so that day's
+    midnight settlement may be cut away. A listing month has nothing before
+    it to lose, so its first day counts at what it charged.
   - The build's validation shares the panel's limitation: one settlement
     missing right where an interval changes is not caught, so such a day
     enters short by that settlement.
-- **Steps of 1e-9 of the window's sum.** Binance prints rates with at most
-  8 decimals, so the window's funding sum is a multiple of 1e-8 up to
-  floating-point rounding. Counted in steps of 1e-9, equal sums are exact
-  ties however their settlements split, and distinct sums stay 10 steps
-  apart, for any window length. A finer step would leave a float64 too few
-  bits for the draw below.
+- **Steps of 1e-9 of the window's sum.** Sums are counted in steps of 1e-9,
+  so equal sums are exact ties however their settlements split. Binance's
+  archives print rates with 8 decimals, so distinct sums are multiples of
+  1e-8 and stay 10 steps apart, for any window length. A rate with more
+  decimals is not refused: sums closer than about 1e-9 (a hundred-millionth
+  of a percent over the window) are then treated as ties. A finer step
+  would leave a float64 too few bits for the draw below.
 - **Ties broken by a draw.** A tie is ordered by a number drawn from the
   sha256 of the symbol and the row's `ts`, which moves the value by less
   than a tenth of a step. It reads no market data, is the same in every

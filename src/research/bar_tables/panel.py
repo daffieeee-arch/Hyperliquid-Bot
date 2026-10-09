@@ -166,12 +166,15 @@ def build_symbol_rows(
     spans one gives ``None``. ``settlements`` may reach back before the first
     bar; only those inside a bar's day are used.
 
-    ``carry`` needs a rate on every day of its window, covered or not: the
-    day's recorded sum is the funding a holder was charged that day (and
-    what the harness charges), known at its close. ``cut_closes`` are days
-    whose settlements the data range may have cut (a dataset's first day,
-    where hist_etl keeps no settlement stamped before it); they count only
-    when covered. ``mean_funding`` keeps needing covered days.
+    ``carry`` needs every day of its window traded and with a rate, covered
+    or not: the day's recorded sum is the funding a holder was charged that
+    day (and what the harness charges), known at its close. Like the price
+    features it reads no archive day that did not trade, whose funding no
+    one paid and the build does not check. ``cut_closes`` are days whose
+    settlements the data range may have cut (a run's first day at a
+    manifest start, where hist_etl keeps no settlement stamped before it);
+    they count only when covered. ``mean_funding`` keeps needing covered
+    days.
     """
 
     _check_bars(symbol, bars)
@@ -186,8 +189,8 @@ def build_symbol_rows(
     covered_streak = _streaks([day.covered for day in funding], run_start)
     carry_streak = _streaks(
         [
-            day.rate is not None and (day.covered or bar.ts not in cut_closes)
-            for day, bar in zip(funding, bars, strict=True)
+            flag and day.rate is not None and (day.covered or bar.ts not in cut_closes)
+            for day, flag, bar in zip(funding, traded, bars, strict=True)
         ],
         run_start,
     )
@@ -199,12 +202,13 @@ def build_symbol_rows(
     rows: list[PanelRow] = []
     for index, bar in enumerate(bars):
         span = index - run_start[index] + 1
-        # A covered day is a carry day, so this sum serves both funding features.
+        # Summed when either funding feature needs it; a covered window has
+        # every rate, so the sum serves both.
         funding_sum = (
             math.fsum(
                 _known(day.rate) for day in funding[index - spec.funding_window + 1 : index + 1]
             )
-            if carry_streak[index] >= spec.funding_window
+            if max(carry_streak[index], covered_streak[index]) >= spec.funding_window
             else None
         )
         rows.append(
@@ -239,9 +243,9 @@ def build_symbol_rows(
                     else None
                 ),
                 carry=(
-                    None
-                    if funding_sum is None
-                    else carry_value(symbol, bar.ts, funding_sum, spec.funding_window)
+                    carry_value(symbol, bar.ts, _known(funding_sum), spec.funding_window)
+                    if carry_streak[index] >= spec.funding_window
+                    else None
                 ),
             )
         )

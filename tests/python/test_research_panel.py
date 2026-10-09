@@ -1292,3 +1292,31 @@ def test_tied_carries_keep_distinct_draws_at_large_sums() -> None:
         assert sorted(symbols, key=lambda symbol: -carries[symbol]) == sorted(
             symbols, key=lambda symbol: -draws[symbol]
         )
+
+
+def test_an_untraded_day_restarts_the_carry_window() -> None:
+    bars = _bars([100.0, 101.0, 102.0, 103.0, 104.0], trades=[10, 0, 10, 10, 10])
+    rows = _rows(bars)
+    # A flat archive day pays no one's funding and is not checked by the build.
+    assert [row.carry is None for row in rows] == [True, True, True, False, False]
+
+
+def test_a_listing_month_first_day_counts_at_what_it_charged(tmp_path: Path) -> None:
+    root, manifest = _universe_root(tmp_path)
+    # AAAUSDT's first settlement is at 08:00 on Jan 1, the day it lists.
+    _write_month(root, "funding", "AAAUSDT", "2026-01", range(1, 32), slots=range(1, 93))
+    out = tmp_path / "panel.parquet"
+    assert main(_panel_args(root, manifest, out)) == 0
+    connection = duckdb.connect()
+    try:
+        first = connection.execute(
+            "SELECT min(ts) FILTER (WHERE carry_3d IS NOT NULL), "
+            "min(ts) FILTER (WHERE funding_3d IS NOT NULL) "
+            "FROM read_parquet(?) WHERE symbol = 'AAAUSDT'",
+            [str(out)],
+        ).fetchone()
+    finally:
+        connection.close()
+    # carry_3d takes Jan 1 at its two settlements; funding_3d waits for three
+    # covered days.
+    assert first == (_FIRST_CLOSE + 2 * DAY_MS, _FIRST_CLOSE + 3 * DAY_MS)

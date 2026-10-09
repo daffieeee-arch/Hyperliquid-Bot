@@ -185,7 +185,8 @@ configs:
   for low funding (see the panel's [Carry](cross-sectional-panel.md#carry)).
 - **Universe and legs**: on the decision day the universe is every symbol
   that traded, has a rank at most `universe_size` and a known signal;
-  funding plays no part in it. Sorted by the signal (ties by symbol), the
+  funding plays no part in it here (a panel built with
+  `--rank-requires-funding` ranks only rows with a rate that day). Sorted by the signal (ties by symbol), the
   top `quantile` of the universe is the long leg and, under
   `direction: signed`, the bottom `quantile` the short leg; `long_only`
   holds the long leg alone. It is one ranking, so the legs are disjoint:

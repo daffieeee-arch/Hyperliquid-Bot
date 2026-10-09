@@ -129,7 +129,7 @@ def _panel(args: argparse.Namespace) -> int:
         manifest = load_panel_manifest(manifest_path, args.group)
         exclusions = (
             load_exclusions(Path(args.exclude_symbols), manifest, manifest_path, args.group)
-            if args.exclude_symbols
+            if args.exclude_symbols is not None
             else None
         )
         rule = RankRule(

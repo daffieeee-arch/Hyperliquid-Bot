@@ -27,10 +27,9 @@ from research.bar_tables.panel import (
     rank_by_volume,
 )
 from research.bar_tables.panel_io import (
-    Run,
-    _check_funding_runs,
     load_exclusions,
     load_panel_manifest,
+    universe_files,
 )
 from research.bar_tables.trend import BarTableError
 from research.hist_etl.manifest import load_manifest
@@ -906,87 +905,25 @@ def test_an_unknown_group_or_bad_window_is_refused(
 # --- Carry and the rank rule ---------------------------------------------------
 
 
-def _vouched(bars: list[DailyBar]) -> frozenset[int]:
-    return frozenset(bar.ts for bar in bars)
-
-
-def test_carry_takes_a_vouched_switch_day_at_its_recorded_sum() -> None:
+def test_carry_takes_every_day_with_a_rate_at_its_recorded_sum() -> None:
     bars = _bars([100.0, 101.0, 102.0, 103.0, 104.0])
-    rows = build_symbol_rows(
-        "AAAUSDT", bars, _returning_to_eight_hours(bars), _SPEC, _vouched(bars)
-    )
+    rows = _rows(bars, _returning_to_eight_hours(bars))
     # Day two cannot be proven whole at its close, so funding_2d is empty for
-    # two days; the build vouched for it, so carry_2d takes its recorded sum.
+    # two days; carry_2d takes the day at its recorded sum, what a holder paid.
     assert rows[1].mean_funding is None and rows[2].mean_funding is None
     assert rows[1].carry == pytest.approx(-(0.0003 + 0.005) / 2, abs=1e-13)
     assert rows[2].carry == pytest.approx(-(0.005 + 0.0003) / 2, abs=1e-13)
     assert rows[0].carry is None
+    # A partial day (one settlement of three) enters at what it charged.
+    partial = [item for item in _funding(bars) if settlements_index(item, bars) not in (4, 5)]
+    assert _rows(bars, partial)[1].carry == pytest.approx(-(0.0003 + 0.0001) / 2, abs=1e-13)
     # A day without any settlement empties carry for the window's length.
     settlements = [item for item in _funding(bars) if not 6 <= settlements_index(item, bars) < 9]
-    gapped = build_symbol_rows("AAAUSDT", bars, settlements, _SPEC, _vouched(bars))
+    gapped = _rows(bars, settlements)
     assert [row.carry is None for row in gapped] == [True, False, True, True, False]
     # A gap between runs restarts the window.
     relisted = [*bars[:3], *(replace(bar, ts=bar.ts + 10 * DAY_MS) for bar in bars[3:])]
-    restarted = build_symbol_rows("AAAUSDT", relisted, _funding(relisted), _SPEC, _vouched(bars))
-    assert restarted[3].carry is None
-
-
-def test_carry_skips_an_uncovered_day_the_build_did_not_vouch_for() -> None:
-    bars = _bars([100.0, 101.0, 102.0, 103.0, 104.0])
-    # Day two holds only its 00:00 settlement: partial, which the build
-    # allows at a listing or delisting edge, on an untraded day, or on the
-    # day of a window's last settlement.
-    partial = [item for item in _funding(bars) if settlements_index(item, bars) not in (4, 5)]
-    unvouched = _vouched(bars) - {bars[1].ts}
-    rows = build_symbol_rows("AAAUSDT", bars, partial, _SPEC, unvouched)
-    assert [row.carry is None for row in rows] == [True, True, True, False, False]
-    # Without vouched days only covered ones count.
-    assert [row.carry is None for row in _rows(bars, partial)] == [True, True, True, False, False]
-    vouched = build_symbol_rows("AAAUSDT", bars, partial, _SPEC, _vouched(bars))
-    assert vouched[1].carry is not None
-    # A covered day counts without being vouched for.
-    covered = build_symbol_rows("AAAUSDT", bars, _funding(bars), _SPEC, unvouched)
-    assert covered[1].carry is not None
-
-
-def test_the_funding_check_vouches_only_for_days_it_checked() -> None:
-    def closes(first: date, last: date) -> list[int]:
-        opens = (first - date(1970, 1, 1)).days * DAY_MS
-        return [opens + offset * DAY_MS + DAY_MS - 1 for offset in range((last - first).days + 1)]
-
-    # Delisted after Feb 20; relisted on Apr 10, the next run's listing month.
-    days = [
-        *closes(date(2026, 1, 1), date(2026, 2, 20)),
-        *closes(date(2026, 4, 10), date(2026, 5, 31)),
-    ]
-    bars = {"RELUSDT": [DailyBar(ts, 100.0, 1_000.0, 10) for ts in days]}
-    settlements = {
-        "RELUSDT": [
-            Settlement(ts + 1 - DAY_MS + hour * 3_600_000, 0.0001, 8)
-            for ts in days
-            for hour in (0, 8, 16)
-        ]
-    }
-    first = Run(
-        "RELUSDT",
-        date(2026, 1, 1),
-        date(2026, 2, 28),
-        late_start=False,
-        early_end=True,
-        published=False,
-        at_spec_start=False,
-        reaches_end=True,
-    )
-    second = replace(
-        first, first=date(2026, 4, 1), last=date(2026, 5, 31), late_start=True, early_end=False
-    )
-    vouched = _check_funding_runs(bars, settlements, [first, second])["RELUSDT"]
-    # January, and May up to the run's last settlement day: not the
-    # delisting month, not the next run's listing month, and not May 31,
-    # whose later settlements nothing after it can confirm.
-    assert vouched == frozenset(
-        [*closes(date(2026, 1, 1), date(2026, 1, 31)), *closes(date(2026, 5, 1), date(2026, 5, 30))]
-    )
+    assert _rows(relisted, _funding(relisted))[3].carry is None
 
 
 def settlements_index(item: Settlement, bars: list[DailyBar]) -> int:
@@ -1241,6 +1178,17 @@ def test_an_excluded_symbol_is_checked_against_the_universe_file(tmp_path: Path)
     assert loaded.sha256 == hashlib.sha256(path.read_bytes()).hexdigest()
     with pytest.raises(BarTableError, match="not a binance_universe entry"):
         load_panel_manifest(manifest, "v")
+    loaded_manifest = load_panel_manifest(manifest, "u")
+    with pytest.raises(BarTableError, match="not a binance_universe entry"):
+        universe_files(tmp_path, loaded_manifest, "v", date(2026, 1, 1), date(2026, 2, 1), _SPEC)
+
+
+def test_an_empty_exclusion_path_fails_closed(tmp_path: Path, capsys: CaptureFixture[str]) -> None:
+    root, manifest = _universe_root(tmp_path)
+    out = tmp_path / "panel.parquet"
+    assert main([*_panel_args(root, manifest, out), "--exclude-symbols", ""]) == 2
+    assert "Exclusion list" in capsys.readouterr().err
+    assert not out.exists()
 
 
 def test_a_traded_day_without_funding_ranks_only_without_the_rule(

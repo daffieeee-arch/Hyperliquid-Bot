@@ -130,6 +130,8 @@ def universe_files(
     window whatever ``start`` is, where the universe has the history.
     """
 
+    if group not in manifest.binance_groups:
+        raise BarTableError(f"{group} is not a binance_universe entry of the manifest.")
     specs = [spec for spec in manifest.binance if spec.group == group]
     klines = [spec for spec in specs if spec.dataset == "klines"]
     funding = [spec for spec in specs if spec.dataset == "fundingRate"]
@@ -294,18 +296,14 @@ def build_panel(
     bars = _read_bars(files.klines)
     _check_kline_runs(bars, files.kline_runs)
     settlements = _read_settlements(files.funding)
-    vouched = _check_funding_runs(bars, settlements, files.funding_runs)
+    _check_funding_runs(bars, settlements, files.funding_runs)
     start_ms = _day_ms(start)
     end_ms = _day_ms(end)
     rows: list[PanelRow] = []
     for symbol in sorted(bars):
         # Rows look back only, so bars after ``end`` change nothing; skip them.
         kept = [bar for bar in bars[symbol] if bar.ts < end_ms]
-        rows.extend(
-            build_symbol_rows(
-                symbol, kept, settlements.get(symbol, []), spec, vouched.get(symbol, frozenset())
-            )
-        )
+        rows.extend(build_symbol_rows(symbol, kept, settlements.get(symbol, []), spec))
     inside = [row for row in rows if start_ms <= row.ts < end_ms]
     if not inside:
         raise BarTableError("The universe has no daily bar inside the panel range.")
@@ -359,7 +357,7 @@ def _check_funding_runs(
     bars: dict[str, list[DailyBar]],
     settlements: dict[str, list[Settlement]],
     runs: Sequence[Run],
-) -> dict[str, frozenset[int]]:
+) -> None:
     """A traded day inside a funding run with a settlement missing fails.
 
     This is validation, not a feature, so it reads the whole series and the
@@ -368,14 +366,8 @@ def _check_funding_runs(
     start late only inside the listing month and stop early only inside the
     delisting month. A day that did not trade is not checked: delisted
     contracts carry default funding.
-
-    Returns, per symbol, the closes this check vouches for: the traded days
-    of a run's window outside its listing and delisting allowances, less
-    the day of the window's last settlement when no settlement follows it
-    (later ones of that day may be missing, and nothing tells yet).
     """
 
-    vouched: dict[str, set[int]] = defaultdict(set)
     for run in runs:
         traded = {bar.ts for bar in bars.get(run.symbol, []) if bar.traded}
         opens = _close_ms(run.first) - DAY_MS
@@ -403,17 +395,6 @@ def _check_funding_runs(
                 f"{run.symbol} traded on {day} with a funding settlement missing inside a "
                 "funding run; run hist_etl verify and sync."
             )
-        if not own:
-            continue
-        unchecked = {settlement_day_close(own[-1].ts)} if following is None else set()
-        vouched[run.symbol].update(
-            ts
-            for ts in traded
-            if opens < ts <= high
-            and ts not in unchecked
-            and not (_late_start_ok(run, ts) or _early_end_ok(run, ts))
-        )
-    return {symbol: frozenset(closes) for symbol, closes in vouched.items()}
 
 
 def _late_start_ok(run: Run, close: int) -> bool:

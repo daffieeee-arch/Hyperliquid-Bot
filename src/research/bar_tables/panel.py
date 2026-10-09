@@ -114,9 +114,8 @@ class PanelRow:
     - ``mean_funding``: the mean daily ``funding_rate`` over the funding
       window, every day of it covered.
     - ``carry``: minus the mean daily ``funding_rate`` over the funding
-      window, every day of it a carry day (see ``build_symbol_rows``) and
-      ordered as ``carry_value`` says. A study that ranks by low funding
-      sorts on it.
+      window, every day of it with a rate, covered or not, and ordered as
+      ``carry_value`` says. A study that ranks by low funding sorts on it.
     """
 
     ts: int
@@ -158,7 +157,6 @@ def build_symbol_rows(
     bars: Sequence[DailyBar],
     settlements: Sequence[Settlement],
     spec: PanelSpec,
-    vouched_closes: frozenset[int] = frozenset(),
 ) -> list[PanelRow]:
     """Rows for one symbol, without ``volume_rank``.
 
@@ -166,13 +164,9 @@ def build_symbol_rows(
     spans one gives ``None``. ``settlements`` may reach back before the first
     bar; only those inside a bar's day are used.
 
-    ``vouched_closes`` are the closes of days on which the build checked
-    that no settlement is missing (``_check_funding_runs``: traded days of a
-    funding run, off its listing and delisting allowances). ``carry`` needs
-    every day of its window to be a carry day: one with a rate that is
-    covered or vouched for. A vouched day the close cannot prove whole is an
-    interval switch, and its recorded sum is the whole day's funding.
-    Without vouched days only covered ones count. ``mean_funding`` keeps
+    ``carry`` needs a rate on every day of its window, covered or not: the
+    day's recorded sum is the funding a holder was charged that day (and
+    what the harness charges), known at its close. ``mean_funding`` keeps
     needing covered days.
     """
 
@@ -186,13 +180,7 @@ def build_symbol_rows(
     run_start = _run_starts(bars)
     traded_streak = _streaks(traded, run_start)
     covered_streak = _streaks([day.covered for day in funding], run_start)
-    carry_streak = _streaks(
-        [
-            day.rate is not None and (day.covered or bar.ts in vouched_closes)
-            for day, bar in zip(funding, bars, strict=True)
-        ],
-        run_start,
-    )
+    carry_streak = _streaks([day.rate is not None for day in funding], run_start)
     # one_day[i]: the log return into bar i, for bars inside one stretch.
     one_day = [
         math.log(bar.close / bars[index - 1].close) if run_start[index] != index else 0.0
@@ -201,7 +189,7 @@ def build_symbol_rows(
     rows: list[PanelRow] = []
     for index, bar in enumerate(bars):
         span = index - run_start[index] + 1
-        # A covered day is a carry day, so this sum serves both funding features.
+        # A covered day has a rate, so this sum serves both funding features.
         funding_sum = (
             math.fsum(
                 _known(day.rate) for day in funding[index - spec.funding_window + 1 : index + 1]

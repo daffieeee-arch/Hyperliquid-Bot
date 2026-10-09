@@ -47,7 +47,7 @@ of latency.
 | `vol_<W>d` | Sample stdev of the last `W` daily log returns; empty unless positive |
 | `qv_<V>d` | Mean quote volume over `V` days, untraded days counting as 0 |
 | `funding_<K>d` | Mean daily `funding_rate` over `K` covered days |
-| `carry_<K>d` | Minus the mean daily `funding_rate` over `K` carry days; see [Carry](#carry) |
+| `carry_<K>d` | Minus the mean daily `funding_rate` over `K` days with a rate, covered or not; see [Carry](#carry) |
 | `volume_rank` | Rank by `qv_<V>d` among the day's rows that traded and have it; 1 is the largest |
 
 ## Point-in-time rules
@@ -97,20 +97,23 @@ of its signal, so a signed spec on `carry_<K>d` longs the lowest funding and
 shorts the highest. It uses the same `--funding-window` as `funding_<K>d`
 and the same clock.
 
-- **Carry days, not covered days.** Its window needs `K` consecutive days in
-  one stretch that are each a carry day: a day with a `funding_rate` that is
-  covered, or that the build checked for a missing settlement. The build
-  checks the traded days of a funding run, except the run's listing and
-  delisting months, its first day at a manifest `start`, and the day of its
-  last settlement when no later one is published yet. A day that returns
-  from 4h to 8h funding reads as not covered at its close and blanks
-  `funding_<K>d` for `K` days, and Binance changes an interval mostly when
-  funding runs at its cap or floor, so a carry ranking on `funding_<K>d`
-  would lose names on exactly the tails it sorts on. A checked day the
-  close cannot prove whole is such a switch, and it enters at its recorded
-  sum, which is what the harness charges a position held through it. An
-  unchecked uncovered day may hold only part of the day's funding, so it
-  is not a carry day.
+- **Rate days, not covered days.** Its window needs `K` consecutive days in
+  one stretch that each have a `funding_rate`, covered or not. A day's
+  recorded sum is the funding a holder was charged that day, known at its
+  close, and it is what the harness charges a position held through it. A
+  day that returns from 4h to 8h funding reads as not covered at its close
+  and blanks `funding_<K>d` for `K` days, and Binance changes an interval
+  mostly when funding runs at its cap or floor, so a carry ranking on
+  `funding_<K>d` would lose names on exactly the tails it sorts on.
+  - A day with fewer settlements than usual (a listing or delisting day)
+    counts at what it charged. That is real funding, not a gap; a missing
+    settlement on a traded day inside a funding run fails the build.
+  - Whether a day counts never depends on a later settlement or on the
+    build's validation, which reads the whole series: a feature must not
+    know whether a contract delists later that month.
+  - The build's validation shares the panel's limitation: one settlement
+    missing right where an interval changes is not caught, so such a day
+    enters short by that settlement.
 - **Steps of 1e-12 of the window's sum.** Binance prints rates with at most
   8 decimals, so the window's funding sum is a multiple of 1e-8 up to
   floating-point rounding. Counted in steps of 1e-12, equal sums are exact

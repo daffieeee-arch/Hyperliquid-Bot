@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 from dataclasses import replace
 from datetime import date
@@ -17,12 +19,20 @@ from research.bar_tables.panel import (
     DailyBar,
     PanelRow,
     PanelSpec,
+    RankRule,
     Settlement,
     build_symbol_rows,
+    carry_value,
     funding_hole_closes,
     rank_by_volume,
 )
+from research.bar_tables.panel_io import (
+    load_exclusions,
+    load_panel_manifest,
+    universe_files,
+)
 from research.bar_tables.trend import BarTableError
+from research.hist_etl.manifest import load_manifest
 from research.hist_etl.universe import MonthRun, Universe, UniverseSymbol, render_universe
 
 # 2026-01-01 23:59:59.999 UTC, the close of the first daily bar of 2026.
@@ -488,6 +498,7 @@ def test_the_cli_writes_the_panel_with_delisted_symbols(tmp_path: Path) -> None:
         "vol_5d",
         "qv_5d",
         "funding_3d",
+        "carry_3d",
         "volume_rank",
     ]
     # A symbol ranks once it traded with five days of volume: DEADUSDT from
@@ -889,3 +900,425 @@ def test_an_unknown_group_or_bad_window_is_refused(
         extreme[extreme.index(flag) + 1] = value
         assert main(extreme) == 2
         assert "Panel dates must lie from 2000-01-01 to 2100-01-01" in capsys.readouterr().err
+
+
+# --- Carry and the rank rule ---------------------------------------------------
+
+
+def test_carry_takes_every_day_with_a_rate_at_its_recorded_sum() -> None:
+    bars = _bars([100.0, 101.0, 102.0, 103.0, 104.0])
+    rows = _rows(bars, _returning_to_eight_hours(bars))
+    # Day two cannot be proven whole at its close, so funding_2d is empty for
+    # two days; carry_2d takes the day at its recorded sum, what a holder paid.
+    assert rows[1].mean_funding is None and rows[2].mean_funding is None
+    assert rows[1].carry == pytest.approx(-(0.0003 + 0.005) / 2, abs=1e-10)
+    assert rows[2].carry == pytest.approx(-(0.005 + 0.0003) / 2, abs=1e-10)
+    assert rows[0].carry is None
+    # A partial day (one settlement of three) enters at what it charged.
+    partial = [item for item in _funding(bars) if settlements_index(item, bars) not in (4, 5)]
+    assert _rows(bars, partial)[1].carry == pytest.approx(-(0.0003 + 0.0001) / 2, abs=1e-10)
+    # A day without any settlement empties carry for the window's length.
+    settlements = [item for item in _funding(bars) if not 6 <= settlements_index(item, bars) < 9]
+    gapped = _rows(bars, settlements)
+    assert [row.carry is None for row in gapped] == [True, False, True, True, False]
+    # A gap between runs restarts the window.
+    relisted = [*bars[:3], *(replace(bar, ts=bar.ts + 10 * DAY_MS) for bar in bars[3:])]
+    assert _rows(relisted, _funding(relisted))[3].carry is None
+
+
+def settlements_index(item: Settlement, bars: list[DailyBar]) -> int:
+    """The index of an 8-hourly settlement of ``_funding(bars)``."""
+
+    return (item.ts - (bars[0].ts + 1 - DAY_MS)) // (8 * 3_600_000)
+
+
+def test_carry_orders_distinct_sums_as_minus_funding() -> None:
+    sums = [0.0063, -0.0028, 0.0021, 0.0021 + 1e-8, 0.0, -0.0028 - 1e-8]
+    carries = [
+        carry_value(f"S{index}USDT", _FIRST_CLOSE, total, 7) for index, total in enumerate(sums)
+    ]
+    by_funding = sorted(range(len(sums)), key=lambda index: sums[index])
+    by_carry = sorted(range(len(sums)), key=lambda index: -carries[index])
+    assert by_carry == by_funding
+    for total, carry in zip(sums, carries, strict=True):
+        assert carry == pytest.approx(-total / 7, abs=1e-10)
+    # A zero sum never writes -0.0.
+    assert math.copysign(1.0, carry_value("AAAUSDT", _FIRST_CLOSE, 0.0, 7)) == 1.0
+    assert math.copysign(1.0, carry_value("ZZZUSDT", _FIRST_CLOSE, -0.0, 7)) == 1.0
+
+
+def test_carry_keeps_8_decimal_sums_apart_and_tied_for_any_window() -> None:
+    for window in (2, 7, 8, 200, 3_650):
+        for count in range(1, 400, 7):
+            # The same 8-decimal sum, added up from different settlement splits.
+            whole = count * 1e-8
+            split = math.fsum(
+                [(count // 3) * 1e-8, (count // 3) * 1e-8, (count - 2 * (count // 3)) * 1e-8]
+            )
+            naive = sum([1e-8] * count)
+            values = {
+                carry_value("AAAUSDT", _FIRST_CLOSE, total, window)
+                for total in (whole, split, naive)
+            }
+            assert len(values) == 1
+            # The next 8-decimal sum stays below it, whatever the draws.
+            for symbol in ("BBBUSDT", "CCCUSDT", "1000XUSDT"):
+                above = carry_value(symbol, _FIRST_CLOSE, whole + 1e-8, window)
+                assert above < min(values)
+
+
+def test_carry_ties_are_broken_by_symbol_and_day_not_by_the_alphabet() -> None:
+    # Sums a floating-point rounding apart, all at the neutral rate.
+    sums = [0.0003, 0.0001 + 0.0001 + 0.0001, 0.0002 + 0.0001, math.fsum([0.0000125] * 24)]
+    assert len(set(sums)) > 1
+    symbols = [f"{name}USDT" for name in ("1000PEPE", "AAA", "MMM", "ZZZ")]
+    orders = set()
+    for day in range(20):
+        ts = _FIRST_CLOSE + day * DAY_MS
+        carries = {
+            symbol: carry_value(symbol, ts, total, 1)
+            for symbol, total in zip(symbols, sums, strict=True)
+        }
+        # Equal to the step, so the draw alone decides the order...
+        assert max(carries.values()) - min(carries.values()) < 1e-10
+        order = tuple(sorted(symbols, key=lambda symbol: -carries[symbol]))
+        draws = {
+            symbol: int.from_bytes(hashlib.sha256(f"{symbol}|{ts}".encode()).digest()[:8], "big")
+            for symbol in symbols
+        }
+        assert order == tuple(sorted(symbols, key=lambda symbol: -draws[symbol]))
+        orders.add(order)
+    # ...and it changes from day to day.
+    assert len(orders) > 1
+
+
+def test_carry_is_built_the_same_way_twice() -> None:
+    bars = _bars([100.0, 101.0, 102.0, 103.0])
+    assert [row.carry for row in _rows(bars)] == [row.carry for row in _rows(bars)]
+
+
+def _ranked_row(symbol: str, volume: float, rate: float | None) -> PanelRow:
+    return PanelRow(
+        ts=_FIRST_CLOSE,
+        symbol=symbol,
+        close=1.0,
+        quote_volume=volume,
+        trades=1,
+        traded=True,
+        funding_rate=rate,
+        funding_settlements=0 if rate is None else 3,
+        funding_covered=rate is not None,
+        returns=(0.1,),
+        realized_vol=0.01,
+        mean_quote_volume=volume,
+        mean_funding=None,
+    )
+
+
+def test_the_rank_rule_moves_the_next_symbol_up() -> None:
+    rows = [
+        _ranked_row("AAAUSDT", 9.0, 0.0001),
+        _ranked_row("BBBUSDT", 8.0, None),
+        _ranked_row("CCCUSDT", 7.0, 0.0001),
+        _ranked_row("DDDUSDT", 6.0, 0.0001),
+    ]
+
+    def ranks(rule: RankRule | None) -> list[tuple[str, int | None]]:
+        return [(row.symbol, row.volume_rank) for row in rank_by_volume(rows, rule)]
+
+    assert ranks(None) == [("AAAUSDT", 1), ("BBBUSDT", 2), ("CCCUSDT", 3), ("DDDUSDT", 4)]
+    assert ranks(RankRule(excluded=frozenset({"AAAUSDT"}))) == [
+        ("AAAUSDT", None),
+        ("BBBUSDT", 1),
+        ("CCCUSDT", 2),
+        ("DDDUSDT", 3),
+    ]
+    assert ranks(RankRule(require_funding=True)) == [
+        ("AAAUSDT", 1),
+        ("BBBUSDT", None),
+        ("CCCUSDT", 2),
+        ("DDDUSDT", 3),
+    ]
+    assert ranks(RankRule(excluded=frozenset({"CCCUSDT"}), require_funding=True)) == [
+        ("AAAUSDT", 1),
+        ("BBBUSDT", None),
+        ("CCCUSDT", None),
+        ("DDDUSDT", 2),
+    ]
+    # Excluded rows keep every value but the rank.
+    excluded = rank_by_volume(rows, RankRule(excluded=frozenset({"AAAUSDT"})))[0]
+    assert replace(excluded, volume_rank=1) == rank_by_volume(rows)[0]
+
+
+def _exclusions(tmp_path: Path, body: object, *, raw: str | None = None) -> Path:
+    path = tmp_path / "exclude.json"
+    path.write_text(raw if raw is not None else json.dumps(body), encoding="utf-8")
+    return path
+
+
+def _exclusion_body(**overrides: object) -> dict[str, object]:
+    body: dict[str, object] = {
+        "format": 1,
+        "universe": "u.json",
+        "rule": "Contracts whose underlying is not a crypto asset.",
+        "symbols": {"AAAUSDT": "commodity"},
+    }
+    body.update(overrides)
+    return body
+
+
+def _ranks(path: Path) -> dict[str, list[int | None]]:
+    connection = duckdb.connect()
+    try:
+        rows = connection.execute(
+            "SELECT symbol, volume_rank FROM read_parquet(?) ORDER BY ts, symbol", [str(path)]
+        ).fetchall()
+    finally:
+        connection.close()
+    ranks: dict[str, list[int | None]] = {}
+    for symbol, rank in rows:
+        assert isinstance(symbol, str)
+        assert rank is None or isinstance(rank, int)
+        ranks.setdefault(symbol, []).append(rank)
+    return ranks
+
+
+def test_excluded_symbols_keep_their_rows_and_never_rank(
+    tmp_path: Path, capsys: CaptureFixture[str]
+) -> None:
+    root, manifest = _universe_root(tmp_path)
+    plain = tmp_path / "plain.parquet"
+    narrowed = tmp_path / "narrowed.parquet"
+    assert main(_panel_args(root, manifest, plain)) == 0
+    exclusions = _exclusions(tmp_path, _exclusion_body())
+    args = [*_panel_args(root, manifest, narrowed), "--exclude-symbols", str(exclusions)]
+    assert main(args) == 0
+    digest = hashlib.sha256(exclusions.read_bytes()).hexdigest()
+    assert capsys.readouterr().out.endswith(f"{narrowed}\t1\texcluded\tsha256:{digest}\n")
+    before = _ranks(plain)
+    after = _ranks(narrowed)
+    assert after["AAAUSDT"] == [None] * len(before["AAAUSDT"])
+    # AAAUSDT out-trades the others, so each of them moves up by one where
+    # AAAUSDT ranked, and the ranks of a day stay 1..n without a hole.
+    for symbol in ("DEADUSDT", "NEWUSDT"):
+        assert after[symbol] == [None if rank is None else rank - 1 for rank in before[symbol]]
+    connection = duckdb.connect()
+    try:
+        holes = connection.execute(
+            "SELECT count(*) FROM (SELECT ts, max(volume_rank) AS top, count(volume_rank) AS n "
+            "FROM read_parquet(?) GROUP BY ts) WHERE top <> n",
+            [str(narrowed)],
+        ).fetchone()
+        unchanged = connection.execute(
+            "SELECT count(*) FROM (SELECT * EXCLUDE (volume_rank) FROM read_parquet(?) "
+            "EXCEPT SELECT * EXCLUDE (volume_rank) FROM read_parquet(?))",
+            [str(narrowed), str(plain)],
+        ).fetchone()
+    finally:
+        connection.close()
+    assert holes == (0,)
+    assert unchanged == (0,)
+
+
+@pytest.mark.parametrize(
+    ("body", "raw", "message"),
+    [
+        (_exclusion_body(extra=1), None, "exactly the keys"),
+        ({key: value for key, value in _exclusion_body().items() if key != "rule"}, None, "keys"),
+        (_exclusion_body(format=2), None, "format 1"),
+        (_exclusion_body(format=True), None, "format 1"),
+        (_exclusion_body(rule=" "), None, "rule"),
+        (_exclusion_body(symbols=["AAAUSDT"]), None, "categories"),
+        (_exclusion_body(symbols={"AAAUSDT": "metal"}), None, "unknown categories"),
+        (_exclusion_body(symbols={"XXXUSDT": "index"}), None, "does not hold: XXXUSDT"),
+        (_exclusion_body(universe="universe/u.json"), None, "reads 'u.json'"),
+        (
+            None,
+            '{"format": 1, "universe": "u.json", "rule": "r", '
+            '"symbols": {"AAAUSDT": "index", "AAAUSDT": "equity"}}',
+            "duplicate keys: AAAUSDT",
+        ),
+        (None, "{", "Exclusion list"),
+    ],
+)
+def test_a_bad_exclusion_list_fails_closed_and_writes_nothing(
+    tmp_path: Path,
+    capsys: CaptureFixture[str],
+    body: object,
+    raw: str | None,
+    message: str,
+) -> None:
+    root, manifest = _universe_root(tmp_path)
+    out = tmp_path / "panel.parquet"
+    exclusions = _exclusions(tmp_path, body, raw=raw)
+    args = [*_panel_args(root, manifest, out), "--exclude-symbols", str(exclusions)]
+    assert main(args) == 2
+    assert message in capsys.readouterr().err
+    assert not out.exists()
+
+
+def test_the_manifest_keeps_each_universe_file_as_written(tmp_path: Path) -> None:
+    _root, manifest = _universe_root(tmp_path)
+    loaded = load_manifest(manifest)
+    assert loaded.binance_universe_files == (("u", "universe/u.json"),)
+    assert loaded.binance_groups == ("u",)
+
+
+def test_an_excluded_symbol_is_checked_against_the_universe_file(tmp_path: Path) -> None:
+    _root, manifest = _universe_root(tmp_path)
+    # A start after DEADUSDT's only month drops its datasets, not its universe entry.
+    manifest.write_text(
+        '[[binance_universe]]\nid = "u"\nfile = "universe/u.json"\nstart = "2026-02-01"\n',
+        encoding="utf-8",
+    )
+    assert not any(spec.symbol == "DEADUSDT" for spec in load_manifest(manifest).binance)
+    path = _exclusions(tmp_path, _exclusion_body(symbols={"DEADUSDT": "index"}))
+    loaded = load_exclusions(path, load_panel_manifest(manifest, "u"), manifest, "u")
+    assert loaded.symbols == frozenset({"DEADUSDT"})
+    assert loaded.sha256 == hashlib.sha256(path.read_bytes()).hexdigest()
+    with pytest.raises(BarTableError, match="not a binance_universe entry"):
+        load_panel_manifest(manifest, "v")
+    with pytest.raises(BarTableError, match="not a binance_universe entry"):
+        load_exclusions(path, load_panel_manifest(manifest, "u"), manifest, "v")
+    loaded_manifest = load_panel_manifest(manifest, "u")
+    with pytest.raises(BarTableError, match="not a binance_universe entry"):
+        universe_files(tmp_path, loaded_manifest, "v", date(2026, 1, 1), date(2026, 2, 1), _SPEC)
+
+
+def test_an_empty_exclusion_path_fails_closed(tmp_path: Path, capsys: CaptureFixture[str]) -> None:
+    root, manifest = _universe_root(tmp_path)
+    out = tmp_path / "panel.parquet"
+    assert main([*_panel_args(root, manifest, out), "--exclude-symbols", ""]) == 2
+    assert "Exclusion list" in capsys.readouterr().err
+    assert not out.exists()
+
+
+def test_a_traded_day_without_funding_ranks_only_without_the_rule(
+    tmp_path: Path, capsys: CaptureFixture[str]
+) -> None:
+    root, manifest = _universe_root(tmp_path)
+    # NEWUSDT lists on Jan 20 but its funding starts only on Jan 25 (slot 72
+    # opens that day), which a listing month allows.
+    _write_month(root, "funding", "NEWUSDT", "2026-01", range(20, 32), slots=range(72, 93))
+    plain = tmp_path / "plain.parquet"
+    funded = tmp_path / "funded.parquet"
+    assert main(_panel_args(root, manifest, plain)) == 0
+    assert main([*_panel_args(root, manifest, funded), "--rank-requires-funding"]) == 0
+    assert capsys.readouterr().out.endswith(f"{funded}\trank requires funding\n")
+    connection = duckdb.connect()
+    try:
+        query = (
+            "SELECT count(*) FILTER (WHERE funding_rate IS NULL AND volume_rank IS NOT NULL), "
+            "count(*) FILTER (WHERE funding_rate IS NULL AND traded) "
+            "FROM read_parquet(?) WHERE symbol = 'NEWUSDT'"
+        )
+        plain_counts = connection.execute(query, [str(plain)]).fetchone()
+        funded_counts = connection.execute(query, [str(funded)]).fetchone()
+        same_elsewhere = connection.execute(
+            "SELECT count(*) FROM (SELECT * FROM read_parquet(?) WHERE funding_rate IS NOT NULL "
+            "AND symbol = 'NEWUSDT' EXCEPT SELECT * FROM read_parquet(?))",
+            [str(funded), str(plain)],
+        ).fetchone()
+    finally:
+        connection.close()
+    # Jan 24 is the only unfunded day with five days of volume: it ranks
+    # without the rule and not with it.
+    assert plain_counts == (1, 5)
+    assert funded_counts == (0, 5)
+    assert same_elsewhere == (0,)
+
+
+def test_two_builds_with_both_rules_are_identical(tmp_path: Path) -> None:
+    root, manifest = _universe_root(tmp_path)
+    exclusions = _exclusions(tmp_path, _exclusion_body(symbols={"DEADUSDT": "index"}))
+    outputs = []
+    for name in ("one.parquet", "two.parquet"):
+        out = tmp_path / name
+        args = [
+            *_panel_args(root, manifest, out),
+            "--exclude-symbols",
+            str(exclusions),
+            "--rank-requires-funding",
+        ]
+        assert main(args) == 0
+        outputs.append(out.read_bytes())
+    assert outputs[0] == outputs[1]
+
+
+def test_a_day_the_data_range_cut_counts_only_when_covered() -> None:
+    bars = _bars([100.0, 101.0, 102.0, 103.0])
+    # Day two lost its 00:00 settlement, stamped just before the cut.
+    partial = [item for item in _funding(bars) if settlements_index(item, bars) != 3]
+    rows = build_symbol_rows("AAAUSDT", bars, partial, _SPEC, frozenset({bars[1].ts}))
+    assert [row.carry is None for row in rows] == [True, True, True, False]
+    # Covered, the same day counts despite the cut.
+    whole = build_symbol_rows("AAAUSDT", bars, _funding(bars), _SPEC, frozenset({bars[1].ts}))
+    assert [row.carry is None for row in whole] == [True, False, False, False]
+
+
+def test_an_uncovered_first_day_at_a_manifest_start_is_not_a_carry_day(tmp_path: Path) -> None:
+    root, manifest = _universe_root(tmp_path)
+    # hist_etl dropped AAAUSDT's Feb 1 00:00 settlement, stamped before the start.
+    _write_month(root, "funding", "AAAUSDT", "2026-02", range(1, 29), slots=range(1, 84))
+    manifest.write_text(
+        '[[binance_universe]]\nid = "u"\nfile = "universe/u.json"\nstart = "2026-02-01"\n',
+        encoding="utf-8",
+    )
+    out = tmp_path / "panel.parquet"
+    args = _panel_args(root, manifest, out)
+    args[args.index("--start") + 1] = "2026-02-01"
+    assert main(args) == 0
+    connection = duckdb.connect()
+    try:
+        first_carry = connection.execute(
+            "SELECT min(ts) FROM read_parquet(?) WHERE symbol = 'AAAUSDT' AND carry_3d IS NOT NULL",
+            [str(out)],
+        ).fetchone()
+    finally:
+        connection.close()
+    # Feb 1 holds no settlement stamped before it, so carry_3d starts on Feb 4.
+    assert first_carry == (_FIRST_CLOSE + (31 + 3) * DAY_MS,)
+
+
+def test_tied_carries_keep_distinct_draws_at_large_sums() -> None:
+    symbols = [f"S{index:03d}USDT" for index in range(100)]
+    for total, window in ((0.2, 30), (0.0021, 7), (0.9, 30)):
+        carries = {symbol: carry_value(symbol, _FIRST_CLOSE, total, window) for symbol in symbols}
+        assert len(set(carries.values())) == len(symbols)
+        draws = {
+            symbol: int.from_bytes(
+                hashlib.sha256(f"{symbol}|{_FIRST_CLOSE}".encode()).digest()[:8], "big"
+            )
+            for symbol in symbols
+        }
+        assert sorted(symbols, key=lambda symbol: -carries[symbol]) == sorted(
+            symbols, key=lambda symbol: -draws[symbol]
+        )
+
+
+def test_an_untraded_day_restarts_the_carry_window() -> None:
+    bars = _bars([100.0, 101.0, 102.0, 103.0, 104.0], trades=[10, 0, 10, 10, 10])
+    rows = _rows(bars)
+    # A flat archive day pays no one's funding and is not checked by the build.
+    assert [row.carry is None for row in rows] == [True, True, True, False, False]
+
+
+def test_a_run_first_day_counts_only_when_covered(tmp_path: Path) -> None:
+    root, manifest = _universe_root(tmp_path)
+    # AAAUSDT's Jan 1 00:00 settlement, stamped before the dataset starts, is gone.
+    _write_month(root, "funding", "AAAUSDT", "2026-01", range(1, 32), slots=range(1, 93))
+    out = tmp_path / "panel.parquet"
+    assert main(_panel_args(root, manifest, out)) == 0
+    connection = duckdb.connect()
+    try:
+        first = connection.execute(
+            "SELECT min(ts) FILTER (WHERE carry_3d IS NOT NULL), "
+            "min(ts) FILTER (WHERE funding_3d IS NOT NULL) "
+            "FROM read_parquet(?) WHERE symbol = 'AAAUSDT'",
+            [str(out)],
+        ).fetchone()
+    finally:
+        connection.close()
+    # Jan 1 may be short of its midnight settlement, so neither feature
+    # reads it: both start on Jan 4.
+    assert first == (_FIRST_CLOSE + 3 * DAY_MS, _FIRST_CLOSE + 3 * DAY_MS)

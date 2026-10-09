@@ -18,6 +18,16 @@ PYTHONPATH=src uv run --frozen python -m research.bar_tables panel \
 The universe has to be synced first (see the "Binance USD-M universe" section
 of [hist-etl.md](../runbooks/hist-etl.md)). Do not commit the Parquet.
 
+Two options narrow who takes a `volume_rank`; both are off by default:
+
+- `--exclude-symbols PATH`: a committed JSON list of contracts that never
+  rank (see [Excluded symbols](#excluded-symbols)).
+- `--rank-requires-funding`: a row ranks only on a day with a funding rate.
+
+The build prints how many symbols the list held and its sha256, and whether
+the rank required funding, so the build log records which rule made the
+table.
+
 ## Columns
 
 Every value is known at the row's daily kline close, `ts` (epoch ms), and
@@ -37,7 +47,8 @@ of latency.
 | `vol_<W>d` | Sample stdev of the last `W` daily log returns; empty unless positive |
 | `qv_<V>d` | Mean quote volume over `V` days, untraded days counting as 0 |
 | `funding_<K>d` | Mean daily `funding_rate` over `K` covered days |
-| `volume_rank` | Rank by `qv_<V>d` among the day's rows that traded and have it; 1 is the largest |
+| `carry_<K>d` | Minus the mean daily `funding_rate` over `K` days with a rate, covered or not; see [Carry](#carry) |
+| `volume_rank` | Rank by `qv_<V>d` among the day's rows that traded and have it (and, with the options above, are not excluded and have a rate); 1 is the largest |
 
 ## Point-in-time rules
 
@@ -73,11 +84,95 @@ of latency.
     is judged like a fresh listing, whatever `start` the panel reads from.
 - **The universe comes from the rank, not from survival.** `volume_rank`
   orders the rows of one day that traded and have `qv_<V>d`, ties going to
-  the symbol that sorts first. It needs no other feature, so the universe
-  never depends on another feature's data, funding included. A study takes
+  the symbol that sorts first. By default it needs no other feature, so the
+  universe never depends on another feature's data, funding included;
+  `--rank-requires-funding` adds the day's own funding rate, a fact of the
+  day rather than a feature. A study takes
   its universe per day from that rank, for example `volume_rank <= 50`,
   requires the features it uses on top, and writes both rules into its
   pre-registration.
+
+## Carry
+
+`carry_<K>d` is how a study ranks by low funding: the harness longs the top
+of its signal, so a signed spec on `carry_<K>d` longs the lowest funding and
+shorts the highest. It uses the same `--funding-window` as `funding_<K>d`
+and the same clock.
+
+- **Traded rate days, not covered days.** Its window needs `K` consecutive
+  days in one stretch that each traded and have a `funding_rate`, covered or
+  not. A day's recorded sum is the funding a holder was charged that day,
+  known at its close, and it is what the harness charges a position held
+  through it. Like the price features, carry reads no archive day that did
+  not trade: no one paid its funding (a delisted contract's flat archive
+  carries the default rate), and the build does not check it. A day that
+  returns from 4h to 8h funding reads as not covered at its close
+  and blanks `funding_<K>d` for `K` days, and Binance changes an interval
+  mostly when funding runs at its cap or floor, so a carry ranking on
+  `funding_<K>d` would lose names on exactly the tails it sorts on.
+  - A day with fewer settlements than usual (a listing or delisting day)
+    counts at what it charged. That is real funding, not a gap; a missing
+    settlement on a traded day inside a funding run fails the build.
+  - Whether a day counts never depends on a later settlement or on the
+    build's validation, which reads the whole series: a feature must not
+    know whether a contract delists later that month.
+  - A run's first day at its dataset's start (the first of its first
+    month, or a manifest `start`) counts only when covered: hist_etl keeps
+    no settlement stamped before a dataset's start, so that day's midnight
+    settlement may be cut away. The build lets exactly these days be
+    partial too. A contract that lists on the first of a month loses that
+    day from carry, which is the cautious side.
+  - The build's validation shares the panel's limitation: one settlement
+    missing right where an interval changes is not caught, so such a day
+    enters short by that settlement.
+- **Steps of 1e-9 of the window's sum.** Sums are counted in steps of 1e-9,
+  so equal sums are exact ties however their settlements split. Binance's
+  archives print rates with 8 decimals, so distinct sums are multiples of
+  1e-8 and stay 10 steps apart, for any window length. A rate with more
+  decimals is not refused: sums closer than about 1e-9 (a hundred-millionth
+  of a percent over the window) are then treated as ties. A finer step
+  would leave a float64 too few bits for the draw below.
+- **Ties broken by a draw.** A tie is ordered by a number drawn from the
+  sha256 of the symbol and the row's `ts`, which moves the value by less
+  than a tenth of a step. It reads no market data, is the same in every
+  build, and changes from day to day, so no symbol is favoured. Without it
+  the harness would break the tie by symbol, and the contracts that sort
+  first (the "1000x" ones) would always take the long leg's ties.
+- A zero is never written as `-0.0`.
+
+## Excluded symbols
+
+A study that leaves contracts out of its universe, such as contracts whose
+underlying is not a crypto asset, commits a list before any result and
+passes it with `--exclude-symbols`:
+
+```json
+{
+  "format": 1,
+  "universe": "binance-um-usdt-1d-2026-10-08.json",
+  "rule": "One line: why these contracts are left out.",
+  "symbols": {"BTCDOMUSDT": "index", "XAUUSDT": "commodity"}
+}
+```
+
+- A listed contract keeps its rows and features, but `volume_rank` is
+  empty on every row, so the next contract moves up. A filter applied after
+  the rank would shrink the top 50 instead.
+- The categories are `index`, `fiat_pegged_or_fx`, `commodity`,
+  `etf_or_etp`, `equity`, `private_company` and `unverified`.
+- The build fails, writing nothing, on an unknown or missing key, a format
+  other than 1, an empty rule, an unknown category, a duplicate key, a
+  `universe` that is not the file name of the group's universe entry, or a
+  symbol the group does not hold.
+- The list is fixed by asset class, which is known at a contract's
+  listing, so it is point in time. The data fingerprint pins its effect.
+
+`--rank-requires-funding` drops every traded day without a rate from the
+rank: listing months before funding starts, trading after a funding archive
+ends, gaps between funding runs, and the first or last days of a run that
+the build allows to lack funding. It reads only the day's own settlements.
+It does not stop a position decided on a ranked day from holding into such
+a day; the harness still fails that run closed.
 
 ## What fails the build
 
@@ -122,6 +217,19 @@ Nothing is written when any of these fail:
 
 ## Limits
 
+- `carry_<K>d` takes an uncovered day at its recorded sum. At the close, a
+  day cut short because the contract stopped trading or settling (a
+  delisting) cannot be told from one short of an archived settlement
+  inside a delisting month, which the build allows; telling them apart
+  needs a later day. Both are what the harness charges a holder. The error
+  is at most the missing part of one day's funding in `K` days, and it
+  makes such a name's funding look lower, so a low-funding long leg may
+  favour it. A study counts how many of its ranked rows have an uncovered
+  day in their carry window, and says how many it tolerates.
+- The carry tie-break lives in a float64. With very many names tied at a
+  large sum, two draws can round to the same value; such a pair falls
+  back to the harness's order by symbol. At a 7-day window near the
+  neutral rate the draw has about 2e8 distinct values.
 - The warm-up months before `start` are checked like the rest, so they
   must be synced too.
 - Funding is published per month only, so `end` cannot pass the newest

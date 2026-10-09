@@ -87,11 +87,11 @@ def load_manifest(path: Path) -> HistManifest:
         raise HistEtlError(
             "binance, binance_universe, kraken and hyperliquid must be arrays of tables"
         )
-    groups: list[str] = []
+    universe_files: list[tuple[str, str]] = []
     expanded: list[BinanceSpec] = []
     for item in universe_raw:
-        group, specs = _binance_universe(item, path.parent)
-        groups.append(group)
+        group, relative, specs = _binance_universe(item, path.parent)
+        universe_files.append((group, relative))
         expanded.extend(specs)
     binance = tuple(_binance_spec(item) for item in binance_raw) + tuple(expanded)
     kraken = tuple(_kraken_spec(item) for item in kraken_raw)
@@ -100,7 +100,7 @@ def load_manifest(path: Path) -> HistManifest:
         [spec.id for spec in binance]
         + [spec.id for spec in kraken]
         + [spec.id for spec in hyperliquid]
-        + groups
+        + [group for group, _file in universe_files]
     )
     if len(ids) != len(set(ids)):
         raise HistEtlError("dataset ids must be unique")
@@ -113,7 +113,7 @@ def load_manifest(path: Path) -> HistManifest:
         binance=binance,
         kraken=kraken,
         hyperliquid=hyperliquid,
-        binance_groups=tuple(groups),
+        binance_universe_files=tuple(universe_files),
     )
 
 
@@ -153,7 +153,7 @@ def _binance_spec(item: object) -> BinanceSpec:
     )
 
 
-def _binance_universe(item: object, manifest_dir: Path) -> tuple[str, tuple[BinanceSpec, ...]]:
+def _binance_universe(item: object, manifest_dir: Path) -> tuple[str, str, tuple[BinanceSpec, ...]]:
     """A committed universe file, expanded into per-symbol USD-M datasets."""
 
     table = _table(item, "binance_universe")
@@ -192,7 +192,7 @@ def _binance_universe(item: object, manifest_dir: Path) -> tuple[str, tuple[Bina
         # Opt-in: a universe is thousands of archives, never a routine sync.
         enabled=_bool_field(table, "enabled", False),
     )
-    return group, specs
+    return group, relative, specs
 
 
 def _kraken_spec(item: object) -> KrakenSpec:

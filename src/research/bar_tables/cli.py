@@ -146,19 +146,19 @@ def _panel(args: argparse.Namespace) -> int:
     ranked = len({row.symbol for row in rows if row.volume_rank is not None})
     print(
         f"bar_tables\twrote\t{len(rows)}\trows\t{symbols}\tsymbols\t"
-        f"{ranked}\tever ranked\t{_rule_note(exclusions, rule)}{args.out}"
+        f"{ranked}\tever ranked\t{args.out}{_rule_note(exclusions, rule)}"
     )
     return 0
 
 
 def _rule_note(exclusions: Exclusions | None, rule: RankRule) -> str:
-    """The rank rule a build used, for its log; empty for the default rule."""
+    """The rank rule a build used, after the output path; empty for the default rule."""
 
     note = ""
     if exclusions is not None:
-        note += f"{len(exclusions.symbols)}\texcluded\tsha256:{exclusions.sha256}\t"
+        note += f"\t{len(exclusions.symbols)}\texcluded\tsha256:{exclusions.sha256}"
     if rule.require_funding:
-        note += "rank requires funding\t"
+        note += "\trank requires funding"
     return note
 
 

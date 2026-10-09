@@ -36,10 +36,11 @@ DAY_MS: Final = 86_400_000
 # Ten years: longer than any archive, and short enough for date arithmetic.
 MAX_WINDOW_DAYS: Final = 3_650
 _HOUR_MS: Final = 3_600_000
-# carry_<K>d counts its window's funding sum in steps of 1e-12. Binance prints
+# carry_<K>d counts its window's funding sum in steps of 1e-9. Binance prints
 # rates with at most 8 decimals, so equal sums are exact ties and distinct
-# ones stay 10,000 steps apart, whatever the window length.
-_CARRY_STEPS_PER_UNIT: Final = 1_000_000_000_000
+# ones stay 10 steps apart, whatever the window length; a coarser step
+# leaves a float64 more bits for the tie-break draw.
+_CARRY_STEPS_PER_UNIT: Final = 1_000_000_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,6 +158,7 @@ def build_symbol_rows(
     bars: Sequence[DailyBar],
     settlements: Sequence[Settlement],
     spec: PanelSpec,
+    cut_closes: frozenset[int] = frozenset(),
 ) -> list[PanelRow]:
     """Rows for one symbol, without ``volume_rank``.
 
@@ -166,8 +168,10 @@ def build_symbol_rows(
 
     ``carry`` needs a rate on every day of its window, covered or not: the
     day's recorded sum is the funding a holder was charged that day (and
-    what the harness charges), known at its close. ``mean_funding`` keeps
-    needing covered days.
+    what the harness charges), known at its close. ``cut_closes`` are days
+    whose settlements the data range may have cut (a dataset's first day,
+    where hist_etl keeps no settlement stamped before it); they count only
+    when covered. ``mean_funding`` keeps needing covered days.
     """
 
     _check_bars(symbol, bars)
@@ -180,7 +184,13 @@ def build_symbol_rows(
     run_start = _run_starts(bars)
     traded_streak = _streaks(traded, run_start)
     covered_streak = _streaks([day.covered for day in funding], run_start)
-    carry_streak = _streaks([day.rate is not None for day in funding], run_start)
+    carry_streak = _streaks(
+        [
+            day.rate is not None and (day.covered or bar.ts not in cut_closes)
+            for day, bar in zip(funding, bars, strict=True)
+        ],
+        run_start,
+    )
     # one_day[i]: the log return into bar i, for bars inside one stretch.
     one_day = [
         math.log(bar.close / bars[index - 1].close) if run_start[index] != index else 0.0
@@ -189,7 +199,7 @@ def build_symbol_rows(
     rows: list[PanelRow] = []
     for index, bar in enumerate(bars):
         span = index - run_start[index] + 1
-        # A covered day has a rate, so this sum serves both funding features.
+        # A covered day is a carry day, so this sum serves both funding features.
         funding_sum = (
             math.fsum(
                 _known(day.rate) for day in funding[index - spec.funding_window + 1 : index + 1]
@@ -242,7 +252,7 @@ def carry_value(symbol: str, ts: int, funding_sum: float, window: int) -> float:
     """Minus the window's mean daily funding, ties broken by a draw.
 
     Sorting by it puts the lowest funding first. The window's sum is counted
-    in steps of 1e-12, so sums that differ only by floating-point rounding
+    in steps of 1e-9, so sums that differ only by floating-point rounding
     (one settlement of 0.0003 against three of 0.0001) are an exact tie,
     and distinct 8-decimal sums never merge. A tie is ordered by a draw from
     the symbol and the day alone: it moves a value by less than a tenth of

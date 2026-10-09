@@ -111,14 +111,18 @@ and the same clock.
   - Whether a day counts never depends on a later settlement or on the
     build's validation, which reads the whole series: a feature must not
     know whether a contract delists later that month.
+  - A dataset's first day (a run's first month, or a manifest `start`)
+    counts only when covered: hist_etl keeps no settlement stamped before
+    it, so its midnight settlement may be cut away.
   - The build's validation shares the panel's limitation: one settlement
     missing right where an interval changes is not caught, so such a day
     enters short by that settlement.
-- **Steps of 1e-12 of the window's sum.** Binance prints rates with at most
+- **Steps of 1e-9 of the window's sum.** Binance prints rates with at most
   8 decimals, so the window's funding sum is a multiple of 1e-8 up to
-  floating-point rounding. Counted in steps of 1e-12, equal sums are exact
-  ties however their settlements split, and distinct sums stay 10,000 steps
-  apart, for any window length.
+  floating-point rounding. Counted in steps of 1e-9, equal sums are exact
+  ties however their settlements split, and distinct sums stay 10 steps
+  apart, for any window length. A finer step would leave a float64 too few
+  bits for the draw below.
 - **Ties broken by a draw.** A tie is ordered by a number drawn from the
   sha256 of the symbol and the row's `ts`, which moves the value by less
   than a tenth of a step. It reads no market data, is the same in every

@@ -297,13 +297,22 @@ def build_panel(
     _check_kline_runs(bars, files.kline_runs)
     settlements = _read_settlements(files.funding)
     _check_funding_runs(bars, settlements, files.funding_runs)
+    # hist_etl keeps no settlement stamped before a dataset's first day.
+    cut: dict[str, set[int]] = defaultdict(set)
+    for run in files.funding_runs:
+        if run.at_spec_start:
+            cut[run.symbol].add(_close_ms(run.first))
     start_ms = _day_ms(start)
     end_ms = _day_ms(end)
     rows: list[PanelRow] = []
     for symbol in sorted(bars):
         # Rows look back only, so bars after ``end`` change nothing; skip them.
         kept = [bar for bar in bars[symbol] if bar.ts < end_ms]
-        rows.extend(build_symbol_rows(symbol, kept, settlements.get(symbol, []), spec))
+        rows.extend(
+            build_symbol_rows(
+                symbol, kept, settlements.get(symbol, []), spec, frozenset(cut.get(symbol, ()))
+            )
+        )
     inside = [row for row in rows if start_ms <= row.ts < end_ms]
     if not inside:
         raise BarTableError("The universe has no daily bar inside the panel range.")

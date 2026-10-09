@@ -911,12 +911,12 @@ def test_carry_takes_every_day_with_a_rate_at_its_recorded_sum() -> None:
     # Day two cannot be proven whole at its close, so funding_2d is empty for
     # two days; carry_2d takes the day at its recorded sum, what a holder paid.
     assert rows[1].mean_funding is None and rows[2].mean_funding is None
-    assert rows[1].carry == pytest.approx(-(0.0003 + 0.005) / 2, abs=1e-13)
-    assert rows[2].carry == pytest.approx(-(0.005 + 0.0003) / 2, abs=1e-13)
+    assert rows[1].carry == pytest.approx(-(0.0003 + 0.005) / 2, abs=1e-10)
+    assert rows[2].carry == pytest.approx(-(0.005 + 0.0003) / 2, abs=1e-10)
     assert rows[0].carry is None
     # A partial day (one settlement of three) enters at what it charged.
     partial = [item for item in _funding(bars) if settlements_index(item, bars) not in (4, 5)]
-    assert _rows(bars, partial)[1].carry == pytest.approx(-(0.0003 + 0.0001) / 2, abs=1e-13)
+    assert _rows(bars, partial)[1].carry == pytest.approx(-(0.0003 + 0.0001) / 2, abs=1e-10)
     # A day without any settlement empties carry for the window's length.
     settlements = [item for item in _funding(bars) if not 6 <= settlements_index(item, bars) < 9]
     gapped = _rows(bars, settlements)
@@ -941,7 +941,7 @@ def test_carry_orders_distinct_sums_as_minus_funding() -> None:
     by_carry = sorted(range(len(sums)), key=lambda index: -carries[index])
     assert by_carry == by_funding
     for total, carry in zip(sums, carries, strict=True):
-        assert carry == pytest.approx(-total / 7, abs=1e-13)
+        assert carry == pytest.approx(-total / 7, abs=1e-10)
     # A zero sum never writes -0.0.
     assert math.copysign(1.0, carry_value("AAAUSDT", _FIRST_CLOSE, 0.0, 7)) == 1.0
     assert math.copysign(1.0, carry_value("ZZZUSDT", _FIRST_CLOSE, -0.0, 7)) == 1.0
@@ -980,7 +980,7 @@ def test_carry_ties_are_broken_by_symbol_and_day_not_by_the_alphabet() -> None:
             for symbol, total in zip(symbols, sums, strict=True)
         }
         # Equal to the step, so the draw alone decides the order...
-        assert max(carries.values()) - min(carries.values()) < 1e-13
+        assert max(carries.values()) - min(carries.values()) < 1e-10
         order = tuple(sorted(symbols, key=lambda symbol: -carries[symbol]))
         draws = {
             symbol: int.from_bytes(hashlib.sha256(f"{symbol}|{ts}".encode()).digest()[:8], "big")
@@ -1094,7 +1094,7 @@ def test_excluded_symbols_keep_their_rows_and_never_rank(
     args = [*_panel_args(root, manifest, narrowed), "--exclude-symbols", str(exclusions)]
     assert main(args) == 0
     digest = hashlib.sha256(exclusions.read_bytes()).hexdigest()
-    assert f"1\texcluded\tsha256:{digest}\t" in capsys.readouterr().out
+    assert capsys.readouterr().out.endswith(f"{narrowed}\t1\texcluded\tsha256:{digest}\n")
     before = _ranks(plain)
     after = _ranks(narrowed)
     assert after["AAAUSDT"] == [None] * len(before["AAAUSDT"])
@@ -1202,7 +1202,7 @@ def test_a_traded_day_without_funding_ranks_only_without_the_rule(
     funded = tmp_path / "funded.parquet"
     assert main(_panel_args(root, manifest, plain)) == 0
     assert main([*_panel_args(root, manifest, funded), "--rank-requires-funding"]) == 0
-    assert "rank requires funding\t" in capsys.readouterr().out
+    assert capsys.readouterr().out.endswith(f"{funded}\trank requires funding\n")
     connection = duckdb.connect()
     try:
         query = (
@@ -1241,3 +1241,54 @@ def test_two_builds_with_both_rules_are_identical(tmp_path: Path) -> None:
         assert main(args) == 0
         outputs.append(out.read_bytes())
     assert outputs[0] == outputs[1]
+
+
+def test_a_day_the_data_range_cut_counts_only_when_covered() -> None:
+    bars = _bars([100.0, 101.0, 102.0, 103.0])
+    # Day two lost its 00:00 settlement, stamped just before the cut.
+    partial = [item for item in _funding(bars) if settlements_index(item, bars) != 3]
+    rows = build_symbol_rows("AAAUSDT", bars, partial, _SPEC, frozenset({bars[1].ts}))
+    assert [row.carry is None for row in rows] == [True, True, True, False]
+    # Covered, the same day counts despite the cut.
+    whole = build_symbol_rows("AAAUSDT", bars, _funding(bars), _SPEC, frozenset({bars[1].ts}))
+    assert [row.carry is None for row in whole] == [True, False, False, False]
+
+
+def test_an_uncovered_first_day_at_a_manifest_start_is_not_a_carry_day(tmp_path: Path) -> None:
+    root, manifest = _universe_root(tmp_path)
+    # hist_etl dropped AAAUSDT's Feb 1 00:00 settlement, stamped before the start.
+    _write_month(root, "funding", "AAAUSDT", "2026-02", range(1, 29), slots=range(1, 84))
+    manifest.write_text(
+        '[[binance_universe]]\nid = "u"\nfile = "universe/u.json"\nstart = "2026-02-01"\n',
+        encoding="utf-8",
+    )
+    out = tmp_path / "panel.parquet"
+    args = _panel_args(root, manifest, out)
+    args[args.index("--start") + 1] = "2026-02-01"
+    assert main(args) == 0
+    connection = duckdb.connect()
+    try:
+        first_carry = connection.execute(
+            "SELECT min(ts) FROM read_parquet(?) WHERE symbol = 'AAAUSDT' AND carry_3d IS NOT NULL",
+            [str(out)],
+        ).fetchone()
+    finally:
+        connection.close()
+    # Feb 1 holds no settlement stamped before it, so carry_3d starts on Feb 4.
+    assert first_carry == (_FIRST_CLOSE + (31 + 3) * DAY_MS,)
+
+
+def test_tied_carries_keep_distinct_draws_at_large_sums() -> None:
+    symbols = [f"S{index:03d}USDT" for index in range(100)]
+    for total, window in ((0.2, 30), (0.0021, 7), (0.9, 30)):
+        carries = {symbol: carry_value(symbol, _FIRST_CLOSE, total, window) for symbol in symbols}
+        assert len(set(carries.values())) == len(symbols)
+        draws = {
+            symbol: int.from_bytes(
+                hashlib.sha256(f"{symbol}|{_FIRST_CLOSE}".encode()).digest()[:8], "big"
+            )
+            for symbol in symbols
+        }
+        assert sorted(symbols, key=lambda symbol: -carries[symbol]) == sorted(
+            symbols, key=lambda symbol: -draws[symbol]
+        )

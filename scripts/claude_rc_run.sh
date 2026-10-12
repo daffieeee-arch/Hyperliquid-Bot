@@ -21,9 +21,11 @@ SCRIPT_DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 source "${SCRIPT_DIR}/claude_rc_lib.sh"
 
 POLL_SECONDS="${CLAUDE_RC_POLL_SECONDS:-15}"
-# Time for a clean exit after the first Ctrl+C, then after a confirming second.
-FIRST_STOP_WAIT_SECONDS="${CLAUDE_RC_FIRST_STOP_WAIT_SECONDS:-10}"
+# Time for a clean exit after Ctrl+C before the session is killed.
 STOP_WAIT_SECONDS="${CLAUDE_RC_STOP_WAIT_SECONDS:-20}"
+# An exit after a run this long always prints its screen, even if equal to
+# the last one printed (that dump may have rotated out of the journal).
+SCREEN_RESET_SECONDS="${CLAUDE_RC_SCREEN_RESET_SECONDS:-600}"
 # A missing repo or binary is retried by systemd; the pause keeps that slow.
 MISSING_PAUSE_SECONDS="${CLAUDE_RC_MISSING_PAUSE_SECONDS:-60}"
 STATE_DIR="${CLAUDE_RC_STATE_DIR:-${HOME}/.cache/claude-rc}"
@@ -57,12 +59,21 @@ stop_session() {
   claude_rc_tmux set-option -t "${PANE_TARGET}" @claude_rc_stopping 1 2>/dev/null || true
   if ! pane_dead; then
     claude_rc_tmux send-keys -t "${PANE_TARGET}" C-c 2>/dev/null || true
-    wait_for_exit "${FIRST_STOP_WAIT_SECONDS}"
-    # A second Ctrl+C confirms the exit where claude asks for one.
+    local tick
+    for tick in 1 2 3 4 5; do
+      session_alive && ! pane_dead || break
+      sleep 0.2
+    done
+    # Where claude asks for a second Ctrl+C, it must come within its short
+    # confirmation window, so send it at once, and only when asked.
     if session_alive && ! pane_dead; then
-      claude_rc_tmux send-keys -t "${PANE_TARGET}" C-c 2>/dev/null || true
-      wait_for_exit "${STOP_WAIT_SECONDS}"
+      local shown
+      shown="$(claude_rc_tmux capture-pane -p -t "${PANE_TARGET}" 2>/dev/null || true)"
+      if grep -qi 'again to exit' <<<"${shown}"; then
+        claude_rc_tmux send-keys -t "${PANE_TARGET}" C-c 2>/dev/null || true
+      fi
     fi
+    wait_for_exit "${STOP_WAIT_SECONDS}"
   fi
   claude_rc_tmux kill-session -t "${SESSION_TARGET}" 2>/dev/null || true
 }
@@ -75,7 +86,7 @@ report_last_screen() {
   # tmux's own "Pane is dead (status, time)" line differs on every exit; drop
   # it and squeeze runs of blank rows before comparing.
   screen="$(claude_rc_tmux capture-pane -p -J -t "${PANE_TARGET}" -S -40 2>/dev/null \
-    | grep -v '^Pane is dead (' | cat -s | claude_rc_trim_blank_tail || true)"
+    | grep -v '^Pane is dead (' | cat -s | claude_rc_trim_blank_tail | tail -n 40 || true)"
   digest="$(printf '%s\n' "${status}" "${screen}" | sha256sum | cut -d' ' -f1)"
   mkdir -p "${STATE_DIR}" 2>/dev/null || true
   previous="$(cat "${STATE_DIR}/last-screen.sha256" 2>/dev/null || true)"
@@ -131,7 +142,8 @@ fi
 claude_rc_tmux start-server \; set-option -wg remain-on-exit on \; \
   new-session -d -s "${CLAUDE_RC_SESSION}" -c "${REPO}" -x 200 -y 50 \
   -- env -u TMUX -u TMUX_PANE bash -lc 'exec "$0" "$@"' "${CLAUDE_BIN}" "${args[@]}"
-echo "claude-rc: remote-control started in ${REPO} (tmux -L ${CLAUDE_RC_SOCKET} attach -t ${CLAUDE_RC_SESSION})"
+echo "claude-rc: remote-control started in ${REPO} (env -u TMUX_TMPDIR tmux -L ${CLAUDE_RC_SOCKET} attach -t ${CLAUDE_RC_SESSION})"
+started_at="$(date +%s)"
 
 while session_alive && ! pane_dead; do
   sleep "${POLL_SECONDS}"
@@ -143,6 +155,9 @@ elif [[ -n "$(claude_rc_tmux show-options -qv -t "${PANE_TARGET}" @claude_rc_sto
   echo "claude-rc: remote-control stopped on request" >&2
   claude_rc_tmux kill-session -t "${SESSION_TARGET}" 2>/dev/null || true
 else
+  if (($(date +%s) - started_at >= SCREEN_RESET_SECONDS)); then
+    rm -f "${STATE_DIR}/last-screen.sha256"
+  fi
   # A signal death (an OOM kill) leaves the status empty and sets the signal.
   status="$(claude_rc_tmux display-message -p -t "${PANE_TARGET}" \
     '#{?pane_dead_signal,signal #{pane_dead_signal},#{pane_dead_status}}' 2>/dev/null || true)"

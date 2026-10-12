@@ -26,22 +26,26 @@ trading mode, adds no credential and moves no capital.
   and agent-forwarded SSH do not work from these sessions. A default tmux
   server that a session starts inherits that environment.
 - When claude exits (a crash, a network outage of more than about ten
-  minutes, a stop from the app), the supervisor writes the last screen to the
-  journal, or one short line when the screen equals the previous exit's (an
-  expired login would otherwise repeat it every 30 seconds), and exits 0. A
-  planned stop logs only "stopped on request"; a signal death names the
-  signal.
-  systemd starts it again after 30 seconds, without a retry limit. Only a
-  missing repo or `claude` binary exits 1.
-- A stop or restart of the service ends only claude (with Ctrl+C, and a
-  second one if claude asks to confirm) and the supervisor
+  minutes, a stop from the app), the supervisor writes the last 40 lines of
+  its screen to the journal and exits 0; systemd starts it again after 30
+  seconds, without a retry limit. If claude ran less than ten minutes and
+  the screen equals the previous exit's (an expired login would repeat it
+  every 30 seconds), only one short line is written. A planned stop logs
+  "stopped on request"; a signal death names the signal. Only a missing repo
+  or `claude` binary exits 1.
+- A stop or restart of the service ends only claude (with Ctrl+C, and at
+  once a second one if its screen asks to press it again) and the supervisor
   (`KillMode=process`). Processes that a session started stay up: a capture
   or research tmux session, a download. They do run inside the service's
-  cgroup, so `systemctl status claude-rc` lists them. The installer and
-  uninstaller refuse to run inside a served session: a process in the
-  service's cgroup whose parents reach the service's `claude remote-control`
-  (or no tmux server). A shell in a tmux session that a served session
-  started reaches that tmux server first, so it counts as an SSH shell.
+  cgroup, so `systemctl status claude-rc` lists them.
+- The installer and uninstaller refuse to run inside a served session or
+  another window of the private tmux server (a restart would end it): a
+  process in the service's cgroup whose first tmux parent is the private
+  server, or that has none. A shell in a tmux session that a served session
+  started reaches that default tmux server first, so it counts as an SSH
+  shell.
+- All `claude_rc_*` tools ignore `TMUX_TMPDIR`, so the private socket is
+  always `/tmp/tmux-<uid>/claude-rc`, also when `~/.profile` sets it.
 - `claude remote-control` started again in the same folder brings back the
   sessions it served, for about four hours after it stopped (documented for a
   Ctrl+C stop; the docs do not say whether a crash or reboot is the same).
@@ -106,7 +110,8 @@ The installer:
 - refuses when its `claude_rc_*` scripts differ from `origin/main` (a guard
   against local edits, not a security boundary);
 - refuses while a hand-started `claude remote-control` runs outside the
-  service;
+  service (best effort: an npm install hides its arguments, so stop it by
+  hand as step 3 says);
 - copies the scripts, writes `/etc/systemd/system/claude-rc.service`, and
   enables and (re)starts the service.
 
@@ -120,7 +125,7 @@ example `sudo CLAUDE_RC_NAME=my-vps bash "$wt/scripts/claude_rc_install.sh"`.
 | Task | Command |
 |---|---|
 | Status, recent log and current screen | `claude-rc-status` |
-| Open the screen | `tmux -L claude-rc attach -t claude-rc` (leave with Ctrl+B, then D) |
+| Open the screen | `env -u TMUX_TMPDIR tmux -L claude-rc attach -t claude-rc` (leave with Ctrl+B, then D) |
 | Restart | `sudo systemctl restart claude-rc` |
 | Stop until the next boot | `sudo systemctl stop claude-rc` |
 | Remove completely | `sudo /usr/local/libexec/claude-rc/claude-rc-uninstall` |
@@ -157,8 +162,9 @@ starts it again after 30 seconds.
   a fake `claude` in a folder with a space. It checks the Ctrl+C stop (also
   when claude asks for a second Ctrl+C), that claude starts without `TMUX`,
   that a stop spares a session whose name only starts with `claude-rc`, that
-  an identical exit screen is printed once, that a planned exit is not
-  reported as a crash, the server detection, the status
+  an identical exit screen is printed once (again after a long run), the
+  40-line cap, that a planned exit is not reported as a crash, the server
+  and private-tmux-server detection, the status
   helper through a symlink, and the rendered unit (`systemd-analyze verify`
   where available). The tmux tests skip locally without tmux but fail in CI.
   The installer refusals (a hand-started server, scripts that differ from

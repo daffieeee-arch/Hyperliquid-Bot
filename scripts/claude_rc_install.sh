@@ -67,8 +67,8 @@ else
   fi
   STAGING="$(mktemp -d)"
   trap 'rm -rf "${STAGING}"' EXIT
-  for name in claude_rc_install.sh claude_rc_lib.sh claude_rc_run.sh claude_rc_status.sh claude_rc_uninstall.sh; do
-    source_file="${SCRIPT_DIR}/${name}"
+  for source_file in "${SCRIPT_DIR}"/claude_rc_*.sh; do
+    name="$(basename "${source_file}")"
     if [[ -L "${source_file}" || ! -f "${source_file}" ]]; then
       echo "Refuse: ${source_file} is missing or not a regular file." >&2
       exit 1
@@ -205,7 +205,7 @@ fi
 # A second remote-control server outside the service would compete with it.
 # The service's own server is the pane process of its private tmux session;
 # it and anything it started are not competitors.
-service_pid="$(as_operator tmux -L "${CLAUDE_RC_SOCKET}" display-message -p \
+service_pid="$(as_operator env -u TMUX_TMPDIR tmux -L "${CLAUDE_RC_SOCKET}" display-message -p \
   -t "$(claude_rc_pane_target)" '#{pane_pid}' 2>/dev/null || true)"
 for pid in $(pgrep -u "${OPERATOR}" -f remote-control 2>/dev/null || true); do
   if [[ -n "${service_pid}" ]] && claude_rc_descends_from "${pid}" "${service_pid}"; then
@@ -221,6 +221,14 @@ done
 if ! as_operator "${CLAUDE_BIN}" auth status >/dev/null 2>&1; then
   echo "Warning: ${OPERATOR} does not look logged in. Run 'claude auth login' as ${OPERATOR}." >&2
 fi
+
+# Every file the lib lists must be staged before anything is replaced.
+for entry in "${CLAUDE_RC_INSTALLED_FILES[@]}"; do
+  if [[ ! -f "${STAGING}/${entry%%:*}" ]]; then
+    echo "Refuse: scripts/${entry%%:*} is missing from ${CHECKOUT}." >&2
+    exit 1
+  fi
+done
 
 # The service and the helpers run these root-owned copies, never the checkout.
 install -d -m 0755 -o root -g root "${LIBEXEC_DIR}"

@@ -20,9 +20,11 @@ CLAUDE_RC_INSTALLED_FILES=(
 CLAUDE_RC_SOCKET="${CLAUDE_RC_TMUX_SOCKET:-${CLAUDE_RC_DEFAULT_SOCKET}}"
 CLAUDE_RC_SESSION="${CLAUDE_RC_TMUX_SESSION:-${CLAUDE_RC_DEFAULT_SESSION}}"
 
-# tmux on the private socket only.
+# tmux on the private socket only. TMUX_TMPDIR is dropped so the service,
+# the operator's SSH shells and a login shell that sets it in ~/.profile all
+# find the socket in the same place (/tmp/tmux-<uid>).
 claude_rc_tmux() {
-  tmux -L "${CLAUDE_RC_SOCKET}" "$@"
+  env -u TMUX_TMPDIR tmux -L "${CLAUDE_RC_SOCKET}" "$@"
 }
 
 # Exact-name targets: a bare name also matches a session that merely starts
@@ -43,7 +45,8 @@ claude_rc_trim_blank_tail() {
 # True when pid is a `claude remote-control` server: its program is claude
 # (the binary, or an interpreter running a claude script or the claude-code
 # cli) and a later argument is exactly remote-control. `rg remote-control
-# .../claude-code` does not match: its program is rg.
+# .../claude-code` does not match: its program is rg. Best effort: an npm
+# install sets its process title and hides its arguments.
 claude_rc_is_server_pid() {
   local -a argv
   mapfile -t argv < <(tr '\0' '\n' <"/proc/$1/cmdline" 2>/dev/null) || return 1
@@ -64,29 +67,49 @@ claude_rc_is_server_pid() {
   return 1
 }
 
+claude_rc_parent_pid() {
+  awk '/^PPid:/ { print $2 }' "/proc/$1/status" 2>/dev/null
+}
+
 # True when pid descends from ancestor (or is it).
 claude_rc_descends_from() {
   local pid="$1" ancestor="$2"
   while [[ -n "${pid}" && "${pid}" -gt 1 ]]; do
     [[ "${pid}" == "${ancestor}" ]] && return 0
-    pid="$(awk '/^PPid:/ { print $2 }' "/proc/${pid}/status" 2>/dev/null)"
+    pid="$(claude_rc_parent_pid "${pid}")"
   done
   return 1
 }
 
-# True when this shell runs in a Claude session the service serves. Outside
-# the service's cgroup it never does. Inside it, a tmux server that a session
-# started also sits in the cgroup, so a shell whose parents reach a tmux
-# server before the remote-control server is an operator window, not a
-# session. Reaching the server, or neither (a detached session process),
-# counts as inside.
+# True when pid is the service's private tmux server. The server keeps the
+# command line it was started with (`tmux -L claude-rc start-server ...`).
+claude_rc_is_private_tmux_server_pid() {
+  [[ "$(cat "/proc/$1/comm" 2>/dev/null)" == tmux* ]] || return 1
+  local -a argv
+  mapfile -t argv < <(tr '\0' '\n' <"/proc/$1/cmdline" 2>/dev/null) || return 1
+  local i
+  for ((i = 0; i + 1 < ${#argv[@]}; i++)); do
+    [[ "${argv[i]}" == "-L" && "${argv[i + 1]}" == "${CLAUDE_RC_SOCKET}" ]] && return 0
+  done
+  return 1
+}
+
+# True when this shell runs in a Claude session the service serves, or in
+# another window of the service's private tmux server (a restart ends both).
+# Outside the service's cgroup it never does. Inside it, the first tmux
+# server among the parents decides: the private one means inside; any other
+# is a server that a session started, holding operator windows. Reaching no
+# tmux server at all (a detached session process) counts as inside. This
+# does not read claude's own command line, which an npm install hides.
 claude_rc_inside_service() {
   grep -q "/${CLAUDE_RC_UNIT_NAME}" "/proc/$$/cgroup" 2>/dev/null || return 1
   local pid="$$"
   while [[ -n "${pid}" && "${pid}" -gt 1 ]]; do
-    claude_rc_is_server_pid "${pid}" && return 0
-    [[ "$(cat "/proc/${pid}/comm" 2>/dev/null)" == tmux* ]] && return 1
-    pid="$(awk '/^PPid:/ { print $2 }' "/proc/${pid}/status" 2>/dev/null)"
+    if [[ "$(cat "/proc/${pid}/comm" 2>/dev/null)" == tmux* ]]; then
+      claude_rc_is_private_tmux_server_pid "${pid}"
+      return
+    fi
+    pid="$(claude_rc_parent_pid "${pid}")"
   done
   return 0
 }

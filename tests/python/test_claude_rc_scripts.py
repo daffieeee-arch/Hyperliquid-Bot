@@ -56,6 +56,7 @@ def _fake_claude(tmp_path: Path) -> Path:
         "  exit 130\n"
         "}\n"
         "trap on_int INT\n"
+        'for i in $(seq 1 "${FAKE_LINES:-0}"); do echo "fake line ${i}"; done\n'
         'for _ in $(seq 1 "${FAKE_SECONDS:-1}"); do sleep 1; done\n'
         "exit 7\n",
     )
@@ -81,7 +82,6 @@ def _runner_env(tmp_path: Path, **extra: str) -> dict[str, str]:
         "CLAUDE_RC_TMUX_SOCKET": f"pytest-claude-rc-{uuid.uuid4().hex[:12]}",
         "CLAUDE_RC_TMUX_SESSION": SESSION,
         "CLAUDE_RC_POLL_SECONDS": "0.2",
-        "CLAUDE_RC_FIRST_STOP_WAIT_SECONDS": "2",
         "CLAUDE_RC_STOP_WAIT_SECONDS": "5",
         "CLAUDE_RC_MISSING_PAUSE_SECONDS": "0",
         "CLAUDE_RC_REPO": str(_spaced_repo(tmp_path)),
@@ -507,3 +507,86 @@ def test_an_exit_marked_as_planned_is_not_reported_as_a_crash(tmp_path: Path) ->
 
     assert "stopped on request" in runner_err
     assert "last screen:" not in runner_err
+
+
+def _run_once(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            ["bash", str(RUNNER)], check=False, capture_output=True, env=env, text=True, timeout=30
+        )
+    finally:
+        _end_test_session(env)
+
+
+@needs_tmux
+def test_the_exit_screen_in_the_journal_is_at_most_40_lines(tmp_path: Path) -> None:
+    completed = _run_once(_runner_env(tmp_path, FAKE_LINES="120"))
+
+    assert completed.returncode == 0, completed.stderr
+    dump = completed.stderr.split("last screen:\n", 1)[1].splitlines()
+    assert 0 < len(dump) <= 40
+    assert dump[-1] == "fake line 120"
+
+
+@needs_tmux
+def test_an_identical_screen_is_printed_again_after_a_long_run(tmp_path: Path) -> None:
+    # With the reset at 0 s every run counts as long, so nothing is suppressed.
+    env = _runner_env(tmp_path, CLAUDE_RC_SCREEN_RESET_SECONDS="0")
+    first = _run_once(env)
+    second = _run_once(env)
+
+    assert "last screen:" in first.stderr
+    assert "last screen:" in second.stderr
+
+
+@needs_tmux
+def test_the_private_tmux_server_is_recognised_by_its_socket(tmp_path: Path) -> None:
+    env = _runner_env(tmp_path)
+    socket = env["CLAUDE_RC_TMUX_SOCKET"]
+    subprocess.run(
+        [
+            "tmux",
+            "-L",
+            socket,
+            "start-server",
+            ";",
+            "new-session",
+            "-d",
+            "-s",
+            SESSION,
+            "--",
+            "sleep",
+            "30",
+        ],
+        check=True,
+        env=env,
+    )
+    try:
+        server_pid = subprocess.run(
+            ["tmux", "-L", socket, "display-message", "-p", "-t", f"={SESSION}:", "#{pid}"],
+            check=True,
+            capture_output=True,
+            env=env,
+            text=True,
+        ).stdout.strip()
+        lib = REPO_ROOT / "scripts" / "claude_rc_lib.sh"
+
+        def is_private(socket_name: str) -> int:
+            return subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    'source "$1"; claude_rc_is_private_tmux_server_pid "$2"',
+                    "bash",
+                    str(lib),
+                    server_pid,
+                ],
+                check=False,
+                capture_output=True,
+                env={**env, "CLAUDE_RC_TMUX_SOCKET": socket_name},
+            ).returncode
+
+        assert is_private(socket) == 0
+        assert is_private("some-other-socket") == 1
+    finally:
+        _end_test_session(env)

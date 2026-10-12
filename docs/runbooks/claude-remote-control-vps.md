@@ -26,8 +26,10 @@ trading mode, adds no credential and moves no capital.
   and agent-forwarded SSH do not work from these sessions. A default tmux
   server that a session starts inherits that environment.
 - When claude exits (a crash, a network outage of more than about ten
-  minutes, a stop from the app), the supervisor writes the last 40 lines of
-  its screen to the journal and exits 0; systemd starts it again after 30
+  minutes, a stop from the app), the supervisor writes its exit status and
+  the last 40 lines of its screen to the journal and exits 0. The status
+  comes from the login shell that runs claude (`~/.cache/claude-rc/exit-status`),
+  because tmux 3.4 does not always report it; systemd starts it again after 30
   seconds, without a retry limit. If claude ran less than ten minutes and
   the screen equals the previous exit's (an expired login would repeat it
   every 30 seconds), only one short line is written. A planned stop never
@@ -47,7 +49,13 @@ trading mode, adds no credential and moves no capital.
   started reaches that default tmux server first, so it counts as an SSH
   shell.
 - All `claude_rc_*` tools ignore `TMUX_TMPDIR`, so the private socket is
-  always `/tmp/tmux-<uid>/claude-rc`, also when `~/.profile` sets it.
+  always `/tmp/tmux-<uid>/claude-rc`, also when `~/.profile` sets it. The
+  private server ignores `~/.tmux.conf`, and the supervisor remembers
+  claude's own pane, so a window you open in that session (Ctrl+B, then c)
+  never hides claude's exit or receives its Ctrl+C.
+- Under pytest or CI the supervisor refuses the live `claude-rc` socket
+  (`status=TEST_ISOLATION_NOOP`), like the capture helpers refuse live
+  capture sessions; tests always use an isolated socket.
 - `claude remote-control` started again in the same folder brings back the
   sessions it served, for about four hours after it stopped (documented for a
   Ctrl+C stop; the docs do not say whether a crash or reboot is the same).
@@ -167,9 +175,10 @@ starts it again after 30 seconds.
   when claude asks for a second Ctrl+C), that claude starts without `TMUX`,
   that a stop spares a session whose name only starts with `claude-rc`, that
   an identical exit screen is printed once (again after a long run), the
-  40-line cap, that a planned exit is not reported as a crash, the server
-  and private-tmux-server detection, the in-service check on a fake `/proc`
-  tree, the status
+  40-line cap, that a planned exit is not reported as a crash, that an
+  operator window changes nothing, that `~/.tmux.conf` is ignored, the
+  test-isolation refusal, the server and private-tmux-server detection, the
+  in-service check on a fake `/proc` tree, the status
   helper through a symlink, and the rendered unit (`systemd-analyze verify`
   where available). The tmux tests skip locally without tmux but fail in CI.
   The installer refusals (a hand-started server, scripts that differ from

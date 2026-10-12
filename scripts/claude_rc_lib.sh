@@ -25,19 +25,46 @@ CLAUDE_RC_SESSION="${CLAUDE_RC_TMUX_SESSION:-${CLAUDE_RC_DEFAULT_SESSION}}"
 
 # tmux on the private socket only. TMUX_TMPDIR is dropped so the service,
 # the operator's SSH shells and a login shell that sets it in ~/.profile all
-# find the socket in the same place (/tmp/tmux-<uid>).
+# find the socket in the same place (/tmp/tmux-<uid>). -f /dev/null keeps the
+# operator's ~/.tmux.conf (hooks, destroy-unattached, base-index, a custom
+# dead-pane line) away from the server the supervisor relies on.
 claude_rc_tmux() {
-  env -u TMUX_TMPDIR tmux -L "${CLAUDE_RC_SOCKET}" "$@"
+  env -u TMUX_TMPDIR tmux -f /dev/null -L "${CLAUDE_RC_SOCKET}" "$@"
 }
 
-# Exact-name targets: a bare name also matches a session that merely starts
-# with it. "=name" targets the session, "=name:" its active pane.
+# Exact-name session target: a bare name also matches a session that merely
+# starts with it.
 claude_rc_session_target() {
   printf '=%s' "${CLAUDE_RC_SESSION}"
 }
 
+# claude's own pane. The supervisor stores its id in the session option
+# @claude_rc_pane, so a second window the operator opens there never becomes
+# the target. Before that (or for an older session) it is the active pane.
 claude_rc_pane_target() {
-  printf '=%s:' "${CLAUDE_RC_SESSION}"
+  local pane
+  pane="$(claude_rc_tmux show-options -qv -t "=${CLAUDE_RC_SESSION}:" @claude_rc_pane 2>/dev/null || true)"
+  printf '%s' "${pane:-=${CLAUDE_RC_SESSION}:}"
+}
+
+# Same rules as data1_in_test_or_ci_env (scripts/data1_operator_isolation.sh).
+claude_rc_in_test_or_ci() {
+  [[ -n "${PYTEST_CURRENT_TEST:-}" ]] && return 0
+  case "${CI:-}" in
+    true | 1 | yes) return 0 ;;
+  esac
+  [[ "${HYPERLIQUID_BOT_TEST_ISOLATION:-}" == "1" ]]
+}
+
+# Tests and CI run as the same user as the live service on the VPS, so they
+# must never reach its socket: refuse unless an isolated socket is set.
+claude_rc_refuse_live_socket_under_test() {
+  if claude_rc_in_test_or_ci && [[ "${CLAUDE_RC_SOCKET}" == "${CLAUDE_RC_DEFAULT_SOCKET}" ]]; then
+    echo "Refuse: test/CI isolation forbids the live ${CLAUDE_RC_DEFAULT_SOCKET} tmux socket." >&2
+    echo "Set CLAUDE_RC_TMUX_SOCKET to an isolated name such as pytest-claude-rc-<id>." >&2
+    echo "status=TEST_ISOLATION_NOOP" >&2
+    return 1
+  fi
 }
 
 # Print stdin without the blank rows tmux pads below the last line.

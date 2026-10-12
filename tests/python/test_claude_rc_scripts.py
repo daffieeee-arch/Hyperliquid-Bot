@@ -22,9 +22,13 @@ INSTALLER = REPO_ROOT / "scripts" / "claude_rc_install.sh"
 SESSION = "pytest-claude-rc"
 
 # CI must have tmux: a skip there would hide the supervisor tests.
-# The scripts ignore TMUX_TMPDIR; so must every tmux call these tests make,
-# or they would talk to other servers on a host whose profile sets it.
-os.environ.pop("TMUX_TMPDIR", None)
+
+
+@pytest.fixture(autouse=True)
+def _no_tmux_tmpdir(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The scripts ignore TMUX_TMPDIR; so must every tmux call these tests make."""
+    monkeypatch.delenv("TMUX_TMPDIR", raising=False)
+
 
 needs_tmux = pytest.mark.skipif(
     shutil.which("tmux") is None and not os.environ.get("CI"), reason="tmux is not installed"
@@ -64,8 +68,9 @@ def _fake_claude(tmp_path: Path) -> Path:
         f'  touch "{marker}"\n'
         "  exit 130\n"
         "}\n"
-        "trap on_int INT\n"
+        '[[ "${FAKE_NO_TRAP:-0}" == 1 ]] || trap on_int INT\n'
         'for i in $(seq 1 "${FAKE_LINES:-0}"); do echo "fake line ${i}"; done\n'
+        '[[ "${FAKE_KILL_SELF:-0}" == 1 ]] && kill -9 $$\n'
         'for _ in $(seq 1 "${FAKE_SECONDS:-1}"); do sleep 1; done\n'
         "exit 7\n",
     )
@@ -191,10 +196,36 @@ def test_stop_leaves_a_session_that_only_starts_with_the_name(tmp_path: Path) ->
     assert alive.returncode == 0
 
 
+def _tmux(env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["tmux", "-f", "/dev/null", "-L", env["CLAUDE_RC_TMUX_SOCKET"], *args],
+        check=False,
+        capture_output=True,
+        env=env,
+        text=True,
+    )
+
+
+def _wait_for_stored_pane(env: dict[str, str]) -> str:
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        pane = _tmux(env, "show-options", "-qv", "-t", f"={SESSION}:", "@claude_rc_pane").stdout
+        if pane.strip():
+            return pane.strip()
+        time.sleep(0.1)
+    raise AssertionError("the supervisor never stored claude's pane id")
+
+
+# timing: the "1" case relies on an 800 ms confirmation window.
+@pytest.mark.timing
 @needs_tmux
+@pytest.mark.parametrize("extra_window", [False, True])
 @pytest.mark.parametrize("ignore_first", ["0", "1"])
-def test_stop_sends_ctrl_c_and_the_runner_exits(tmp_path: Path, ignore_first: str) -> None:
-    # "1": claude asks for a second Ctrl+C before it exits.
+def test_stop_sends_ctrl_c_and_the_runner_exits(
+    tmp_path: Path, ignore_first: str, extra_window: bool
+) -> None:
+    # "1": claude asks for a second Ctrl+C before it exits. extra_window: the
+    # operator opened another window, which becomes the active pane.
     env = _runner_env(tmp_path, FAKE_SECONDS="60", FAKE_IGNORE_FIRST_INT=ignore_first)
     runner = subprocess.Popen(
         ["bash", str(RUNNER)],
@@ -208,6 +239,11 @@ def test_stop_sends_ctrl_c_and_the_runner_exits(tmp_path: Path, ignore_first: st
         while not _session_alive(env) and time.monotonic() < deadline:
             time.sleep(0.1)
         assert _session_alive(env)
+        _wait_for_stored_pane(env)
+        if extra_window:
+            assert (
+                _tmux(env, "new-window", "-t", f"={SESSION}:", "--", "sleep", "60").returncode == 0
+            )
 
         stopped = subprocess.run(
             ["bash", str(RUNNER), "--stop"],
@@ -671,3 +707,87 @@ def test_server_detection_reads_the_program_and_its_arguments(
     _fake_proc(proc, 500, argv=argv, comm=argv[0], ppid=1, cgroup="/user.slice")
 
     assert _fake_lib_call(proc, "claude_rc_is_server_pid", "500") == expected
+
+
+@needs_tmux
+def test_an_operator_window_does_not_hide_claude_exiting(tmp_path: Path) -> None:
+    env = _runner_env(tmp_path, FAKE_SECONDS="2")
+    runner = subprocess.Popen(
+        ["bash", str(RUNNER)],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        _wait_for_stored_pane(env)
+        assert _tmux(env, "new-window", "-t", f"={SESSION}:", "--", "sleep", "60").returncode == 0
+        assert runner.wait(timeout=30) == 0
+        runner_err = runner.stderr.read() if runner.stderr else ""
+    finally:
+        if runner.poll() is None:
+            runner.kill()
+            runner.wait()
+        _end_test_session(env)
+
+    assert "exited with status 7" in runner_err
+
+
+@needs_tmux
+def test_the_operators_tmux_conf_is_ignored(tmp_path: Path) -> None:
+    env = _runner_env(tmp_path)
+    # With this setting a detached session would be destroyed at once.
+    (Path(env["HOME"]) / ".tmux.conf").write_text(
+        "set -g destroy-unattached on\n", encoding="utf-8"
+    )
+    completed = _run_once(env)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "exited with status 7" in completed.stderr
+
+
+def test_the_live_socket_is_refused_under_test(tmp_path: Path) -> None:
+    env = _runner_env(tmp_path)
+    del env["CLAUDE_RC_TMUX_SOCKET"]
+    env["PYTEST_CURRENT_TEST"] = "test_claude_rc_scripts"
+    completed = subprocess.run(
+        ["bash", str(RUNNER), "--stop"], check=False, capture_output=True, env=env, text=True
+    )
+
+    assert completed.returncode == 2
+    assert "status=TEST_ISOLATION_NOOP" in completed.stderr
+
+
+@needs_tmux
+def test_a_signal_death_is_named_in_the_journal(tmp_path: Path) -> None:
+    completed = _run_once(_runner_env(tmp_path, FAKE_KILL_SELF="1"))
+
+    assert completed.returncode == 0, completed.stderr
+    assert "exited with status 137 (signal 9)" in completed.stderr
+
+
+@needs_tmux
+def test_a_ctrl_c_in_the_screen_is_reported_with_its_signal(tmp_path: Path) -> None:
+    # The operator presses Ctrl+C in the attached screen (not a planned stop),
+    # and claude dies of SIGINT instead of handling it.
+    env = _runner_env(tmp_path, FAKE_SECONDS="60", FAKE_NO_TRAP="1")
+    runner = subprocess.Popen(
+        ["bash", str(RUNNER)],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        pane = _wait_for_stored_pane(env)
+        time.sleep(0.3)
+        assert _tmux(env, "send-keys", "-t", pane, "C-c").returncode == 0
+        assert runner.wait(timeout=30) == 0
+        runner_err = runner.stderr.read() if runner.stderr else ""
+    finally:
+        if runner.poll() is None:
+            runner.kill()
+            runner.wait()
+        _end_test_session(env)
+
+    assert "exited with status 130 (signal 2)" in runner_err

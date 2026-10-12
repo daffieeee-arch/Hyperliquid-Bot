@@ -24,8 +24,17 @@ if claude_rc_inside_service; then
   exit 1
 fi
 
-systemctl disable --now "${CLAUDE_RC_UNIT_NAME}" 2>/dev/null || true
-rm -f "${UNIT_PATH}" "${STATUS_LINK}"
+if ! systemctl disable --now "${CLAUDE_RC_UNIT_NAME}"; then
+  if systemctl is-active --quiet "${CLAUDE_RC_UNIT_NAME}"; then
+    echo "Refuse: ${CLAUDE_RC_UNIT_NAME} is still running; nothing was removed." >&2
+    exit 1
+  fi
+fi
+rm -f "${UNIT_PATH}"
+# Remove the status link only if it is the one the installer made.
+if [[ -L "${STATUS_LINK}" && "$(readlink "${STATUS_LINK}")" == "${LIBEXEC_DIR}/"* ]]; then
+  rm -f "${STATUS_LINK}"
+fi
 for entry in "${CLAUDE_RC_INSTALLED_FILES[@]}"; do
   rm -f "${LIBEXEC_DIR}/${entry#*:}"
 done

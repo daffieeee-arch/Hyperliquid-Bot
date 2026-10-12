@@ -69,8 +69,8 @@ stop_session() {
     # Where claude asks for a second Ctrl+C, it must come within its short
     # confirmation window: keep watching the screen and answer as soon as it
     # asks, once, while waiting for the exit.
-    local ticks=$((STOP_WAIT_SECONDS * 10)) answered=0 shown
-    while ((ticks > 0)) && session_alive && ! pane_dead "${pane}"; do
+    local deadline=$((SECONDS + STOP_WAIT_SECONDS)) answered=0 shown
+    while ((SECONDS < deadline)) && session_alive && ! pane_dead "${pane}"; do
       if ((answered == 0)); then
         shown="$(claude_rc_tmux capture-pane -p -t "${pane}" 2>/dev/null || true)"
         if grep -qi 'again to exit' <<<"${shown}"; then
@@ -79,7 +79,6 @@ stop_session() {
         fi
       fi
       sleep 0.1
-      ticks=$((ticks - 1))
     done
   fi
   claude_rc_tmux kill-session -t "${SESSION_TARGET}" 2>/dev/null || true

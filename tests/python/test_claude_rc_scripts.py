@@ -507,7 +507,7 @@ def test_server_detection_needs_claude_and_the_remote_control_argument(tmp_path:
 def test_an_exit_marked_as_planned_is_not_reported_as_a_crash(tmp_path: Path) -> None:
     # --stop marks the session before its Ctrl+C; here the mark is set by hand
     # and claude exits on its own, so the main loop always sees the dead pane.
-    env = _runner_env(tmp_path, FAKE_SECONDS="2")
+    env = _runner_env(tmp_path, FAKE_SECONDS="6")
     runner = subprocess.Popen(
         ["bash", str(RUNNER)],
         env=env,
@@ -516,22 +516,9 @@ def test_an_exit_marked_as_planned_is_not_reported_as_a_crash(tmp_path: Path) ->
         text=True,
     )
     try:
-        deadline = time.monotonic() + 10
-        while not _session_alive(env) and time.monotonic() < deadline:
-            time.sleep(0.1)
-        subprocess.run(
-            [
-                "tmux",
-                "-L",
-                env["CLAUDE_RC_TMUX_SOCKET"],
-                "set-option",
-                "-t",
-                f"={SESSION}:",
-                "@claude_rc_stopping",
-                "1",
-            ],
-            check=True,
-        )
+        _wait_for_stored_pane(env)
+        marked = _tmux(env, "set-option", "-t", f"={SESSION}:", "@claude_rc_stopping", "1")
+        assert marked.returncode == 0, marked.stderr
         assert runner.wait(timeout=30) == 0
         runner_err = runner.stderr.read() if runner.stderr else ""
     finally:
@@ -663,7 +650,7 @@ def test_server_detection_reads_the_program_and_its_arguments(
 
 @needs_tmux
 def test_an_operator_window_does_not_hide_claude_exiting(tmp_path: Path) -> None:
-    env = _runner_env(tmp_path, FAKE_SECONDS="2")
+    env = _runner_env(tmp_path, FAKE_SECONDS="6")
     runner = subprocess.Popen(
         ["bash", str(RUNNER)],
         env=env,

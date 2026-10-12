@@ -125,7 +125,8 @@ find_claude() {
   # shell gets no terminal (setsid, stdin /dev/null) and 20 s, so a .bashrc
   # that attaches tmux or prompts cannot hang the installer, and it may print
   # other lines, so keep only an executable absolute path.
-  as_operator timeout 20 setsid bash -ic 'command -v claude' </dev/null 2>/dev/null \
+  # -k: an interactive bash ignores the first SIGTERM.
+  as_operator timeout -k 5 20 setsid bash -ic 'command -v claude' </dev/null 2>/dev/null \
     | while IFS= read -r candidate; do
       if usable_claude "${candidate}"; then
         printf '%s\n' "${candidate}"
@@ -188,7 +189,7 @@ ExecStart=${RUNNER}
 ExecStop=${RUNNER} --stop
 Restart=always
 RestartSec=30
-TimeoutStopSec=40
+TimeoutStopSec=60
 # Only the supervisor is signalled on stop. Processes that Claude sessions
 # start (capture or research tmux sessions, downloads) live in this cgroup
 # too and must outlive a restart; ExecStop ends claude itself with Ctrl+C.
@@ -238,7 +239,9 @@ for pid in $(pgrep -u "${OPERATOR}" -f remote-control 2>/dev/null || true); do
   fi
 done
 
-if ! as_operator timeout 20 "${CLAUDE_BIN}" auth status </dev/null >/dev/null 2>&1; then
+# sudo's secure_path hides an npm/nvm node; give claude its own folder first.
+if ! as_operator env "PATH=${CLAUDE_DIR}:/usr/local/bin:/usr/bin:/bin" \
+  timeout -k 5 20 "${CLAUDE_BIN}" auth status </dev/null >/dev/null 2>&1; then
   echo "Warning: ${OPERATOR} does not look logged in. Run 'claude auth login' as ${OPERATOR}." >&2
 fi
 

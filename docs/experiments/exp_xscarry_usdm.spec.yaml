@@ -1,0 +1,100 @@
+# Pre-registered: cross-sectional funding carry on Binance USD-M USDT perps
+# (exp_xscarry_usdm). See docs/experiments/exp_xscarry_usdm.md before
+# changing anything here: a change to any field is a new pre-registration
+# with a new spec_sha256, not a re-run. Comments are not part of the hash.
+# Copy it to a study directory outside the repository, build panel.parquet
+# next to the copy, then lock and run it there (see the Run section of the
+# doc). carry_7d is minus the mean daily funding rate over the 7 consecutive
+# days ending that day, each traded with a rate (a funding dataset's first
+# day only when covered), its sum counted in steps of 1e-9 and ties broken by
+# a sha256 draw from symbol and day (see the doc's Signal). It comes from the
+# panel change merged in #145.
+
+hypothesis_id: xscarry-bn-um-usdt-top50-1d-f7
+universe: binance-um-usdt-perps, crypto underlyings only, top 50 by 30-day quote volume on each day, point in time
+dataset_version: bn-um-usdt-1d universe 2026-10-08, panel 2020-01-01..2026-09-01, lookbacks 14, vol 30, volume 30, funding 7, carry 7 traded rate days hashed ties, non-crypto excluded 2026-10-08, rank requires funding
+h0: Mean net return per period of the cross-sectional funding carry portfolio (long the lowest, short the highest 7-day mean funding rate) is less than or equal to zero after costs and funding.
+h1: Mean net return per period of the cross-sectional funding carry portfolio is greater than zero after costs and funding on the holdout, scored once.
+alpha: 0.05
+selection_method: holm
+direction: signed
+signal_feature: carry
+costs:
+  fee_bps: 4.5
+  slippage_bps: 4.0
+  spread_bps: 1.5
+  latency_bars: 1
+  funding_column: funding_rate
+# The same panel, split and costs as exp_xsmom_usdm: 371 days before the
+# first fold, 16 expanding test folds of 91 days, a 608-day holdout
+# (2025-01-01..2026-08-31) on a 2,435-day axis. Per fold 11 (h7) or 6 (h14)
+# periods, in the holdout 75 or 40.
+split:
+  method: expanding
+  train_bars: 371
+  test_bars: 91
+  holdout_bars: 608
+sample:
+  min_trades_validation: 72
+  min_trades_holdout: 30
+  min_folds: 16
+data:
+  backend: panel
+  parquet_path: panel.parquet
+  timestamp_column: ts
+  symbol_column: symbol
+  price_column: close
+  traded_column: traded
+  rank_column: volume_rank
+  max_gap: 86400000
+  max_rows: 2000000
+  columns:
+    ts:
+      dtype: int64
+      role: timestamp
+    symbol:
+      dtype: string
+      role: symbol
+    close:
+      dtype: float64
+      role: price
+    traded:
+      dtype: bool
+      role: traded
+    volume_rank:
+      dtype: int64
+      role: rank
+    carry_7d:
+      dtype: float64
+      role: feature
+    funding_rate:
+      dtype: float64
+      role: funding
+    funding_covered:
+      dtype: bool
+      role: covered
+    available_ts:
+      dtype: int64
+      role: availability
+features:
+  - name: carry
+    column: carry_7d
+    available_at_column: available_ts
+# The 10% legs hold 5 names from a full universe of 50 and 4 from 40 to 49
+# eligible names, so the floor is 4.
+portfolio:
+  universe_size: 50
+  min_names_per_leg: 4
+configs:
+  - id: q10-h7
+    quantile: 0.1
+    horizon_bars: 7
+  - id: q10-h14
+    quantile: 0.1
+    horizon_bars: 14
+  - id: q20-h7
+    quantile: 0.2
+    horizon_bars: 7
+  - id: q20-h14
+    quantile: 0.2
+    horizon_bars: 14

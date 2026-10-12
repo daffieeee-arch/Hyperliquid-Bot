@@ -9,8 +9,10 @@ trading mode, adds no credential and moves no capital.
 ## What runs
 
 - `claude-rc.service`, a systemd **system** unit owned by root, starts at
-  boot and runs `/usr/local/libexec/claude-rc/claude-rc-run` (a copy of
-  `scripts/claude_rc_run.sh`) as the operator user, never as root.
+  boot and runs `/usr/local/libexec/claude-rc/claude-rc-run` (a root-owned
+  copy of `scripts/claude_rc_run.sh`) as the operator user, never as root.
+  The status and uninstall helpers are root-owned copies in the same folder;
+  `/usr/local/bin/claude-rc-status` points to the status helper.
 - The supervisor starts `claude remote-control --name hyperliquid-vps` in the
   repo checkout, inside a detached tmux session `claude-rc` on its **own tmux
   socket** (`tmux -L claude-rc`). Restarting it never touches the capture
@@ -19,6 +21,11 @@ trading mode, adds no credential and moves no capital.
   minutes, a stop from the app), the supervisor writes the last screen to the
   journal and exits. systemd starts it again after 30 seconds, without a
   retry limit.
+- A stop or restart of the service ends only claude (with Ctrl+C, and a
+  second one if claude asks to confirm) and the supervisor
+  (`KillMode=process`). Processes that a session started stay up: a capture
+  or research tmux session, a download. They do run inside the service's
+  cgroup, so `systemctl status claude-rc` lists them.
 - `claude remote-control` started again in the same folder brings back the
   sessions it served, for about four hours after it stopped (documented for a
   Ctrl+C stop; the docs do not say whether a crash or reboot is the same).
@@ -38,8 +45,11 @@ extra deny list. What that means:
   or exchange credentials on the host, no edits inside running containers, no
   changes to durable runtime data outside an approved runbook, and explicit
   approval for high-blast-radius actions (`AGENTS.md`, [Security](../SECURITY.md)).
-- Root owns the unit and the supervisor copy, so a session cannot rewrite
-  what restarts it. Stopping or removing the service needs `sudo`.
+- Root owns the unit and the installed scripts, so a session cannot change
+  them, and stopping or removing the service needs `sudo`. This is not a
+  boundary against a stolen account: whoever steers the operator user can
+  also wait for the operator's next `sudo` in that account (for example by
+  changing shell startup files). The account's own protection is what counts.
 
 ## One-time preparation (operator, over SSH)
 
@@ -54,32 +64,45 @@ extra deny list. What that means:
 
 ## Install or update
 
+Run this from an SSH terminal, not from a Claude session the service serves
+(the restart would end that session; the installer refuses). It installs from
+a temporary worktree of `origin/main`, so the main checkout keeps its branch
+and running jobs such as `s4-build` are not disturbed:
+
 ```bash
 cd "$HOME/Hyperliquid Project/Hyperliquid-Bot"
-git pull --ff-only
-bash scripts/claude_rc_install.sh --print-unit   # optional: show the unit, change nothing
-sudo bash scripts/claude_rc_install.sh
+git fetch origin main
+git worktree add --detach /tmp/claude-rc-main origin/main
+bash /tmp/claude-rc-main/scripts/claude_rc_install.sh --print-unit   # optional: show the unit
+sudo bash /tmp/claude-rc-main/scripts/claude_rc_install.sh
+git worktree remove /tmp/claude-rc-main
 ```
 
-The installer finds `claude` for the operator, refuses root as the operator,
-refuses paths that systemd would expand (`%`, `$`, quotes, backslashes),
-copies the supervisor, writes `/etc/systemd/system/claude-rc.service`, and
-enables and (re)starts the service. Run it again after a merged change to the
-`claude_rc_*` scripts: the service runs the installed copy, not the checkout.
+The installer:
 
-If the layout differs, pass `CLAUDE_RC_REPO`, `CLAUDE_RC_BIN` or
-`CLAUDE_RC_NAME` through sudo, for example
-`sudo CLAUDE_RC_NAME=my-vps bash scripts/claude_rc_install.sh`.
+- finds `claude` for the operator and refuses root as the operator;
+- refuses values systemd would expand (`%`, `$`, quotes, backslash, backtick);
+- refuses when its `claude_rc_*` scripts differ from `origin/main` (a guard
+  against local edits, not a security boundary);
+- refuses while a hand-started `claude remote-control` runs outside the
+  service;
+- copies the scripts, writes `/etc/systemd/system/claude-rc.service`, and
+  enables and (re)starts the service.
+
+Repeat the same steps after a merged change to the `claude_rc_*` scripts: the
+service runs the installed copies, not the checkout. If the layout differs,
+pass `CLAUDE_RC_REPO`, `CLAUDE_RC_BIN` or `CLAUDE_RC_NAME` through sudo, for
+example `sudo CLAUDE_RC_NAME=my-vps bash /tmp/claude-rc-main/scripts/claude_rc_install.sh`.
 
 ## Daily use
 
 | Task | Command |
 |---|---|
-| Status, recent log and current screen | `bash scripts/claude_rc_status.sh` |
+| Status, recent log and current screen | `claude-rc-status` |
 | Open the screen | `tmux -L claude-rc attach -t claude-rc` (leave with Ctrl+B, then D) |
 | Restart | `sudo systemctl restart claude-rc` |
 | Stop until the next boot | `sudo systemctl stop claude-rc` |
-| Remove completely | `sudo bash scripts/claude_rc_uninstall.sh` |
+| Remove completely | `sudo /usr/local/libexec/claude-rc/claude-rc-uninstall` |
 
 Pressing Ctrl+C inside the attached screen stops claude; the service then
 starts it again after 30 seconds.
@@ -95,7 +118,7 @@ starts it again after 30 seconds.
 
 ## Acceptance test after install
 
-1. `bash scripts/claude_rc_status.sh` shows `service: active (enabled)` and a
+1. `claude-rc-status` shows `service: active (enabled)` and a
    Remote Control screen; the app lists `hyperliquid-vps` with a green dot.
 2. Attach, press Ctrl+C, leave with Ctrl+B, then D. Within about a minute the
    status shows a new screen and the app session comes back online.
@@ -110,5 +133,8 @@ starts it again after 30 seconds.
 - An idle server costs next to nothing, but a session that waits on a prompt
   does no work until it is answered.
 - Tests: `tests/python/test_claude_rc_scripts.py` runs the supervisor against
-  a fake `claude` in a folder with a space, checks Ctrl+C stop and the
-  rendered unit (`systemd-analyze verify` where available).
+  a fake `claude` in a folder with a space, checks the Ctrl+C stop (also when
+  claude asks for a second Ctrl+C), the status helper through a symlink, and
+  the rendered unit (`systemd-analyze verify` where available). The installer
+  refusals for a hand-started server and for scripts that differ from
+  `origin/main` were checked by hand as root with a throwaway user.

@@ -6,16 +6,27 @@
 #
 # The service runs `claude remote-control` as the operator (the sudo caller),
 # never as root, with that user's normal rights. Root owns the unit and the
-# supervisor copy so a session cannot rewrite what restarts it. See
+# supervisor copy so a session cannot rewrite what restarts it. Run this from
+# an SSH terminal, not from a Claude session the service serves. See
 # docs/runbooks/claude-remote-control-vps.md.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-UNIT_NAME="claude-rc.service"
-UNIT_PATH="${CLAUDE_RC_UNIT_PATH:-/etc/systemd/system/${UNIT_NAME}}"
+# shellcheck source=claude_rc_lib.sh
+source "${SCRIPT_DIR}/claude_rc_lib.sh"
+
+UNIT_PATH="${CLAUDE_RC_UNIT_PATH:-/etc/systemd/system/${CLAUDE_RC_UNIT_NAME}}"
 LIBEXEC_DIR="${CLAUDE_RC_LIBEXEC_DIR:-/usr/local/libexec/claude-rc}"
 RUNNER="${LIBEXEC_DIR}/claude-rc-run"
+STATUS_LINK="${CLAUDE_RC_STATUS_LINK:-/usr/local/bin/claude-rc-status}"
+SCRIPTS_TO_INSTALL=(
+  scripts/claude_rc_install.sh
+  scripts/claude_rc_lib.sh
+  scripts/claude_rc_run.sh
+  scripts/claude_rc_status.sh
+  scripts/claude_rc_uninstall.sh
+)
 
 PRINT_ONLY=0
 if [[ "${1:-}" == "--print-unit" ]]; then
@@ -40,6 +51,18 @@ OPERATOR_GROUP="$(id -gn "${OPERATOR}")"
 REPO="${CLAUDE_RC_REPO:-${OPERATOR_HOME}/Hyperliquid Project/Hyperliquid-Bot}"
 NAME="${CLAUDE_RC_NAME:-hyperliquid-vps}"
 
+as_operator() {
+  if [[ "$(id -un)" == "${OPERATOR}" ]]; then
+    "$@"
+  else
+    sudo -u "${OPERATOR}" -H "$@"
+  fi
+}
+
+usable_claude() {
+  [[ "$1" == /* && -x "$1" && ! -d "$1" ]]
+}
+
 find_claude() {
   local candidate
   for candidate in \
@@ -47,33 +70,46 @@ find_claude() {
     "${OPERATOR_HOME}/.claude/local/claude" \
     /usr/local/bin/claude \
     /usr/bin/claude; do
-    if [[ -x "${candidate}" ]]; then
+    if usable_claude "${candidate}"; then
       printf '%s\n' "${candidate}"
       return 0
     fi
   done
-  # npm or nvm installs only show up on the operator's interactive PATH.
-  if [[ "$(id -un)" == "${OPERATOR}" ]]; then
-    command -v claude 2>/dev/null || true
-  elif command -v sudo >/dev/null 2>&1; then
-    sudo -u "${OPERATOR}" -i bash -ic 'command -v claude' 2>/dev/null | tail -n 1 || true
-  fi
+  # npm or nvm installs only show up on the operator's interactive PATH; the
+  # shell may print other lines, so keep only an executable absolute path.
+  as_operator bash -ic 'command -v claude' 2>/dev/null | while IFS= read -r candidate; do
+    if usable_claude "${candidate}"; then
+      printf '%s\n' "${candidate}"
+      break
+    fi
+  done || true
 }
 
 CLAUDE_BIN="${CLAUDE_RC_BIN:-$(find_claude)}"
-if [[ -z "${CLAUDE_BIN}" ]]; then
-  echo "Refuse: claude was not found for ${OPERATOR}. Install Claude Code, or set CLAUDE_RC_BIN." >&2
+if [[ -z "${CLAUDE_BIN}" ]] || ! usable_claude "${CLAUDE_BIN}"; then
+  echo "Refuse: no executable claude found for ${OPERATOR} (${CLAUDE_BIN:-none})." >&2
+  echo "Install Claude Code for ${OPERATOR}, or set CLAUDE_RC_BIN to its absolute path." >&2
   exit 1
 fi
+CLAUDE_DIR="$(dirname "${CLAUDE_BIN}")"
 
-# systemd expands % and $ and ends a quoted value at ", so such paths could
+# systemd expands % and $ and ends a quoted value at ", so such values could
 # start the wrong thing. Refuse them instead of escaping.
-for value in "${REPO}" "${CLAUDE_BIN}" "${NAME}" "${OPERATOR_HOME}"; do
+for value in "${REPO}" "${CLAUDE_BIN}" "${NAME}" "${OPERATOR_HOME}" "${LIBEXEC_DIR}"; do
   if [[ "${value}" =~ [\"\\%\$\`] || "${value}" == *$'\n'* ]]; then
     echo "Refuse: unsupported character in: ${value}" >&2
     exit 1
   fi
 done
+# ExecStart is not quoted, and PATH entries are split at ':'.
+if [[ "${LIBEXEC_DIR}" =~ [[:space:]] ]]; then
+  echo "Refuse: the libexec directory may not contain spaces: ${LIBEXEC_DIR}" >&2
+  exit 1
+fi
+if [[ "${CLAUDE_DIR}" == *:* || "${OPERATOR_HOME}" == *:* ]]; then
+  echo "Refuse: a ':' in ${CLAUDE_DIR} or ${OPERATOR_HOME} would break PATH." >&2
+  exit 1
+fi
 
 render_unit() {
   cat <<EOF
@@ -91,14 +127,17 @@ Group=${OPERATOR_GROUP}
 Environment="CLAUDE_RC_REPO=${REPO}"
 Environment="CLAUDE_RC_BIN=${CLAUDE_BIN}"
 Environment="CLAUDE_RC_NAME=${NAME}"
-Environment="PATH=$(dirname "${CLAUDE_BIN}"):${OPERATOR_HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PATH=${CLAUDE_DIR}:${OPERATOR_HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin"
 Environment=TERM=xterm-256color
 ExecStart=${RUNNER}
 ExecStop=${RUNNER} --stop
 Restart=always
 RestartSec=30
 TimeoutStopSec=40
-KillMode=control-group
+# Only the supervisor is signalled on stop. Processes that Claude sessions
+# start (capture or research tmux sessions, downloads) live in this cgroup
+# too and must outlive a restart; ExecStop ends claude itself with Ctrl+C.
+KillMode=process
 
 [Install]
 WantedBy=multi-user.target
@@ -114,7 +153,12 @@ if [[ "${EUID}" -ne 0 ]]; then
   echo "Run with sudo: sudo bash $0" >&2
   exit 1
 fi
-for tool in tmux systemctl awk; do
+if claude_rc_inside_service; then
+  echo "Refuse: this runs inside ${CLAUDE_RC_UNIT_NAME}; the restart would end this session." >&2
+  echo "Run it from an SSH terminal instead." >&2
+  exit 1
+fi
+for tool in tmux systemctl awk git; do
   if ! command -v "${tool}" >/dev/null 2>&1; then
     echo "Refuse: ${tool} is not installed." >&2
     exit 1
@@ -124,34 +168,59 @@ if [[ ! -d "${REPO}" ]]; then
   echo "Refuse: repo checkout is missing: ${REPO}" >&2
   exit 1
 fi
-if [[ ! -x "${CLAUDE_BIN}" ]]; then
-  echo "Refuse: not executable: ${CLAUDE_BIN}" >&2
+
+# These files run as root below. The checkout is writable by every Claude
+# session, so install only what matches the reviewed origin/main.
+CHECKOUT="$(dirname "${SCRIPT_DIR}")"
+if ! as_operator git -C "${CHECKOUT}" rev-parse --verify --quiet origin/main >/dev/null; then
+  echo "Refuse: ${CHECKOUT} has no origin/main to compare with. Run 'git fetch origin main' first." >&2
+  exit 1
+fi
+if [[ -n "$(as_operator git -C "${CHECKOUT}" status --porcelain -- "${SCRIPTS_TO_INSTALL[@]}")" ]] \
+  || ! as_operator git -C "${CHECKOUT}" diff --quiet origin/main -- "${SCRIPTS_TO_INSTALL[@]}"; then
+  echo "Refuse: the claude_rc scripts in ${CHECKOUT} differ from origin/main." >&2
+  echo "Install from a fresh worktree of origin/main, as docs/runbooks/claude-remote-control-vps.md shows." >&2
   exit 1
 fi
 
-# A second remote-control server in the same folder would compete with the service.
-if ! systemctl is-active --quiet "${UNIT_NAME}" \
-  && pgrep -u "${OPERATOR}" -f "claude.* remote-control" >/dev/null 2>&1; then
-  echo "Refuse: ${OPERATOR} already runs 'claude remote-control' by hand." >&2
-  echo "Stop that one first (Ctrl+C in its tmux window), then run this again." >&2
+# A second remote-control server outside the service would compete with it.
+hand_started_server() {
+  local pid
+  for pid in $(pgrep -u "${OPERATOR}" -f remote-control 2>/dev/null || true); do
+    grep -q "/${CLAUDE_RC_UNIT_NAME}" "/proc/${pid}/cgroup" 2>/dev/null && continue
+    if tr '\0' '\n' <"/proc/${pid}/cmdline" 2>/dev/null | grep -qx remote-control; then
+      echo "${pid}"
+      return 0
+    fi
+  done
+  return 1
+}
+if pid="$(hand_started_server)"; then
+  echo "Refuse: ${OPERATOR} runs 'claude remote-control' by hand (pid ${pid})." >&2
+  echo "Stop that one first (Ctrl+C in its window), then run this again." >&2
   exit 1
 fi
 
-if ! sudo -u "${OPERATOR}" -H "${CLAUDE_BIN}" auth status >/dev/null 2>&1; then
+if ! as_operator "${CLAUDE_BIN}" auth status >/dev/null 2>&1; then
   echo "Warning: ${OPERATOR} does not look logged in. Run 'claude auth login' as ${OPERATOR}." >&2
 fi
 
+# The service and the helpers run these root-owned copies, never the checkout.
 install -d -m 0755 -o root -g root "${LIBEXEC_DIR}"
 install -m 0755 -o root -g root "${SCRIPT_DIR}/claude_rc_run.sh" "${RUNNER}"
+install -m 0644 -o root -g root "${SCRIPT_DIR}/claude_rc_lib.sh" "${LIBEXEC_DIR}/claude_rc_lib.sh"
+install -m 0755 -o root -g root "${SCRIPT_DIR}/claude_rc_status.sh" "${LIBEXEC_DIR}/claude-rc-status"
+install -m 0755 -o root -g root "${SCRIPT_DIR}/claude_rc_uninstall.sh" "${LIBEXEC_DIR}/claude-rc-uninstall"
+ln -sfn "${LIBEXEC_DIR}/claude-rc-status" "${STATUS_LINK}"
 unit_tmp="$(mktemp)"
 render_unit >"${unit_tmp}"
 install -m 0644 -o root -g root "${unit_tmp}" "${UNIT_PATH}"
 rm -f "${unit_tmp}"
 
 systemctl daemon-reload
-systemctl enable "${UNIT_NAME}" >/dev/null
-systemctl restart "${UNIT_NAME}"
+systemctl enable "${CLAUDE_RC_UNIT_NAME}" >/dev/null
+systemctl restart "${CLAUDE_RC_UNIT_NAME}"
 
-echo "Installed ${UNIT_NAME}: claude remote-control runs as ${OPERATOR} in ${REPO}."
+echo "Installed ${CLAUDE_RC_UNIT_NAME}: claude remote-control runs as ${OPERATOR} in ${REPO}."
 echo "Session title in the Claude app: ${NAME}"
-echo "Check it with: bash scripts/claude_rc_status.sh"
+echo "Check it with: claude-rc-status"

@@ -13,6 +13,7 @@
 
 set -euo pipefail
 
+# Same defaults as claude_rc_lib.sh; this file is installed without it.
 SOCKET="${CLAUDE_RC_TMUX_SOCKET:-claude-rc}"
 SESSION="${CLAUDE_RC_TMUX_SESSION:-claude-rc}"
 POLL_SECONDS="${CLAUDE_RC_POLL_SECONDS:-15}"
@@ -34,15 +35,24 @@ pane_dead() {
   [[ "${dead}" == "1" ]]
 }
 
+wait_for_exit() {
+  local limit="$1" waited=0
+  while session_alive && ! pane_dead && ((waited < limit)); do
+    sleep 1
+    waited=$((waited + 1))
+  done
+}
+
 stop_session() {
   session_alive || return 0
   if ! pane_dead; then
     rc_tmux send-keys -t "${SESSION}" C-c 2>/dev/null || true
-    local waited=0
-    while session_alive && ! pane_dead && ((waited < STOP_WAIT_SECONDS)); do
-      sleep 1
-      waited=$((waited + 1))
-    done
+    wait_for_exit 3
+    # A second Ctrl+C confirms the exit where claude asks for one.
+    if session_alive && ! pane_dead; then
+      rc_tmux send-keys -t "${SESSION}" C-c 2>/dev/null || true
+      wait_for_exit "${STOP_WAIT_SECONDS}"
+    fi
   fi
   rc_tmux kill-session -t "${SESSION}" 2>/dev/null || true
 }
@@ -95,7 +105,7 @@ done
 if session_alive; then
   status="$(rc_tmux display-message -p -t "${SESSION}" '#{pane_dead_status}' 2>/dev/null || true)"
   echo "claude-rc: remote-control exited with status ${status:-unknown}; last screen:" >&2
-  # Drop the blank rows below the last line of output.
+  # Drop the blank rows below the last line of output (as claude_rc_trim_blank_tail).
   rc_tmux capture-pane -p -J -t "${SESSION}" -S -40 2>/dev/null \
     | awk 'NF { last = NR } { row[NR] = $0 } END { for (i = 1; i <= last; i++) print row[i] }' >&2 \
     || true

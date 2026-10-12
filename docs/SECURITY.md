@@ -152,7 +152,9 @@ The always-on Remote Control server runs as the operator user with the same
 rights as an interactive session (Chupa's decision, 2026-10-12). Whoever
 holds the operator's claude.ai account can steer it, so that account needs
 strong sign-in protection and its VPS sessions are never shared. Root owns
-the unit and its supervisor; the service never runs as root. See
+the unit and the installed scripts and the service never runs as root, but
+that is no boundary against a stolen account, which can wait for the
+operator's next `sudo` in the same account. See
 [Always-on Claude Code Remote Control](runbooks/claude-remote-control-vps.md).
 
 ### Grafana MCP

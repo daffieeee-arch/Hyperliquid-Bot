@@ -40,7 +40,17 @@ def _fake_claude(tmp_path: Path) -> Path:
         "#!/usr/bin/env bash\n"
         "printf 'fake claude arg <%s>\\n' \"$@\"\n"
         'echo "fake claude cwd: $(pwd)"\n'
-        f"trap 'touch \"{marker}\"; exit 130' INT\n"
+        "presses=0\n"
+        "on_int() {\n"
+        "  presses=$((presses + 1))\n"
+        '  if [[ "${FAKE_IGNORE_FIRST_INT:-0}" == 1 && "${presses}" -lt 2 ]]; then\n'
+        '    echo "Press Ctrl-C again to exit"\n'
+        "    return\n"
+        "  fi\n"
+        f'  touch "{marker}"\n'
+        "  exit 130\n"
+        "}\n"
+        "trap on_int INT\n"
         'for _ in $(seq 1 "${FAKE_SECONDS:-1}"); do sleep 1; done\n'
         "exit 7\n",
     )
@@ -115,8 +125,10 @@ def test_runner_starts_claude_in_the_spaced_repo_and_reports_its_exit(tmp_path: 
 
 
 @needs_tmux
-def test_stop_sends_ctrl_c_and_the_runner_exits(tmp_path: Path) -> None:
-    env = _runner_env(tmp_path, FAKE_SECONDS="60")
+@pytest.mark.parametrize("ignore_first", ["0", "1"])
+def test_stop_sends_ctrl_c_and_the_runner_exits(tmp_path: Path, ignore_first: str) -> None:
+    # "1": claude asks for a second Ctrl+C before it exits.
+    env = _runner_env(tmp_path, FAKE_SECONDS="60", FAKE_IGNORE_FIRST_INT=ignore_first)
     runner = subprocess.Popen(
         ["bash", str(RUNNER)],
         env=env,
@@ -216,6 +228,10 @@ def test_print_unit_quotes_the_spaced_repo_and_never_runs_as_root(tmp_path: Path
     assert f"User={_non_root_user()}" in unit
     assert "User=root" not in unit
     assert "Restart=always" in unit
+    # Processes the sessions start (capture tmux sessions, downloads) must
+    # survive a restart of the service.
+    assert "KillMode=process" in unit
+    assert "KillMode=control-group" not in unit
     assert f"ExecStart={tmp_path / 'libexec' / 'claude-rc-run'}" in unit
     assert "ExecStop=" in unit and "claude-rc-run --stop" in unit
     assert "WantedBy=multi-user.target" in unit
@@ -267,3 +283,75 @@ def test_installer_needs_sudo_to_install(tmp_path: Path) -> None:
 
     assert completed.returncode == 1
     assert "Run with sudo" in completed.stderr
+
+
+def test_runner_tmux_defaults_match_the_shared_lib() -> None:
+    lib = (REPO_ROOT / "scripts" / "claude_rc_lib.sh").read_text(encoding="utf-8")
+    runner = RUNNER.read_text(encoding="utf-8")
+
+    assert 'CLAUDE_RC_DEFAULT_SOCKET="claude-rc"' in lib
+    assert 'CLAUDE_RC_DEFAULT_SESSION="claude-rc"' in lib
+    assert 'SOCKET="${CLAUDE_RC_TMUX_SOCKET:-claude-rc}"' in runner
+    assert 'SESSION="${CLAUDE_RC_TMUX_SESSION:-claude-rc}"' in runner
+
+
+@needs_tmux
+def test_status_via_symlink_reports_one_line_and_the_screen(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "fakebin"
+    fake_bin.mkdir()
+    _executable(
+        fake_bin / "systemctl",
+        "#!/usr/bin/env bash\n"
+        'case "$1" in\n'
+        "  is-active) echo inactive; exit 3 ;;\n"
+        "  is-enabled) echo disabled; exit 1 ;;\n"
+        "esac\n"
+        "exit 1\n",
+    )
+    # A user outside adm sees no lines and exit 0, like the real journalctl.
+    _executable(fake_bin / "journalctl", "#!/usr/bin/env bash\nexit 0\n")
+    link = tmp_path / "claude-rc-status"
+    link.symlink_to(REPO_ROOT / "scripts" / "claude_rc_status.sh")
+    env = _runner_env(tmp_path)
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+    socket = env["CLAUDE_RC_TMUX_SOCKET"]
+    subprocess.run(
+        [
+            "tmux",
+            "-L",
+            socket,
+            "new-session",
+            "-d",
+            "-s",
+            SESSION,
+            "--",
+            "bash",
+            "-c",
+            "echo remote-control screen line; sleep 30",
+        ],
+        check=True,
+        env=env,
+    )
+    try:
+        deadline = time.monotonic() + 5
+        screen = ""
+        while "screen line" not in screen and time.monotonic() < deadline:
+            time.sleep(0.1)
+            screen = subprocess.run(
+                ["tmux", "-L", socket, "capture-pane", "-p", "-t", SESSION],
+                capture_output=True,
+                text=True,
+                check=False,
+            ).stdout
+        completed = subprocess.run(
+            ["bash", str(link)], check=False, capture_output=True, env=env, text=True, timeout=30
+        )
+    finally:
+        _end_test_session(env)
+
+    assert completed.returncode == 0, completed.stderr
+    lines = completed.stdout.splitlines()
+    assert lines[0] == "service: inactive (disabled)"
+    assert "sudo journalctl -u claude-rc.service" in completed.stdout
+    assert "remote-control screen line" in completed.stdout
+    assert completed.stdout.endswith("remote-control screen line\n")

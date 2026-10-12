@@ -54,6 +54,12 @@ as_operator() {
 # for a stolen operator account, which can move the local origin/main; the
 # fresh worktree in the runbook is what the operator relies on for that.
 if [[ "${PRINT_ONLY}" -eq 1 ]]; then
+  # The preview sources unverified files from the checkout, so it is not for
+  # sudo (the documented way to reach root here).
+  if [[ "${EUID}" -eq 0 && -n "${SUDO_USER:-}" ]]; then
+    echo "Refuse: run --print-unit without sudo." >&2
+    exit 1
+  fi
   LIB_DIR="${SCRIPT_DIR}"
 else
   if [[ "${EUID}" -ne 0 ]]; then

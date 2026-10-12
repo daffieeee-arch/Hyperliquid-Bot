@@ -404,7 +404,7 @@ def test_status_via_symlink_reports_one_line_and_the_screen(tmp_path: Path) -> N
     state = Path(env["CLAUDE_RC_STATE_DIR"])
     state.mkdir(parents=True, exist_ok=True)
     (state / "last-screen.txt").write_text(
-        "exit at T with status 1\nplease run /login\n", encoding="utf-8"
+        "exit at T with status 1\n\x1b]0;evil\x07please run /login\n", encoding="utf-8"
     )
     try:
         deadline = time.monotonic() + 5
@@ -424,7 +424,9 @@ def test_status_via_symlink_reports_one_line_and_the_screen(tmp_path: Path) -> N
     assert "sudo journalctl -u claude-rc.service" in completed.stdout
     assert "remote-control screen line" in completed.stdout
     assert "last exit of claude remote-control" in completed.stdout
-    assert completed.stdout.endswith("please run /login\n")
+    assert completed.stdout.endswith("]0;evilplease run /login\n")
+    # Control characters (here an escape sequence) never reach the terminal.
+    assert "\x1b" not in completed.stdout and "\x07" not in completed.stdout
 
 
 @needs_tmux
@@ -483,6 +485,13 @@ def test_server_detection_needs_claude_and_the_remote_control_argument(tmp_path:
     )
     plain = subprocess.Popen(["bash", "-c", "sleep 30; true", "remote-control"])
     try:
+        # The shebang's env must have exec'd bash before the command lines count.
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            cmdline = Path(f"/proc/{server.pid}/cmdline").read_bytes().split(b"\0")
+            if Path(cmdline[0].decode()).name != "env":
+                break
+            time.sleep(0.05)
         time.sleep(0.2)
         assert all(p.poll() is None for p in (server, lookalike, plain))
         assert _lib_call("claude_rc_is_server_pid", str(server.pid)) == 0
@@ -637,6 +646,7 @@ def test_inside_service_follows_the_first_tmux_server(tmp_path: Path) -> None:
     [
         (["claude", "remote-control"], 0),
         (["node", "--max-old-space-size=4096", "/x/claude-code/cli.js", "remote-control"], 0),
+        (["node", "--max-old-space-size", "4096", "/x/claude-code/cli.js", "remote-control"], 0),
         (["node", "/x/claude-code/cli.js", "--resume"], 1),
         (["rg", "remote-control", "/x/claude-code"], 1),
         (["node", "--inspect", "/x/other.js", "remote-control"], 1),
@@ -795,3 +805,37 @@ def test_test_isolation_rules_match_the_capture_helpers(extra: dict[str, str]) -
     assert verdict("claude_rc_lib.sh", "claude_rc_in_test_or_ci") == verdict(
         "data1_operator_isolation.sh", "data1_in_test_or_ci_env"
     )
+
+
+def test_the_preview_refuses_sudo(tmp_path: Path) -> None:
+    if os.geteuid() != 0:
+        pytest.skip("only root can show the refusal")
+    completed = _print_unit(tmp_path, SUDO_USER="operator")
+
+    assert completed.returncode == 1
+    assert "without sudo" in completed.stderr
+
+
+@needs_tmux
+def test_a_sigterm_to_the_supervisor_stops_claude(tmp_path: Path) -> None:
+    # A stop during start-up: ExecStop found no session, so the supervisor
+    # must not leave claude running when systemd's SIGTERM reaches it.
+    env = _runner_env(tmp_path, FAKE_SECONDS="60")
+    runner = subprocess.Popen(
+        ["bash", str(RUNNER)],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        _wait_for_stored_pane(env)
+        runner.terminate()
+        assert runner.wait(timeout=30) == 0
+    finally:
+        if runner.poll() is None:
+            runner.kill()
+            runner.wait()
+        _end_test_session(env)
+
+    assert (tmp_path / "interrupted").exists()

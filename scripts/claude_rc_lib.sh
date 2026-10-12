@@ -79,8 +79,8 @@ claude_rc_trim_blank_tail() {
 }
 
 # True when pid is a `claude remote-control` server: its program is claude,
-# or an interpreter (node, bun, a shell) whose first non-flag argument is a
-# claude script or the claude-code cli, and a later argument is exactly
+# or an interpreter (node, bun, a shell) running a claude script or the
+# claude-code cli, and a later argument is exactly
 # remote-control. `rg remote-control .../claude-code` does not match: its
 # program is rg. Best effort: an npm install sets its process title and
 # hides its arguments.
@@ -92,11 +92,13 @@ claude_rc_is_server_pid() {
   case "${argv[0]##*/}" in
     claude) ;;
     node | nodejs | bun | bash | sh)
-      while ((i < ${#argv[@]})) && [[ "${argv[i]}" == -* ]]; do
+      # The script may follow interpreter flags, some with separate values.
+      while ((i < ${#argv[@]})); do
+        [[ "${argv[i]}" != -* && ("${argv[i]##*/}" == "claude" || "${argv[i]}" == *claude-code*) ]] \
+          && break
         i=$((i + 1))
       done
       ((i < ${#argv[@]})) || return 1
-      [[ "${argv[i]##*/}" == "claude" || "${argv[i]}" == *claude-code* ]] || return 1
       i=$((i + 1))
       ;;
     *) return 1 ;;

@@ -5,7 +5,7 @@
 # operator user. It starts `claude remote-control` in a detached tmux session
 # on a private socket and stays in the foreground while that session lives.
 # claude starts through a login shell and without TMUX/TMUX_PANE, so it gets
-# the operator's ~/.profile, and tmux sessions that Claude sessions start
+# the operator's login profile, and tmux sessions that Claude sessions start
 # (captures, research jobs) land on the operator's default tmux server, never
 # on this private one.
 #
@@ -24,6 +24,10 @@ claude_rc_refuse_live_socket_under_test || exit 2
 POLL_SECONDS="${CLAUDE_RC_POLL_SECONDS:-15}"
 # Time for a clean exit after Ctrl+C before the session is killed.
 STOP_WAIT_SECONDS="${CLAUDE_RC_STOP_WAIT_SECONDS:-20}"
+if [[ ! "${STOP_WAIT_SECONDS}" =~ ^[0-9]+$ ]]; then
+  echo "claude-rc: CLAUDE_RC_STOP_WAIT_SECONDS must be whole seconds; using 20" >&2
+  STOP_WAIT_SECONDS=20
+fi
 # An identical screen is printed again once the last dump is this old.
 SCREEN_RESET_MINUTES="${CLAUDE_RC_SCREEN_RESET_MINUTES:-10}"
 # A missing repo or binary is retried by systemd; the pause keeps that slow.
@@ -90,7 +94,7 @@ report_last_screen() {
   local status="$1" screen digest previous=""
   # tmux's own "Pane is dead (status, time)" line differs on every exit; drop
   # it and squeeze runs of blank rows before comparing.
-  screen="$(claude_rc_tmux capture-pane -p -J -t "$(claude_rc_pane_target)" -S -40 2>/dev/null \
+  screen="$(claude_rc_tmux capture-pane -p -J -t "${pane_id:-$(claude_rc_pane_target)}" -S -40 2>/dev/null \
     | grep -v '^Pane is dead (' | cat -s | claude_rc_trim_blank_tail | tail -n 40 || true)"
   digest="$(printf '%s\n' "${status}" "${screen}" | sha256sum | cut -d' ' -f1)"
   mkdir -p "${STATE_DIR}" 2>/dev/null || true
@@ -139,6 +143,11 @@ fi
 # A session left by a crashed run would put two servers on one directory.
 stop_session
 
+# systemd's SIGTERM (after ExecStop, KillMode=process) reaches only this
+# script. ExecStop may have found no session yet if the stop came during
+# start-up, so stop claude here too rather than leave it unmanaged.
+trap 'stop_session; exit 0' TERM
+
 args=(remote-control)
 if [[ -n "${NAME}" ]]; then
   args+=(--name "${NAME}")
@@ -146,11 +155,12 @@ fi
 
 # remain-on-exit keeps the last screen (for example a login prompt) readable
 # after claude exits. It is set on the private server before the session
-# exists, so even an instant exit keeps it. The login shell reads ~/.profile,
-# runs claude and writes its exit status to a file: tmux 3.4 does not always
-# report it (about half the time on a busy host). The shell's INT trap is a
-# no-op handler, which exec resets, so Ctrl+C still reaches claude and the
-# shell survives it long enough to write the status.
+# exists, so even an instant exit keeps it. The login shell reads the
+# operator's login profile (~/.bash_profile, ~/.bash_login or ~/.profile,
+# as an SSH login does), runs claude and writes its exit status to a file:
+# tmux 3.4 does not always report it (about half the time on a busy host).
+# The shell's INT trap is a no-op handler, which exec resets, so Ctrl+C still
+# reaches claude and the shell survives it long enough to write the status.
 STATUS_FILE="${STATE_DIR}/exit-status"
 mkdir -p "${STATE_DIR}" 2>/dev/null || true
 rm -f "${STATUS_FILE}"
@@ -163,8 +173,10 @@ pane_id="$(claude_rc_tmux start-server \; set-option -wg remain-on-exit on \; \
 claude_rc_tmux set-option -t "${pane_id}" @claude_rc_pane "${pane_id}" 2>/dev/null || true
 echo "claude-rc: remote-control started in ${REPO} (env -u TMUX_TMPDIR tmux -L ${CLAUDE_RC_SOCKET} attach -t ${CLAUDE_RC_SESSION})"
 
-while session_alive && ! pane_dead; do
-  sleep "${POLL_SECONDS}"
+while session_alive && ! pane_dead "${pane_id}"; do
+  # Sleep in the background and wait, so a SIGTERM is handled at once.
+  sleep "${POLL_SECONDS}" &
+  wait "$!" || true
 done
 
 # Read the stop mark first: --stop sets it before its Ctrl+C, and may remove
@@ -187,7 +199,7 @@ else
     sleep 0.1
   done
   if [[ -z "${status}" ]]; then
-    status="$(claude_rc_tmux display-message -p -t "$(claude_rc_pane_target)" \
+    status="$(claude_rc_tmux display-message -p -t "${pane_id}" \
       '#{?pane_dead_signal,signal #{pane_dead_signal},#{pane_dead_status}}' 2>/dev/null || true)"
   elif [[ "${status}" =~ ^[0-9]+$ ]] && ((status > 128 && status <= 128 + 64)); then
     # The shell reports a death by signal N as 128+N, the same as that exit

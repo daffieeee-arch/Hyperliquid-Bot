@@ -16,8 +16,8 @@ trading mode, adds no credential and moves no capital.
 - The supervisor starts `claude remote-control --name hyperliquid-vps` in the
   repo checkout, inside a detached tmux session `claude-rc` on its **own tmux
   socket** (`tmux -L claude-rc`), and targets that session by its exact name.
-  claude starts through a login shell (so it reads the operator's
-  `~/.profile`) and without the `TMUX` variables, so tmux sessions that a
+  claude starts through a login shell (so it reads the operator's login
+  profile, `~/.bash_profile` or else `~/.profile`, as an SSH login does) and without the `TMUX` variables, so tmux sessions that a
   Claude session starts (a capture, an `s4-*` job) land on the operator's
   default tmux server, where the capture scripts look for them. Restarting
   the service never touches that server.
@@ -52,7 +52,7 @@ trading mode, adds no credential and moves no capital.
   started reaches that default tmux server first, so it counts as an SSH
   shell.
 - All `claude_rc_*` tools ignore `TMUX_TMPDIR`, so the private socket is
-  always `/tmp/tmux-<uid>/claude-rc`, also when `~/.profile` sets it. The
+  always `/tmp/tmux-<uid>/claude-rc`, also when the login profile sets it. The
   private server ignores `~/.tmux.conf`, and the supervisor remembers
   claude's own pane, so a window opened in that session never hides claude's
   exit or receives its Ctrl+C. The private session belongs to the service:
@@ -62,8 +62,9 @@ trading mode, adds no credential and moves no capital.
   Ctrl+C typed into a hand-started server. Long jobs belong in their own
   tmux session on the default server (as the capture and research runbooks
   already do); those survive every restart.
-- `~/.profile` runs at every start of claude, so it must not `exec tmux` or
-  wait for input; claude would never start.
+- The login profile (`~/.bash_profile`, `~/.bash_login` or `~/.profile`)
+  runs at every start of claude, so it must not `exec tmux` or wait for
+  input; claude would never start.
 - Under pytest or CI the supervisor refuses the live `claude-rc` socket
   (`status=TEST_ISOLATION_NOOP`), like the capture helpers refuse live
   capture sessions; tests always use an isolated socket.

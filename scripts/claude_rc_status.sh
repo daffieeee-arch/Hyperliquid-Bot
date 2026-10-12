@@ -40,8 +40,21 @@ if claude_rc_tmux has-session -t "$(claude_rc_session_target)" 2>/dev/null; then
 else
   echo "no claude remote-control screen is running right now."
 fi
-if [[ -s "${state_dir}/last-screen.txt" ]]; then
+# The file sits in the operator's home, writable by every session: read it
+# as the service user (a symlink to a root-only file stays unreadable) and
+# drop control characters, so it cannot write escape sequences to the
+# terminal.
+read_last_screen() {
+  if [[ -n "${CLAUDE_RC_RUN_AS:-}" ]]; then
+    sudo -u "${CLAUDE_RC_RUN_AS}" cat -- "$1"
+  else
+    cat -- "$1"
+  fi
+}
+last_screen="$(read_last_screen "${state_dir}/last-screen.txt" 2>/dev/null \
+  | LC_ALL=C tr -d '\000-\010\013-\037\177' || true)"
+if [[ -n "${last_screen}" ]]; then
   echo
   echo "last exit of claude remote-control (${state_dir}/last-screen.txt):"
-  cat "${state_dir}/last-screen.txt"
+  printf '%s\n' "${last_screen}"
 fi

@@ -30,11 +30,13 @@ trading mode, adds no credential and moves no capital.
   its screen to the journal and exits 0; systemd starts it again after 30
   seconds, without a retry limit. If claude ran less than ten minutes and
   the screen equals the previous exit's (an expired login would repeat it
-  every 30 seconds), only one short line is written. A planned stop logs
-  "stopped on request"; a signal death names the signal. Only a missing repo
-  or `claude` binary exits 1.
-- A stop or restart of the service ends only claude (with Ctrl+C, and at
-  once a second one if its screen asks to press it again) and the supervisor
+  every 30 seconds), only one short line is written. A planned stop never
+  writes a crash dump: it logs "stopped on request", or "the tmux session
+  ended" when the stop removed the session first. A signal death names the
+  signal. Only a missing repo or `claude` binary exits 1.
+- A stop or restart of the service ends only claude (with Ctrl+C; for a
+  second it watches the screen and presses again at once if claude asks) and
+  the supervisor
   (`KillMode=process`). Processes that a session started stay up: a capture
   or research tmux session, a download. They do run inside the service's
   cgroup, so `systemctl status claude-rc` lists them.
@@ -105,6 +107,8 @@ script that root runs.
 
 The installer:
 
+- runs from a `main()` function, so bash has read the whole file before root
+  executes any of it;
 - finds `claude` for the operator and refuses root as the operator;
 - refuses values systemd would expand (`%`, `$`, quotes, backslash, backtick);
 - refuses when its `claude_rc_*` scripts differ from `origin/main` (a guard
@@ -124,7 +128,7 @@ example `sudo CLAUDE_RC_NAME=my-vps bash "$wt/scripts/claude_rc_install.sh"`.
 
 | Task | Command |
 |---|---|
-| Status, recent log and current screen | `claude-rc-status` |
+| Status, recent log and current screen | `claude-rc-status` (also under `sudo`, which shows the full journal) |
 | Open the screen | `env -u TMUX_TMPDIR tmux -L claude-rc attach -t claude-rc` (leave with Ctrl+B, then D) |
 | Restart | `sudo systemctl restart claude-rc` |
 | Stop until the next boot | `sudo systemctl stop claude-rc` |
@@ -164,7 +168,8 @@ starts it again after 30 seconds.
   that a stop spares a session whose name only starts with `claude-rc`, that
   an identical exit screen is printed once (again after a long run), the
   40-line cap, that a planned exit is not reported as a crash, the server
-  and private-tmux-server detection, the status
+  and private-tmux-server detection, the in-service check on a fake `/proc`
+  tree, the status
   helper through a symlink, and the rendered unit (`systemd-analyze verify`
   where available). The tmux tests skip locally without tmux but fail in CI.
   The installer refusals (a hand-started server, scripts that differ from

@@ -17,6 +17,9 @@ CLAUDE_RC_INSTALLED_FILES=(
   "claude_rc_uninstall.sh:claude-rc-uninstall"
 )
 
+# Tests point this at a fake /proc tree.
+CLAUDE_RC_PROC="${CLAUDE_RC_PROC_ROOT:-/proc}"
+
 CLAUDE_RC_SOCKET="${CLAUDE_RC_TMUX_SOCKET:-${CLAUDE_RC_DEFAULT_SOCKET}}"
 CLAUDE_RC_SESSION="${CLAUDE_RC_TMUX_SESSION:-${CLAUDE_RC_DEFAULT_SESSION}}"
 
@@ -42,33 +45,38 @@ claude_rc_trim_blank_tail() {
   awk 'NF { last = NR } { row[NR] = $0 } END { for (i = 1; i <= last; i++) print row[i] }'
 }
 
-# True when pid is a `claude remote-control` server: its program is claude
-# (the binary, or an interpreter running a claude script or the claude-code
-# cli) and a later argument is exactly remote-control. `rg remote-control
-# .../claude-code` does not match: its program is rg. Best effort: an npm
-# install sets its process title and hides its arguments.
+# True when pid is a `claude remote-control` server: its program is claude,
+# or an interpreter (node, bun, a shell) whose first non-flag argument is a
+# claude script or the claude-code cli, and a later argument is exactly
+# remote-control. `rg remote-control .../claude-code` does not match: its
+# program is rg. Best effort: an npm install sets its process title and
+# hides its arguments.
 claude_rc_is_server_pid() {
   local -a argv
-  mapfile -t argv < <(tr '\0' '\n' <"/proc/$1/cmdline" 2>/dev/null) || return 1
+  mapfile -t argv < <(tr '\0' '\n' <"${CLAUDE_RC_PROC}/$1/cmdline" 2>/dev/null) || return 1
   ((${#argv[@]} >= 2)) || return 1
-  local first=1
+  local i=1
   case "${argv[0]##*/}" in
     claude) ;;
     node | nodejs | bun | bash | sh)
-      [[ "${argv[1]##*/}" == "claude" || "${argv[1]}" == *claude-code* ]] || return 1
-      first=2
+      while ((i < ${#argv[@]})) && [[ "${argv[i]}" == -* ]]; do
+        i=$((i + 1))
+      done
+      ((i < ${#argv[@]})) || return 1
+      [[ "${argv[i]##*/}" == "claude" || "${argv[i]}" == *claude-code* ]] || return 1
+      i=$((i + 1))
       ;;
     *) return 1 ;;
   esac
   local arg
-  for arg in "${argv[@]:first}"; do
+  for arg in "${argv[@]:i}"; do
     [[ "${arg}" == "remote-control" ]] && return 0
   done
   return 1
 }
 
 claude_rc_parent_pid() {
-  awk '/^PPid:/ { print $2 }' "/proc/$1/status" 2>/dev/null
+  awk '/^PPid:/ { print $2 }' "${CLAUDE_RC_PROC}/$1/status" 2>/dev/null
 }
 
 # True when pid descends from ancestor (or is it).
@@ -84,9 +92,9 @@ claude_rc_descends_from() {
 # True when pid is the service's private tmux server. The server keeps the
 # command line it was started with (`tmux -L claude-rc start-server ...`).
 claude_rc_is_private_tmux_server_pid() {
-  [[ "$(cat "/proc/$1/comm" 2>/dev/null)" == tmux* ]] || return 1
+  [[ "$(cat "${CLAUDE_RC_PROC}/$1/comm" 2>/dev/null)" == tmux* ]] || return 1
   local -a argv
-  mapfile -t argv < <(tr '\0' '\n' <"/proc/$1/cmdline" 2>/dev/null) || return 1
+  mapfile -t argv < <(tr '\0' '\n' <"${CLAUDE_RC_PROC}/$1/cmdline" 2>/dev/null) || return 1
   local i
   for ((i = 0; i + 1 < ${#argv[@]}; i++)); do
     [[ "${argv[i]}" == "-L" && "${argv[i + 1]}" == "${CLAUDE_RC_SOCKET}" ]] && return 0
@@ -101,11 +109,12 @@ claude_rc_is_private_tmux_server_pid() {
 # is a server that a session started, holding operator windows. Reaching no
 # tmux server at all (a detached session process) counts as inside. This
 # does not read claude's own command line, which an npm install hides.
+# The optional argument is the pid to check (default: this shell).
 claude_rc_inside_service() {
-  grep -q "/${CLAUDE_RC_UNIT_NAME}" "/proc/$$/cgroup" 2>/dev/null || return 1
-  local pid="$$"
+  local pid="${1:-$$}"
+  grep -q "/${CLAUDE_RC_UNIT_NAME}" "${CLAUDE_RC_PROC}/${pid}/cgroup" 2>/dev/null || return 1
   while [[ -n "${pid}" && "${pid}" -gt 1 ]]; do
-    if [[ "$(cat "/proc/${pid}/comm" 2>/dev/null)" == tmux* ]]; then
+    if [[ "$(cat "${CLAUDE_RC_PROC}/${pid}/comm" 2>/dev/null)" == tmux* ]]; then
       claude_rc_is_private_tmux_server_pid "${pid}"
       return
     fi

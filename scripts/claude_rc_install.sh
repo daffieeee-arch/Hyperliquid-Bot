@@ -12,6 +12,9 @@
 
 set -euo pipefail
 
+# Everything runs from main(), so bash has read the whole file before root
+# executes any of it; an edit to the file while it runs changes nothing.
+main() {
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CHECKOUT="$(dirname "${SCRIPT_DIR}")"
 
@@ -81,6 +84,9 @@ else
       exit 1
     fi
   done
+  # The copies are verified and root-owned; let the operator read them too.
+  chmod 0755 "${STAGING}"
+  chmod 0644 "${STAGING}"/*
   LIB_DIR="${STAGING}"
 fi
 # shellcheck source=claude_rc_lib.sh
@@ -205,8 +211,10 @@ fi
 # A second remote-control server outside the service would compete with it.
 # The service's own server is the pane process of its private tmux session;
 # it and anything it started are not competitors.
-service_pid="$(as_operator env -u TMUX_TMPDIR tmux -L "${CLAUDE_RC_SOCKET}" display-message -p \
-  -t "$(claude_rc_pane_target)" '#{pane_pid}' 2>/dev/null || true)"
+# shellcheck disable=SC2016  # expanded by the operator's shell
+service_pid="$(as_operator bash -c \
+  'source "$1"; claude_rc_tmux display-message -p -t "$(claude_rc_pane_target)" "#{pane_pid}"' \
+  bash "${LIB_DIR}/claude_rc_lib.sh" 2>/dev/null || true)"
 for pid in $(pgrep -u "${OPERATOR}" -f remote-control 2>/dev/null || true); do
   if [[ -n "${service_pid}" ]] && claude_rc_descends_from "${pid}" "${service_pid}"; then
     continue
@@ -250,3 +258,7 @@ systemctl restart "${CLAUDE_RC_UNIT_NAME}"
 echo "Installed ${CLAUDE_RC_UNIT_NAME}: claude remote-control runs as ${OPERATOR} in ${REPO}."
 echo "Session title in the Claude app: ${NAME}"
 echo "Check it with: claude-rc-status"
+}
+
+main "$@"
+exit

@@ -22,6 +22,10 @@ INSTALLER = REPO_ROOT / "scripts" / "claude_rc_install.sh"
 SESSION = "pytest-claude-rc"
 
 # CI must have tmux: a skip there would hide the supervisor tests.
+# The scripts ignore TMUX_TMPDIR; so must every tmux call these tests make,
+# or they would talk to other servers on a host whose profile sets it.
+os.environ.pop("TMUX_TMPDIR", None)
+
 needs_tmux = pytest.mark.skipif(
     shutil.which("tmux") is None and not os.environ.get("CI"), reason="tmux is not installed"
 )
@@ -45,12 +49,17 @@ def _fake_claude(tmp_path: Path) -> Path:
         'echo "fake claude cwd: $(pwd)"\n'
         'echo "fake claude TMUX=${TMUX:-unset} TMUX_PANE=${TMUX_PANE:-unset}"\n'
         'echo "fake claude profile=${CLAUDE_RC_TEST_PROFILE:-unset}"\n'
-        "presses=0\n"
+        "first_press_ms=0\n"
         "on_int() {\n"
-        "  presses=$((presses + 1))\n"
-        '  if [[ "${FAKE_IGNORE_FIRST_INT:-0}" == 1 && "${presses}" -lt 2 ]]; then\n'
-        '    echo "Press Ctrl-C again to exit"\n'
-        "    return\n"
+        '  if [[ "${FAKE_IGNORE_FIRST_INT:-0}" == 1 ]]; then\n'
+        "    now_ms=$(($(date +%s%N) / 1000000))\n"
+        "    # Like claude: a second press counts only within a short window.\n"
+        "    window_ms=${FAKE_CONFIRM_MS:-800}\n"
+        "    if ((first_press_ms == 0 || now_ms - first_press_ms > window_ms)); then\n"
+        "      first_press_ms=${now_ms}\n"
+        '      echo "Press Ctrl-C again to exit"\n'
+        "      return\n"
+        "    fi\n"
         "  fi\n"
         f'  touch "{marker}"\n'
         "  exit 130\n"
@@ -590,3 +599,75 @@ def test_the_private_tmux_server_is_recognised_by_its_socket(tmp_path: Path) -> 
         assert is_private("some-other-socket") == 1
     finally:
         _end_test_session(env)
+
+
+def _fake_proc(root: Path, pid: int, *, argv: list[str], comm: str, ppid: int, cgroup: str) -> None:
+    entry = root / str(pid)
+    entry.mkdir(parents=True)
+    (entry / "cmdline").write_bytes("\0".join(argv).encode() + b"\0")
+    (entry / "comm").write_text(comm + "\n", encoding="utf-8")
+    (entry / "status").write_text(f"Name:\t{comm}\nPPid:\t{ppid}\n", encoding="utf-8")
+    (entry / "cgroup").write_text(f"0::{cgroup}\n", encoding="utf-8")
+
+
+def _fake_lib_call(proc: Path, function: str, *args: str) -> int:
+    lib = REPO_ROOT / "scripts" / "claude_rc_lib.sh"
+    return subprocess.run(
+        ["bash", "-c", 'source "$1"; shift; "$@"', "bash", str(lib), function, *args],
+        check=False,
+        capture_output=True,
+        env={**os.environ, "CLAUDE_RC_PROC_ROOT": str(proc), "CLAUDE_RC_TMUX_SOCKET": "claude-rc"},
+    ).returncode
+
+
+def test_inside_service_follows_the_first_tmux_server(tmp_path: Path) -> None:
+    proc = tmp_path / "proc"
+    service = "/system.slice/claude-rc.service"
+    # A served session: shell -> claude -> private tmux server.
+    _fake_proc(
+        proc,
+        80,
+        argv=["tmux", "-L", "claude-rc", "start-server"],
+        comm="tmux: server",
+        ppid=1,
+        cgroup=service,
+    )
+    _fake_proc(proc, 90, argv=["claude"], comm="claude", ppid=80, cgroup=service)
+    _fake_proc(proc, 100, argv=["bash"], comm="bash", ppid=90, cgroup=service)
+    # An operator window in a default tmux server that a session started.
+    _fake_proc(
+        proc,
+        210,
+        argv=["tmux", "new", "-s", "hl-capture"],
+        comm="tmux: server",
+        ppid=1,
+        cgroup=service,
+    )
+    _fake_proc(proc, 200, argv=["bash"], comm="bash", ppid=210, cgroup=service)
+    # A detached session process, and an ordinary SSH shell.
+    _fake_proc(proc, 300, argv=["bash"], comm="bash", ppid=1, cgroup=service)
+    _fake_proc(proc, 400, argv=["bash"], comm="bash", ppid=1, cgroup="/user.slice/session-3.scope")
+
+    assert _fake_lib_call(proc, "claude_rc_inside_service", "100") == 0
+    assert _fake_lib_call(proc, "claude_rc_inside_service", "200") == 1
+    assert _fake_lib_call(proc, "claude_rc_inside_service", "300") == 0
+    assert _fake_lib_call(proc, "claude_rc_inside_service", "400") == 1
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["claude", "remote-control"], 0),
+        (["node", "--max-old-space-size=4096", "/x/claude-code/cli.js", "remote-control"], 0),
+        (["node", "/x/claude-code/cli.js", "--resume"], 1),
+        (["rg", "remote-control", "/x/claude-code"], 1),
+        (["node", "--inspect", "/x/other.js", "remote-control"], 1),
+    ],
+)
+def test_server_detection_reads_the_program_and_its_arguments(
+    tmp_path: Path, argv: list[str], expected: int
+) -> None:
+    proc = tmp_path / "proc"
+    _fake_proc(proc, 500, argv=argv, comm=argv[0], ppid=1, cgroup="/user.slice")
+
+    assert _fake_lib_call(proc, "claude_rc_is_server_pid", "500") == expected

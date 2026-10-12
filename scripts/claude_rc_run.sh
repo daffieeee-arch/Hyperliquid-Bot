@@ -59,20 +59,19 @@ stop_session() {
   claude_rc_tmux set-option -t "${PANE_TARGET}" @claude_rc_stopping 1 2>/dev/null || true
   if ! pane_dead; then
     claude_rc_tmux send-keys -t "${PANE_TARGET}" C-c 2>/dev/null || true
-    local tick
-    for tick in 1 2 3 4 5; do
-      session_alive && ! pane_dead || break
-      sleep 0.2
-    done
     # Where claude asks for a second Ctrl+C, it must come within its short
-    # confirmation window, so send it at once, and only when asked.
-    if session_alive && ! pane_dead; then
-      local shown
+    # confirmation window: watch the screen for a second and answer as soon
+    # as it asks, and only then.
+    local tick shown
+    for tick in 1 2 3 4 5 6 7 8 9 10; do
+      session_alive && ! pane_dead || break
       shown="$(claude_rc_tmux capture-pane -p -t "${PANE_TARGET}" 2>/dev/null || true)"
       if grep -qi 'again to exit' <<<"${shown}"; then
         claude_rc_tmux send-keys -t "${PANE_TARGET}" C-c 2>/dev/null || true
+        break
       fi
-    fi
+      sleep 0.1
+    done
     wait_for_exit "${STOP_WAIT_SECONDS}"
   fi
   claude_rc_tmux kill-session -t "${SESSION_TARGET}" 2>/dev/null || true
@@ -159,8 +158,15 @@ else
     rm -f "${STATE_DIR}/last-screen.sha256"
   fi
   # A signal death (an OOM kill) leaves the status empty and sets the signal.
-  status="$(claude_rc_tmux display-message -p -t "${PANE_TARGET}" \
-    '#{?pane_dead_signal,signal #{pane_dead_signal},#{pane_dead_status}}' 2>/dev/null || true)"
+  # tmux can flag the pane dead a moment before it has reaped the process, so
+  # ask again briefly while neither is known.
+  status=""
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    status="$(claude_rc_tmux display-message -p -t "${PANE_TARGET}" \
+      '#{?pane_dead_signal,signal #{pane_dead_signal},#{pane_dead_status}}' 2>/dev/null || true)"
+    [[ -n "${status}" ]] && break
+    sleep 0.1
+  done
   report_last_screen "${status:-unknown}"
   claude_rc_tmux kill-session -t "${SESSION_TARGET}" 2>/dev/null || true
 fi

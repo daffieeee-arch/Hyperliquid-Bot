@@ -41,7 +41,7 @@ if [[ -z "${OPERATOR}" || "${OPERATOR}" == "root" ]]; then
   echo "Refuse: run this with sudo from the operator account, not as root itself." >&2
   exit 1
 fi
-OPERATOR_HOME="$(getent passwd "${OPERATOR}" | cut -d: -f6)"
+OPERATOR_HOME="$(getent passwd "${OPERATOR}" | cut -d: -f6 || true)"
 if [[ -z "${OPERATOR_HOME}" ]]; then
   echo "Refuse: unknown user ${OPERATOR}." >&2
   exit 1
@@ -75,14 +75,17 @@ find_claude() {
       return 0
     fi
   done
-  # npm or nvm installs only show up on the operator's interactive PATH; the
-  # shell may print other lines, so keep only an executable absolute path.
-  as_operator bash -ic 'command -v claude' 2>/dev/null | while IFS= read -r candidate; do
-    if usable_claude "${candidate}"; then
-      printf '%s\n' "${candidate}"
-      break
-    fi
-  done || true
+  # npm or nvm installs only show up on the operator's interactive PATH. The
+  # shell gets no terminal (setsid, stdin /dev/null) and 20 s, so a .bashrc
+  # that attaches tmux or prompts cannot hang the installer, and it may print
+  # other lines, so keep only an executable absolute path.
+  as_operator timeout 20 setsid bash -ic 'command -v claude' </dev/null 2>/dev/null \
+    | while IFS= read -r candidate; do
+      if usable_claude "${candidate}"; then
+        printf '%s\n' "${candidate}"
+        break
+      fi
+    done || true
 }
 
 CLAUDE_BIN="${CLAUDE_RC_BIN:-$(find_claude)}"
@@ -169,19 +172,31 @@ if [[ ! -d "${REPO}" ]]; then
   exit 1
 fi
 
-# These files run as root below. The checkout is writable by every Claude
-# session, so install only what matches the reviewed origin/main.
+# These files run as root. The checkout is writable by every Claude session,
+# so copy them to a root-only folder first and install only copies that match
+# the reviewed origin/main byte for byte. This guards against local edits and
+# against a swap between check and install; it is no boundary against a
+# stolen operator account, which can also move the local origin/main.
 CHECKOUT="$(dirname "${SCRIPT_DIR}")"
 if ! as_operator git -C "${CHECKOUT}" rev-parse --verify --quiet origin/main >/dev/null; then
   echo "Refuse: ${CHECKOUT} has no origin/main to compare with. Run 'git fetch origin main' first." >&2
   exit 1
 fi
-if [[ -n "$(as_operator git -C "${CHECKOUT}" status --porcelain -- "${SCRIPTS_TO_INSTALL[@]}")" ]] \
-  || ! as_operator git -C "${CHECKOUT}" diff --quiet origin/main -- "${SCRIPTS_TO_INSTALL[@]}"; then
-  echo "Refuse: the claude_rc scripts in ${CHECKOUT} differ from origin/main." >&2
-  echo "Install from a fresh worktree of origin/main, as docs/runbooks/claude-remote-control-vps.md shows." >&2
-  exit 1
-fi
+STAGING="$(mktemp -d)"
+trap 'rm -rf "${STAGING}"' EXIT
+for path in "${SCRIPTS_TO_INSTALL[@]}"; do
+  staged="${STAGING}/$(basename "${path}")"
+  if [[ -L "${CHECKOUT}/${path}" || ! -f "${CHECKOUT}/${path}" ]]; then
+    echo "Refuse: ${CHECKOUT}/${path} is missing or not a regular file." >&2
+    exit 1
+  fi
+  cp -- "${CHECKOUT}/${path}" "${staged}"
+  if ! as_operator git -C "${CHECKOUT}" show "origin/main:${path}" 2>/dev/null | cmp -s - "${staged}"; then
+    echo "Refuse: ${path} in ${CHECKOUT} differs from origin/main." >&2
+    echo "Install from a fresh worktree of origin/main, as docs/runbooks/claude-remote-control-vps.md shows." >&2
+    exit 1
+  fi
+done
 
 # A second remote-control server outside the service would compete with it.
 hand_started_server() {
@@ -207,15 +222,13 @@ fi
 
 # The service and the helpers run these root-owned copies, never the checkout.
 install -d -m 0755 -o root -g root "${LIBEXEC_DIR}"
-install -m 0755 -o root -g root "${SCRIPT_DIR}/claude_rc_run.sh" "${RUNNER}"
-install -m 0644 -o root -g root "${SCRIPT_DIR}/claude_rc_lib.sh" "${LIBEXEC_DIR}/claude_rc_lib.sh"
-install -m 0755 -o root -g root "${SCRIPT_DIR}/claude_rc_status.sh" "${LIBEXEC_DIR}/claude-rc-status"
-install -m 0755 -o root -g root "${SCRIPT_DIR}/claude_rc_uninstall.sh" "${LIBEXEC_DIR}/claude-rc-uninstall"
+install -m 0755 -o root -g root "${STAGING}/claude_rc_run.sh" "${RUNNER}"
+install -m 0644 -o root -g root "${STAGING}/claude_rc_lib.sh" "${LIBEXEC_DIR}/claude_rc_lib.sh"
+install -m 0755 -o root -g root "${STAGING}/claude_rc_status.sh" "${LIBEXEC_DIR}/claude-rc-status"
+install -m 0755 -o root -g root "${STAGING}/claude_rc_uninstall.sh" "${LIBEXEC_DIR}/claude-rc-uninstall"
 ln -sfn "${LIBEXEC_DIR}/claude-rc-status" "${STATUS_LINK}"
-unit_tmp="$(mktemp)"
-render_unit >"${unit_tmp}"
-install -m 0644 -o root -g root "${unit_tmp}" "${UNIT_PATH}"
-rm -f "${unit_tmp}"
+render_unit >"${STAGING}/${CLAUDE_RC_UNIT_NAME}"
+install -m 0644 -o root -g root "${STAGING}/${CLAUDE_RC_UNIT_NAME}" "${UNIT_PATH}"
 
 systemctl daemon-reload
 systemctl enable "${CLAUDE_RC_UNIT_NAME}" >/dev/null

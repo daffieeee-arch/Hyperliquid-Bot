@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Shared names for the claude_rc_* scripts. claude_rc_run.sh is installed on
-# its own, so it repeats the two tmux defaults; a test keeps them equal.
+# Shared names for the claude_rc_* scripts. The installer copies this file
+# next to the installed scripts, which source it from their own folder.
 
 CLAUDE_RC_UNIT_NAME="claude-rc.service"
 CLAUDE_RC_DEFAULT_SOCKET="claude-rc"

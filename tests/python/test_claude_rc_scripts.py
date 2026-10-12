@@ -68,6 +68,7 @@ def _runner_env(tmp_path: Path, **extra: str) -> dict[str, str]:
         "CLAUDE_RC_TMUX_SOCKET": f"pytest-claude-rc-{uuid.uuid4().hex[:12]}",
         "CLAUDE_RC_TMUX_SESSION": SESSION,
         "CLAUDE_RC_POLL_SECONDS": "0.2",
+        "CLAUDE_RC_FIRST_STOP_WAIT_SECONDS": "2",
         "CLAUDE_RC_STOP_WAIT_SECONDS": "5",
         "CLAUDE_RC_MISSING_PAUSE_SECONDS": "0",
         "CLAUDE_RC_REPO": str(_spaced_repo(tmp_path)),
@@ -283,16 +284,6 @@ def test_installer_needs_sudo_to_install(tmp_path: Path) -> None:
 
     assert completed.returncode == 1
     assert "Run with sudo" in completed.stderr
-
-
-def test_runner_tmux_defaults_match_the_shared_lib() -> None:
-    lib = (REPO_ROOT / "scripts" / "claude_rc_lib.sh").read_text(encoding="utf-8")
-    runner = RUNNER.read_text(encoding="utf-8")
-
-    assert 'CLAUDE_RC_DEFAULT_SOCKET="claude-rc"' in lib
-    assert 'CLAUDE_RC_DEFAULT_SESSION="claude-rc"' in lib
-    assert 'SOCKET="${CLAUDE_RC_TMUX_SOCKET:-claude-rc}"' in runner
-    assert 'SESSION="${CLAUDE_RC_TMUX_SESSION:-claude-rc}"' in runner
 
 
 @needs_tmux

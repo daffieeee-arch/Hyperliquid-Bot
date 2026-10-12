@@ -15,7 +15,12 @@ LIBEXEC_DIR="${CLAUDE_RC_LIBEXEC_DIR:-/usr/local/libexec/claude-rc}"
 STATUS_LINK="${CLAUDE_RC_STATUS_LINK:-/usr/local/bin/claude-rc-status}"
 
 if [[ "${EUID}" -ne 0 ]]; then
-  echo "Run with sudo: sudo bash $0" >&2
+  echo "Run with sudo: sudo $0" >&2
+  exit 1
+fi
+if claude_rc_inside_service; then
+  echo "Refuse: this runs inside ${CLAUDE_RC_UNIT_NAME}; stopping it would end this session first." >&2
+  echo "Run it from an SSH terminal instead." >&2
   exit 1
 fi
 

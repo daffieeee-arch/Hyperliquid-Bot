@@ -3,8 +3,10 @@
 #
 # systemd (claude-rc.service, see claude_rc_install.sh) runs this as the
 # operator user. It starts `claude remote-control` in a detached tmux session
-# on a private socket, so it never shares a tmux server with the capture or
-# research sessions, and stays in the foreground while that session lives.
+# on a private socket and stays in the foreground while that session lives.
+# claude starts without TMUX/TMUX_PANE, so tmux sessions that Claude sessions
+# start (captures, research jobs) land on the operator's default server, as
+# from an SSH shell, and never on this private one.
 # When claude exits, this script prints the last screen to the journal and
 # exits non-zero; systemd then starts it again.
 #
@@ -31,15 +33,20 @@ rc_tmux() {
   tmux -L "${SOCKET}" "$@"
 }
 
+# Exact-name targets: a bare name would also match a session that merely
+# starts with it. "=name" targets the session, "=name:" its active pane.
+SESSION_TARGET="=${SESSION}"
+PANE_TARGET="=${SESSION}:"
+
 session_alive() {
-  rc_tmux has-session -t "${SESSION}" 2>/dev/null
+  rc_tmux has-session -t "${SESSION_TARGET}" 2>/dev/null
 }
 
 # Unknown counts as alive: a failed tmux query must not end a healthy server.
 # A session that is really gone is caught by session_alive.
 pane_dead() {
   local dead
-  dead="$(rc_tmux display-message -p -t "${SESSION}" '#{pane_dead}' 2>/dev/null)" || return 1
+  dead="$(rc_tmux display-message -p -t "${PANE_TARGET}" '#{pane_dead}' 2>/dev/null)" || return 1
   [[ "${dead}" == "1" ]]
 }
 
@@ -54,15 +61,15 @@ wait_for_exit() {
 stop_session() {
   session_alive || return 0
   if ! pane_dead; then
-    rc_tmux send-keys -t "${SESSION}" C-c 2>/dev/null || true
+    rc_tmux send-keys -t "${PANE_TARGET}" C-c 2>/dev/null || true
     wait_for_exit "${FIRST_STOP_WAIT_SECONDS}"
     # A second Ctrl+C confirms the exit where claude asks for one.
     if session_alive && ! pane_dead; then
-      rc_tmux send-keys -t "${SESSION}" C-c 2>/dev/null || true
+      rc_tmux send-keys -t "${PANE_TARGET}" C-c 2>/dev/null || true
       wait_for_exit "${STOP_WAIT_SECONDS}"
     fi
   fi
-  rc_tmux kill-session -t "${SESSION}" 2>/dev/null || true
+  rc_tmux kill-session -t "${SESSION_TARGET}" 2>/dev/null || true
 }
 
 case "${1:-}" in
@@ -104,7 +111,8 @@ fi
 # after claude exits, so it can be copied to the journal below. It is set on
 # the private server before the session exists, so even an instant exit keeps it.
 rc_tmux start-server \; set-option -wg remain-on-exit on \; \
-  new-session -d -s "${SESSION}" -c "${REPO}" -x 200 -y 50 -- "${CLAUDE_BIN}" "${args[@]}"
+  new-session -d -s "${SESSION}" -c "${REPO}" -x 200 -y 50 \
+  -- env -u TMUX -u TMUX_PANE "${CLAUDE_BIN}" "${args[@]}"
 echo "claude-rc: remote-control started in ${REPO} (tmux -L ${SOCKET} attach -t ${SESSION})"
 
 while session_alive && ! pane_dead; do
@@ -112,10 +120,10 @@ while session_alive && ! pane_dead; do
 done
 
 if session_alive; then
-  status="$(rc_tmux display-message -p -t "${SESSION}" '#{pane_dead_status}' 2>/dev/null || true)"
+  status="$(rc_tmux display-message -p -t "${PANE_TARGET}" '#{pane_dead_status}' 2>/dev/null || true)"
   echo "claude-rc: remote-control exited with status ${status:-unknown}; last screen:" >&2
-  rc_tmux capture-pane -p -J -t "${SESSION}" -S -40 2>/dev/null | claude_rc_trim_blank_tail >&2 || true
-  rc_tmux kill-session -t "${SESSION}" 2>/dev/null || true
+  rc_tmux capture-pane -p -J -t "${PANE_TARGET}" -S -40 2>/dev/null | claude_rc_trim_blank_tail >&2 || true
+  rc_tmux kill-session -t "${SESSION_TARGET}" 2>/dev/null || true
 else
   echo "claude-rc: the tmux session ended" >&2
 fi

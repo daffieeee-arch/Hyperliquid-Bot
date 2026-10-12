@@ -26,9 +26,9 @@ else
 fi
 
 echo
-if tmux -L "${SOCKET}" has-session -t "${SESSION}" 2>/dev/null; then
+if tmux -L "${SOCKET}" has-session -t "=${SESSION}" 2>/dev/null; then
   echo "screen of claude remote-control (tmux -L ${SOCKET} attach -t ${SESSION} to open it, Ctrl+B then D to leave):"
-  tmux -L "${SOCKET}" capture-pane -p -J -t "${SESSION}" 2>/dev/null | claude_rc_trim_blank_tail
+  tmux -L "${SOCKET}" capture-pane -p -J -t "=${SESSION}:" 2>/dev/null | claude_rc_trim_blank_tail
 else
   echo "no claude remote-control screen is running right now."
 fi

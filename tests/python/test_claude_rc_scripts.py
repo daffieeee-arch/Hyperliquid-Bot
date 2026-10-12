@@ -40,6 +40,7 @@ def _fake_claude(tmp_path: Path) -> Path:
         "#!/usr/bin/env bash\n"
         "printf 'fake claude arg <%s>\\n' \"$@\"\n"
         'echo "fake claude cwd: $(pwd)"\n'
+        'echo "fake claude TMUX=${TMUX:-unset} TMUX_PANE=${TMUX_PANE:-unset}"\n'
         "presses=0\n"
         "on_int() {\n"
         "  presses=$((presses + 1))\n"
@@ -122,7 +123,45 @@ def test_runner_starts_claude_in_the_spaced_repo_and_reports_its_exit(tmp_path: 
         "fake claude arg <hyperliquid vps>\n"
     ) in completed.stderr
     assert f"fake claude cwd: {env['CLAUDE_RC_REPO']}" in completed.stderr
+    # Without TMUX, tmux sessions that Claude sessions start go to the default
+    # server, where the capture scripts look for them.
+    assert "fake claude TMUX=unset TMUX_PANE=unset" in completed.stderr
     assert not _session_alive(env)
+
+
+@needs_tmux
+def test_stop_leaves_a_session_that_only_starts_with_the_name(tmp_path: Path) -> None:
+    env = _runner_env(tmp_path)
+    socket = env["CLAUDE_RC_TMUX_SOCKET"]
+    decoy = f"{SESSION}-decoy"
+    subprocess.run(
+        ["tmux", "-L", socket, "new-session", "-d", "-s", decoy, "--", "sleep", "30"],
+        check=True,
+        env=env,
+    )
+    try:
+        stopped = subprocess.run(
+            ["bash", str(RUNNER), "--stop"],
+            check=False,
+            capture_output=True,
+            env=env,
+            text=True,
+            timeout=30,
+        )
+        alive = subprocess.run(
+            ["tmux", "-L", socket, "has-session", "-t", f"={decoy}"],
+            check=False,
+            capture_output=True,
+        )
+    finally:
+        subprocess.run(
+            ["tmux", "-L", socket, "kill-session", "-t", f"={decoy}"],
+            check=False,
+            capture_output=True,
+        )
+
+    assert stopped.returncode == 0, stopped.stderr
+    assert alive.returncode == 0
 
 
 @needs_tmux

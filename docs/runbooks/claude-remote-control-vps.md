@@ -15,8 +15,11 @@ trading mode, adds no credential and moves no capital.
   `/usr/local/bin/claude-rc-status` points to the status helper.
 - The supervisor starts `claude remote-control --name hyperliquid-vps` in the
   repo checkout, inside a detached tmux session `claude-rc` on its **own tmux
-  socket** (`tmux -L claude-rc`). Restarting it never touches the capture
-  (`*-capture`) or research (`s4-*`) sessions on the default tmux server.
+  socket** (`tmux -L claude-rc`), and targets that session by its exact name.
+  claude starts without the `TMUX` variables, so tmux sessions that a Claude
+  session starts (a capture, an `s4-*` job) land on the operator's default
+  tmux server, exactly as from an SSH shell, where the capture scripts look
+  for them. Restarting the service never touches that server.
 - When claude exits (a crash, a network outage of more than about ten
   minutes, a stop from the app), the supervisor writes the last screen to the
   journal and exits. systemd starts it again after 30 seconds, without a
@@ -72,11 +75,16 @@ and running jobs such as `s4-build` are not disturbed:
 ```bash
 cd "$HOME/Hyperliquid Project/Hyperliquid-Bot"
 git fetch origin main
-git worktree add --detach /tmp/claude-rc-main origin/main
-bash /tmp/claude-rc-main/scripts/claude_rc_install.sh --print-unit   # optional: show the unit
-sudo bash /tmp/claude-rc-main/scripts/claude_rc_install.sh
-git worktree remove /tmp/claude-rc-main
+wt="$(mktemp -d)/main"
+git worktree add --detach "$wt" origin/main
+bash "$wt/scripts/claude_rc_install.sh" --print-unit   # optional: show the unit
+sudo bash "$wt/scripts/claude_rc_install.sh"
+git worktree remove "$wt" && rmdir "$(dirname "$wt")"
 ```
+
+`mktemp -d` gives a fresh folder only the operator can open. Never use a
+fixed name under `/tmp`: another account could create it first and swap the
+script that root runs.
 
 The installer:
 
@@ -92,7 +100,7 @@ The installer:
 Repeat the same steps after a merged change to the `claude_rc_*` scripts: the
 service runs the installed copies, not the checkout. If the layout differs,
 pass `CLAUDE_RC_REPO`, `CLAUDE_RC_BIN` or `CLAUDE_RC_NAME` through sudo, for
-example `sudo CLAUDE_RC_NAME=my-vps bash /tmp/claude-rc-main/scripts/claude_rc_install.sh`.
+example `sudo CLAUDE_RC_NAME=my-vps bash "$wt/scripts/claude_rc_install.sh"`.
 
 ## Daily use
 
@@ -134,7 +142,9 @@ starts it again after 30 seconds.
   does no work until it is answered.
 - Tests: `tests/python/test_claude_rc_scripts.py` runs the supervisor against
   a fake `claude` in a folder with a space, checks the Ctrl+C stop (also when
-  claude asks for a second Ctrl+C), the status helper through a symlink, and
-  the rendered unit (`systemd-analyze verify` where available). The installer
+  claude asks for a second Ctrl+C), that claude starts without `TMUX`, that a
+  stop spares a session whose name only starts with `claude-rc`, the status
+  helper through a symlink, and the rendered unit (`systemd-analyze verify`
+  where available). The installer
   refusals for a hand-started server and for scripts that differ from
   `origin/main` were checked by hand as root with a throwaway user.

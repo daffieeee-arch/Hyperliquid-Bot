@@ -40,27 +40,53 @@ claude_rc_trim_blank_tail() {
   awk 'NF { last = NR } { row[NR] = $0 } END { for (i = 1; i <= last; i++) print row[i] }'
 }
 
-# True when pid is a `claude remote-control` server: one argument is exactly
-# remote-control and another names claude (the binary or the claude-code cli).
+# True when pid is a `claude remote-control` server: its program is claude
+# (the binary, or an interpreter running a claude script or the claude-code
+# cli) and a later argument is exactly remote-control. `rg remote-control
+# .../claude-code` does not match: its program is rg.
 claude_rc_is_server_pid() {
-  local args
-  args="$(tr '\0' '\n' <"/proc/$1/cmdline" 2>/dev/null)" || return 1
-  grep -qx 'remote-control' <<<"${args}" || return 1
-  grep -qE '(^|/)claude$|claude-code' <<<"${args}"
+  local -a argv
+  mapfile -t argv < <(tr '\0' '\n' <"/proc/$1/cmdline" 2>/dev/null) || return 1
+  ((${#argv[@]} >= 2)) || return 1
+  local first=1
+  case "${argv[0]##*/}" in
+    claude) ;;
+    node | nodejs | bun | bash | sh)
+      [[ "${argv[1]##*/}" == "claude" || "${argv[1]}" == *claude-code* ]] || return 1
+      first=2
+      ;;
+    *) return 1 ;;
+  esac
+  local arg
+  for arg in "${argv[@]:first}"; do
+    [[ "${arg}" == "remote-control" ]] && return 0
+  done
+  return 1
 }
 
-# True when this shell descends from the service's remote-control server, i.e.
-# runs in a Claude session the service serves. It follows parents, not the
-# cgroup: a tmux server that such a session started also sits in the
-# service's cgroup, but shells in it do not descend from the server.
-claude_rc_inside_service() {
-  local pid="$$"
+# True when pid descends from ancestor (or is it).
+claude_rc_descends_from() {
+  local pid="$1" ancestor="$2"
   while [[ -n "${pid}" && "${pid}" -gt 1 ]]; do
-    if claude_rc_is_server_pid "${pid}" \
-      && grep -q "/${CLAUDE_RC_UNIT_NAME}" "/proc/${pid}/cgroup" 2>/dev/null; then
-      return 0
-    fi
+    [[ "${pid}" == "${ancestor}" ]] && return 0
     pid="$(awk '/^PPid:/ { print $2 }' "/proc/${pid}/status" 2>/dev/null)"
   done
   return 1
+}
+
+# True when this shell runs in a Claude session the service serves. Outside
+# the service's cgroup it never does. Inside it, a tmux server that a session
+# started also sits in the cgroup, so a shell whose parents reach a tmux
+# server before the remote-control server is an operator window, not a
+# session. Reaching the server, or neither (a detached session process),
+# counts as inside.
+claude_rc_inside_service() {
+  grep -q "/${CLAUDE_RC_UNIT_NAME}" "/proc/$$/cgroup" 2>/dev/null || return 1
+  local pid="$$"
+  while [[ -n "${pid}" && "${pid}" -gt 1 ]]; do
+    claude_rc_is_server_pid "${pid}" && return 0
+    [[ "$(cat "/proc/${pid}/comm" 2>/dev/null)" == tmux* ]] && return 1
+    pid="$(awk '/^PPid:/ { print $2 }' "/proc/${pid}/status" 2>/dev/null)"
+  done
+  return 0
 }

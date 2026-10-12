@@ -203,11 +203,15 @@ if [[ ! -d "${REPO}" ]]; then
 fi
 
 # A second remote-control server outside the service would compete with it.
-# The service's own server is the pane process of its private tmux session.
+# The service's own server is the pane process of its private tmux session;
+# it and anything it started are not competitors.
 service_pid="$(as_operator tmux -L "${CLAUDE_RC_SOCKET}" display-message -p \
   -t "$(claude_rc_pane_target)" '#{pane_pid}' 2>/dev/null || true)"
 for pid in $(pgrep -u "${OPERATOR}" -f remote-control 2>/dev/null || true); do
-  if [[ "${pid}" != "${service_pid}" ]] && claude_rc_is_server_pid "${pid}"; then
+  if [[ -n "${service_pid}" ]] && claude_rc_descends_from "${pid}" "${service_pid}"; then
+    continue
+  fi
+  if claude_rc_is_server_pid "${pid}"; then
     echo "Refuse: ${OPERATOR} runs 'claude remote-control' outside the service (pid ${pid})." >&2
     echo "Stop that one first (Ctrl+C in its window), then run this again." >&2
     exit 1

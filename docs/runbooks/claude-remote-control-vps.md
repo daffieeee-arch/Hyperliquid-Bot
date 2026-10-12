@@ -28,7 +28,9 @@ trading mode, adds no credential and moves no capital.
 - When claude exits (a crash, a network outage of more than about ten
   minutes, a stop from the app), the supervisor writes the last screen to the
   journal, or one short line when the screen equals the previous exit's (an
-  expired login would otherwise repeat it every 30 seconds), and exits 0.
+  expired login would otherwise repeat it every 30 seconds), and exits 0. A
+  planned stop logs only "stopped on request"; a signal death names the
+  signal.
   systemd starts it again after 30 seconds, without a retry limit. Only a
   missing repo or `claude` binary exits 1.
 - A stop or restart of the service ends only claude (with Ctrl+C, and a
@@ -36,9 +38,10 @@ trading mode, adds no credential and moves no capital.
   (`KillMode=process`). Processes that a session started stay up: a capture
   or research tmux session, a download. They do run inside the service's
   cgroup, so `systemctl status claude-rc` lists them. The installer and
-  uninstaller recognise "running inside the service" by process ancestry
-  (a parent is the service's `claude remote-control`), so a shell in such a
-  tmux session is still treated as an SSH shell.
+  uninstaller refuse to run inside a served session: a process in the
+  service's cgroup whose parents reach the service's `claude remote-control`
+  (or no tmux server). A shell in a tmux session that a served session
+  started reaches that tmux server first, so it counts as an SSH shell.
 - `claude remote-control` started again in the same folder brings back the
   sessions it served, for about four hours after it stopped (documented for a
   Ctrl+C stop; the docs do not say whether a crash or reboot is the same).
@@ -154,7 +157,8 @@ starts it again after 30 seconds.
   a fake `claude` in a folder with a space. It checks the Ctrl+C stop (also
   when claude asks for a second Ctrl+C), that claude starts without `TMUX`,
   that a stop spares a session whose name only starts with `claude-rc`, that
-  an identical exit screen is printed once, the server detection, the status
+  an identical exit screen is printed once, that a planned exit is not
+  reported as a crash, the server detection, the status
   helper through a symlink, and the rendered unit (`systemd-analyze verify`
   where available). The tmux tests skip locally without tmux but fail in CI.
   The installer refusals (a hand-started server, scripts that differ from

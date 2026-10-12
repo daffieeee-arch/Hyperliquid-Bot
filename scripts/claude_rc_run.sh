@@ -53,6 +53,8 @@ wait_for_exit() {
 
 stop_session() {
   session_alive || return 0
+  # Tell the main loop this exit is planned, so it does not report a crash.
+  claude_rc_tmux set-option -t "${PANE_TARGET}" @claude_rc_stopping 1 2>/dev/null || true
   if ! pane_dead; then
     claude_rc_tmux send-keys -t "${PANE_TARGET}" C-c 2>/dev/null || true
     wait_for_exit "${FIRST_STOP_WAIT_SECONDS}"
@@ -131,19 +133,21 @@ claude_rc_tmux start-server \; set-option -wg remain-on-exit on \; \
   -- env -u TMUX -u TMUX_PANE bash -lc 'exec "$0" "$@"' "${CLAUDE_BIN}" "${args[@]}"
 echo "claude-rc: remote-control started in ${REPO} (tmux -L ${CLAUDE_RC_SOCKET} attach -t ${CLAUDE_RC_SESSION})"
 
-# A stop from systemd ends with SIGTERM after ExecStop; that is not a failure.
-trap 'exit 0' TERM
 while session_alive && ! pane_dead; do
-  sleep "${POLL_SECONDS}" &
-  wait "$!" || true
+  sleep "${POLL_SECONDS}"
 done
 
-if session_alive; then
-  status="$(claude_rc_tmux display-message -p -t "${PANE_TARGET}" '#{pane_dead_status}' 2>/dev/null || true)"
-  report_last_screen "${status:-unknown}"
+if ! session_alive; then
+  echo "claude-rc: the tmux session ended" >&2
+elif [[ -n "$(claude_rc_tmux show-options -qv -t "${PANE_TARGET}" @claude_rc_stopping 2>/dev/null)" ]]; then
+  echo "claude-rc: remote-control stopped on request" >&2
   claude_rc_tmux kill-session -t "${SESSION_TARGET}" 2>/dev/null || true
 else
-  echo "claude-rc: the tmux session ended" >&2
+  # A signal death (an OOM kill) leaves the status empty and sets the signal.
+  status="$(claude_rc_tmux display-message -p -t "${PANE_TARGET}" \
+    '#{?pane_dead_signal,signal #{pane_dead_signal},#{pane_dead_status}}' 2>/dev/null || true)"
+  report_last_screen "${status:-unknown}"
+  claude_rc_tmux kill-session -t "${SESSION_TARGET}" 2>/dev/null || true
 fi
 # Exit 0: systemd restarts the service either way (Restart=always), and a
 # planned stop must not leave the unit marked failed.

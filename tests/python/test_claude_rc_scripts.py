@@ -210,6 +210,7 @@ def test_stop_sends_ctrl_c_and_the_runner_exits(tmp_path: Path, ignore_first: st
         )
         assert stopped.returncode == 0, stopped.stderr
         assert runner.wait(timeout=30) == 0
+        runner_err = runner.stderr.read() if runner.stderr else ""
     finally:
         if runner.poll() is None:
             runner.kill()
@@ -217,6 +218,8 @@ def test_stop_sends_ctrl_c_and_the_runner_exits(tmp_path: Path, ignore_first: st
         _end_test_session(env)
 
     assert (tmp_path / "interrupted").exists()
+    # A planned stop is not reported as a crash with a screen dump.
+    assert "last screen:" not in runner_err
     assert not _session_alive(env)
 
 
@@ -446,15 +449,61 @@ def test_server_detection_needs_claude_and_the_remote_control_argument(tmp_path:
         env={**os.environ, "FAKE_SECONDS": "30"},
         stdout=subprocess.DEVNULL,
     )
-    # Like `rg remote-control`: the argument without a claude program.
-    lookalike = subprocess.Popen(["bash", "-c", "sleep 30", "remote-control"])
+    # Like `rg remote-control ~/.npm/.../claude-code`: the argument and a
+    # claude path, but another program. "; true" keeps bash from exec-ing
+    # sleep, so these command lines stay as written while the test reads them.
+    lookalike = subprocess.Popen(
+        ["bash", "-c", 'exec -a rg bash -c "sleep 30; true" x remote-control /x/claude-code']
+    )
+    plain = subprocess.Popen(["bash", "-c", "sleep 30; true", "remote-control"])
     try:
         time.sleep(0.2)
+        assert all(p.poll() is None for p in (server, lookalike, plain))
         assert _lib_call("claude_rc_is_server_pid", str(server.pid)) == 0
         assert _lib_call("claude_rc_is_server_pid", str(lookalike.pid)) == 1
-        # Neither runs inside the service, and this test does not descend from one.
-        assert _lib_call("claude_rc_inside_service") == 1
+        assert _lib_call("claude_rc_is_server_pid", str(plain.pid)) == 1
     finally:
-        for process in (server, lookalike):
+        for process in (server, lookalike, plain):
             process.kill()
             process.wait()
+
+
+@needs_tmux
+def test_an_exit_marked_as_planned_is_not_reported_as_a_crash(tmp_path: Path) -> None:
+    # --stop marks the session before its Ctrl+C; here the mark is set by hand
+    # and claude exits on its own, so the main loop always sees the dead pane.
+    env = _runner_env(tmp_path, FAKE_SECONDS="2")
+    runner = subprocess.Popen(
+        ["bash", str(RUNNER)],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not _session_alive(env) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        subprocess.run(
+            [
+                "tmux",
+                "-L",
+                env["CLAUDE_RC_TMUX_SOCKET"],
+                "set-option",
+                "-t",
+                f"={SESSION}:",
+                "@claude_rc_stopping",
+                "1",
+            ],
+            check=True,
+        )
+        assert runner.wait(timeout=30) == 0
+        runner_err = runner.stderr.read() if runner.stderr else ""
+    finally:
+        if runner.poll() is None:
+            runner.kill()
+            runner.wait()
+        _end_test_session(env)
+
+    assert "stopped on request" in runner_err
+    assert "last screen:" not in runner_err

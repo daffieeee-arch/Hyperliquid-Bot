@@ -25,7 +25,8 @@ fi
 echo
 if claude_rc_tmux has-session -t "$(claude_rc_session_target)" 2>/dev/null; then
   echo "screen of claude remote-control (tmux -L ${CLAUDE_RC_SOCKET} attach -t ${CLAUDE_RC_SESSION} to open it, Ctrl+B then D to leave):"
-  claude_rc_tmux capture-pane -p -J -t "$(claude_rc_pane_target)" 2>/dev/null | claude_rc_trim_blank_tail
+  # The session can end between the two calls; the status stays read-only and quiet.
+  claude_rc_tmux capture-pane -p -J -t "$(claude_rc_pane_target)" 2>/dev/null | claude_rc_trim_blank_tail || true
 else
   echo "no claude remote-control screen is running right now."
 fi

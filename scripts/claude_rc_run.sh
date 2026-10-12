@@ -37,12 +37,22 @@ session_alive() {
   claude_rc_tmux has-session -t "${SESSION_TARGET}" 2>/dev/null
 }
 
-# Unknown counts as alive: a failed tmux query must not end a healthy server.
-# A session that is really gone is caught by session_alive.
+# True when claude's pane is dead (remain-on-exit) or gone (closed while
+# another window keeps the session). A failed tmux query counts as alive: it
+# must not end a healthy server; a session that is really gone is caught by
+# session_alive. Pass the pane to save the lookup.
 pane_dead() {
-  local dead
-  dead="$(claude_rc_tmux display-message -p -t "$(claude_rc_pane_target)" '#{pane_dead}' 2>/dev/null)" || return 1
-  [[ "${dead}" == "1" ]]
+  local pane="${1:-}" panes state
+  [[ -n "${pane}" ]] || pane="$(claude_rc_pane_target)"
+  if [[ "${pane}" == %* ]]; then
+    panes="$(claude_rc_tmux list-panes -s -t "${SESSION_TARGET}" -F '#{pane_id} #{pane_dead}' 2>/dev/null)" \
+      || return 1
+    state="$(awk -v p="${pane}" '$1 == p { print $2 }' <<<"${panes}")"
+    [[ -z "${state}" || "${state}" == "1" ]]
+  else
+    state="$(claude_rc_tmux display-message -p -t "${pane}" '#{pane_dead}' 2>/dev/null)" || return 1
+    [[ "${state}" == "1" ]]
+  fi
 }
 
 stop_session() {
@@ -51,13 +61,13 @@ stop_session() {
   pane="$(claude_rc_pane_target)"
   # Tell the main loop this exit is planned, so it does not report a crash.
   claude_rc_tmux set-option -t "${pane}" @claude_rc_stopping 1 2>/dev/null || true
-  if ! pane_dead; then
+  if ! pane_dead "${pane}"; then
     claude_rc_tmux send-keys -t "${pane}" C-c 2>/dev/null || true
     # Where claude asks for a second Ctrl+C, it must come within its short
     # confirmation window: keep watching the screen and answer as soon as it
     # asks, once, while waiting for the exit.
     local ticks=$((STOP_WAIT_SECONDS * 10)) answered=0 shown
-    while ((ticks > 0)) && session_alive && ! pane_dead; do
+    while ((ticks > 0)) && session_alive && ! pane_dead "${pane}"; do
       if ((answered == 0)); then
         shown="$(claude_rc_tmux capture-pane -p -t "${pane}" 2>/dev/null || true)"
         if grep -qi 'again to exit' <<<"${shown}"; then
@@ -175,7 +185,8 @@ else
     status="$(claude_rc_tmux display-message -p -t "$(claude_rc_pane_target)" \
       '#{?pane_dead_signal,signal #{pane_dead_signal},#{pane_dead_status}}' 2>/dev/null || true)"
   elif [[ "${status}" =~ ^[0-9]+$ ]] && ((status > 128)); then
-    status="${status} (signal $((status - 128)))"
+    # The shell reports a death by signal N as 128+N, the same as that exit code.
+    status="${status} (signal $((status - 128)) or exit code ${status})"
   fi
   report_last_screen "${status:-unknown}"
   claude_rc_tmux kill-session -t "${SESSION_TARGET}" 2>/dev/null || true

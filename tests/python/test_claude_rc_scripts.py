@@ -763,7 +763,7 @@ def test_a_signal_death_is_named_in_the_journal(tmp_path: Path) -> None:
     completed = _run_once(_runner_env(tmp_path, FAKE_KILL_SELF="1"))
 
     assert completed.returncode == 0, completed.stderr
-    assert "exited with status 137 (signal 9)" in completed.stderr
+    assert "exited with status 137 (signal 9 or exit code 137)" in completed.stderr
 
 
 @needs_tmux
@@ -790,4 +790,66 @@ def test_a_ctrl_c_in_the_screen_is_reported_with_its_signal(tmp_path: Path) -> N
             runner.wait()
         _end_test_session(env)
 
-    assert "exited with status 130 (signal 2)" in runner_err
+    assert "exited with status 130 (signal 2 or exit code 130)" in runner_err
+
+
+@needs_tmux
+def test_closing_claudes_pane_beside_another_window_counts_as_an_exit(tmp_path: Path) -> None:
+    env = _runner_env(tmp_path, FAKE_SECONDS="60")
+    runner = subprocess.Popen(
+        ["bash", str(RUNNER)],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        pane = _wait_for_stored_pane(env)
+        assert _tmux(env, "new-window", "-t", f"={SESSION}:", "--", "sleep", "60").returncode == 0
+        assert _tmux(env, "kill-pane", "-t", pane).returncode == 0
+        assert runner.wait(timeout=30) == 0
+        runner_err = runner.stderr.read() if runner.stderr else ""
+    finally:
+        if runner.poll() is None:
+            runner.kill()
+            runner.wait()
+        _end_test_session(env)
+
+    assert "remote-control exited with status" in runner_err
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {},
+        {"PYTEST_CURRENT_TEST": "x"},
+        {"CI": "true"},
+        {"CI": "1"},
+        {"CI": "yes"},
+        {"CI": "false"},
+        {"HYPERLIQUID_BOT_TEST_ISOLATION": "1"},
+        {"HYPERLIQUID_BOT_TEST_ISOLATION": "0"},
+    ],
+)
+def test_test_isolation_rules_match_the_capture_helpers(extra: dict[str, str]) -> None:
+    # claude_rc_lib.sh is installed on its own, so it repeats the rules of
+    # data1_in_test_or_ci_env; this keeps the two copies equal.
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in ("PYTEST_CURRENT_TEST", "CI", "HYPERLIQUID_BOT_TEST_ISOLATION")
+    }
+    env.update(extra)
+    scripts = REPO_ROOT / "scripts"
+
+    def verdict(source: str, function: str) -> int:
+        return subprocess.run(
+            ["bash", "-c", 'source "$1"; "$2"', "bash", str(scripts / source), function],
+            check=False,
+            capture_output=True,
+            env=env,
+        ).returncode
+
+    assert verdict("claude_rc_lib.sh", "claude_rc_in_test_or_ci") == verdict(
+        "data1_operator_isolation.sh", "data1_in_test_or_ci_env"
+    )

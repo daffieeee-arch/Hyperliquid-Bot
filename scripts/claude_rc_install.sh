@@ -144,6 +144,12 @@ for value in "${REPO}" "${CLAUDE_BIN}" "${NAME}" "${OPERATOR_HOME}" "${LIBEXEC_D
     exit 1
   fi
 done
+for path in "${LIBEXEC_DIR}" "${UNIT_PATH}" "${STATUS_LINK}" "${REPO}" "${CLAUDE_BIN}"; do
+  if [[ "${path}" != /* ]]; then
+    echo "Refuse: not an absolute path: ${path}" >&2
+    exit 1
+  fi
+done
 # ExecStart is not quoted, and PATH entries are split at ':'.
 if [[ "${LIBEXEC_DIR}" =~ [[:space:]] ]]; then
   echo "Refuse: the libexec directory may not contain spaces: ${LIBEXEC_DIR}" >&2

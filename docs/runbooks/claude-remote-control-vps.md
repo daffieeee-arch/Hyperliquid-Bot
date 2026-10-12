@@ -34,8 +34,9 @@ trading mode, adds no credential and moves no capital.
   the screen equals the previous exit's (an expired login would repeat it
   every 30 seconds), only one short line is written. A planned stop never
   writes a crash dump: it logs "stopped on request", or "the tmux session
-  ended" when the stop removed the session first. A signal death names the
-  signal. Only a missing repo or `claude` binary exits 1.
+  ended" when the stop removed the session first. A status above 128 is
+  shown as "signal N or exit code 128+N": the shell reports both alike.
+  Only a missing repo or `claude` binary exits 1.
 - A stop or restart of the service ends only claude (with Ctrl+C; for a
   second it watches the screen and presses again at once if claude asks) and
   the supervisor
@@ -51,8 +52,16 @@ trading mode, adds no credential and moves no capital.
 - All `claude_rc_*` tools ignore `TMUX_TMPDIR`, so the private socket is
   always `/tmp/tmux-<uid>/claude-rc`, also when `~/.profile` sets it. The
   private server ignores `~/.tmux.conf`, and the supervisor remembers
-  claude's own pane, so a window you open in that session (Ctrl+B, then c)
-  never hides claude's exit or receives its Ctrl+C.
+  claude's own pane, so a window opened in that session never hides claude's
+  exit or receives its Ctrl+C. The private session belongs to the service:
+  such a window is closed with the session at claude's next exit or restart,
+  so do not work there.
+- A stop's Ctrl+C reaches claude's whole foreground process group, like a
+  Ctrl+C typed into a hand-started server. Long jobs belong in their own
+  tmux session on the default server (as the capture and research runbooks
+  already do); those survive every restart.
+- `~/.profile` runs at every start of claude, so it must not `exec tmux` or
+  wait for input; claude would never start.
 - Under pytest or CI the supervisor refuses the live `claude-rc` socket
   (`status=TEST_ISOLATION_NOOP`), like the capture helpers refuse live
   capture sessions; tests always use an isolated socket.

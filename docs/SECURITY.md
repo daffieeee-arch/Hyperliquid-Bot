@@ -146,6 +146,15 @@ Credentials must not appear in process arguments or plain repository
 configuration. Use certificate verification and a project-scoped service
 identity where supported.
 
+### Claude Code Remote Control on the VPS
+
+The always-on Remote Control server runs as the operator user with the same
+rights as an interactive session (Chupa's decision, 2026-10-12). Whoever
+holds the operator's claude.ai account can steer it, so that account needs
+strong sign-in protection and its VPS sessions are never shared. Root owns
+the unit and its supervisor; the service never runs as root. See
+[Always-on Claude Code Remote Control](runbooks/claude-remote-control-vps.md).
+
 ### Grafana MCP
 
 Hermes may create/edit dashboards, folders, panels, annotations and alerts in the Hyperliquid project scope. It does not require global Grafana administration.

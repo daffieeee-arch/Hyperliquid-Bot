@@ -35,6 +35,11 @@ Use Cursor Remote SSH when an editor is preferred. Use `agent` or `codex`
 directly in the VPS shell for terminal-first work. Run all tools from the
 repository root unless a worktree is intentionally selected.
 
+Claude Code reaches the VPS through an always-on Remote Control server
+(`claude-rc.service`), so a session that works on the VPS can be opened from
+the Claude app at any time. Install, status and limits are in
+[Always-on Claude Code Remote Control](runbooks/claude-remote-control-vps.md).
+
 Recommended permission posture:
 
 - use the workspace-scoped permission profile for ordinary implementation;

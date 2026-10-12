@@ -25,21 +25,23 @@ fi
 # The screen lives on the service user's private tmux socket; under sudo,
 # ask as that user, not as root.
 service_user="$(systemctl show -p User --value "${CLAUDE_RC_UNIT_NAME}" 2>/dev/null || true)"
-rc_screen_tmux() {
-  if [[ "${EUID}" -eq 0 && -n "${service_user}" && "${service_user}" != "root" ]]; then
-    sudo -u "${service_user}" env -u TMUX_TMPDIR tmux -f /dev/null -L "${CLAUDE_RC_SOCKET}" "$@"
-  else
-    claude_rc_tmux "$@"
-  fi
-}
+state_dir="${CLAUDE_RC_STATE_DIR:-${HOME}/.cache/claude-rc}"
+if [[ "${EUID}" -eq 0 && -n "${service_user}" && "${service_user}" != "root" ]]; then
+  export CLAUDE_RC_RUN_AS="${service_user}"
+  state_dir="$(getent passwd "${service_user}" | cut -d: -f6 || true)/.cache/claude-rc"
+fi
 
 echo
-if rc_screen_tmux has-session -t "$(claude_rc_session_target)" 2>/dev/null; then
+if claude_rc_tmux has-session -t "$(claude_rc_session_target)" 2>/dev/null; then
   echo "screen of claude remote-control (env -u TMUX_TMPDIR tmux -L ${CLAUDE_RC_SOCKET} attach -t ${CLAUDE_RC_SESSION} to open it, Ctrl+B then D to leave):"
   # The session can end between the two calls; the status stays read-only and quiet.
-  pane="$(rc_screen_tmux show-options -qv -t "=${CLAUDE_RC_SESSION}:" @claude_rc_pane 2>/dev/null || true)"
-  rc_screen_tmux capture-pane -p -J -t "${pane:-=${CLAUDE_RC_SESSION}:}" 2>/dev/null \
+  claude_rc_tmux capture-pane -p -J -t "$(claude_rc_pane_target)" 2>/dev/null \
     | claude_rc_trim_blank_tail || true
 else
   echo "no claude remote-control screen is running right now."
+fi
+if [[ -s "${state_dir}/last-screen.txt" ]]; then
+  echo
+  echo "last exit of claude remote-control (${state_dir}/last-screen.txt):"
+  cat "${state_dir}/last-screen.txt"
 fi

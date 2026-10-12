@@ -28,8 +28,14 @@ CLAUDE_RC_SESSION="${CLAUDE_RC_TMUX_SESSION:-${CLAUDE_RC_DEFAULT_SESSION}}"
 # find the socket in the same place (/tmp/tmux-<uid>). -f /dev/null keeps the
 # operator's ~/.tmux.conf (hooks, destroy-unattached, base-index, a custom
 # dead-pane line) away from the server the supervisor relies on.
+# CLAUDE_RC_RUN_AS (status under sudo) asks as the service user, whose
+# socket it is.
 claude_rc_tmux() {
-  env -u TMUX_TMPDIR tmux -f /dev/null -L "${CLAUDE_RC_SOCKET}" "$@"
+  local -a run_as=()
+  if [[ -n "${CLAUDE_RC_RUN_AS:-}" ]]; then
+    run_as=(sudo -u "${CLAUDE_RC_RUN_AS}")
+  fi
+  "${run_as[@]}" env -u TMUX_TMPDIR tmux -f /dev/null -L "${CLAUDE_RC_SOCKET}" "$@"
 }
 
 # Exact-name session target: a bare name also matches a session that merely
@@ -131,15 +137,17 @@ claude_rc_is_private_tmux_server_pid() {
 
 # True when this shell runs in a Claude session the service serves, or in
 # another window of the service's private tmux server (a restart ends both).
-# Outside the service's cgroup it never does. Inside it, the first tmux
-# server among the parents decides: the private one means inside; any other
-# is a server that a session started, holding operator windows. Reaching no
-# tmux server at all (a detached session process) counts as inside. This
-# does not read claude's own command line, which an npm install hides.
+# The first tmux server among the parents decides: the private one means
+# inside, any other is a server that a session started, holding operator
+# windows. Following parents survives `sudo -i` or `su -`, which move the
+# shell out of the service's cgroup. With no tmux server among the parents, a
+# process still in the service's cgroup is a detached session process, so
+# inside; anything else (an SSH shell) is outside. This never reads claude's
+# own command line, which an npm install hides.
 # The optional argument is the pid to check (default: this shell).
 claude_rc_inside_service() {
-  local pid="${1:-$$}"
-  grep -q "/${CLAUDE_RC_UNIT_NAME}" "${CLAUDE_RC_PROC}/${pid}/cgroup" 2>/dev/null || return 1
+  local start="${1:-$$}" pid
+  pid="${start}"
   while [[ -n "${pid}" && "${pid}" -gt 1 ]]; do
     if [[ "$(cat "${CLAUDE_RC_PROC}/${pid}/comm" 2>/dev/null)" == tmux* ]]; then
       claude_rc_is_private_tmux_server_pid "${pid}"
@@ -147,5 +155,5 @@ claude_rc_inside_service() {
     fi
     pid="$(claude_rc_parent_pid "${pid}")"
   done
-  return 0
+  grep -q "/${CLAUDE_RC_UNIT_NAME}" "${CLAUDE_RC_PROC}/${start}/cgroup" 2>/dev/null
 }

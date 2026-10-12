@@ -69,6 +69,7 @@ def _fake_claude(tmp_path: Path) -> Path:
         "  exit 130\n"
         "}\n"
         '[[ "${FAKE_NO_TRAP:-0}" == 1 ]] || trap on_int INT\n'
+        'echo "fake claude ready"\n'
         'for i in $(seq 1 "${FAKE_LINES:-0}"); do echo "fake line ${i}"; done\n'
         '[[ "${FAKE_KILL_SELF:-0}" == 1 ]] && kill -9 $$\n'
         'for _ in $(seq 1 "${FAKE_SECONDS:-1}"); do sleep 1; done\n'
@@ -110,21 +111,23 @@ def _runner_env(tmp_path: Path, **extra: str) -> dict[str, str]:
     return env
 
 
-def _end_test_session(env: dict[str, str]) -> None:
-    subprocess.run(
-        ["tmux", "-L", env["CLAUDE_RC_TMUX_SOCKET"], "kill-session", "-t", SESSION],
+def _tmux(env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
+    """tmux on the test's private socket, without any ~/.tmux.conf, as the scripts call it."""
+    return subprocess.run(
+        ["tmux", "-f", "/dev/null", "-L", env["CLAUDE_RC_TMUX_SOCKET"], *args],
         check=False,
         capture_output=True,
+        env=env,
+        text=True,
     )
+
+
+def _end_test_session(env: dict[str, str]) -> None:
+    _tmux(env, "kill-session", "-t", f"={SESSION}")
 
 
 def _session_alive(env: dict[str, str]) -> bool:
-    probe = subprocess.run(
-        ["tmux", "-L", env["CLAUDE_RC_TMUX_SOCKET"], "has-session", "-t", SESSION],
-        check=False,
-        capture_output=True,
-    )
-    return probe.returncode == 0
+    return _tmux(env, "has-session", "-t", f"={SESSION}").returncode == 0
 
 
 @needs_tmux
@@ -164,13 +167,8 @@ def test_runner_starts_claude_in_the_spaced_repo_and_reports_its_exit(tmp_path: 
 @needs_tmux
 def test_stop_leaves_a_session_that_only_starts_with_the_name(tmp_path: Path) -> None:
     env = _runner_env(tmp_path)
-    socket = env["CLAUDE_RC_TMUX_SOCKET"]
     decoy = f"{SESSION}-decoy"
-    subprocess.run(
-        ["tmux", "-L", socket, "new-session", "-d", "-s", decoy, "--", "sleep", "30"],
-        check=True,
-        env=env,
-    )
+    assert _tmux(env, "new-session", "-d", "-s", decoy, "--", "sleep", "30").returncode == 0
     try:
         stopped = subprocess.run(
             ["bash", str(RUNNER), "--stop"],
@@ -180,38 +178,22 @@ def test_stop_leaves_a_session_that_only_starts_with_the_name(tmp_path: Path) ->
             text=True,
             timeout=30,
         )
-        alive = subprocess.run(
-            ["tmux", "-L", socket, "has-session", "-t", f"={decoy}"],
-            check=False,
-            capture_output=True,
-        )
+        alive = _tmux(env, "has-session", "-t", f"={decoy}")
     finally:
-        subprocess.run(
-            ["tmux", "-L", socket, "kill-session", "-t", f"={decoy}"],
-            check=False,
-            capture_output=True,
-        )
+        _tmux(env, "kill-session", "-t", f"={decoy}")
 
     assert stopped.returncode == 0, stopped.stderr
     assert alive.returncode == 0
 
 
-def _tmux(env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["tmux", "-f", "/dev/null", "-L", env["CLAUDE_RC_TMUX_SOCKET"], *args],
-        check=False,
-        capture_output=True,
-        env=env,
-        text=True,
-    )
-
-
 def _wait_for_stored_pane(env: dict[str, str]) -> str:
+    """claude's pane id, once the fake claude has set up its Ctrl+C handling."""
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
         pane = _tmux(env, "show-options", "-qv", "-t", f"={SESSION}:", "@claude_rc_pane").stdout
-        if pane.strip():
-            return pane.strip()
+        pane = pane.strip()
+        if pane and "fake claude ready" in _tmux(env, "capture-pane", "-p", "-t", pane).stdout:
+            return pane
         time.sleep(0.1)
     raise AssertionError("the supervisor never stored claude's pane id")
 
@@ -235,10 +217,6 @@ def test_stop_sends_ctrl_c_and_the_runner_exits(
         text=True,
     )
     try:
-        deadline = time.monotonic() + 10
-        while not _session_alive(env) and time.monotonic() < deadline:
-            time.sleep(0.1)
-        assert _session_alive(env)
         _wait_for_stored_pane(env)
         if extra_window:
             assert (
@@ -410,35 +388,30 @@ def test_status_via_symlink_reports_one_line_and_the_screen(tmp_path: Path) -> N
     link.symlink_to(REPO_ROOT / "scripts" / "claude_rc_status.sh")
     env = _runner_env(tmp_path)
     env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
-    socket = env["CLAUDE_RC_TMUX_SOCKET"]
-    subprocess.run(
-        [
-            "tmux",
-            "-L",
-            socket,
-            "new-session",
-            "-d",
-            "-s",
-            SESSION,
-            "--",
-            "bash",
-            "-c",
-            "echo remote-control screen line; sleep 30",
-        ],
-        check=True,
-        env=env,
+    started = _tmux(
+        env,
+        "new-session",
+        "-d",
+        "-s",
+        SESSION,
+        "--",
+        "bash",
+        "-c",
+        "echo remote-control screen line; sleep 30",
+    )
+    assert started.returncode == 0, started.stderr
+    # A kept exit screen from an earlier run is shown too.
+    state = Path(env["CLAUDE_RC_STATE_DIR"])
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "last-screen.txt").write_text(
+        "exit at T with status 1\nplease run /login\n", encoding="utf-8"
     )
     try:
         deadline = time.monotonic() + 5
         screen = ""
         while "screen line" not in screen and time.monotonic() < deadline:
             time.sleep(0.1)
-            screen = subprocess.run(
-                ["tmux", "-L", socket, "capture-pane", "-p", "-t", SESSION],
-                capture_output=True,
-                text=True,
-                check=False,
-            ).stdout
+            screen = _tmux(env, "capture-pane", "-p", "-t", f"={SESSION}:").stdout
         completed = subprocess.run(
             ["bash", str(link)], check=False, capture_output=True, env=env, text=True, timeout=30
         )
@@ -450,7 +423,8 @@ def test_status_via_symlink_reports_one_line_and_the_screen(tmp_path: Path) -> N
     assert lines[0] == "service: inactive (disabled)"
     assert "sudo journalctl -u claude-rc.service" in completed.stdout
     assert "remote-control screen line" in completed.stdout
-    assert completed.stdout.endswith("remote-control screen line\n")
+    assert "last exit of claude remote-control" in completed.stdout
+    assert completed.stdout.endswith("please run /login\n")
 
 
 @needs_tmux
@@ -478,12 +452,19 @@ def test_a_repeated_identical_exit_screen_is_not_printed_again(tmp_path: Path) -
     assert "fake claude arg" not in outputs[1]
 
 
-def _lib_call(function: str, *args: str) -> int:
+def _lib_call(
+    function: str, *args: str, proc: Path | None = None, socket: str = "claude-rc"
+) -> int:
+    """Run one claude_rc_lib.sh function; proc points it at a fake /proc tree."""
+    env = {**os.environ, "CLAUDE_RC_TMUX_SOCKET": socket}
+    if proc is not None:
+        env["CLAUDE_RC_PROC_ROOT"] = str(proc)
     lib = REPO_ROOT / "scripts" / "claude_rc_lib.sh"
     return subprocess.run(
         ["bash", "-c", 'source "$1"; shift; "$@"', "bash", str(lib), function, *args],
         check=False,
         capture_output=True,
+        env=env,
     ).returncode
 
 
@@ -574,10 +555,13 @@ def test_the_exit_screen_in_the_journal_is_at_most_40_lines(tmp_path: Path) -> N
 
 
 @needs_tmux
-def test_an_identical_screen_is_printed_again_after_a_long_run(tmp_path: Path) -> None:
-    # With the reset at 0 s every run counts as long, so nothing is suppressed.
-    env = _runner_env(tmp_path, CLAUDE_RC_SCREEN_RESET_SECONDS="0")
+def test_an_identical_screen_is_printed_again_once_the_last_dump_is_old(tmp_path: Path) -> None:
+    env = _runner_env(tmp_path)
     first = _run_once(env)
+    # The last dump is 11 minutes old: it may have rotated out of the journal.
+    digest = Path(env["CLAUDE_RC_STATE_DIR"]) / "last-screen.sha256"
+    old = time.time() - 11 * 60
+    os.utime(digest, (old, old))
     second = _run_once(env)
 
     assert "last screen:" in first.stderr
@@ -588,51 +572,16 @@ def test_an_identical_screen_is_printed_again_after_a_long_run(tmp_path: Path) -
 def test_the_private_tmux_server_is_recognised_by_its_socket(tmp_path: Path) -> None:
     env = _runner_env(tmp_path)
     socket = env["CLAUDE_RC_TMUX_SOCKET"]
-    subprocess.run(
-        [
-            "tmux",
-            "-L",
-            socket,
-            "start-server",
-            ";",
-            "new-session",
-            "-d",
-            "-s",
-            SESSION,
-            "--",
-            "sleep",
-            "30",
-        ],
-        check=True,
-        env=env,
+    started = _tmux(
+        env, "start-server", ";", "new-session", "-d", "-s", SESSION, "--", "sleep", "30"
     )
+    assert started.returncode == 0, started.stderr
     try:
-        server_pid = subprocess.run(
-            ["tmux", "-L", socket, "display-message", "-p", "-t", f"={SESSION}:", "#{pid}"],
-            check=True,
-            capture_output=True,
-            env=env,
-            text=True,
-        ).stdout.strip()
-        lib = REPO_ROOT / "scripts" / "claude_rc_lib.sh"
+        server_pid = _tmux(env, "display-message", "-p", "-t", f"={SESSION}:", "#{pid}").stdout
+        server_pid = server_pid.strip()
 
-        def is_private(socket_name: str) -> int:
-            return subprocess.run(
-                [
-                    "bash",
-                    "-c",
-                    'source "$1"; claude_rc_is_private_tmux_server_pid "$2"',
-                    "bash",
-                    str(lib),
-                    server_pid,
-                ],
-                check=False,
-                capture_output=True,
-                env={**env, "CLAUDE_RC_TMUX_SOCKET": socket_name},
-            ).returncode
-
-        assert is_private(socket) == 0
-        assert is_private("some-other-socket") == 1
+        assert _lib_call("claude_rc_is_private_tmux_server_pid", server_pid, socket=socket) == 0
+        assert _lib_call("claude_rc_is_private_tmux_server_pid", server_pid, socket="other") == 1
     finally:
         _end_test_session(env)
 
@@ -644,16 +593,6 @@ def _fake_proc(root: Path, pid: int, *, argv: list[str], comm: str, ppid: int, c
     (entry / "comm").write_text(comm + "\n", encoding="utf-8")
     (entry / "status").write_text(f"Name:\t{comm}\nPPid:\t{ppid}\n", encoding="utf-8")
     (entry / "cgroup").write_text(f"0::{cgroup}\n", encoding="utf-8")
-
-
-def _fake_lib_call(proc: Path, function: str, *args: str) -> int:
-    lib = REPO_ROOT / "scripts" / "claude_rc_lib.sh"
-    return subprocess.run(
-        ["bash", "-c", 'source "$1"; shift; "$@"', "bash", str(lib), function, *args],
-        check=False,
-        capture_output=True,
-        env={**os.environ, "CLAUDE_RC_PROC_ROOT": str(proc), "CLAUDE_RC_TMUX_SOCKET": "claude-rc"},
-    ).returncode
 
 
 def test_inside_service_follows_the_first_tmux_server(tmp_path: Path) -> None:
@@ -684,10 +623,13 @@ def test_inside_service_follows_the_first_tmux_server(tmp_path: Path) -> None:
     _fake_proc(proc, 300, argv=["bash"], comm="bash", ppid=1, cgroup=service)
     _fake_proc(proc, 400, argv=["bash"], comm="bash", ppid=1, cgroup="/user.slice/session-3.scope")
 
-    assert _fake_lib_call(proc, "claude_rc_inside_service", "100") == 0
-    assert _fake_lib_call(proc, "claude_rc_inside_service", "200") == 1
-    assert _fake_lib_call(proc, "claude_rc_inside_service", "300") == 0
-    assert _fake_lib_call(proc, "claude_rc_inside_service", "400") == 1
+    assert _lib_call("claude_rc_inside_service", "100", proc=proc) == 0
+    assert _lib_call("claude_rc_inside_service", "200", proc=proc) == 1
+    assert _lib_call("claude_rc_inside_service", "300", proc=proc) == 0
+    assert _lib_call("claude_rc_inside_service", "400", proc=proc) == 1
+    # `sudo -i` in a served session: a new session scope, same parents.
+    _fake_proc(proc, 500, argv=["bash"], comm="bash", ppid=90, cgroup="/user.slice/session-9.scope")
+    assert _lib_call("claude_rc_inside_service", "500", proc=proc) == 0
 
 
 @pytest.mark.parametrize(
@@ -706,7 +648,7 @@ def test_server_detection_reads_the_program_and_its_arguments(
     proc = tmp_path / "proc"
     _fake_proc(proc, 500, argv=argv, comm=argv[0], ppid=1, cgroup="/user.slice")
 
-    assert _fake_lib_call(proc, "claude_rc_is_server_pid", "500") == expected
+    assert _lib_call("claude_rc_is_server_pid", "500", proc=proc) == expected
 
 
 @needs_tmux

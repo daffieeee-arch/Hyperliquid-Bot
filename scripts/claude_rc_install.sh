@@ -232,7 +232,7 @@ for pid in $(pgrep -u "${OPERATOR}" -f remote-control 2>/dev/null || true); do
   fi
 done
 
-if ! as_operator "${CLAUDE_BIN}" auth status >/dev/null 2>&1; then
+if ! as_operator timeout 20 "${CLAUDE_BIN}" auth status </dev/null >/dev/null 2>&1; then
   echo "Warning: ${OPERATOR} does not look logged in. Run 'claude auth login' as ${OPERATOR}." >&2
 fi
 

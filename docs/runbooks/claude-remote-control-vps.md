@@ -27,26 +27,28 @@ trading mode, adds no credential and moves no capital.
   server that a session starts inherits that environment.
 - When claude exits (a crash, a network outage of more than about ten
   minutes, a stop from the app), the supervisor writes its exit status and
-  the last 40 lines of its screen to the journal and exits 0. The status
-  comes from the login shell that runs claude (`~/.cache/claude-rc/exit-status`),
-  because tmux 3.4 does not always report it; systemd starts it again after 30
-  seconds, without a retry limit. If claude ran less than ten minutes and
-  the screen equals the previous exit's (an expired login would repeat it
-  every 30 seconds), only one short line is written. A planned stop never
-  writes a crash dump: it logs "stopped on request", or "the tmux session
-  ended" when the stop removed the session first. A status above 128 is
-  shown as "signal N or exit code 128+N": the shell reports both alike.
-  Only a missing repo or `claude` binary exits 1.
-- A stop or restart of the service ends only claude (with Ctrl+C; for a
-  second it watches the screen and presses again at once if claude asks) and
-  the supervisor
-  (`KillMode=process`). Processes that a session started stay up: a capture
-  or research tmux session, a download. They do run inside the service's
-  cgroup, so `systemctl status claude-rc` lists them.
+  the last 40 lines of its screen to the journal and exits 0; systemd starts
+  it again after 30 seconds, without a retry limit. Only a missing repo or
+  `claude` binary exits 1.
+  - The status comes from the login shell that runs claude
+    (`~/.cache/claude-rc/exit-status`), because tmux 3.4 does not always
+    report it. A status above 128 reads "signal N or exit code 128+N": the
+    shell reports both alike.
+  - A screen equal to the one dumped in the last ten minutes (an expired
+    login would repeat it every 30 seconds) gives one short line instead.
+    The last exit screen is also kept in `~/.cache/claude-rc/last-screen.txt`,
+    which `claude-rc-status` shows.
+  - A planned stop never writes a crash dump: it logs "stopped on request",
+    or "the tmux session ended" when the stop removed the session first.
+- A stop or restart of the service ends only claude (with Ctrl+C; while it
+  waits it watches the screen and presses again at once if claude asks) and
+  the supervisor (`KillMode=process`). Processes that a session started stay
+  up: a capture or research tmux session, a download. They do run inside the
+  service's cgroup, so `systemctl status claude-rc` lists them.
 - The installer and uninstaller refuse to run inside a served session or
   another window of the private tmux server (a restart would end it): a
-  process in the service's cgroup whose first tmux parent is the private
-  server, or that has none. A shell in a tmux session that a served session
+  process whose first tmux parent is the private server (also after
+  `sudo -i`), or that has none and sits in the service's cgroup. A shell in a tmux session that a served session
   started reaches that default tmux server first, so it counts as an SSH
   shell.
 - All `claude_rc_*` tools ignore `TMUX_TMPDIR`, so the private socket is

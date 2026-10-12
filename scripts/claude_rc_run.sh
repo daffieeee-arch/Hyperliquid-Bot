@@ -24,9 +24,8 @@ claude_rc_refuse_live_socket_under_test || exit 2
 POLL_SECONDS="${CLAUDE_RC_POLL_SECONDS:-15}"
 # Time for a clean exit after Ctrl+C before the session is killed.
 STOP_WAIT_SECONDS="${CLAUDE_RC_STOP_WAIT_SECONDS:-20}"
-# An exit after a run this long always prints its screen, even if equal to
-# the last one printed (that dump may have rotated out of the journal).
-SCREEN_RESET_SECONDS="${CLAUDE_RC_SCREEN_RESET_SECONDS:-600}"
+# An identical screen is printed again once the last dump is this old.
+SCREEN_RESET_MINUTES="${CLAUDE_RC_SCREEN_RESET_MINUTES:-10}"
 # A missing repo or binary is retried by systemd; the pause keeps that slow.
 MISSING_PAUSE_SECONDS="${CLAUDE_RC_MISSING_PAUSE_SECONDS:-60}"
 STATE_DIR="${CLAUDE_RC_STATE_DIR:-${HOME}/.cache/claude-rc}"
@@ -82,9 +81,11 @@ stop_session() {
   claude_rc_tmux kill-session -t "${SESSION_TARGET}" 2>/dev/null || true
 }
 
-# Print the last screen unless it equals the one printed before, so a claude
-# that exits at once on every restart (an expired login) does not flood the
-# journal with the same 40 lines every 30 seconds.
+# Print the last screen unless it equals the one printed in the last 10
+# minutes, so a claude that exits at once on every restart (an expired login)
+# does not flood the journal with the same lines every 30 seconds. The screen
+# is also kept in last-screen.txt, which claude-rc-status shows when no
+# screen is running.
 report_last_screen() {
   local status="$1" screen digest previous=""
   # tmux's own "Pane is dead (status, time)" line differs on every exit; drop
@@ -93,6 +94,11 @@ report_last_screen() {
     | grep -v '^Pane is dead (' | cat -s | claude_rc_trim_blank_tail | tail -n 40 || true)"
   digest="$(printf '%s\n' "${status}" "${screen}" | sha256sum | cut -d' ' -f1)"
   mkdir -p "${STATE_DIR}" 2>/dev/null || true
+  printf 'exit at %s with status %s\n%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${status}" "${screen}" \
+    >"${STATE_DIR}/last-screen.txt" 2>/dev/null || true
+  # An old digest (its dump may have rotated out of the journal) never mutes.
+  find "${STATE_DIR}" -maxdepth 1 -name last-screen.sha256 -mmin "+${SCREEN_RESET_MINUTES}" \
+    -delete 2>/dev/null || true
   previous="$(cat "${STATE_DIR}/last-screen.sha256" 2>/dev/null || true)"
   if [[ "${digest}" == "${previous}" ]]; then
     echo "claude-rc: remote-control exited with status ${status}; same screen as the last exit" >&2
@@ -156,21 +162,20 @@ pane_id="$(claude_rc_tmux start-server \; set-option -wg remain-on-exit on \; \
   "${CLAUDE_BIN}" "${args[@]}")"
 claude_rc_tmux set-option -t "${pane_id}" @claude_rc_pane "${pane_id}" 2>/dev/null || true
 echo "claude-rc: remote-control started in ${REPO} (env -u TMUX_TMPDIR tmux -L ${CLAUDE_RC_SOCKET} attach -t ${CLAUDE_RC_SESSION})"
-started_at="$(date +%s)"
 
 while session_alive && ! pane_dead; do
   sleep "${POLL_SECONDS}"
 done
 
-if ! session_alive; then
-  echo "claude-rc: the tmux session ended" >&2
-elif [[ -n "$(claude_rc_tmux show-options -qv -t "$(claude_rc_pane_target)" @claude_rc_stopping 2>/dev/null)" ]]; then
+# Read the stop mark first: --stop sets it before its Ctrl+C, and may remove
+# the session at any moment after claude exits.
+stopping="$(claude_rc_tmux show-options -qv -t "=${CLAUDE_RC_SESSION}:" @claude_rc_stopping 2>/dev/null || true)"
+if [[ -n "${stopping}" ]]; then
   echo "claude-rc: remote-control stopped on request" >&2
   claude_rc_tmux kill-session -t "${SESSION_TARGET}" 2>/dev/null || true
+elif ! session_alive; then
+  echo "claude-rc: the tmux session ended" >&2
 else
-  if (($(date +%s) - started_at >= SCREEN_RESET_SECONDS)); then
-    rm -f "${STATE_DIR}/last-screen.sha256"
-  fi
   # The wrapper writes the status just before the pane dies; tmux's own
   # status is only a fallback. 128+N means claude died of signal N.
   status=""
@@ -184,8 +189,9 @@ else
   if [[ -z "${status}" ]]; then
     status="$(claude_rc_tmux display-message -p -t "$(claude_rc_pane_target)" \
       '#{?pane_dead_signal,signal #{pane_dead_signal},#{pane_dead_status}}' 2>/dev/null || true)"
-  elif [[ "${status}" =~ ^[0-9]+$ ]] && ((status > 128)); then
-    # The shell reports a death by signal N as 128+N, the same as that exit code.
+  elif [[ "${status}" =~ ^[0-9]+$ ]] && ((status > 128 && status <= 128 + 64)); then
+    # The shell reports a death by signal N as 128+N, the same as that exit
+    # code; above 128+64 (SIGRTMAX) it can only be an exit code.
     status="${status} (signal $((status - 128)) or exit code ${status})"
   fi
   report_last_screen "${status:-unknown}"

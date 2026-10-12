@@ -16,19 +16,29 @@ trading mode, adds no credential and moves no capital.
 - The supervisor starts `claude remote-control --name hyperliquid-vps` in the
   repo checkout, inside a detached tmux session `claude-rc` on its **own tmux
   socket** (`tmux -L claude-rc`), and targets that session by its exact name.
-  claude starts without the `TMUX` variables, so tmux sessions that a Claude
-  session starts (a capture, an `s4-*` job) land on the operator's default
-  tmux server, exactly as from an SSH shell, where the capture scripts look
-  for them. Restarting the service never touches that server.
+  claude starts through a login shell (so it reads the operator's
+  `~/.profile`) and without the `TMUX` variables, so tmux sessions that a
+  Claude session starts (a capture, an `s4-*` job) land on the operator's
+  default tmux server, where the capture scripts look for them. Restarting
+  the service never touches that server.
+- The environment is close to, not identical with, an SSH login: there is no
+  SSH agent, no `XDG_RUNTIME_DIR` and no user D-Bus, so `systemctl --user`
+  and agent-forwarded SSH do not work from these sessions. A default tmux
+  server that a session starts inherits that environment.
 - When claude exits (a crash, a network outage of more than about ten
   minutes, a stop from the app), the supervisor writes the last screen to the
-  journal and exits. systemd starts it again after 30 seconds, without a
-  retry limit.
+  journal, or one short line when the screen equals the previous exit's (an
+  expired login would otherwise repeat it every 30 seconds), and exits 0.
+  systemd starts it again after 30 seconds, without a retry limit. Only a
+  missing repo or `claude` binary exits 1.
 - A stop or restart of the service ends only claude (with Ctrl+C, and a
   second one if claude asks to confirm) and the supervisor
   (`KillMode=process`). Processes that a session started stay up: a capture
   or research tmux session, a download. They do run inside the service's
-  cgroup, so `systemctl status claude-rc` lists them.
+  cgroup, so `systemctl status claude-rc` lists them. The installer and
+  uninstaller recognise "running inside the service" by process ancestry
+  (a parent is the service's `claude remote-control`), so a shell in such a
+  tmux session is still treated as an SSH shell.
 - `claude remote-control` started again in the same folder brings back the
   sessions it served, for about four hours after it stopped (documented for a
   Ctrl+C stop; the docs do not say whether a crash or reboot is the same).
@@ -141,10 +151,12 @@ starts it again after 30 seconds.
 - An idle server costs next to nothing, but a session that waits on a prompt
   does no work until it is answered.
 - Tests: `tests/python/test_claude_rc_scripts.py` runs the supervisor against
-  a fake `claude` in a folder with a space, checks the Ctrl+C stop (also when
-  claude asks for a second Ctrl+C), that claude starts without `TMUX`, that a
-  stop spares a session whose name only starts with `claude-rc`, the status
+  a fake `claude` in a folder with a space. It checks the Ctrl+C stop (also
+  when claude asks for a second Ctrl+C), that claude starts without `TMUX`,
+  that a stop spares a session whose name only starts with `claude-rc`, that
+  an identical exit screen is printed once, the server detection, the status
   helper through a symlink, and the rendered unit (`systemd-analyze verify`
-  where available). The installer
-  refusals for a hand-started server and for scripts that differ from
-  `origin/main` were checked by hand as root with a throwaway user.
+  where available). The tmux tests skip locally without tmux but fail in CI.
+  The installer refusals (a hand-started server, scripts that differ from
+  `origin/main`, checked before root sources anything) were run by hand as
+  root with a throwaway user.

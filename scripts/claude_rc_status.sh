@@ -8,9 +8,6 @@ SCRIPT_DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 # shellcheck source=claude_rc_lib.sh
 source "${SCRIPT_DIR}/claude_rc_lib.sh"
 
-SOCKET="${CLAUDE_RC_TMUX_SOCKET:-${CLAUDE_RC_DEFAULT_SOCKET}}"
-SESSION="${CLAUDE_RC_TMUX_SESSION:-${CLAUDE_RC_DEFAULT_SESSION}}"
-
 # is-active and is-enabled print their answer and exit non-zero for most of them.
 active="$(systemctl is-active "${CLAUDE_RC_UNIT_NAME}" 2>/dev/null || true)"
 enabled="$(systemctl is-enabled "${CLAUDE_RC_UNIT_NAME}" 2>/dev/null || true)"
@@ -26,9 +23,9 @@ else
 fi
 
 echo
-if tmux -L "${SOCKET}" has-session -t "=${SESSION}" 2>/dev/null; then
-  echo "screen of claude remote-control (tmux -L ${SOCKET} attach -t ${SESSION} to open it, Ctrl+B then D to leave):"
-  tmux -L "${SOCKET}" capture-pane -p -J -t "=${SESSION}:" 2>/dev/null | claude_rc_trim_blank_tail
+if claude_rc_tmux has-session -t "$(claude_rc_session_target)" 2>/dev/null; then
+  echo "screen of claude remote-control (tmux -L ${CLAUDE_RC_SOCKET} attach -t ${CLAUDE_RC_SESSION} to open it, Ctrl+B then D to leave):"
+  claude_rc_tmux capture-pane -p -J -t "$(claude_rc_pane_target)" 2>/dev/null | claude_rc_trim_blank_tail
 else
   echo "no claude remote-control screen is running right now."
 fi

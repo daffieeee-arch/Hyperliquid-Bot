@@ -86,7 +86,10 @@ Pushes to `main` always run everything.
 
 ## Python tests in parallel
 
-`python-foundation` runs the suite with pytest-xdist over the runner's cores:
+`python-foundation` installs tmux from apt first (the claude-rc supervisor
+tests in `tests/python/test_claude_rc_scripts.py` drive a real tmux server and
+fail instead of skipping when `CI` is set), then runs the suite with
+pytest-xdist over the runner's cores:
 
 ```bash
 uv run --frozen pytest -q -m timing

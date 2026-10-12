@@ -91,6 +91,12 @@ jobs:
         if: needs.changes.outputs.python != 'false'
         run: uv run --frozen mypy src tests/python vertical_slices/course1_exit_gate
 
+      - name: Install tmux
+        if: needs.changes.outputs.python != 'false'
+        # tests/python/test_claude_rc_scripts.py drives a real tmux server and
+        # fails rather than skips in CI; the ubuntu-24.04 image has no tmux.
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends tmux
+
       - name: Test Python real-clock deadlines (serial)
         if: needs.changes.outputs.python != 'false'
         # Tests marked timing assert deadlines with tens of milliseconds of

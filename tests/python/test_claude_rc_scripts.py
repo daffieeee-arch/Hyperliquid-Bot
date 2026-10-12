@@ -21,7 +21,10 @@ RUNNER = REPO_ROOT / "scripts" / "claude_rc_run.sh"
 INSTALLER = REPO_ROOT / "scripts" / "claude_rc_install.sh"
 SESSION = "pytest-claude-rc"
 
-needs_tmux = pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux is not installed")
+# CI must have tmux: a skip there would hide the supervisor tests.
+needs_tmux = pytest.mark.skipif(
+    shutil.which("tmux") is None and not os.environ.get("CI"), reason="tmux is not installed"
+)
 
 
 def _executable(path: Path, text: str) -> Path:
@@ -41,6 +44,7 @@ def _fake_claude(tmp_path: Path) -> Path:
         "printf 'fake claude arg <%s>\\n' \"$@\"\n"
         'echo "fake claude cwd: $(pwd)"\n'
         'echo "fake claude TMUX=${TMUX:-unset} TMUX_PANE=${TMUX_PANE:-unset}"\n'
+        'echo "fake claude profile=${CLAUDE_RC_TEST_PROFILE:-unset}"\n'
         "presses=0\n"
         "on_int() {\n"
         "  presses=$((presses + 1))\n"
@@ -63,6 +67,14 @@ def _spaced_repo(tmp_path: Path) -> Path:
     return repo
 
 
+def _test_home(tmp_path: Path) -> Path:
+    """A HOME whose ~/.profile marks that the login shell read it."""
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    (home / ".profile").write_text("export CLAUDE_RC_TEST_PROFILE=loaded\n", encoding="utf-8")
+    return home
+
+
 def _runner_env(tmp_path: Path, **extra: str) -> dict[str, str]:
     env = {
         **os.environ,
@@ -75,6 +87,9 @@ def _runner_env(tmp_path: Path, **extra: str) -> dict[str, str]:
         "CLAUDE_RC_REPO": str(_spaced_repo(tmp_path)),
         "CLAUDE_RC_BIN": str(_fake_claude(tmp_path)),
         "CLAUDE_RC_NAME": "hyperliquid vps",
+        "CLAUDE_RC_STATE_DIR": str(tmp_path / "state"),
+        # The login shell reads this HOME's profile, not the real one.
+        "HOME": str(_test_home(tmp_path)),
     }
     env.pop("TMUX", None)
     env.update(extra)
@@ -113,7 +128,8 @@ def test_runner_starts_claude_in_the_spaced_repo_and_reports_its_exit(tmp_path: 
     finally:
         _end_test_session(env)
 
-    assert completed.returncode == 1, completed.stderr
+    # Exit 0: systemd restarts it anyway, and a stop must not mark it failed.
+    assert completed.returncode == 0, completed.stderr
     assert "remote-control started in" in completed.stdout
     assert "exited with status 7" in completed.stderr
     # The name stays one argument and the session starts in the spaced folder.
@@ -126,6 +142,8 @@ def test_runner_starts_claude_in_the_spaced_repo_and_reports_its_exit(tmp_path: 
     # Without TMUX, tmux sessions that Claude sessions start go to the default
     # server, where the capture scripts look for them.
     assert "fake claude TMUX=unset TMUX_PANE=unset" in completed.stderr
+    # claude starts through a login shell, so it sees the operator's ~/.profile.
+    assert "fake claude profile=loaded" in completed.stderr
     assert not _session_alive(env)
 
 
@@ -191,7 +209,7 @@ def test_stop_sends_ctrl_c_and_the_runner_exits(tmp_path: Path, ignore_first: st
             timeout=30,
         )
         assert stopped.returncode == 0, stopped.stderr
-        assert runner.wait(timeout=30) == 1
+        assert runner.wait(timeout=30) == 0
     finally:
         if runner.poll() is None:
             runner.kill()
@@ -385,3 +403,58 @@ def test_status_via_symlink_reports_one_line_and_the_screen(tmp_path: Path) -> N
     assert "sudo journalctl -u claude-rc.service" in completed.stdout
     assert "remote-control screen line" in completed.stdout
     assert completed.stdout.endswith("remote-control screen line\n")
+
+
+@needs_tmux
+def test_a_repeated_identical_exit_screen_is_not_printed_again(tmp_path: Path) -> None:
+    env = _runner_env(tmp_path)
+    outputs = []
+    try:
+        for _ in range(2):
+            completed = subprocess.run(
+                ["bash", str(RUNNER)],
+                check=False,
+                capture_output=True,
+                env=env,
+                text=True,
+                timeout=30,
+            )
+            assert completed.returncode == 0, completed.stderr
+            outputs.append(completed.stderr)
+    finally:
+        _end_test_session(env)
+
+    assert "last screen:" in outputs[0]
+    assert "fake claude arg <remote-control>" in outputs[0]
+    assert "same screen as the last exit" in outputs[1]
+    assert "fake claude arg" not in outputs[1]
+
+
+def _lib_call(function: str, *args: str) -> int:
+    lib = REPO_ROOT / "scripts" / "claude_rc_lib.sh"
+    return subprocess.run(
+        ["bash", "-c", 'source "$1"; shift; "$@"', "bash", str(lib), function, *args],
+        check=False,
+        capture_output=True,
+    ).returncode
+
+
+def test_server_detection_needs_claude_and_the_remote_control_argument(tmp_path: Path) -> None:
+    claude = _fake_claude(tmp_path)
+    server = subprocess.Popen(
+        [str(claude), "remote-control"],
+        env={**os.environ, "FAKE_SECONDS": "30"},
+        stdout=subprocess.DEVNULL,
+    )
+    # Like `rg remote-control`: the argument without a claude program.
+    lookalike = subprocess.Popen(["bash", "-c", "sleep 30", "remote-control"])
+    try:
+        time.sleep(0.2)
+        assert _lib_call("claude_rc_is_server_pid", str(server.pid)) == 0
+        assert _lib_call("claude_rc_is_server_pid", str(lookalike.pid)) == 1
+        # Neither runs inside the service, and this test does not descend from one.
+        assert _lib_call("claude_rc_inside_service") == 1
+    finally:
+        for process in (server, lookalike):
+            process.kill()
+            process.wait()

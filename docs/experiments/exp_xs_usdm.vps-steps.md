@@ -315,7 +315,7 @@ tolerance of the decision rules.
   `<CLASSIFICATION_DIFF>`, `<ROW_COUNT>`, `<SYMBOL_COUNT>`,
   `<RANKED_COUNT>`, `<DATA_FINGERPRINT>` (also in both run scripts),
   `<PARQUET_SHA256>`, `<REBUILD_CHECK>`, `<SHAPE_COUNTS>`,
-  `<CARRY_PRESENCE>` and `<GATE_OUTCOMES>`. `grep -n '<[A-Z_]*>'` on both
+  `<CARRY_PRESENCE>` and `<GATE_OUTCOMES>`. `grep -n '<[A-Z0-9_]*>'` on both
   docs must then find nothing.
 - Remove the draft notes at the top of both docs once every value is in.
 - Run `ruff check`, `ruff format --check` and `mypy` on the four scripts.

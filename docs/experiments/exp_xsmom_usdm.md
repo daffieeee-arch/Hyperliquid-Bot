@@ -100,11 +100,11 @@ delisted ones included. On each decision day the universe is, point in time:
     else, for a contract Binance no longer lists, a public token registry
     entry for that ticker's token. The class, source and fields of all 896
     symbols are in `config/research/binance-um-usdt-classification-2026-10-08.json`
-    (sha256 `<CLASSIFICATION_SHA256>`); the list is its non-crypto symbols.
+    (sha256 `065f7ba001e4679ec22d2ca3ef5567dcd277ce0fbe0b7eab6b5078f96caacad7`); the list is its non-crypto symbols.
     The classification reads no price, volume or funding.
   - The list is `config/research/binance-um-usdt-non-crypto-2026-10-08.json`
-    (sha256 `<EXCLUSION_SHA256>`): `<EXCLUSION_COUNTS>` (contracts per
-    category, and how many list before the holdout).
+    (sha256 `37dc30be8a1aa95c983ec0d2e091ed9297d9f452e85fd51ee03b75fbff5d5348`):
+    221 contracts: 159 `equity`, 38 `etf_or_etp`, 10 `commodity`, 6 `index`, 6 `private_company`, 2 `fiat_pegged_or_fx` and none `unverified`; six of them list before the holdout, the indices BTCDOM, DEFI, DOTECO, FOOTBALL and BLUEBIRD, and USDC.
   - The panel builder takes it with `--exclude-symbols` (#145). A listed
     contract keeps its rows and features, but its `volume_rank` is empty on
     every row, so the next contract moves up; a filter applied after the
@@ -122,10 +122,13 @@ delisted ones included. On each decision day the universe is, point in time:
     USDC. Its classifier was the author's recognition, which checked no
     kept ticker; see [Seen before](#seen-before). It is replaced by the
     classification above.
-  - By the rule, USTC stays in if its source confirms the draft's reading:
-    it was listed in 2023-11, long after it lost its peg, so it trades as a
-    free-floating crypto token. The same holds for FRAX, STABLE, STBL and
-    USUAL, tokens rather than pegged coins.
+  - By the rule, USTC stays in: CoinGecko's record of the token says it lost
+    its USD peg in May 2022 and has traded freely since, and Binance launched
+    the contract on 2023-11-27. FRAX, STABLE, STBL and USUAL stay in too:
+    CoinGecko maps their contracts to the governance tokens `frax-share`,
+    `stable-2`, `stbl` and `usual`, none of them pegged. USDC, PAXG and XAUT,
+    typed `COIN` by Binance, are left out by the same check (a fiat-backed
+    stablecoin and two gold-backed tokens).
   - The 16 "1000x" contracts (1000PEPE, 1000SHIB, ...) are crypto with a
     price multiplier and stay in; the multiplier does not change returns.
 - **A ranked contract has funding that day** (`--rank-requires-funding`,
@@ -231,7 +234,7 @@ delisted ones included. On each decision day the universe is, point in time:
   run checks the pin as [`exp_funding_btc`](exp_funding_btc.md) does,
   including untracked and ignored files, before it syncs anything. The
   exclusion list, the overlap script and the beta script are checked
-  against main, and the list also against `<EXCLUSION_SHA256>`.
+  against main, and the list also against `37dc30be8a1aa95c983ec0d2e091ed9297d9f452e85fd51ee03b75fbff5d5348`.
 - **Signal**: `ret_14d`, the log return from the close 14 days earlier to
   the decision day's close. It needs 15 consecutive traded days, so a
   listing has none for its first two weeks and a halt restarts it.
@@ -301,7 +304,7 @@ value, a return or a signal. Nothing waits for a date: the panel ends with
 published, so the shape-only build and the study's own build read the same
 files. The classification of every contract, and the non-crypto list it
 gives, are fixed before the build, and the build uses exactly that list
-(`<EXCLUSION_SHA256>`): a change to the list in review re-runs the build
+(`37dc30be8a1aa95c983ec0d2e091ed9297d9f452e85fd51ee03b75fbff5d5348`): a change to the list in review re-runs the build
 and these checks. Each gate's remedy below was written in the draft, before
 any count was seen. None drops or adds a symbol by hand, moves a period or
 changes a decision rule's tolerance; what applied is recorded under
@@ -366,7 +369,32 @@ been seen, and they are stated so the reader can judge their weight:
   `unverified`. Recognition favours tokens that later became well known.
   The final list comes from the metadata classification of every symbol
   (see Universe); the draft's counts and its differences from the final
-  list are recorded here: `<CLASSIFICATION_DIFF>`.
+  list are recorded here: the
+  draft held 239 contracts (5 `index`, 2 `fiat_pegged_or_fx`, 10
+  `commodity`, 30 `etf_or_etp`, 138 `equity`, 2 `private_company`, 52
+  `unverified`); 55 symbols changed class, each with its source in the
+  classification file.
+  - Kept by the draft, now left out (2): ALLUSDT, `index` (exchangeInfo
+    `INDEX`; Binance's ALL Composite Index, launched 2025-08-06), and
+    PENGUSDT, `equity` (exchangeInfo `EQUITY`; launch notice: Penguin
+    Solutions, Inc. Common Stock), listed 2025-08 and 2026-07.
+  - Left out by the draft, now kept (20), all exchangeInfo `COIN`:
+    SLXUSDT (the draft's `etf_or_etp` guess, the VanEck Steel ETF; Binance's
+    launch notice names SLX (Solstice)) and 19 `unverified`: ARXUSDT,
+    BILLUSDT, BTWUSDT, CAPUSDT, CHIPUSDT, CTRUSDT, DATAIPUSDT, DOSUSDT,
+    GENIUSUSDT, GRAMUSDT, GRVTUSDT, MARSCOINUSDT, OPGUSDT, OUSDT, PONSUSDT,
+    PRLUSDT, REUSDT, STARUSDT, ZESTUSDT. All list from 2026-04 on.
+  - `unverified` in the draft, now another excluded category (33), each
+    from exchangeInfo and its launch notice: 20 `equity` (AGPUUSDT,
+    BBXUSDT, BEUSDT, BNCUSDT, BOTUSDT, BSPUSDT, BXUSDT, CATUSDT, CBRSUSDT,
+    CXMTUSDT, CYPHUSDT, PAYPUSDT, RUMUSDT, SECZUSDT, SHAZUSDT, SKHYUSDT,
+    STXXUSDT, UNITREEUSDT, VUSDT, WENUSDT), 9 `etf_or_etp` (DRAMUSDT,
+    INTWUSDT, KSTRUSDT, LYTEUSDT, MVLLUSDT, RAMUSDT, SKDDUSDT, SKUUUSDT,
+    SNXXUSDT) and 4 `private_company` (MOONSHOTUSDT and OURAUSDT,
+    exchangeInfo `PREMARKET`; QNTXUSDT and SPCXUSDT, `EQUITY` with Pre-IPO
+    launch notices).
+  - No symbol is `unverified` in the final list, so none listing before
+    2025 needs naming.
 - **Market microstructure, for costs**: Binance quoted spreads of 16
   contracts on 2024-03-20 (validation), Binance depth on 2026-10-06 and a
   Hyperliquid snapshot on 2026-10-09 (24h volume, open interest and books
@@ -714,8 +742,9 @@ When the family stops:
 - **Survivorship**: the universe includes every contract Binance Vision
   archives, delisted ones too, ranked by trailing volume each day. What is
   missing: contracts Binance never archived or removed; five contracts with
-  Chinese names that the manifest cannot hold (meme tokens; their listing
-  months are not in the universe file); GAIBUSDT, which has funding from
+  Chinese names that the manifest cannot hold (meme tokens, `COIN` in
+  exchangeInfo, onboarded 2025-10-20, 2026-01-21, 2026-03-11, 2026-08-30
+  and 2026-09-06, so four of them trade in the holdout); GAIBUSDT, which has funding from
   2025-11 to 2026-04 but no 1d klines and so no panel row; and days a
   contract traded without a funding archive (see Universe).
 - **Tickers are not assets**: renamed assets are separate tickers (MATIC
@@ -829,7 +858,7 @@ export STUDY_DIR=...            # must not exist yet; outside the repository
   git diff --exit-code origin/main -- docs/experiments/exp_xsmom_usdm.md \
     config/research/binance-um-usdt-non-crypto-2026-10-08.json \
     docs/experiments/exp_xs_usdm_overlap.py docs/experiments/exp_xs_usdm_beta.py
-  echo "<EXCLUSION_SHA256>  config/research/binance-um-usdt-non-crypto-2026-10-08.json" \
+  echo "37dc30be8a1aa95c983ec0d2e091ed9297d9f452e85fd51ee03b75fbff5d5348  config/research/binance-um-usdt-non-crypto-2026-10-08.json" \
     | sha256sum -c -
   # STUDY_DIR stays outside the repository, so the run cannot dirty it.
   study="$(realpath -m "$STUDY_DIR")"

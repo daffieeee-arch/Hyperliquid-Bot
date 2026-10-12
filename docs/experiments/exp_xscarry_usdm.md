@@ -84,8 +84,8 @@ on each decision day the 50 best by `volume_rank` among the contracts that
 traded, have a 30-day mean quote volume and a funding rate that day, and
 are not on the non-crypto list
 (`config/research/binance-um-usdt-non-crypto-2026-10-08.json`, sha256
-`<EXCLUSION_SHA256>`, from the classification of every contract,
-`<EXCLUSION_COUNTS>`). The reasons for both rules, the list's checks, the
+`37dc30be8a1aa95c983ec0d2e091ed9297d9f452e85fd51ee03b75fbff5d5348`, from the classification of every contract,
+221 contracts: 159 `equity`, 38 `etf_or_etp`, 10 `commodity`, 6 `index`, 6 `private_company`, 2 `fiat_pegged_or_fx` and none `unverified`; six of them list before the holdout, the indices BTCDOM, DEFI, DOTECO, FOOTBALL and BLUEBIRD, and USDC). The reasons for both rules, the list's checks, the
 classification and the contracts that trade without a funding archive are
 given there.
 
@@ -598,7 +598,7 @@ export STUDY_DIR=...            # must not exist yet; outside the repository
   git diff --exit-code origin/main -- docs/experiments/exp_xscarry_usdm.md \
     config/research/binance-um-usdt-non-crypto-2026-10-08.json \
     docs/experiments/exp_xs_usdm_overlap.py docs/experiments/exp_xs_usdm_beta.py
-  echo "<EXCLUSION_SHA256>  config/research/binance-um-usdt-non-crypto-2026-10-08.json" \
+  echo "37dc30be8a1aa95c983ec0d2e091ed9297d9f452e85fd51ee03b75fbff5d5348  config/research/binance-um-usdt-non-crypto-2026-10-08.json" \
     | sha256sum -c -
   # STUDY_DIR stays outside the repository, so the run cannot dirty it.
   study="$(realpath -m "$STUDY_DIR")"

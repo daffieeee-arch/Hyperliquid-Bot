@@ -1,17 +1,29 @@
 ---
-description: Claude Code code review is standard in the Hyperliquid-Bot ship workflow
+description: Independent Codex review and a separate gated merge agent
 alwaysApply: true
 ---
 
-# Claude Code code review (standard)
+# Independent review and merge roles
 
-For this repository, **Claude Code's built-in `/code-review` is part of the normal development workflow**, not an optional extra. Bugbot is no longer used.
+Feature PRs receive an independent Codex review. Claude Code is not a required
+reviewer or merger. The operator delegates routine merges to a separate merge
+agent and is not expected to read code or approve each ordinary merge.
 
 When opening or updating a feature PR:
 
-1. After the PR exists (and after material follow-up commits), the branch changes get a Claude Code `/code-review` (for example `/code-review high <branch>`). A Cursor agent cannot run it: Claude Code runs it before it merges the PR.
-2. Verify each finding; fix the real ones on the same branch; push; re-run the review when the diff changed materially. Report findings judged not to be bugs, with the reason.
-3. Skip the review only for trivial docs/chore PRs unless the user asks for it anyway.
-4. Do not treat CI green alone as sufficient review for feature PRs — the code review runs before Claude Code merges. Cursor agents never merge feature PRs.
+1. A reviewer that did not author the changes checks the full final diff,
+   acceptance criteria and test evidence, and records the reviewed head/base.
+2. Verify findings, fix real bugs on the same branch and review changed code
+   again. Record reasons for declining findings. Keep trivial reviews proportionate.
+3. Execution, risk, secrets, CI and runtime changes also receive a separate
+   security review; research changes require appropriate quant/data review.
+4. A merge agent that did not author the change checks current required CI,
+   independent review, resolved blockers, a current base and a non-draft mergeable
+   PR. It squash-merges with an expected head SHA and no administrator bypass.
+5. GitHub unattended auto-merge stays disabled. LIVE/SHADOW/TESTNET, real capital,
+   real credentials and live risk limits still require explicit operator approval.
+   A merge never deploys. Shared GitHub credentials do not make subagents native
+   approving reviewers or separate authorization boundaries.
 
-Canonical workflow text: `AGENTS.md` → Development workflow (code review step).
+Canonical workflow: [AGENTS.md](../../AGENTS.md), Development workflow, and
+[GitHub workflow](../../docs/GITHUB_WORKFLOW.md).

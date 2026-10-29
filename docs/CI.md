@@ -1,5 +1,10 @@
 # Continuous integration
 
+The delivery and separate-review policy is in [GITHUB_WORKFLOW.md](GITHUB_WORKFLOW.md).
+GitHub Free on the current public repository is the baseline. CodeQL uses
+GitHub's default setup alongside these source checks; paid Copilot review is
+not required.
+
 PAPER-only GitHub Actions. This repository extends the existing
 `.github/workflows/ci.yml` and `.github/workflows/cockpit.yml` workflows. There
 is no parallel CI stack, no paid runner, and no LIVE/wallet/signing job.
@@ -84,6 +89,30 @@ outputs are empty and every heavy step runs, instead of the jobs reporting a
 skipped success. A failed diff inside `ci_scope.py` also runs everything.
 Pushes to `main` always run everything.
 
+## Final CI gate
+
+`ci-gate` runs with `always()` after all eight jobs in the CI workflow. Its
+dependency results must succeed, except `dependency-review` may be skipped on
+`push`, where it does not apply. The gate requires the existing classifier's
+explicit area outputs and reason; a missing classification or a draft-skip
+reason fails even if the PR became ready while the run was executing.
+
+For PRs, the gate reads the current GitHub PR with read-only permissions and
+requires an open, non-draft PR with the same number, head SHA and base SHA as
+the event. API errors, missing results, failures and cancellations fail closed.
+Both heavy areas may skip only for the explicit docs-only classification.
+Unchanged areas keep their existing selective checks.
+
+Draft PRs therefore have a red `ci-gate` while retaining cheap draft checks and
+skipping heavy tests. Marking the PR ready starts new applicable checks on that
+head. Old draft-era success job names are not merge-ready evidence.
+
+The gate aggregates only `ci.yml`; Cockpit's `first-paper-screen` remains a
+separate required check. It is not an independent AI-review publisher or an
+authorization boundary against someone allowed to change workflow code.
+Make `ci-gate` required only after its first successful ready-PR run establishes
+the check name and source, preserving every existing required check.
+
 ## Python tests in parallel
 
 `python-foundation` runs the suite with pytest-xdist over the runner's cores:
@@ -144,11 +173,14 @@ New names (add if branch protection requires them):
 | `dependency-review` | `pull_request` only | skipped on `push` to `main` |
 | `actionlint` | every CI run | workflow YAML |
 | `regress` | every CI run; its Python step needs the `python` area, its browser steps the `typescript` area (both skip on docs-only and draft PRs) | API + browser regress |
+| `ci-gate` | always after the CI workflow jobs | rejects draft-era skips, unavailable results and stale PR head/base; separate Cockpit check remains required |
 
 A job whose area is not affected (docs-only, the other area only, or a
 draft PR) still reports `python-foundation`, `d01-publication`,
 `typescript-foundation`, `regress`, and `first-paper-screen` as **success**
 (early skip step). Do not require `dependency-review` on `push` to `main`.
+The final `ci-gate` intentionally fails for draft-skip runs despite those
+individual success names.
 
 ## D01 publication hash
 

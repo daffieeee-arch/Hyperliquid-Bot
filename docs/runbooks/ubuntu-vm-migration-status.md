@@ -32,6 +32,9 @@ not a deployment, capture-start or strategy-promotion authorization.
 
 These observations do **not** establish data loss. Locate the original data
 or its intended durable mount before declaring the migration complete.
+The operator subsequently confirmed that `data-capture` and `hist-archives`
+remain on the Netcup VPS. Their remote paths, coverage and transfer to this VM
+have not been independently verified; no transfer was started by this task.
 No secret files, process environments or full command lines were inspected.
 No services were stopped/restarted and no runtime data was written.
 

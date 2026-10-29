@@ -2,15 +2,15 @@
 
 This register records current high-level decisions and the conditions under which they should be revisited.
 
-## COURSE-1B runtime transition status
+## Current development and runtime transition status
 
-Host-neutral Linux/amd64 OCI is the platform boundary. **ADR-024** records the definitive PAPER
-runtime profile: the Netcup Ubuntu 24.04 LTS VPS (hostname `chupa`) running
-digest-pinned OCI images under Compose-compatible declarative configuration.
-It is also the primary capture and interactive development host. The previous
-NAS appliance profile is retired, superseding its operational treatment in
-ADR-003, ADR-012, ADR-016, ADR-017, ADR-019 and ADR-021. TerraPC/WSL2 remains
-a secondary operator environment.
+Host-neutral Linux/amd64 OCI remains the platform boundary. **ADR-025** moves
+source development to the Ubuntu VM on TrueNAS SCALE without approving
+capture/data migration or continuous runtime operation. **ADR-024** is kept
+as the historical Netcup Ubuntu LTS VPS/OCI decision; its original wording
+below records the decision at that time. The direct NAS-appliance runtime
+profile remains retired. Running a development VM on TrueNAS does not revive
+that appliance profile. TerraPC/WSL2 remains secondary.
 
 ## ADR-001 — Python for the quantitative/trading core
 
@@ -1569,6 +1569,10 @@ An unsuitable result reopens the thin-native fallback rather than silently expan
 
 ## ADR-024 — Definitive PAPER runtime: Ubuntu LTS VPS + Linux/amd64 OCI
 
+**Historical status:** ADR-025 supersedes the primary-development-host
+selection. The original Netcup decision is retained below; it is not evidence
+that the old deployment or datasets migrated to the VM.
+
 **Decision:** The definitive continuous PAPER runtime is the Netcup
 **Ubuntu 24.04 LTS** VPS (hostname `chupa`) on **Linux/amd64**, running
 **digest-pinned OCI images** under **Compose-compatible** declarative
@@ -1626,8 +1630,52 @@ demand a separate host decision.
 
 ---
 
+## ADR-025 — Ubuntu VM development move; runtime migration unverified
+
+**Date:** 2026-10-29.
+
+**Decision:** Primary source development is now the Ubuntu VM on TrueNAS SCALE,
+as reported by the operator. Local read-only inspection observed Ubuntu
+26.04.1 LTS and KVM. The main checkout is
+`$HOME/coding-projects/Hyperliquid-Bot`; Codex may use isolated worktrees.
+GitHub source synchronization does not migrate ignored datasets, local
+configuration, service processes or deployment artifacts.
+
+**Scope:** This supersedes ADR-024's primary development-host choice only.
+Its Netcup profile and older operator runbooks remain historical references.
+The host-neutral Linux/amd64 OCI boundary, PAPER defaults, image-promotion
+requirements and retirement of direct NAS-appliance runtime remain intact.
+The current source CI runs tests/checks; OCI release construction remains
+planned. This ADR approves no new runtime deployment.
+
+**Evidence:** The initial inspection found the source checkout clean and at
+the same commit as GitHub `main`, but no old `$HOME/Hyperliquid Project/` tree,
+verified `data-capture` / `hist-archives` root, project data mount, or running
+project service in the inspected locations. The system Python was 3.14.4,
+outside the project's `>=3.13,<3.14` range, and pinned developer tools were
+initially absent. This is not evidence of data loss or of the old VPS state.
+Follow-up evidence belongs in
+[ubuntu-vm-migration-status.md](../runbooks/ubuntu-vm-migration-status.md).
+
+**Requirements before runtime cutover:**
+
+- locate durable captures and historical archives; verify their intended
+  transfer/mount, coverage, permissions, capacity and backup boundary;
+- restore pinned development tools and locked dependencies; run relevant
+  deterministic checks before claiming a local baseline;
+- identify actual service configuration and source/image identities without
+  disclosing secrets; test freshness, recovery and rollback as applicable;
+- preserve old datasets; no ordinary development task rewrites runtime data;
+- obtain explicit operator approval for deployment or capture starts.
+
+**Not authorized:** enabling SHADOW/TESTNET/LIVE, moving capital, introducing
+real trading credentials, changing live risk limits, or administering unrelated
+TrueNAS assets. A merge is not a deployment.
+
+---
+
 ## Pending ADR gates — not yet decisions
 
-No material open ADR gate remains after ADR-024. Future gates such as D22-B
-venue-authoritative crash-window reconciliation require separate evidence and
-explicit authorization; they are not implied by this register entry.
+The VM's data/capture/runtime cutover remains an evidence gate under ADR-025.
+D22-B venue-authoritative crash-window reconciliation also requires separate
+evidence and explicit authorization; neither follows from source migration.

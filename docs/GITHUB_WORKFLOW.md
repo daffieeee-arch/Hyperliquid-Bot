@@ -11,6 +11,10 @@ agents work on bounded tasks in separate worktrees. An independent reviewer must
 not have authored the code being reviewed. Give it the original request, full
 final diff, relevant contracts and actual test results.
 
+A separate merge agent checks the final evidence and performs routine merges.
+The operator has authorized this role; he is not expected to read code or approve
+each ordinary project merge. The merge agent must not have authored the change.
+
 Every feature PR records:
 
 - reviewer task/identity and reviewed head/base commit IDs;
@@ -25,7 +29,7 @@ agents are not required. Claude Code is not a required reviewer or merger.
 
 Subagents have separate contexts but share the host and configured capabilities.
 They are not separate GitHub users or isolated authorization boundaries. Their
-review report is evidence for the maintainer, not a native GitHub approval.
+review report is evidence for the merge agent, not a native GitHub approval.
 
 ## Delivery sequence
 
@@ -41,9 +45,11 @@ review report is evidence for the maintainer, not a native GitHub approval.
 7. Complete independent review and any specialist security/quant review. New
    changes invalidate the review of the changed code; revalidate the base after
    another PR merges.
-8. Codex stops at Ready. An authorized maintainer may squash-merge only after
-   checking current CI and review evidence. This task does not delegate automatic
-   feature merging to Codex or another agent.
+8. Hand off to a separate Codex merge agent. It verifies the actual final
+   head/base, independent reviews, resolved blocking findings, a non-draft
+   mergeable PR and all required checks from their expected publishers. It then
+   squash-merges with an explicit expected head SHA, without administrator
+   bypass or another routine human confirmation.
 9. Delete merged branches/worktrees only after checking for leftover work.
 
 Merge never starts collectors, deploys an image or promotes trading modes. LIVE,
@@ -76,8 +82,11 @@ workflow. Keep scan findings and checks visible on the PR.
 The free baseline does not claim a technically independent AI approval gate.
 The author cannot approve their own PR through a second subagent using the same
 GitHub account. An author-controlled label, comment or success status cannot
-establish that independence. Keep automatic merge disabled operationally until
-an explicitly authorized merge policy and a trustworthy review publisher exist.
+establish that independence. Keep GitHub's unattended auto-merge disabled. The
+separate merge agent is authorized to check the actual reviews and CI, then
+explicitly squash-merge; this is a role separation within the agent workflow,
+not a separately enforced GitHub identity boundary. It operates while a session
+runs and does not claim continuous background monitoring.
 
 An independently controlled GitHub App/check publisher could enforce a separate
 review result later. Its credentials and trusted publishing code must be outside

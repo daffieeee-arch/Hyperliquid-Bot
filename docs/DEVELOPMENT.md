@@ -149,9 +149,9 @@ extra security/quant review for high-risk changes
         ↓
 resolve blocking findings; re-run affected tests, CI and review
         ↓
-Cursor / Codex stop at Ready (no feature merge authority)
+separate Codex merge agent verifies final head/base, CI and independent reviews
         ↓
-separately authorized merge after current CI/review gates
+explicit squash merge without branch-protection bypass
         ↓
 delete merged branch / worktree only if no leftover work
         ↓
@@ -166,15 +166,16 @@ Rules:
 - architecture changes must update the relevant documentation/ADR;
 - generated code must pass deterministic tests rather than rely on an LLM review alone;
 - default merge method is Squash and Merge;
-- **Cursor Cloud Agents and Codex do not merge feature PRs**; they leave PRs
-  Ready after CI and review fixes;
+- implementation agents hand off to a separate Codex merge agent after CI and
+  independent review. Chupa authorizes routine merges through that agent without
+  asking him to read code or confirm each merge. The merge agent must not have
+  authored the change and uses an expected head SHA, without administrator bypass;
 - **A separate Codex review agent reviews feature PRs.** It checks the full
   final diff, acceptance criteria and test evidence, and records head/base
   commit identities with its findings. It does not implement that same change;
 - high-risk changes (execution, risk, secrets, CI, infra/runtime and non-trivial
   strategy/data contracts) also receive an appropriate security/quant review;
-- Claude Code has no mandatory reviewer or merger role. The current workflow
-  grants Codex no feature-merge authority. LIVE/SHADOW/TESTNET, real capital,
+- Claude Code has no mandatory reviewer or merger role. LIVE/SHADOW/TESTNET, real capital,
   real credentials or live risk-limit changes still need explicit operator approval;
 - follow [GitHub workflow](GITHUB_WORKFLOW.md) for review evidence and actual
   merge gates. GitHub Free is sufficient for the current public repository;
@@ -187,6 +188,8 @@ Rules:
 - independent review applies to feature changes; keep review proportionate for
   trivial documentation/chore changes and honor an explicit review request;
 - no deployment occurs merely because a pull request was merged.
+- GitHub's unattended auto-merge stays disabled; the separate merge agent makes
+  the explicit gated squash merge during an active session.
 
 ## Local data policy
 

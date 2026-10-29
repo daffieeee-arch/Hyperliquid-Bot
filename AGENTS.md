@@ -76,11 +76,16 @@ repository change):
     additional independent review the user requests before merge.
 12. Resolve blocking review findings on the same branch; re-run the relevant
     tests and CI.
-13. Cursor Cloud Agents and Codex stop at Ready: they open PRs and fix CI and
-    review findings only, and do **not** merge feature PRs.
-14. The default merge method is squash. Merge only through an authorized
-    maintainer after current-head CI, independent review and resolved blocking
-    findings. Consecutive PRs must be revalidated against the new `main`.
+13. Implementation agents hand off to a separate Codex merge agent after review.
+    Chupa authorizes that merge agent to merge ordinary project PRs without
+    asking him to read code or approve routine merges. The merge agent must
+    not have authored the change and must verify independent review evidence,
+    required checks from their expected publishers, a current base, a non-draft
+    mergeable PR and resolved blocking findings. A label or the implementer's
+    own assertion is not review evidence.
+14. The default merge method is squash. The merge agent uses an explicit
+    expected head SHA and does not bypass branch protection with administrator
+    privileges. Consecutive PRs must be revalidated against the new `main`.
     Chupa does not read code: deterministic checks and review evidence must
     be sufficient for the decision. Execution, risk, secrets, CI and runtime
     changes also receive a separate security review. A subagent sharing the
@@ -90,8 +95,9 @@ repository change):
     prerequisite. See `docs/GITHUB_WORKFLOW.md` for enforcement limitations.
     A change enabling LIVE, SHADOW or TESTNET trading, moving real capital,
     or changing real credentials or live risk limits requires Chupa's explicit
-    approval. A merge never deploys. Do not enable auto-merge without a
-    separately authorized merge policy and a working review gate.
+    approval. A merge never deploys. Keep GitHub's unattended auto-merge disabled:
+    the separate merge agent explicitly checks the gates and squash-merges.
+    Agents act while a session runs; this policy does not install a watcher.
 15. After a merge, delete the merged feature branch and any associated
     worktree only after confirming they hold no uncommitted or unmerged work.
     Runtime operations stay with the operator (Chupa) or an explicitly

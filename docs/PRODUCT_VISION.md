@@ -6,11 +6,12 @@ A professional crypto quantitative research and trading platform centered on Hyp
 
 The platform is designed to behave more like a small systematic trading desk than a single retail bot. It should continuously test multiple independent sources of edge, measure whether those edges survive realistic costs, allocate capital according to current evidence, and reduce or quarantine strategies whose live behavior diverges from their validated distribution.
 
-Development happens primarily on the Netcup Ubuntu 24.04 LTS VPS through
-Cursor IDE Remote SSH, Cursor CLI and Codex CLI. Tested, versioned
-Linux/amd64 OCI images run as isolated services on the host-neutral runtime.
-The VPS is the definitive primary development, capture and PAPER profile
-(**ADR-024**); TerraPC/WSL2 is secondary.
+Development has moved to an Ubuntu VM on TrueNAS SCALE (**ADR-025**);
+TerraPC/WSL2 is secondary. The observed guest is Ubuntu 26.04.1 LTS / KVM.
+Migration of captures, historical data and continuous services remains
+unverified. **ADR-024** preserves the earlier Netcup profile. Tested,
+versioned Linux/amd64 OCI deployment remains the target architecture;
+release-image construction is not yet implemented by source CI.
 
 ## Strategic objective
 
@@ -47,7 +48,7 @@ The platform has six logical planes:
 - **Trading Plane** — signals, portfolio construction, risk and execution.
 - **Control Plane** — configuration, strategy lifecycle, permissions and operator actions.
 - **Observability Plane** — Grafana, traces, logs, alerts and forensic reconstruction.
-- **Build & Deployment Plane** — VPS development, GitHub CI, private images
+- **Build & Deployment Plane** — Ubuntu VM development, GitHub CI, planned release images
   and approved-runtime promotion/rollback.
 
 The build/deployment plane ensures that source changes do not directly affect 24/7 services. PAPER, SHADOW and LIVE are distinct runtime environments with separate configuration, secrets and approval gates.

@@ -1,0 +1,32 @@
+name: Research proposal
+description: Pre-register a research question before scoring strategies.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: hypothesis
+    attributes:
+      label: Hypothesis, mechanism and universe
+      description: Link an existing experiment or draft PR before proposing a duplicate study.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Data, availability clocks and known prior observations
+      description: Identify coverage, source/code pins, known periods and proposed train/validation/untouched OOS splits. Do not attach bulk datasets.
+    validations:
+      required: true
+  - type: textarea
+    id: evaluation
+    attributes:
+      label: Evaluation and stopping rules
+      description: Include fees, funding, spread, slippage, latency/fill model, benchmarks, multiple-testing treatment and stress checks.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Deliverable and limitations
+      description: Define the report and decision criteria. A positive result does not authorize PAPER promotion, SHADOW, TESTNET or LIVE.
+    validations:
+      required: true

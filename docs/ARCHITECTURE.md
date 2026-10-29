@@ -10,16 +10,18 @@ The platform follows two governing principles:
 
 The data plane may ingest multiple free public feeds, while authenticated
 execution is introduced gradually and only where it has a measurable purpose.
-Source development happens primarily on the Netcup Ubuntu 24.04 LTS VPS
-(hostname `chupa`) through Cursor IDE Remote SSH, Cursor CLI (`agent`) or Codex
-CLI. The runtime boundary remains host-neutral Linux/amd64 OCI and consumes
-pinned images. **ADR-024** records the VPS as the definitive development,
-capture and PAPER profile.
+Source development now happens on an Ubuntu VM on TrueNAS SCALE
+(operator-reported placement; observed Ubuntu 26.04.1 LTS / KVM) under
+**ADR-025**. The runtime boundary remains host-neutral Linux/amd64 OCI.
+**ADR-024** preserves the earlier Netcup profile; it does not prove a
+migrated runtime. Continuous services, data roots and release-image
+construction remain unverified or planned. See
+[migration status](runbooks/ubuntu-vm-migration-status.md).
 
 ```mermaid
 flowchart LR
-    DEV[Netcup Ubuntu 24.04 LTS VPS\nCursor / Codex development] --> GH[GitHub PR]
-    GH --> CI[GitHub Actions\nTests + image build]
+    DEV[Ubuntu VM on TrueNAS SCALE\nCursor / Codex development] --> GH[GitHub PR]
+    GH --> CI[GitHub Actions\nTests; release build planned]
     CI --> REG[Private GHCR\nversioned image + digest]
     REG --> RT[Linux/amd64 OCI runtime\nPAPER / SHADOW / LIVE]
 
@@ -59,10 +61,12 @@ See [Development Workflow](DEVELOPMENT.md), [Deployment](DEPLOYMENT.md), and [Ve
 
 ## COURSE-1 delivery cut line
 
-The long-term platform shape above remains directional, but it is not the current implementation
-sequence. The repository has a working public-trade decoder and collector plus extensive dormant
-provenance contracts, but no end-to-end replay, strategy, risk, PAPER execution or order/fill
-ledger route. The next product proof therefore uses one reuse-first vertical slice:
+The long-term platform shape above remains directional. COURSE-1 has proved
+the bounded end-to-end replay, smoke strategy, risk, sandbox-PAPER and local
+ledger route below. The later project-owned PAPER engine is documented in
+[PAPER_ENGINE.md](PAPER_ENGINE.md); neither path establishes strategy edge,
+venue reconciliation or continuous deployment. Dormant provenance contracts
+remain deferred. The bounded COURSE-1 proof is:
 
 ```text
 bounded Hyperliquid BTC-PERP replay + identified run configuration
@@ -114,13 +118,14 @@ COURSE-1 defers Phase 1A-3B1C-2, 3B1C-3, 3B1D and the provenance-complete form o
 code, tests and ADR-022 remain intact and dormant. Reactivation needs a concrete consumer and a
 new priority decision after the vertical slice; sunk implementation cost is not itself a consumer.
 
-Host-neutral Linux/amd64 OCI is the architecture boundary. **ADR-024** records
-the Netcup Ubuntu 24.04 LTS VPS as the definitive primary development, capture
-and PAPER profile. TerraPC/WSL2 remains a secondary operator environment.
+Host-neutral Linux/amd64 OCI remains the architecture boundary. **ADR-025**
+selects the Ubuntu VM for development only; capture/data migration and runtime
+approval are separate evidence gates. **ADR-024** is the historical Netcup
+profile. TerraPC/WSL2 remains a secondary operator environment.
 
 ## Environment separation
 
-### DEV — Netcup Ubuntu 24.04 LTS VPS
+### DEV — Ubuntu VM on TrueNAS SCALE
 
 Owns:
 
@@ -139,20 +144,21 @@ environment.
 
 ### CI — GitHub Actions
 
-Owns independent verification and release construction:
+Current CI owns independent verification:
 
 - lint/type/test checks;
 - frontend production build;
 - contract and safety tests;
-- container build;
-- secret/dependency/security checks;
-- release image publication to private GHCR.
+- secret/dependency/security checks.
+
+Release-container construction and publication to GHCR are planned; they are
+not implemented by the current test workflows.
 
 CI does not directly promote a strategy into live capital.
 
 ### PAPER / SHADOW / LIVE — host-neutral Linux/OCI runtime
 
-Owns:
+Planned runtime responsibilities:
 
 - continuous market-data collection;
 - durable ClickHouse data;
@@ -162,10 +168,11 @@ Owns:
 - runtime secrets;
 - monitoring, alerts, recovery and backups.
 
-These are separately configured deployments. **ADR-024** selects the Netcup
-Ubuntu 24.04 LTS VPS as the primary PAPER profile. Source code is never edited
-in place inside running containers, even though the VPS also hosts the primary
-interactive development checkout.
+These require separately configured and approved deployments. **ADR-024**
+records the earlier Netcup profile; **ADR-025** records the development move
+without authorizing runtime cutover. No running-container, durable-data or
+24/7 service migration to the VM has been verified. Source is never edited
+in place inside running containers.
 
 ## Separation of concerns
 
@@ -187,7 +194,7 @@ MarketData.venue_health(venue)
 Initial public adapters target Hyperliquid, Bitvavo, Kraken and selected Binance feeds. Additional venues are added only where they serve a research hypothesis or resilience requirement.
 
 The development data plane uses mocks, fixtures and disposable services. The
-VPS durable runtime store is authoritative for self-collected 24/7 history;
+verified durable runtime store is authoritative for retained history;
 development tasks do not mutate it except through an explicit operational
 workflow.
 
@@ -447,7 +454,7 @@ Runs isolated experiments and may consume significant CPU/RAM without affecting 
 
 Research may run:
 
-- on the VPS against bounded sample data;
+- on the Ubuntu VM against verified bounded sample data;
 - secondarily in WSL2 against bounded sample data;
 - in CI for deterministic regression tests;
 - as a controlled low-priority runtime research worker against larger datasets.
@@ -504,7 +511,9 @@ Every balance, signal, order, fill, fee and PnL record includes a venue and cano
 
 ### Build & Deployment Plane
 
-The supply chain converts reviewed source into runtime artifacts:
+The planned release supply chain converts reviewed source into runtime artifacts.
+Current workflows provide CI validation; release builds and deployment remain
+separate work:
 
 ```text
 source branch

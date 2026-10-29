@@ -2,19 +2,35 @@
 
 ## Delivery model
 
-Development and runtime responsibilities remain isolated even when they share
-the primary host:
+Development and runtime responsibilities remain isolated:
 
-- **Netcup Ubuntu 24.04 LTS VPS (`chupa`):** primary source development,
-  capture, tests, research and PAPER operation;
+- **Ubuntu VM on TrueNAS SCALE (ADR-025):** current source development;
+  observed Ubuntu 26.04.1 LTS / KVM, repository under `$HOME/coding-projects/`;
 - **TerraPC/WSL2:** secondary operator environment;
-- **GitHub Actions:** independent CI and image construction;
-- **Host-neutral Linux/amd64 OCI runtime:** 24/7 data collection and PAPER/SHADOW/LIVE; **ADR-024**
-  records the Netcup VPS as the definitive primary profile.
+- **GitHub Actions:** existing independent CI; image release remains planned;
+- **Host-neutral Linux/amd64 OCI runtime:** target for approved continuous
+  PAPER operation. **ADR-024** is the historical Netcup profile; migration of
+  datasets, captures and runtime services to the VM is unverified.
 
 Fases overlap by workstream. A strategy may be in PAPER while another remains in RESEARCH, and production hardening can continue while live-market paper evidence accumulates.
 
-## COURSE-1 — current active priority
+## Current migration and research checkpoint
+
+1. Restore and verify the pinned development toolchain and existing test baseline.
+2. Locate and verify durable captures and historical archives without mutating
+   runtime data. Missing local roots are not proof of source-data loss.
+3. Apply the independent-review workflow in [GITHUB_WORKFLOW.md](GITHUB_WORKFLOW.md);
+   no paid GitHub/Copilot reviewer is required.
+4. Once data is verified, pre-register one new bounded study. The multi-asset
+   panel/funding infrastructure is a candidate, not an approved strategy.
+5. Connect a validated research candidate to supported PAPER instruments and
+   economics before claiming strategy PAPER evidence.
+
+See [migration status](runbooks/ubuntu-vm-migration-status.md). Existing VPS/WSL
+capture runbooks below are legacy references, not authorization to start a
+capture on the new host.
+
+## COURSE-1 — bounded engineering evidence
 
 Status: **core fit, local D01, bounded D22-A, and bounded live-public PAPER soak complete; full D22 incomplete; D22-B not implemented; provenance expansion deferred**
 
@@ -59,11 +75,10 @@ The active sequence is:
    function is extended, not replaced. A PAPER-only FastAPI `/health` and
    `/ready` baseline exists in `hyperliquid_bot.control_service` (not wired to
    cockpit, collectors, or LIVE).
-7. **Complete (decision only):** ADR-024 records the definitive PAPER runtime
-   profile (Ubuntu LTS VPS + Linux/amd64 OCI, digest-pinned, Compose-compatible).
-   The Netcup Ubuntu 24.04 LTS VPS is now the primary development, capture and
-   PAPER host; deployment and capture starts still require their explicit
-   operator gates.
+7. **Complete (historical decision only):** ADR-024 records the Netcup
+   Ubuntu LTS VPS/OCI profile. ADR-025 subsequently moves development to the
+   Ubuntu VM without approving runtime/data cutover. Deployment and capture
+   starts still require their explicit operator gates.
 
 The fit decision is not a benchmark exercise. It checks only the blocking product and safety
 questions: supportable pinned version, licensing, Python/runtime compatibility, Hyperliquid
@@ -95,9 +110,9 @@ Exit gate:
 - no result is presented as profitability, strategy promotion, TESTNET or LIVE readiness.
 
 Runtime-host work follows this exit gate. Host-neutral Linux/amd64 OCI/Compose is the architecture
-boundary. **ADR-024** records a supported Ubuntu LTS VPS as the definitive primary PAPER profile.
-The Netcup Ubuntu 24.04 LTS VPS is now the primary development, capture and
-PAPER host.
+boundary. **ADR-024** records the historical Netcup PAPER profile; **ADR-025**
+records the current VM development move. Continuous capture/runtime migration
+requires fresh evidence and approval.
 
 ## Phase 0A — Blueprint and project decisions
 
@@ -338,9 +353,9 @@ Deliverables:
 - experiment registry;
 - Bitvavo public-data adapter for spot research;
 - Kraken public/MCP paper integration when it serves a concrete experiment;
-- offline hist warehouse on VPS `chupa` (`~/Hyperliquid Project/hist-archives/`)
-  for Vision BTCUSDT + Kraken OHLCVT research SQL — sibling of live retain, not
-  a substitute ([hist-archives-research-warehouse.md](runbooks/hist-archives-research-warehouse.md)).
+- offline historical warehouse for Vision BTCUSDT + Kraken OHLCVT research SQL;
+  its earlier Netcup path was `~/Hyperliquid Project/hist-archives/`, and its
+  VM location/transfer is unverified — separate from live retain, not a substitute ([hist-archives-research-warehouse.md](runbooks/hist-archives-research-warehouse.md)).
 
 Possible parallel status:
 
@@ -391,7 +406,7 @@ Deliverables:
 - protected software/deployment promotion gates;
 - disaster-recovery and rollback drills.
 
-Development occurs primarily on the VPS. Authenticated runtime testing occurs
+Development occurs primarily on the Ubuntu VM. Authenticated runtime testing occurs
 only in the appropriate isolated approved runtime environment.
 
 ## Phase 5 — Advanced alpha and portfolio layer
@@ -433,7 +448,7 @@ These workstreams can progress simultaneously after shared contracts are agreed:
 
 ### A. Development platform and CI
 
-- VPS/Cursor/Codex;
+- Ubuntu VM/Cursor/Codex;
 - repository bootstrap;
 - tests;
 - image builds;
@@ -502,8 +517,9 @@ Potential additions only when justified:
 ## Planning interpretation
 
 The goal is not to spend months before seeing results. The local vertical slice
-came first; **ADR-024** records the Ubuntu LTS VPS/OCI PAPER runtime decision,
-and the Netcup VPS is now the primary development and capture host. Production
-hardening and out-of-sample evidence then accumulate in parallel.
+came first; **ADR-024** records the historical Ubuntu LTS VPS/OCI PAPER
+profile. **ADR-025** records the Ubuntu VM development move, with data/runtime
+migration still unverified. Production hardening and out-of-sample evidence
+can accumulate after those prerequisites are met.
 
 Time ranges are engineering/research estimates, not guarantees of strategy profitability.

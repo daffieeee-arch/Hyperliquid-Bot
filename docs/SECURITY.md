@@ -6,7 +6,7 @@ Trading security is designed from day one, even while the system only uses paper
 
 The platform separates four trust zones:
 
-1. VPS development checkout and disposable services;
+1. Ubuntu VM development checkout and disposable services;
 2. GitHub/CI and container registry;
 3. approved Linux/OCI PAPER/SHADOW runtime;
 4. separately approved LIVE runtime and exchange credentials.
@@ -15,8 +15,11 @@ Moving code between zones happens through reviewed source and immutable containe
 
 ## Development boundary
 
-The Netcup Ubuntu 24.04 LTS VPS is trusted for source development and PAPER
-capture, but the development checkout is not a live signing boundary.
+The Ubuntu VM on TrueNAS SCALE is the source-development boundary under
+**ADR-025**. Neither the VM nor the underlying NAS gains PAPER runtime,
+production credential or administrative trust merely because source moved.
+Data/capture migration remains unverified; **ADR-024** describes the earlier
+Netcup profile. See [migration status](runbooks/ubuntu-vm-migration-status.md).
 
 Normal development must not contain:
 
@@ -30,7 +33,8 @@ Normal development must not contain:
 Codex should use workspace-scoped permissions and normal approval prompts. `danger-full-access`, Administrator execution and unrestricted access to personal/NAS data are not defaults.
 
 Remote SSH and CLI agents do not change this boundary: commands execute with
-the VPS user's configured permissions.
+the VM user's configured permissions. TrueNAS administration and unrelated
+NAS datasets remain outside ordinary project development.
 
 ## Wallet separation
 
@@ -72,17 +76,22 @@ Use protected runtime secret injection. Rotate credentials after suspected expos
 GitHub Actions should include:
 
 - minimal workflow permissions;
-- branch/PR review before merge;
+- branch/PR review before merge by a separate Codex review agent;
+- additional security/quant review for high-risk changes, following
+  [GitHub workflow](GITHUB_WORKFLOW.md);
 - secret scanning;
 - dependency scanning/review where available;
 - Python lint/type/test checks;
 - TypeScript lint/type/build checks;
-- container image build and vulnerability checks;
+- planned release-container build and vulnerability checks;
 - third-party actions pinned to reviewed commit SHAs where practical;
 - protected release/deployment environments;
 - no direct live deployment from an unreviewed pull request.
 
-Release images are published to private GHCR. Each approved runtime profile receives a dedicated read-only package credential. Production-like deployments pin an image digest and record the source commit.
+Release-image publication to GHCR is planned; current source CI does not
+prove an image build or deployment. Each approved runtime profile receives a
+dedicated read-only package credential. Production-like deployments pin an
+image digest and record the source commit.
 
 No successful CI run automatically promotes a strategy into live capital.
 
@@ -104,7 +113,10 @@ Do not build production images directly on a runtime host. Do not hot-edit runni
 
 ## Browser boundary
 
-The Next.js UI contains no exchange signing capability. It sends authenticated operator requests to the FastAPI control gateway. Signing occurs only inside the isolated execution service.
+The Next.js UI contains no exchange signing capability. Its current data
+reads use Next.js API routes; the separate FastAPI health/readiness baseline
+is not yet a wired control gateway. Any future signing belongs only inside
+an explicitly approved isolated execution service.
 
 ## Network design
 
@@ -118,13 +130,14 @@ Prefer:
 - separate paper/shadow/live networks or namespaces;
 - explicit outbound access requirements.
 
-### Cockpit on the VPS (PAPER)
+### Cockpit access (PAPER)
 
-Bind `next dev` to **localhost only** (`127.0.0.1:3000`). Remote operator
-browsers reach it through **Tailscale Serve** at
-`https://chupa.<tailnet>.ts.net` (tailnet-private), with that hostname listed
-in Next.js `allowedDevOrigins`. Do **not** publish port 3000 on the provider
-public IP. SSH local forwarding to `127.0.0.1:3000` is an acceptable fallback.
+Bind `next dev` to **localhost only** (`127.0.0.1:3000`) unless an explicit
+local-network setup is authorized. SSH local forwarding is a suitable remote
+access path. The earlier Netcup Tailscale Serve hostname and Next.js
+`allowedDevOrigins` are legacy configuration, not proof of VM access setup.
+Verify the actual private access path before exposing the cockpit. Do not
+publish the development port on a public IP.
 Grafana, Codex, research workers and the frontend do not receive exchange private keys.
 
 ## MCP capability model

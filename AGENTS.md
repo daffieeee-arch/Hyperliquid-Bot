@@ -6,17 +6,18 @@ This repository builds a professional multi-strategy crypto quantitative researc
 
 Primary development environment:
 
-- Netcup Ubuntu 24.04 LTS VPS (hostname `chupa`);
+- Ubuntu virtual machine on TrueNAS SCALE (Ubuntu 26.04.1 LTS observed);
 - Cursor IDE Remote SSH, Cursor CLI (`agent`) and Codex CLI;
-- repository at `$HOME/Hyperliquid Project/Hyperliquid-Bot`;
+- repository at `$HOME/coding-projects/Hyperliquid-Bot`;
 - TerraPC/WSL2 only as a secondary operator environment.
 
 24/7 runtime boundary:
 
 - host-neutral Linux/amd64 OCI runtime;
-- the Netcup Ubuntu 24.04 LTS VPS is the definitive primary PAPER, capture and
-  development profile (**ADR-024**);
-- CI-built Linux container images;
+- **ADR-025** records the development move; durable data and continuous PAPER
+  runtime migration require separate verification;
+- **ADR-024** remains the historical Netcup reference, not evidence of VM deployment;
+- reviewed CI-built Linux container images are the deployment target;
 - PAPER first, later SHADOW and explicitly approved LIVE.
 
 Read `README.md`, `docs/ARCHITECTURE.md`, `docs/DEVELOPMENT.md`, `docs/DEPLOYMENT.md`, `docs/ROADMAP.md`, `docs/SECURITY.md` and the relevant domain document before significant changes.
@@ -62,49 +63,47 @@ repository change):
    rounds still change it: a draft skips the heavy CI jobs, and marking it
    ready for review runs them on the current head (`docs/CI.md`).
 9. Let all required CI checks complete successfully.
-10. **Claude Code code review is standard** for feature PRs on this project.
-    After the PR exists (or after material follow-up commits), run Claude
-    Code's built-in `/code-review` on the branch changes, for example
-    `/code-review high <branch>`. Verify each finding before acting on it:
-    fix the real ones on the same branch, push, and re-run the review when
-    the diff changed materially. Report findings you judge not to be bugs,
-    with the reason. Agents that cannot run `/code-review` themselves (Cursor,
-    Codex) leave it to Claude Code, which runs it before it merges; a PR is not
-    merged until it has run. Skip only for trivial docs/chore PRs unless the
-    user asks for the review anyway.
+10. **A separate Codex reviewer is standard** for feature PRs. The coordinator
+    may delegate implementation, but the reviewer must not have authored the
+    changes it reviews. Give it the original acceptance criteria, full final
+    diff, relevant contracts and test evidence, not just the implementer's
+    summary. Record the reviewed head/base commit IDs, findings and their
+    disposition in the PR. Fix verified bugs on the same branch and review
+    changed code again after follow-up commits. Claude Code is not a required
+    reviewer or merger. Trivial docs/chore PRs may use a proportionate review.
 11. For material or high-risk changes (execution, risk, secrets, LIVE gates,
     infra/runtime, non-trivial strategy/data contracts), also obtain any
     additional independent review the user requests before merge.
 12. Resolve blocking review findings on the same branch; re-run the relevant
     tests and CI.
-13. Cursor Cloud Agents and Codex stop at Ready: they open PRs and fix CI and
-    review findings only, and do **not** merge feature PRs.
-14. **Claude Code reviews and merges** (it took over from the Chief of Staff /
-    Grok Bot). It squash-merges a feature PR on its own, without asking, when:
-    - CI is green on the current head, and the PR is mergeable and not a draft;
-    - `/code-review` ran on the final diff, its last round found no
-      correctness bug, and every finding is fixed or declined with its reason
-      in the PR;
-    - when PRs merge in a row, the next one still passes format, lint,
-      typecheck and its affected tests on top of the new `main`.
-
-    Chupa does not read code: the review rounds, the tests and CI are the
-    gate. This covers every change, including PAPER execution and risk code,
-    secrets handling, CI and infra/runtime; for those high-risk changes the
-    review adds a separate security round before the merge. The one
-    exception: a change that enables LIVE, SHADOW or TESTNET trading, moves
-    real capital, or adds or changes real credentials or live risk limits is
-    never merged without Chupa's explicit approval (no agent self-promotes to
-    LIVE). A merge never deploys. Dependabot PRs may be merged on green CI
-    after a look at the changelog and diff. Claude Code acts when a session
-    runs (on request, or on events for PRs it follows); it does not watch the
-    repository on its own.
+13. Implementation agents hand off to a separate Codex merge agent after review.
+    Chupa authorizes that merge agent to merge ordinary project PRs without
+    asking him to read code or approve routine merges. The merge agent must
+    not have authored the change and must verify independent review evidence,
+    required checks from their expected publishers, a current base, a non-draft
+    mergeable PR and resolved blocking findings. A label or the implementer's
+    own assertion is not review evidence.
+14. The default merge method is squash. The merge agent uses an explicit
+    expected head SHA and does not bypass branch protection with administrator
+    privileges. Consecutive PRs must be revalidated against the new `main`.
+    Chupa does not read code: deterministic checks and review evidence must
+    be sufficient for the decision. Execution, risk, secrets, CI and runtime
+    changes also receive a separate security review. A subagent sharing the
+    author's GitHub identity is not a native approving reviewer. Never fake
+    approval with an author-controlled label, comment or green status. GitHub
+    Free is the baseline; paid Copilot review or an OpenAI API key is not a
+    prerequisite. See `docs/GITHUB_WORKFLOW.md` for enforcement limitations.
+    A change enabling LIVE, SHADOW or TESTNET trading, moving real capital,
+    or changing real credentials or live risk limits requires Chupa's explicit
+    approval. A merge never deploys. Keep GitHub's unattended auto-merge disabled:
+    the separate merge agent explicitly checks the gates and squash-merges.
+    Agents act while a session runs; this policy does not install a watcher.
 15. After a merge, delete the merged feature branch and any associated
     worktree only after confirming they hold no uncommitted or unmerged work.
-    VPS operations stay with the operator (Chupa) or an agent on the VPS:
-    synchronize the Netcup VPS `main` checkout with `origin/main` when a
-    deploy is needed, and assign capture windows. Older documents that say
-    "CoS assigns" or "CoS runs" a VPS step mean the operator.
+    Runtime operations stay with the operator (Chupa) or an explicitly
+    assigned runtime agent. Synchronize only the intended host checkout when
+    deployment is needed, after verifying its data mounts and runtime role.
+    Older documents that say "CoS assigns" or "CoS runs" mean the operator.
 
 Keep the workflow practical: add extra steps, tests, or CI only when the
 nature of the change actually requires them.
@@ -140,7 +139,7 @@ Every quantitative experiment must define:
 
 Never claim profitability from in-sample results alone. Avoid look-ahead, survivorship, selection and execution bias.
 
-Local development uses fixtures, replay and bounded exports. Continuous data belongs on the VPS durable runtime store.
+Local development uses fixtures, replay and bounded exports. Continuous data belongs on a separately verified durable runtime store outside Git.
 
 ## Execution and risk
 
@@ -159,11 +158,12 @@ Browser code and Grafana never sign orders.
 
 ## Infrastructure boundaries
 
-- DEV runs on the Netcup Ubuntu 24.04 LTS VPS; disposable Docker services and
-  WSL2 remain available for isolated local work.
-- CI builds/tests images.
+- DEV runs on the Ubuntu VM on TrueNAS SCALE; disposable Docker services and
+  WSL2 may be used for isolated local work when available.
+- CI tests source; immutable image build/release remains a separate delivery step.
 - The approved Linux/OCI runtime host pulls image digests and owns persistent runtime volumes.
-- **ADR-024** records the definitive PAPER runtime profile (Ubuntu LTS VPS + Linux/amd64 OCI).
+- **ADR-025** records the development move. **ADR-024** retains the historical
+  Ubuntu LTS VPS + Linux/amd64 OCI reference; it does not certify VM runtime readiness.
 - Redis and PostgreSQL are introduced only when their defined responsibilities are required.
 - Grafana dashboards and alerts should be version-controlled even when edited through MCP.
 
@@ -193,3 +193,16 @@ A task is not done merely because code was generated. It is done when:
 - documentation/contracts are consistent;
 - deployment/runtime implications are stated;
 - unresolved risks are explicit.
+
+## Review guidelines
+
+- Verify PAPER fail-closed startup, no venue calls from strategy code, and no
+  signing, credential or durable-data changes hidden in tooling work.
+- For research/data changes, check point-in-time availability, units,
+  instrument identity, funding/cost treatment and holdout boundaries. Respect
+  existing experiment code pins and do not silently re-register a failed study.
+- For CI changes, check that required tests really ran for the current ready
+  PR, failures cannot become successful skips, and untrusted PR code never
+  executes with publisher credentials or access to the runtime VM.
+- Report correctness and security findings with a reproducible example or
+  precise code path. Mechanical format/lint checks belong in CI.

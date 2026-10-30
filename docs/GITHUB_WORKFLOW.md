@@ -104,13 +104,34 @@ Do not add an API-key-powered review Action as a supposedly free substitute.
 ## Planning and follow-up work
 
 Use issue and PR templates for acceptance criteria, validation and review evidence.
-An optional Project board uses Backlog, Ready, In progress, Review and Done. If the
-connected identity lacks Projects scopes, issues remain the source of truth;
-do not silently change authentication or create a second tracker.
+Issues and PRs remain canonical; maintain their status/priority labels alongside
+board cards. Labels and board states never constitute independent approval.
 
-The setup session could not access Projects with its current permissions. The
-tracked issues use `status:in-progress`, `status:blocked`, `status:ready` and
-priority labels instead; no board or broader token permission is assumed.
+Initial setup lacked Projects permissions. The operator subsequently granted
+Projects v2 read/write access. The private
+[Hyperliquid Bot — Program & Readiness](https://github.com/users/daffieeee-arch/projects/2)
+board was verified with `viewerCanUpdate` and 577 updates read back. This records
+session evidence, not a guarantee that later sessions retain access.
+
+When access is available, the coordinator maintains existing issue/PR cards:
+
+- At session start, reconcile the active scope, workstream, status, evidence URL,
+  scoped `Gate` and `Last Verified` against the canonical issue/PR evidence.
+- Update those fields when a draft opens, review starts, findings change,
+  current-head CI completes, or a merge/closure changes the work's disposition.
+- Use Done for merged source or completed bounded acceptance only, stating that
+  scope. Closed-unmerged work must never be represented as Merged.
+- Keep historical `Runtime Proven` evidence attached to its original host and
+  period; it does not prove the current VM runtime. Migration #149, S4 #150,
+  readiness #158 and their parent runtime gates stay blocked until their actual
+  proof requirements are met. A merged preparation helper is not that proof.
+- Preserve the existing nine views and custom fields. Do not invent target dates,
+  publish private card contents or duplicate this board in another tracker.
+
+This maintenance runs within active sessions. It installs no watcher, deployment
+or unattended auto-merge. If future Projects permissions are unavailable, record
+that limitation in the issue/PR and continue maintaining their labels; do not
+silently change authentication or create a second tracker.
 
 The immediate order after the VM move is:
 

@@ -19,6 +19,7 @@ from hyperliquid_bot.hyperliquid_ws_client import HyperliquidTradesCollectorConf
 from hyperliquid_bot.local_mode import UnsafeTradingModeError
 from hyperliquid_bot.paper_engine import (
     HYPERLIQUID_PERP_BASE_TAKER_FEE_RATE,
+    BarEvent,
     BboEvent,
     MarketEvent,
     MarkEvent,
@@ -1933,6 +1934,157 @@ def test_fresh_mark_cannot_execute_a_stop_against_an_expired_book(tmp_path: Path
     engine.on_event(_bbo(ns=7_000_000_000, bid="96999", ask="97001", ordinal=4))
     assert engine.position_quantity == 0
     assert _state(engine)["realized_pnl_usdc"] == "-300.2"
+    engine.close()
+
+
+@pytest.mark.parametrize("venue_mark", [False, True])
+def test_clock_expiry_rechecks_stop_against_a_still_fresh_trade(
+    tmp_path: Path, venue_mark: bool
+) -> None:
+    engine = _engine(
+        tmp_path,
+        "clock-fallback",
+        strategy=_SilentAfterTargets((Decimal("0.1"),)),
+        config=_instant(stale_after_ns=5_000_000_000),
+    )
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001"))
+    if venue_mark:
+        engine.on_event(_mark(ns=4_000_000_000, price="100000", ordinal=2))
+    trade_ns = 8_000_000_000 if venue_mark else 4_000_000_000
+    engine.on_event(_trade(ns=trade_ns, price="97000", size="1", ordinal=3))
+    assert engine.position_quantity == Decimal("0.1")
+    assert read_health(engine.health_path)["stop_exit_pending"] is False
+    clock_ns = trade_ns + 2_000_000_000
+    engine.on_clock(now_utc_ns=clock_ns, now_utc=CREATED + timedelta(seconds=clock_ns // 10**9))
+    assert engine.position_quantity == 0
+    health = read_health(engine.health_path)
+    assert health["fill_count"] == 2
+    assert health["mark_price"] is None
+    assert health["realized_pnl_usdc"] == "-300.1"
+    fills = _objects(_state(engine)["fills"])
+    assert fills[-1]["price"] == "97000"
+    assert fills[-1]["received_utc_ns"] == clock_ns
+    triggered = [
+        row for row in _ledger(tmp_path / "clock-fallback") if row["type"] == "stop_triggered"
+    ]
+    assert triggered[-1]["mark_source"] == "last_trade"
+    engine.close()
+
+
+def test_clock_expiry_applies_missing_price_halt_without_inventing_a_mark(tmp_path: Path) -> None:
+    engine = _engine(
+        tmp_path,
+        "clock-missing-mark",
+        strategy=_SilentAfterTargets((Decimal("0.1"),)),
+        config=_instant(stale_after_ns=5_000_000_000),
+    )
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001"))
+    engine.on_event(_trade(ns=4_000_000_000, price="100000", size="1", ordinal=2))
+    assert engine.kill_switch == "NONE"
+    engine.on_clock(now_utc_ns=6_000_000_000, now_utc=CREATED + timedelta(seconds=6))
+    health = read_health(engine.health_path)
+    assert engine.kill_switch == "HALT_NEW"
+    assert health["kill_reason"] == "missing_price"
+    assert health["mark_price"] is None
+    assert health["unrealized_pnl_usdc"] is None
+    assert health["equity_usdc"] is None
+    assert engine.position_quantity == Decimal("0.1")
+    assert health["fill_count"] == 1
+    engine.close()
+
+
+def test_clock_never_uses_expired_trade_or_bar_as_a_stop_price_or_mark(tmp_path: Path) -> None:
+    engine = _engine(
+        tmp_path,
+        "clock-all-prices-expired",
+        strategy=_SilentAfterTargets((Decimal("0.1"),)),
+        config=_instant(stale_after_ns=5_000_000_000),
+    )
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001"))
+    engine.on_event(_mark(ns=4_000_000_000, price="100000", ordinal=2))
+    engine.on_event(_trade(ns=4_000_000_000, price="97000", size="1", ordinal=3))
+    engine.on_event(
+        BarEvent(
+            venue=VENUE,
+            instrument_id=INSTRUMENT,
+            event_time_utc=CREATED + timedelta(seconds=8),
+            received_utc_ns=8_000_000_000,
+            source_event_id="bar-only-refresh",
+            open_price=Decimal("97000"),
+            high_price=Decimal("97000"),
+            low_price=Decimal("97000"),
+            close_price=Decimal("97000"),
+            volume=Decimal("1"),
+            bar_start_utc=CREATED,
+        )
+    )
+    assert engine.kill_switch == "NONE"
+    engine.on_clock(now_utc_ns=10_000_000_000, now_utc=CREATED + timedelta(seconds=10))
+    health = read_health(engine.health_path)
+    assert engine.kill_switch == "HALT_NEW"
+    assert health["kill_reason"] == "missing_price"
+    assert health["mark_price"] is None
+    assert health["stop_exit_pending"] is False
+    assert health["fill_count"] == 1
+    assert engine.position_quantity == Decimal("0.1")
+    engine.close()
+
+
+def test_clock_pending_stop_switches_to_a_fresh_trade_when_book_expires(tmp_path: Path) -> None:
+    engine = _engine(
+        tmp_path,
+        "clock-pending-fallback",
+        strategy=_SilentAfterTargets((Decimal("0.1"),)),
+        config=_instant(stale_after_ns=5_000_000_000),
+    )
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001", bid_size="0.04"))
+    engine.on_event(_trade(ns=4_000_000_000, price="97000", size="1", ordinal=2))
+    engine.on_event(_mark(ns=5_000_000_000, price="97000", ordinal=3))
+    assert engine.position_quantity == Decimal("0.06")
+    assert read_health(engine.health_path)["exit_waiting_for_quote"] is True
+    engine.on_clock(now_utc_ns=6_000_000_000, now_utc=CREATED + timedelta(seconds=6))
+    assert engine.position_quantity == 0
+    assert [row["price"] for row in _objects(_state(engine)["fills"])] == [
+        "100001",
+        "100000",
+        "97000",
+    ]
+    engine.close()
+
+
+def test_clock_fallback_fill_includes_fees_in_last_event_loss_window(tmp_path: Path) -> None:
+    engine = _engine(
+        tmp_path,
+        "clock-fee-loss",
+        strategy=_SilentAfterTargets((Decimal("0.1"),)),
+        config=_instant(
+            stale_after_ns=5_000_000_000,
+            taker_fee_rate=Decimal("0.0009"),
+            risk_limits=_loose_loss_limits(drawdown="0.5", daily="0.0031"),
+        ),
+    )
+    late = datetime(2026, 7, 15, 23, 59, 55, tzinfo=UTC)
+    engine.on_event(_bbo_at(ns=0, event_time=late, bid="100000", ask="100001", ordinal=1))
+    engine.on_event(
+        _trade(
+            ns=4_000_000_000,
+            price="97000",
+            size="1",
+            ordinal=2,
+            event_time=late + timedelta(seconds=4),
+        )
+    )
+    assert engine.kill_switch == "NONE"
+    engine.on_clock(now_utc_ns=6_000_000_000, now_utc=late + timedelta(seconds=6))
+    health = read_health(engine.health_path)
+    assert engine.position_quantity == 0
+    assert engine.kill_switch == "HALT_NEW"
+    assert health["kill_reason"] == "daily_loss"
+    assert health["fees_usdc"] == "17.73009"
+    assert health["realized_pnl_usdc"] == "-300.1"
+    assert health["equity_usdc"] == "99682.16991"
+    switches = [row for row in _ledger(tmp_path / "clock-fee-loss") if row["type"] == "kill_switch"]
+    assert [(row["state"], row["reason"]) for row in switches] == [("HALT_NEW", "daily_loss")]
     engine.close()
 
 

@@ -438,32 +438,34 @@ class PaperEngine:
         if now_utc_ns < anchor:
             raise PaperEngineError("clock moved backwards.")
         with self._fail_closed(observed):
+            previous_touch = self._current_touch_event()
+            previous_kill = self._kill
+            fills_before = self._fill_count
             self._advance_source_clock(now_utc_ns)
-            if now_utc_ns - anchor > self._config.stale_after_ns:
+            touch_changed = self._current_touch_event() is not previous_touch
+            stale = now_utc_ns - anchor > self._config.stale_after_ns
+            if stale:
                 self._flatten_halt("stale_data")
+            elif not self._stop_exit_pending or self._exit_waiting_for_quote or touch_changed:
+                # Expiry can reveal a fresh trade fallback without a new event.
+                # An unchanged missing/band-blocked pending exit still waits for
+                # a quote; elapsed time alone only refills a consumed touch.
+                self._check_stop(now_utc_ns)
+            if self._last_event_time is not None:
+                self._mark_limits(self._last_event_time)
+            if (
+                stale
+                or self._exit_waiting_for_quote
+                or touch_changed
+                or self._kill is not previous_kill
+            ):
                 self._enforce_flat(now_utc_ns, observed)
-            elif self._exit_waiting_for_quote:
-                self._retry_waiting_exit(now_utc_ns, observed)
+            if self._fill_count != fills_before and self._last_event_time is not None:
+                # Clock-driven fills include fees in the last venue event's
+                # loss window; a wall-clock midnight never rolls that window.
+                self._mark_limits(self._last_event_time)
+                self._enforce_flat(now_utc_ns, observed)
             self._persist(observed)
-
-    def _retry_waiting_exit(self, now_utc_ns: int, observed: datetime) -> None:
-        """Retry an exit that waits on a used-up level, once it may have refilled.
-
-        The BBO feed only pushes changes, so a quiet, unchanged book would hold
-        the exit until the stale-data halt. Only this wait is retried on the
-        clock: a band or a missing touch needs a new quote, not more time.
-        """
-
-        fills_before = self._fill_count
-        if self._stop_exit_pending:
-            self._check_stop(now_utc_ns)
-        self._enforce_flat(now_utc_ns, observed)
-        if self._fill_count != fills_before and self._last_event_time is not None:
-            # A fill changed realized equity: apply the limits now rather than
-            # at the next event. Loss windows roll on venue event time only,
-            # never on the caller's clock, so the last event's window is used.
-            self._mark_limits(self._last_event_time)
-            self._enforce_flat(now_utc_ns, observed)
 
     def close(self) -> None:
         """Write the final health file. The run still cannot be resumed."""

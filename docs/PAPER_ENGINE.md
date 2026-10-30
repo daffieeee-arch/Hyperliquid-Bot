@@ -123,8 +123,10 @@ refill, cancels a strategy order meanwhile, and `health.json` shows
 `exit_waiting_for_quote: true`. The BBO feed only pushes changes, so
 `on_clock` retries such a waiting exit, and after a fill applies the loss
 limits at once in the last event's window: loss windows roll on venue event
-time only, never on the caller's clock. A band or a missing touch is not
-retried on the clock; it needs a new quote.
+time only, never on the caller's clock. A clock also reevaluates stops and
+missing-price guards when a source expires: an expired book/mark may reveal
+a still-fresh trade fallback. A pending exit against an unchanged missing or
+band-blocked quote is not retried merely because time passed.
 
 While an order waits, the same target from the strategy keeps it working,
 even when the order was rounded or clipped to the risk size; only a changed

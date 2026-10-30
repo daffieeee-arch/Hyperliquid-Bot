@@ -45,6 +45,7 @@ REASON_DRAWDOWN_KILL: Final = (
 REASON_AVERAGING_DOWN: Final = (
     "averaging down is not permitted outside a predeclared reduce-only exit"
 )
+REASON_REDUCE_ONLY_FLAT: Final = "reduce-only order requires an open position in the asset"
 
 PAPER_HARD_LIMIT_GATES: Final = (
     "risk_based_size",
@@ -408,6 +409,8 @@ def evaluate_paper_hard_limits(
     drawdown = (snapshot.peak_equity_usdc - snapshot.equity_usdc) / snapshot.peak_equity_usdc
 
     reasons: list[str] = []
+    if intent.reduce_only and snapshot.asset_exposure_usdc == 0:
+        reasons.append(REASON_REDUCE_ONLY_FLAT)
     if not intent.reduce_only:
         if proposed_notional > sized_notional:
             reasons.append(REASON_RISK_BASED_SIZE)

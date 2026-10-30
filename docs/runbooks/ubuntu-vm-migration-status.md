@@ -38,6 +38,22 @@ have not been independently verified; no transfer was started by this task.
 No secret files, process environments or full command lines were inspected.
 No services were stopped/restarted and no runtime data was written.
 
+### Subsequent update: copy in progress (2026-10-30)
+
+The operator later withdrew certainty about the old dataset location, then
+reported copying the Netcup archive to TrueNAS. The coordinator observed two
+existing project NFS4 exports and a bounded sample of capture lane/run
+directories. This supersedes the earlier no-mount observation; it does not
+establish complete transfer, historical-archive presence, claims, published
+parts, market coverage or checksums. No write canary or storage change was
+performed. Source/destination data consistency remains unverified in #149.
+
+The [bounded post-copy metadata helper](migration-metadata-verification.md)
+is prepared with synthetic fixtures only. Do not run it against the active
+copy. Copy completion must first be confirmed by the operator, then the exact
+root and mount identity supplied explicitly. Even a completed bounded
+inventory does not certify migration, S4 readiness or runtime deployment.
+
 ## Development tools: before and after
 
 At the initial inspection, system Python was **3.14.4**, outside the project's

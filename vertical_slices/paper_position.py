@@ -24,6 +24,9 @@ def sandbox_position_truth(strategy: Any, *, epoch: str) -> PaperSignedPosition 
     if type(epoch) is not str or not epoch or epoch != epoch.strip() or not epoch.isprintable():
         return None
     try:
+        strategy_quantity = strategy.signed_position_quantity
+        if type(strategy_quantity) is not Decimal or not strategy_quantity.is_finite():
+            return None
         instrument_id = strategy.config.instrument_id
         account = strategy.cache.account_for_venue(instrument_id.venue)
         if account is None:
@@ -77,7 +80,11 @@ def sandbox_position_truth(strategy: Any, *, epoch: str) -> PaperSignedPosition 
             position_rows.append(
                 (position.id.value, str(quantity if position.is_long else -quantity))
             )
-        if signed != strategy.signed_position_quantity:
+        # Both approved sandbox compositions use NETTING. Multiple legs in one
+        # exact scope are unsupported/conflicting, never a proven net-flat book.
+        if len(position_rows) > 1:
+            return None
+        if signed != strategy_quantity:
             return None
         pending = Decimal("0")
         order_rows: list[tuple[str, str, str, str]] = []
@@ -111,6 +118,7 @@ def sandbox_position_truth(strategy: Any, *, epoch: str) -> PaperSignedPosition 
                 or leaves < 0
                 or total <= 0
                 or filled + leaves != total
+                or (not order.is_closed and leaves == 0)
             ):
                 return None
             if not order.is_closed:

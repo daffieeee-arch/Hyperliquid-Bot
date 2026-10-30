@@ -95,6 +95,9 @@ reduce the current position. The native account is the isolated logical
 
 The COURSE-1/D22-A wrapper reads the exactly pinned local sandbox cache's account,
 signed positions and remaining orders, cross-checking strategy fill truth.
+Callback quantity must be an exact finite `Decimal`. The current NETTING
+composition refuses multiple open legs in one exact scope and nonterminal
+orders with zero remaining quantity as conflicting/unknown cache state.
 Unknown/conflicting cache state cannot mint an approval. Owner-epoch tokens are
 ephemeral: the canonical `PaperRiskDecision.to_dict()` business projection does
 not persist them and is not an execution permit. D22-A offline verification

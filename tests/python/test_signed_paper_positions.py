@@ -288,6 +288,95 @@ def test_sandbox_unknown_or_conflicting_cache_never_mints_usable_truth() -> None
     assert sandbox_position_truth(sandbox(), epoch="") is None
 
 
+class _DecimalSubclass(Decimal):
+    pass
+
+
+@pytest.mark.parametrize(
+    "signed,value",
+    [
+        ("0", False),
+        ("0", 0.0),
+        ("1", True),
+        ("1", 1.0),
+        ("-1", -1.0),
+        ("0", None),
+        ("1", "1"),
+        ("0", Decimal("NaN")),
+        ("1", Decimal("sNaN")),
+        ("1", Decimal("Infinity")),
+        ("-1", Decimal("-Infinity")),
+        ("0", _DecimalSubclass("0")),
+        ("1", _DecimalSubclass("1")),
+    ],
+)
+def test_sandbox_callback_truth_requires_an_exact_finite_decimal(signed: str, value: Any) -> None:
+    strategy = sandbox(quantity=signed)
+    strategy.signed_position_quantity = value
+    assert sandbox_position_truth(strategy, epoch="owner-1") is None
+
+
+@pytest.mark.parametrize("signed", ["0", "1", "-1"])
+def test_sandbox_exact_decimal_callback_truth_preserves_entries_and_reductions(signed: str) -> None:
+    truth = sandbox_position_truth(sandbox(quantity=signed), epoch="owner-1")
+    assert truth is not None
+    assert truth.quantity == Decimal(signed)
+    order = intent(truth, "1", reduce_only=Decimal(signed) != 0)
+    assert evaluate_paper_hard_limits(snapshot=snapshot(truth), intent=order).approved
+
+
+@pytest.mark.parametrize("opposite", [False, True])
+def test_sandbox_netting_scope_never_hides_distinct_open_legs(opposite: bool) -> None:
+    strategy = sandbox()
+    first = strategy.cache.positions_open()[0]
+    second = SimpleNamespace(
+        **{
+            **vars(first),
+            "id": SimpleNamespace(value="position-2"),
+            "is_long": not opposite,
+            "is_short": opposite,
+        }
+    )
+    strategy.cache.positions_open = lambda **_: [first, second]
+    strategy.signed_position_quantity = Decimal("0" if opposite else "4")
+    assert sandbox_position_truth(strategy, epoch="owner-1") is None
+
+
+def test_sandbox_netting_guard_ignores_open_legs_outside_its_exact_scope() -> None:
+    strategy = sandbox()
+    first = strategy.cache.positions_open()[0]
+    others = [
+        SimpleNamespace(**{**vars(first), field: SimpleNamespace(value="unrelated")})
+        for field in ("account_id", "instrument_id", "strategy_id")
+    ]
+    strategy.cache.positions_open = lambda **_: [first, *others]
+    truth = sandbox_position_truth(strategy, epoch="owner-1")
+    assert truth is not None and truth.quantity == Decimal("2")
+
+
+def test_sandbox_nonterminal_order_with_zero_leaves_is_unknown_pending_truth() -> None:
+    strategy = sandbox()
+    order = strategy.cache.orders()[0]
+    order.is_closed = False
+    order.status = "PARTIALLY_FILLED"
+    assert sandbox_position_truth(strategy, epoch="owner-1") is None
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+def test_sandbox_valid_partial_or_terminal_cancel_preserves_remaining_truth(terminal: bool) -> None:
+    strategy = sandbox(quantity="1.5", pending="0.5")
+    order = strategy.cache.orders()[0]
+    order.is_closed = terminal
+    order.status = "CANCELED" if terminal else "PARTIALLY_FILLED"
+    strategy.cache.orders = lambda **_: [order]
+    truth = sandbox_position_truth(strategy, epoch="owner-1")
+    assert truth is not None
+    assert truth.quantity == Decimal("1.5")
+    assert truth.pending_order_quantity == (0 if terminal else Decimal("0.5"))
+    decision = evaluate_paper_hard_limits(snapshot=snapshot(truth), intent=intent(truth, "1.5"))
+    assert decision.approved is terminal
+
+
 def test_sandbox_pending_scope_excludes_unrelated_accounts_assets_and_strategies() -> None:
     scoped = sandbox(pending="0.5")
     target = scoped.cache.orders()[0]

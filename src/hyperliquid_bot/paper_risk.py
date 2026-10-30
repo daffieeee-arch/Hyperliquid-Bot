@@ -46,6 +46,15 @@ REASON_AVERAGING_DOWN: Final = (
     "averaging down is not permitted outside a predeclared reduce-only exit"
 )
 REASON_REDUCE_ONLY_FLAT: Final = "reduce-only order requires an open position in the asset"
+REASON_POSITION_IDENTITY: Final = "order and signed position identities do not match"
+REASON_POSITION_UNKNOWN: Final = (
+    "signed position or pending-order truth is unavailable or unreconciled"
+)
+REASON_POSITION_CHANGED: Final = "position version changed; reconcile and decide again"
+REASON_POSITION_PENDING: Final = "outstanding orders must settle or cancel and reconcile first"
+REASON_POSITION_CONFLICT: Final = "signed asset position conflicts with portfolio exposure"
+REASON_REDUCE_ONLY_DIRECTION: Final = "reduce-only order must oppose the signed asset position"
+REASON_REDUCE_ONLY_OVERSIZE: Final = "reduce-only quantity exceeds the signed asset position"
 
 PAPER_HARD_LIMIT_GATES: Final = (
     "risk_based_size",
@@ -184,6 +193,33 @@ DEFAULT_PAPER_RISK_LIMITS: Final = PaperRiskLimits()
 
 
 @dataclass(frozen=True, slots=True)
+class PaperPositionKey:
+    """Exact local PAPER ownership; no account or instrument aliases are inferred."""
+
+    environment: str
+    account_id: str
+    venue_id: str
+    instrument_id: str
+    strategy_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class PaperSignedPosition:
+    """Caller-owned reconciled truth, including every outstanding order in this scope.
+
+    None means unknown, not zero. A version changes after position/pending-order
+    changes or reconstruction. This value neither reserves orders nor reconciles
+    an external account; the owner must refresh it before each new decision.
+    """
+
+    key: PaperPositionKey
+    quantity: Decimal | None
+    version: str | None
+    pending_order_quantity: Decimal | None
+    reconciled: bool
+
+
+@dataclass(frozen=True, slots=True)
 class PaperPortfolioSnapshot:
     """Point-in-time PAPER book used by hard limits. Missing/invalid values fail closed."""
 
@@ -197,6 +233,7 @@ class PaperPortfolioSnapshot:
     asset_exposure_usdc: Decimal
     strategy_exposure_usdc: Decimal
     venue_exposure_usdc: Decimal
+    position: PaperSignedPosition | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,6 +249,8 @@ class PaperOrderIntent:
     asset_id: str = "BTC-USD-PERP"
     strategy_id: str = "D01SmokeStrategy"
     venue_id: str = "HYPERLIQUID"
+    position_key: PaperPositionKey | None = None
+    position_version: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,12 +295,19 @@ def paper_snapshot_for_bounded_book(
     daily_pnl_usdc: Decimal = Decimal("0"),
     weekly_pnl_usdc: Decimal = Decimal("0"),
     peak_equity_usdc: Decimal | None = None,
+    position: PaperSignedPosition | None = None,
 ) -> PaperPortfolioSnapshot:
     """Build a single-instrument snapshot for the bounded D01 / COURSE-1 / D22-A book."""
 
     _require_positive_decimal(equity_usdc, field_name="equity_usdc")
     _require_positive_decimal(price, field_name="price")
     _require_finite_decimal(current_position, field_name="current_position")
+    if (
+        position is not None
+        and position.quantity is not None
+        and position.quantity != current_position
+    ):
+        raise ValueError("signed position conflicts with the bounded book quantity.")
     _require_finite_decimal(daily_pnl_usdc, field_name="daily_pnl_usdc")
     _require_finite_decimal(weekly_pnl_usdc, field_name="weekly_pnl_usdc")
     peak = equity_usdc if peak_equity_usdc is None else peak_equity_usdc
@@ -282,7 +328,94 @@ def paper_snapshot_for_bounded_book(
         asset_exposure_usdc=exposure,
         strategy_exposure_usdc=exposure,
         venue_exposure_usdc=exposure,
+        position=position,
     )
+
+
+def _validate_position_key(key: PaperPositionKey) -> None:
+    if type(key) is not PaperPositionKey:
+        raise TypeError("position key must be a PaperPositionKey.")
+    if type(key.environment) is not str:
+        raise TypeError("position environment must be explicit text.")
+    require_local_paper_mode(key.environment)
+    for field_name in ("account_id", "venue_id", "instrument_id", "strategy_id"):
+        value = getattr(key, field_name)
+        if type(value) is not str or not value or value != value.strip() or not value.isprintable():
+            raise ValueError(
+                f"position {field_name} must be non-empty printable text without outer whitespace."
+            )
+
+
+def paper_position_rejection_reasons(
+    *,
+    position: PaperSignedPosition | None,
+    key: PaperPositionKey | None,
+    version: str | None,
+    side: str,
+    quantity: Decimal,
+    reduce_only: bool,
+    trading_mode: object | None = None,
+) -> tuple[str, ...]:
+    """Validate ownership/current truth before any entry-limit exemption, even at negative equity.
+
+    New submissions with any outstanding order are rejected conservatively;
+    callers must reconcile its partial fill/cancel before resubmitting. The
+    native single-IOC owner checks its own accepted fill separately against
+    current truth, excluding only that same order from outstanding reservations.
+    """
+
+    require_local_paper_mode(trading_mode)
+    if type(side) is not str or side not in {"BUY", "SELL"}:
+        raise ValueError("order side must be exactly BUY or SELL.")
+    if type(reduce_only) is not bool:
+        raise TypeError("reduce_only must be a boolean.")
+    _require_positive_decimal(quantity, field_name="quantity")
+    if key is not None:
+        _validate_position_key(key)
+    if position is None:
+        return (REASON_POSITION_UNKNOWN,)
+    if type(position) is not PaperSignedPosition:
+        raise TypeError("position must be a PaperSignedPosition.")
+    _validate_position_key(position.key)
+    if type(position.reconciled) is not bool:
+        raise TypeError("position reconciled must be a boolean.")
+    if position.quantity is not None:
+        _require_finite_decimal(position.quantity, field_name="signed position quantity")
+    if position.pending_order_quantity is not None:
+        _require_non_negative_decimal(
+            position.pending_order_quantity, field_name="pending_order_quantity"
+        )
+    for field_name, token in (
+        ("position version", position.version),
+        ("intent position version", version),
+    ):
+        if token is not None and (
+            type(token) is not str or not token or token != token.strip() or not token.isprintable()
+        ):
+            raise ValueError(
+                f"{field_name} must be non-empty printable text without outer whitespace."
+            )
+    if key is None or key != position.key:
+        return (REASON_POSITION_IDENTITY,)
+    if (
+        not position.reconciled
+        or position.quantity is None
+        or position.pending_order_quantity is None
+        or position.version is None
+    ):
+        return (REASON_POSITION_UNKNOWN,)
+    if version is None or version != position.version:
+        return (REASON_POSITION_CHANGED,)
+    if position.pending_order_quantity > 0:
+        return (REASON_POSITION_PENDING,)
+    if reduce_only:
+        if position.quantity == 0:
+            return (REASON_REDUCE_ONLY_FLAT,)
+        if (side == "BUY") == (position.quantity > 0):
+            return (REASON_REDUCE_ONLY_DIRECTION,)
+        if quantity > abs(position.quantity):
+            return (REASON_REDUCE_ONLY_OVERSIZE,)
+    return ()
 
 
 def _signed_quantity(side: str, quantity: Decimal) -> Decimal:
@@ -367,25 +500,82 @@ def evaluate_paper_hard_limits(
     _validate_intent(intent)
     _validate_limits(limits)
 
+    reasons = list(
+        paper_position_rejection_reasons(
+            position=snapshot.position,
+            key=intent.position_key,
+            version=intent.position_version,
+            side=intent.side,
+            quantity=intent.quantity,
+            reduce_only=intent.reduce_only,
+            trading_mode=trading_mode,
+        )
+    )
+    if intent.position_key is not None and (
+        intent.asset_id != intent.position_key.instrument_id
+        or intent.venue_id != intent.position_key.venue_id
+        or intent.strategy_id != intent.position_key.strategy_id
+    ):
+        reasons.append(REASON_POSITION_IDENTITY)
+    position = snapshot.position
+    if (
+        position is not None
+        and position.quantity is not None
+        and (
+            (position.quantity == 0) != (snapshot.asset_exposure_usdc == 0)
+            or snapshot.asset_exposure_usdc > snapshot.gross_exposure_usdc
+            or snapshot.asset_exposure_usdc > snapshot.strategy_exposure_usdc
+            or snapshot.asset_exposure_usdc > snapshot.venue_exposure_usdc
+            or snapshot.strategy_exposure_usdc > snapshot.gross_exposure_usdc
+            or snapshot.venue_exposure_usdc > snapshot.gross_exposure_usdc
+            or abs(snapshot.net_exposure_usdc) > snapshot.gross_exposure_usdc
+            or (position.quantity != 0 and snapshot.open_position_count == 0)
+            or (
+                position.quantity != 0
+                and abs(
+                    snapshot.net_exposure_usdc
+                    - (
+                        snapshot.asset_exposure_usdc
+                        if position.quantity > 0
+                        else -snapshot.asset_exposure_usdc
+                    )
+                )
+                > snapshot.gross_exposure_usdc - snapshot.asset_exposure_usdc
+            )
+            or (
+                position.quantity != 0
+                and (
+                    (snapshot.open_position_count == 1)
+                    != (snapshot.gross_exposure_usdc == snapshot.asset_exposure_usdc)
+                )
+            )
+        )
+    ):
+        reasons.append(REASON_POSITION_CONFLICT)
+
     proposed_notional = intent.quantity * intent.price
     signed_delta = _signed_quantity(intent.side, intent.quantity)
-    current_signed_qty = (
-        Decimal("0")
-        if snapshot.gross_exposure_usdc == 0
-        else snapshot.net_exposure_usdc / intent.price
-    )
-    projected_signed_qty = current_signed_qty + signed_delta
     if intent.reduce_only:
-        projected_gross = abs(projected_signed_qty) * intent.price
-        projected_net = projected_signed_qty * intent.price
-        projected_asset = projected_gross
-        projected_strategy = (
-            snapshot.strategy_exposure_usdc - snapshot.asset_exposure_usdc + projected_asset
-        )
-        projected_venue = (
-            snapshot.venue_exposure_usdc - snapshot.asset_exposure_usdc + projected_asset
-        )
-        projected_count = snapshot.open_position_count if projected_signed_qty != 0 else 0
+        # Keep current aggregates on rejection; never report an invented
+        # reduction from missing/wrong-account truth. Other assets stay intact.
+        projected_gross = snapshot.gross_exposure_usdc
+        projected_net = snapshot.net_exposure_usdc
+        projected_asset = snapshot.asset_exposure_usdc
+        projected_strategy = snapshot.strategy_exposure_usdc
+        projected_venue = snapshot.venue_exposure_usdc
+        projected_count = snapshot.open_position_count
+        if not reasons and position is not None and position.quantity is not None:
+            reduction = (
+                snapshot.asset_exposure_usdc
+                if intent.quantity == abs(position.quantity)
+                else snapshot.asset_exposure_usdc * intent.quantity / abs(position.quantity)
+            )
+            projected_gross -= reduction
+            projected_net -= reduction if position.quantity > 0 else -reduction
+            projected_asset -= reduction
+            projected_strategy -= reduction
+            projected_venue -= reduction
+            projected_count -= 1 if intent.quantity == abs(position.quantity) else 0
     else:
         projected_gross = snapshot.gross_exposure_usdc + proposed_notional
         projected_net = snapshot.net_exposure_usdc + (signed_delta * intent.price)
@@ -408,9 +598,6 @@ def evaluate_paper_hard_limits(
     leverage = projected_gross / snapshot.equity_usdc
     drawdown = (snapshot.peak_equity_usdc - snapshot.equity_usdc) / snapshot.peak_equity_usdc
 
-    reasons: list[str] = []
-    if intent.reduce_only and snapshot.asset_exposure_usdc == 0:
-        reasons.append(REASON_REDUCE_ONLY_FLAT)
     if not intent.reduce_only:
         if proposed_notional > sized_notional:
             reasons.append(REASON_RISK_BASED_SIZE)

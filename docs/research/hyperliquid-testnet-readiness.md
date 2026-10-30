@@ -144,14 +144,14 @@ this assessment constructs no signer, including a throwaway one.
 | Funding boundary and fees; restart across a boundary | Venue-account economics reconcile with fill/funding coverage and decimals; missing information is unavailable, not zero |
 | Source/config/image mismatch or environment mixing | Refuse reuse; TESTNET evidence never enters PAPER or research holdout results |
 
-Additional blocking project contracts from #161: prove `reduce_only` actually
-reduces the signed position of the **same asset/account**, never opens from
-flat or crosses zero; a caller boolean is insufficient. Existing PAPER risk
-snapshots aggregate exposure and are not a ready authenticated per-asset book.
-Prove fill-time hard notional/exposure limits under adverse short-price moves,
-partial fills and gaps; decide cancel/clip/halt behavior explicitly before
-execution adoption. Completing the PAPER input repair does not itself prove
-these broader execution contracts.
+The PAPER boundary now proves signed reductions of the same explicit
+environment/account/venue/instrument/strategy scope, rejecting wrong direction,
+flat, over-close, unknown/pending truth and stale versions (#167; see
+[Risk Management](../RISK_MANAGEMENT.md)). Native PAPER also rechecks fill-time
+limits under adverse short-price moves (#164). These local decision contracts
+are not an authenticated per-asset book or venue reconciliation. Adapter
+adoption still must prove that authoritative venue state, partial fills,
+cancel races, gaps and crash recovery supply current truth to those contracts.
 
 Exit from HOLD requires supported exact release + compatible runtime/license
 decision, the conformance evidence above, reviewed durable recovery and

@@ -65,6 +65,15 @@ compares exact Nautilus/official-SDK versions and records the remaining fit,
 recovery and safety gates. Its conditional reuse decision does not activate
 TESTNET, grant signing authority or supersede ADR-023's sandbox-only scope.
 
+The implemented PAPER signed-position boundary is described in
+[Risk Management](RISK_MANAGEMENT.md). Reduce-only exemptions require exact
+account/environment/instrument ownership, correct direction, a current version
+and known pending-order truth; requests crossing zero are rejected. Outstanding
+orders require settlement/cancellation and reconciliation before resubmission.
+This pure decision contract does not reserve capacity or reconcile a venue.
+Actual broker adapters must supply authoritative current truth and serialize
+decisions before any separately authorized network-execution fit gate.
+
 ## Order lifecycle
 
 A robust order state machine must handle:

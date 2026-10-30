@@ -14,6 +14,16 @@ It reuses `hyperliquid_bot.paper_risk` for stop-based sizing and the
 portfolio gates. It does not replace the frozen D01 smoke-risk function and
 it does not change the Nautilus sandbox route.
 
+The risk boundary binds a signed position to an exact PAPER/account/venue/
+instrument/strategy key and current version. The isolated logical account is
+`native-paper:<run_id>`. New submissions wait for outstanding orders to settle
+or cancel and reconcile. Each accepted IOC retains its original key and is
+checked again against the current signed position immediately before filling;
+an oversize or wrong-direction reduction is rejected rather than clipped.
+The same proof runs before the emergency-exit exception for non-positive equity.
+Unknown position truth blocks that exception. This is local PAPER truth, not
+venue reconciliation; the create-only engine still has no resume API.
+
 ## Run directory
 
 Each `run_id` is create-only. If the directory exists, opening it raises

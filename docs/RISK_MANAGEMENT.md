@@ -64,14 +64,42 @@ the next UTC day and ISO week; drawdown and stale-data halts do not.
 Reduce-only exits remain allowed when an entry halt is already breached so an
 open PAPER position can still flatten. Invalid or incomplete portfolio state
 raises rather than passing. Hard limits are never relaxed by this module.
-An intent marked reduce-only is rejected when the named asset has no exposure,
-even when other assets are open. The generic portfolio snapshot carries
-unsigned asset exposure, so the caller must still prove that a non-flat
-reduce-only intent has the correct direction and cannot over-close or reverse
-that asset. Portfolio net exposure is not a substitute for a signed asset
-position. Native PAPER constructs exits from its signed position; a complete
-public signed-asset reduce-only contract remains a separate offline fit-gate
-follow-up, not a guarantee of the generic gate.
+Every approval now requires an explicit `PaperPositionKey` (PAPER environment,
+account, venue, instrument and strategy) and a reconciled `PaperSignedPosition`.
+The intent must name that exact key and current position version. Missing
+signed quantity, version or pending-order truth is unavailable, not flat or
+zero pending. Malformed/non-finite values fail closed. Portfolio-net exposure
+never supplies an asset's direction.
+
+A reduce-only intent must oppose a nonzero signed position and may not exceed
+its absolute quantity. Oversized orders are rejected, never clipped or allowed
+to cross zero. New submissions with outstanding order quantity are rejected
+conservatively; after a partial fill/cancel, reconcile the remaining signed
+position and all pending orders, publish a new version, then decide again.
+Restart/reconstruction requires a new owner version; old approvals are not
+reusable. These immutable inputs do not reserve orders or implement an OMS:
+the execution owner must serialize decisions and provide current truth.
+
+For a valid reduction, aggregate gross/strategy/venue exposure decreases only
+by the reduced fraction of the named asset's current exposure; aggregate net
+changes with that asset's signed direction. Closing it decrements the open
+position count by one and preserves every other asset. The snapshot must
+attribute that asset to the key's strategy and venue; contradictory aggregate
+exposure is rejected. Execution price is not used to infer a portfolio position.
+
+Native PAPER validates before its non-positive-equity emergency-exit exception
+and again before applying an accepted IOC. Only that same owned IOC is excluded
+from its own pending reservation; its full remaining order quantity must still
+reduce the current position. The native account is the isolated logical
+`native-paper:<run_id>` account, not an exchange wallet.
+
+The COURSE-1/D22-A wrapper reads the exactly pinned local sandbox cache's account,
+signed positions and remaining orders, cross-checking strategy fill truth.
+Unknown/conflicting cache state cannot mint an approval. Owner-epoch tokens are
+ephemeral: the canonical `PaperRiskDecision.to_dict()` business projection does
+not persist them and is not an execution permit. D22-A offline verification
+reconstructs its already-validated ledger prefix solely to recompute records;
+it does not authorize resubmission or establish venue-authoritative recovery.
 
 The bounded COURSE-1 / D22-A smoke book currently supplies a clean snapshot
 (starting cash, current position, mark). Daily, weekly and drawdown gates are

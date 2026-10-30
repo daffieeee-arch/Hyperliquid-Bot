@@ -210,8 +210,21 @@ See the PR description for the same table. Summary:
    `not venue-reconciled`. Relabeling as venue PnL fails the view contract.
 5. **OPERATOR_STOP / live tmux names** —
    Stop scripts and pytest sources must not contain
-   `tmux send-keys -t hl-capture` (or `bn-` / `bv-` / `kr-capture`). A mutated
+   literal live-session targets for `hl-capture`, `bn-capture`, `bv-capture`,
+   `bv-std-capture`, `kr-capture` or `okx-capture`. A mutated
    helper fixture expects `OperatorStopIsolationError`. Tests/CI must use
-   isolated fake session names and become a no-op when a live name is
-   targeted (`TEST_ISOLATION_NOOP`). No `pkill` / `killall` /
+   the six explicit `pytest-<lane>-isolated` names (`hl`, `bn`, `bv`,
+   `bv-std`, `kr`, `okx`). Any nonempty pytest/CI/isolation marker activates
+   the guard, including `CI=false` or an isolation value of `0`. Start,
+   `--check-only` and stop refuse live or unknown names before querying tmux
+   (`TEST_ISOLATION_NOOP`). Prefixes, patterns, session IDs and pane/window
+   selectors are rejected. Helpers use [tmux exact session targets](https://man.openbsd.org/tmux.1#COMMANDS)
+   (`has-session -t =name`, `send-keys`/`pipe-pane -t =name:`). The trailing
+   colon explicitly selects the session, preventing window/pane fallback.
+   Normal operator names are limited to 1–128 ASCII letters,
+   digits, underscores or hyphens, starting with a letter or digit.
+   Operator subprocess tests prepend fake `tmux` and collector-refusing `uv`
+   commands; they never contact the host's tmux server or start collectors.
+   This prevents accidental operations; it is not a sandbox for code that
+   deliberately removes every marker or invokes another binary. No `pkill` / `killall` /
    `tmux kill-server`.

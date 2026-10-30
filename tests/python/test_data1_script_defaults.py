@@ -7,6 +7,9 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from tests.operator_fakes import fake_operator_path
+
+from hyperliquid_bot.operator_stop_isolation import isolated_fake_session
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TEST_HOME = "/home/chupa"
@@ -50,8 +53,12 @@ def test_start_helpers_accept_spaced_vps_defaults(tmp_path: Path, lane: str) -> 
         "HOME": str(home),
         "DURATION_SECONDS": "60",
         "RUN_ID": f"test-data1{lane}-vps-defaults",
-        # Never collide with live Phase A tmux names on the VPS.
-        "TMUX_SESSION": f"pytest-data1{lane}-isolated",
+        "HYPERLIQUID_BOT_TEST_ISOLATION": "1",
+        "PATH": fake_operator_path(tmp_path, os.environ.get("PATH", "")),
+        # Use the same explicit fake lane contract as the operator guards.
+        "TMUX_SESSION": isolated_fake_session(
+            {"a": "hl", "b": "kr", "c": "okx", "e": "bv", "f": "bn"}[lane]
+        ),
     }
 
     completed = subprocess.run(

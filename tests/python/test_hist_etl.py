@@ -21,7 +21,7 @@ from research.hist_etl.errors import HistEtlError
 from research.hist_etl.http import HttpBody, build_transport
 from research.hist_etl.manifest import load_manifest
 from research.hist_etl.models import BINANCE_VISION_BASE, ArchivePlan
-from research.hist_etl.pipeline import run_sync
+from research.hist_etl.pipeline import run_sync, run_verify
 from research.hist_etl.planning import plan_binance, sources_for_month
 
 TODAY = date(2026, 10, 6)
@@ -590,6 +590,8 @@ def test_kraken_pair_filter_sparse_ok_and_conflict(tmp_path: Path) -> None:
     finally:
         connection.close()
     assert count == (2,)
+    # Verify the same output tree as the writer/catalog, including sparse bars.
+    assert run_verify(root=root, manifest_path=manifest, today=TODAY, dataset_ids=None, env={}) == 0
 
     conflict = tmp_path / "kraken-conflict"
     first = conflict / "kraken-ohlcvt" / "Kraken_OHLCVT_2026Q1.zip"

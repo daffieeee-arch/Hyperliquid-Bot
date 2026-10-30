@@ -6,9 +6,9 @@ Convert validated signals into reliable orders with minimal avoidable alpha loss
 
 ## Development versus runtime
 
-Execution code is developed and tested primarily on the Netcup Ubuntu 24.04
-LTS VPS, but authenticated execution runs only in an explicitly authorized
-isolated runtime environment.
+Execution code is developed and tested on the Ubuntu VM on TrueNAS SCALE
+(ADR-025). Authenticated execution requires a separately approved isolated
+runtime; moving development does not establish deployment or data readiness.
 
 Local DEV:
 
@@ -45,7 +45,8 @@ No authenticated wallet or trade key is required during local or deployed PAPER 
 
 ## Execution interface
 
-All brokers implement a common interface so strategy/risk code is unchanged between modes:
+Target architecture: brokers share strategy/risk contracts across modes. The
+following list is not evidence that authenticated brokers already exist:
 
 ```text
 BacktestBroker
@@ -58,6 +59,11 @@ KrakenBroker             # optional later
 ```
 
 Broker selection is server-side configuration validated at startup. Local builds and tests prove that unapproved non-PAPER modes fail closed.
+
+The [offline Hyperliquid adapter assessment](research/hyperliquid-testnet-readiness.md)
+compares exact Nautilus/official-SDK versions and records the remaining fit,
+recovery and safety gates. Its conditional reuse decision does not activate
+TESTNET, grant signing authority or supersede ADR-023's sandbox-only scope.
 
 ## Order lifecycle
 

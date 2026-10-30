@@ -120,7 +120,15 @@ its `native-paper-cockpit-v1` reader. Venue fees, funding, account balances and
 PnL carry their own reconciliation/coverage state; never relabel simulated
 cash as venue margin. The current browser cannot sign or control test trading.
 
-## Next deterministic conformance work: not executed
+## Bounded follow-up and remaining conformance work
+
+The [offline fragment fit](hyperliquid-adapter-fragment-fit.md) now exercises
+five narrow actual legacy Python adapter/core-order fragments without a
+client or signer. Its synthetic report/event seam and explicit unexecuted
+boundaries do not complete the broader conformance cases below. Adoption
+remains HOLD.
+
+### Remaining deterministic conformance work: not executed in full
 
 Run against the actual pinned adapter with injected recorded protocol
 responses or transport seams; assertions inspect adapter events, commands,

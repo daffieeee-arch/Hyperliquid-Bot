@@ -318,6 +318,9 @@ class PaperEngine:
         self._bbo_mark: Decimal | None = None
         self._bbo_mark_ns: int | None = None
         self._last_data_ns: int | None = None
+        # Source freshness follows processing progress, including clock ticks.
+        # A late print must not make an expired quote usable again.
+        self._source_clock_ns: int | None = None
         self._last_event_time: datetime | None = None
         self._working: _WorkingOrder | None = None
         self._next_order_number = 1
@@ -400,6 +403,7 @@ class PaperEngine:
             self._advance(event)
 
     def _advance(self, event: MarketEvent) -> None:
+        self._advance_source_clock(event.received_utc_ns)
         if self._stale_gap(event.received_utc_ns):
             self._flatten_halt("stale_data")
             self._last_data_ns = event.received_utc_ns
@@ -434,31 +438,34 @@ class PaperEngine:
         if now_utc_ns < anchor:
             raise PaperEngineError("clock moved backwards.")
         with self._fail_closed(observed):
-            if now_utc_ns - anchor > self._config.stale_after_ns:
+            previous_touch = self._current_touch_event()
+            previous_kill = self._kill
+            fills_before = self._fill_count
+            self._advance_source_clock(now_utc_ns)
+            touch_changed = self._current_touch_event() is not previous_touch
+            stale = now_utc_ns - anchor > self._config.stale_after_ns
+            if stale:
                 self._flatten_halt("stale_data")
+            elif not self._stop_exit_pending or self._exit_waiting_for_quote or touch_changed:
+                # Expiry can reveal a fresh trade fallback without a new event.
+                # An unchanged missing/band-blocked pending exit still waits for
+                # a quote; elapsed time alone only refills a consumed touch.
+                self._check_stop(now_utc_ns)
+            if self._last_event_time is not None:
+                self._mark_limits(self._last_event_time)
+            if (
+                stale
+                or self._exit_waiting_for_quote
+                or touch_changed
+                or self._kill is not previous_kill
+            ):
                 self._enforce_flat(now_utc_ns, observed)
-            elif self._exit_waiting_for_quote:
-                self._retry_waiting_exit(now_utc_ns, observed)
+            if self._fill_count != fills_before and self._last_event_time is not None:
+                # Clock-driven fills include fees in the last venue event's
+                # loss window; a wall-clock midnight never rolls that window.
+                self._mark_limits(self._last_event_time)
+                self._enforce_flat(now_utc_ns, observed)
             self._persist(observed)
-
-    def _retry_waiting_exit(self, now_utc_ns: int, observed: datetime) -> None:
-        """Retry an exit that waits on a used-up level, once it may have refilled.
-
-        The BBO feed only pushes changes, so a quiet, unchanged book would hold
-        the exit until the stale-data halt. Only this wait is retried on the
-        clock: a band or a missing touch needs a new quote, not more time.
-        """
-
-        fills_before = self._fill_count
-        if self._stop_exit_pending:
-            self._check_stop(now_utc_ns)
-        self._enforce_flat(now_utc_ns, observed)
-        if self._fill_count != fills_before and self._last_event_time is not None:
-            # A fill changed realized equity: apply the limits now rather than
-            # at the next event. Loss windows roll on venue event time only,
-            # never on the caller's clock, so the last event's window is used.
-            self._mark_limits(self._last_event_time)
-            self._enforce_flat(now_utc_ns, observed)
 
     def close(self) -> None:
         """Write the final health file. The run still cannot be resumed."""
@@ -519,6 +526,17 @@ class PaperEngine:
             return False
         return received_utc_ns - self._last_data_ns > self._config.stale_after_ns
 
+    def _advance_source_clock(self, received_ns: int) -> None:
+        if self._source_clock_ns is None or received_ns > self._source_clock_ns:
+            self._source_clock_ns = received_ns
+
+    def _source_is_fresh(self, received_ns: int | None) -> bool:
+        return (
+            received_ns is not None
+            and self._source_clock_ns is not None
+            and self._source_clock_ns - received_ns <= self._config.stale_after_ns
+        )
+
     def _update_market(self, event: MarketEvent) -> None:
         if isinstance(event, BboEvent):
             self._bbo = event
@@ -545,11 +563,15 @@ class PaperEngine:
         raise PaperEngineError("unsupported market event.")
 
     def _display_mark(self) -> tuple[Decimal, str] | None:
-        venue_ns = -1 if self._venue_mark_ns is None else self._venue_mark_ns
-        bbo_ns = -1 if self._bbo_mark_ns is None else self._bbo_mark_ns
-        if self._venue_mark is not None and venue_ns >= bbo_ns:
+        venue_ns = self._venue_mark_ns if self._source_is_fresh(self._venue_mark_ns) else None
+        bbo_ns = self._bbo_mark_ns if self._source_is_fresh(self._bbo_mark_ns) else None
+        if (
+            self._venue_mark is not None
+            and venue_ns is not None
+            and (bbo_ns is None or venue_ns >= bbo_ns)
+        ):
             return self._venue_mark, "venue_mark"
-        if self._bbo_mark is not None:
+        if self._bbo_mark is not None and bbo_ns is not None:
             return self._bbo_mark, "bbo_mid"
         return None
 
@@ -677,6 +699,7 @@ class PaperEngine:
             if (
                 marked is None
                 and trade is not None
+                and self._source_is_fresh(trade.received_utc_ns)
                 and self._stop_set_trade_count is not None
                 and self._trade_count > self._stop_set_trade_count
             ):
@@ -729,9 +752,11 @@ class PaperEngine:
     def _current_touch_event(self) -> BboEvent | TradeEvent | None:
         """The quote an order is priced against: a complete BBO, else the last trade."""
 
-        if self._bbo is not None and bbo_is_complete(self._bbo):
+        if self._book_complete():
             return self._bbo
-        return self._trade
+        if self._trade is not None and self._source_is_fresh(self._trade.received_utc_ns):
+            return self._trade
+        return None
 
     def _available(
         self, event: BboEvent | TradeEvent, side: str, received_ns: int
@@ -846,9 +871,8 @@ class PaperEngine:
             )
             return
         limit_price = self._limit_price(desired, touch_price)
-        # The notional a fill can reach. A BUY limit caps it; a SELL limit only
-        # floors the price, so a short gets the same cushion above the touch
-        # (a bid rise beyond the band while the order waits is not bounded).
+        # Pre-submit sizing uses a cushion above the touch. A SELL limit only
+        # floors its price, so every entry fill also rechecks its actual risk.
         risk_price = touch_price * (Decimal(1) + self._config.entry_price_band_fraction)
         quantity = floor_size(desired.quantity, self._size_increment)
         if quantity <= 0:
@@ -1090,7 +1114,9 @@ class PaperEngine:
     ) -> None:
         quote: FillQuote | None
         unfilled: str | None
-        if isinstance(event, BboEvent) and not bbo_is_complete(event):
+        if not self._source_is_fresh(event.received_utc_ns):
+            quote, unfilled = None, "stale_quote"
+        elif isinstance(event, BboEvent) and not bbo_is_complete(event):
             quote, unfilled = None, "no_touch"
         else:
             quote, unfilled = self._quote(working, event=event, received_ns=received_ns)
@@ -1133,7 +1159,36 @@ class PaperEngine:
         )
         if beyond_limit:
             return None, "price_band"
+        if not working.reduce_only and not self._entry_fill_allows(working, quote, received_ns):
+            return None, "risk_rejected"
         return quote, None
+
+    def _entry_fill_allows(
+        self, working: _WorkingOrder, quote: FillQuote, received_ns: int
+    ) -> bool:
+        desired = _DesiredOrder(working.side, working.desired_quantity, False)
+        projected = self._position.position_quantity + _signed(working.side, quote.quantity)
+        reason = None
+        if abs(projected) > self._config.max_position_quantity:
+            reason = "max_position"
+        elif abs(projected) * quote.price > self._config.max_notional_usdc:
+            reason = "max_notional"
+        if reason is not None:
+            self._reject(
+                reason=reason,
+                detail="entry fill exceeds the current hard limit",
+                received_utc_ns=received_ns,
+                desired=desired,
+            )
+            return False
+        return self._paper_risk_allows(
+            side=working.side,
+            quantity=quote.quantity,
+            price=quote.price,
+            reduce_only=False,
+            received_ns=received_ns,
+            desired=desired,
+        )
 
     def _complete_ioc(
         self,
@@ -1284,7 +1339,11 @@ class PaperEngine:
         self._working = None
 
     def _book_complete(self) -> bool:
-        return self._bbo is not None and bbo_is_complete(self._bbo)
+        return (
+            self._bbo is not None
+            and self._source_is_fresh(self._bbo.received_utc_ns)
+            and bbo_is_complete(self._bbo)
+        )
 
     def _reject(
         self,
@@ -1334,14 +1393,31 @@ class PaperEngine:
         self._store.append({"type": "kill_switch", "state": self._kill.value, "reason": reason})
 
     def _view(self) -> StrategyView:
+        bbo = (
+            self._bbo
+            if self._bbo is not None and self._source_is_fresh(self._bbo.received_utc_ns)
+            else None
+        )
+        trade = (
+            self._trade
+            if self._trade is not None and self._source_is_fresh(self._trade.received_utc_ns)
+            else None
+        )
+        bar = (
+            self._bar
+            if self._bar is not None and self._source_is_fresh(self._bar.received_utc_ns)
+            else None
+        )
         return StrategyView(
             position_quantity=self._position.position_quantity,
-            bid_price=None if self._bbo is None else self._bbo.bid_price,
-            ask_price=None if self._bbo is None else self._bbo.ask_price,
-            mid_price=None if self._bbo is None else bbo_mid(self._bbo),
-            last_trade_price=None if self._trade is None else self._trade.price,
-            venue_mark_price=self._venue_mark,
-            last_bar_close=None if self._bar is None else self._bar.close_price,
+            bid_price=None if bbo is None else bbo.bid_price,
+            ask_price=None if bbo is None else bbo.ask_price,
+            mid_price=None if bbo is None else bbo_mid(bbo),
+            last_trade_price=None if trade is None else trade.price,
+            venue_mark_price=(
+                self._venue_mark if self._source_is_fresh(self._venue_mark_ns) else None
+            ),
+            last_bar_close=None if bar is None else bar.close_price,
             kill_switch=self._kill.value,
         )
 

@@ -6,6 +6,7 @@ import { compressors } from "hyparquet-compressors";
 
 import { bindVenueCaptureRun } from "./capture-runs";
 import { DEFAULT_CAPTURE_FRESH_MAX_S, resolveCaptureFreshMaxSeconds } from "./capture-freshness";
+import { loadCaptureSnapshotForContract } from "./data1a-capture";
 import {
   applyTapeRow,
   createVenueTapeState,
@@ -40,6 +41,7 @@ const TAPE_COLUMNS = [
   "venue",
   "product",
   "channel",
+  "session_id",
   "direction",
   "frame_type",
   "received_utc_ns",
@@ -173,6 +175,7 @@ export async function ingestPart(
       venue: raw.venue,
       product: raw.product,
       channel: raw.channel,
+      ...(typeof raw.session_id === "string" ? { session_id: raw.session_id } : {}),
       direction: raw.direction,
       frame_type: raw.frame_type,
       received_utc_ns: ns,
@@ -297,6 +300,7 @@ export async function loadVenueMarketTape(
 ): Promise<{ tape: VenueMarketTape; parsed: number }> {
   let runId: string | undefined;
   let bindingSource: CaptureBindingSource = "unbound";
+  let readingBoundRun = false;
   try {
     const resolved = bindVenueCaptureRun(contract, env, repoRoot, query, {
       now: observedAt,
@@ -317,6 +321,16 @@ export async function loadVenueMarketTape(
         parsed: 0,
       };
     }
+    readingBoundRun = true;
+    // Share the strip's claim, identity and unsigned-capture validation before
+    // touching the tape cache. Direct-directory binds use the claim's run ID.
+    const snapshot = loadCaptureSnapshotForContract(
+      resolved,
+      contract,
+      () => observedAt,
+      freshMaxSeconds,
+    );
+    runId = snapshot.runId;
     const { cache, parts, parsed } = await refreshRunTape(resolved.runDir, coldStartParts);
     const newest = parts.at(-1);
     const lastEventUtc = lastEventIso(cache.state);
@@ -368,7 +382,7 @@ export async function loadVenueMarketTape(
       tape: emptyTape(
         contract,
         observedAt,
-        MISSING_ERROR_PATTERN.test(message) ? "missing" : "error",
+        !readingBoundRun && MISSING_ERROR_PATTERN.test(message) ? "missing" : "error",
         message,
         runId,
         bindingSource,

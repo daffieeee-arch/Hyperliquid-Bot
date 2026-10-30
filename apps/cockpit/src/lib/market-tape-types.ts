@@ -51,6 +51,8 @@ export type InstrumentTape = {
   contextCount: number;
   lastTrade: TapeTrade | undefined;
   lastBbo: TapeBbo | undefined;
+  /** Why a previously decoded or selected book cannot currently supply a quote. */
+  bboUnavailableReason?: string;
   lastContext: TapeContext | undefined;
   /** Newest first, bounded. */
   recentTrades: TapeTrade[];

@@ -250,8 +250,8 @@ describe("MARKETS quotes", () => {
       mid: "81180.00",
       quoteKind: "stored-tape",
       quoteState: "ok",
-      quoteAge: "14s",
-      quoteAt: "2026-09-06T10:15:45.000Z",
+      quoteAge: "29s",
+      quoteAt: "2026-09-06T10:15:30.000Z",
       quoteReason: undefined,
     });
     expect(binance?.quoteSource).toBe(
@@ -265,8 +265,8 @@ describe("MARKETS quotes", () => {
       last: "81150.0",
       quoteKind: "stored-tape",
       quoteState: "ok",
-      quoteAge: "9s",
-      quoteAt: "2026-09-06T10:15:50.000Z",
+      quoteAge: "11s",
+      quoteAt: "2026-09-06T10:15:48.000Z",
     });
     expect(hl?.quoteSource).toMatch(/^stored capture · run /);
     expect(hl?.quoteSource).not.toMatch(/allMids/);
@@ -284,7 +284,9 @@ describe("MARKETS quotes", () => {
     const rows = applyStoredTapeQuote(marketsRowsFromBoundVenues(venues), storedTape, 10);
     const binance = rows.find((row) => row.id === "binance");
     expect(binance?.quoteState).toBe("stale");
-    expect(binance?.quoteReason).toBe("newest stored tick is 14s old (fresh ≤ 10s)");
+    expect(binance?.quoteReason).toBe(
+      "trade is 29s old (fresh ≤ 10s) · BBO is 14s old (fresh ≤ 10s)",
+    );
     expect(binance?.last).toBe("81180.10");
 
     const tradeOnly: MarketTapeResponse = {
@@ -346,6 +348,170 @@ describe("MARKETS quotes", () => {
     );
   });
 
+  it.each(["last", "mid"] as const)("does not let a fresh sibling hide stale %s", (oldField) => {
+    const oldAt = "2026-09-06T00:15:59.000Z";
+    const freshAt = "2026-09-06T10:15:58.000Z";
+    const tape: MarketTapeResponse = {
+      ok: true,
+      tape: {
+        ...storedTape.tape,
+        venues: storedTape.tape.venues.map((venue) => ({
+          ...venue,
+          instruments: venue.instruments.map((item) => ({
+            ...item,
+            lastTrade:
+              item.lastTrade === undefined
+                ? undefined
+                : {
+                    ...item.lastTrade,
+                    at: oldField === "last" ? oldAt : freshAt,
+                  },
+            lastBbo:
+              item.lastBbo === undefined
+                ? undefined
+                : {
+                    ...item.lastBbo,
+                    at: oldField === "mid" ? oldAt : freshAt,
+                  },
+          })),
+        })),
+      },
+    };
+    const result = applyStoredTapeQuote(marketsRowsFromBoundVenues(venues), tape, 180)[1];
+    expect(result?.quoteState).toBe("stale");
+    expect(result?.quoteAt).toBe(oldAt);
+    expect(result?.[oldField === "last" ? "lastQuote" : "midQuote"]).toMatchObject({
+      at: oldAt,
+      age: "10h 00m",
+      state: "stale",
+    });
+    expect(result?.[oldField === "last" ? "midQuote" : "lastQuote"]).toMatchObject({
+      at: freshAt,
+      age: "1s",
+      state: "ok",
+    });
+    expect(result?.last).toBe("81180.10");
+    expect(result?.mid).toBe("81180.00");
+  });
+
+  it.each(["another-run", undefined])(
+    "refuses tape run %s while independent polls disagree",
+    (runId) => {
+      const tape: MarketTapeResponse = {
+        ok: true,
+        tape: {
+          ...storedTape.tape,
+          venues: storedTape.tape.venues.map((venue) => ({ ...venue, runId })),
+        },
+      };
+      const result = applyStoredTapeQuote(marketsRowsFromBoundVenues(venues), tape, 180)[1];
+      expect(result).toMatchObject({
+        last: MARKET_QUOTE_UNAVAILABLE,
+        mid: MARKET_QUOTE_UNAVAILABLE,
+        quoteState: "unavailable",
+      });
+      expect(result?.quoteReason).toMatch(/run does not match/);
+    },
+  );
+
+  it("matches raw run identities exactly and never binds the display placeholder", () => {
+    const rows = marketsRowsFromBoundVenues([
+      chip({ id: "binance", chip: "BINANCE", product: "BTCUSDT", run_id: "CaseSensitiveRun" }),
+    ]);
+    const venue = storedTape.tape.venues.find((item) => item.id === "binance");
+    if (venue === undefined) throw new Error("missing test venue");
+    const matching: MarketTapeResponse = {
+      ok: true,
+      tape: { ...storedTape.tape, venues: [{ ...venue, runId: "CaseSensitiveRun" }] },
+    };
+    expect(applyStoredTapeQuote(rows, matching, 180)[0]?.last).toBe("81180.10");
+    const wrong: MarketTapeResponse = {
+      ok: true,
+      tape: { ...matching.tape, venues: [{ ...venue, runId: "casesensitiverun" }] },
+    };
+    expect(applyStoredTapeQuote(rows, wrong, 180)[0]?.last).toBe(MARKET_QUOTE_UNAVAILABLE);
+    const unbound = marketsRowsFromBoundVenues([
+      chip({ id: "binance", chip: "BINANCE", product: "BTCUSDT", run_id: undefined }),
+    ]);
+    expect(applyStoredTapeQuote(unbound, matching, 180)[0]?.quoteState).toBe("unavailable");
+    const placeholder: MarketTapeResponse = {
+      ok: true,
+      tape: { ...matching.tape, venues: [{ ...venue, runId: "n/a" }] },
+    };
+    expect(applyStoredTapeQuote(unbound, placeholder, 180)[0]?.last).toBe(MARKET_QUOTE_UNAVAILABLE);
+  });
+
+  it("clears previous prices when a newer tape read omits the selected venue", () => {
+    const prior = applyStoredTapeQuote(marketsRowsFromBoundVenues(venues), storedTape, 180);
+    const empty: MarketTapeResponse = { ok: true, tape: { ...storedTape.tape, venues: [] } };
+    expect(applyStoredTapeQuote(prior, empty, 180)[1]).toMatchObject({
+      last: MARKET_QUOTE_UNAVAILABLE,
+      mid: MARKET_QUOTE_UNAVAILABLE,
+      quoteState: "unavailable",
+    });
+  });
+
+  it("ages each retained source against display time without a subsequent backend read", () => {
+    const rows = marketsRowsFromBoundVenues(venues);
+    const before = applyStoredTapeQuote(rows, storedTape, 180)[1];
+    expect(before?.lastQuote.state).toBe("ok");
+    expect(before?.midQuote.state).toBe("ok");
+    const expired = applyStoredTapeQuote(rows, storedTape, 180, "2026-09-06T10:19:01.000Z")[1];
+    expect(expired?.lastQuote.state).toBe("stale");
+    expect(expired?.midQuote.state).toBe("stale");
+    expect(expired?.quoteState).toBe("stale");
+    const backwards = applyStoredTapeQuote(rows, storedTape, 10, "2026-09-06T10:00:00.000Z")[1];
+    expect(backwards?.quoteState).toBe("stale");
+    expect(backwards?.midQuote.age).toBe("14s");
+  });
+
+  it("does not substitute another contract or quote currency", () => {
+    const venue = storedTape.tape.venues.find((item) => item.id === "binance");
+    if (venue === undefined) throw new Error("missing test venue");
+    const tape: MarketTapeResponse = {
+      ok: true,
+      tape: { ...storedTape.tape, venues: [{ ...venue, contractProduct: "BTC-EUR" }] },
+    };
+    const rows = marketsRowsFromBoundVenues(venues);
+    expect(applyStoredTapeQuote(rows, tape, 180)[1]?.quoteReason).toMatch(/product does not match/);
+    tape.tape.venues[0] = {
+      ...venue,
+      instruments: [
+        instrument({
+          product: "BTC-EUR",
+          lastTrade: { at: OBSERVED, price: "70000", size: "1", side: "buy" },
+        }),
+      ],
+    };
+    expect(applyStoredTapeQuote(rows, tape, 180)[1]).toMatchObject({
+      last: MARKET_QUOTE_UNAVAILABLE,
+      mid: MARKET_QUOTE_UNAVAILABLE,
+    });
+  });
+
+  it("does not show an untimed Last as fresh just because Mid has a timestamp", () => {
+    const tape: MarketTapeResponse = {
+      ok: true,
+      tape: {
+        ...storedTape.tape,
+        venues: storedTape.tape.venues.map((venue) => ({
+          ...venue,
+          instruments: venue.instruments.map((item) => ({
+            ...item,
+            lastTrade:
+              item.lastTrade === undefined ? undefined : { ...item.lastTrade, at: "invalid" },
+          })),
+        })),
+      },
+    };
+    const result = applyStoredTapeQuote(marketsRowsFromBoundVenues(venues), tape, 180)[1];
+    expect(result?.last).toBe(MARKET_QUOTE_UNAVAILABLE);
+    expect(result?.lastQuote.state).toBe("unavailable");
+    expect(result?.lastQuote.reason).toMatch(/timestamp is unavailable/);
+    expect(result?.mid).toBe("81180.00");
+    expect(result?.midQuote.state).toBe("ok");
+  });
+
   it("fails closed every row when the tape read itself failed and never invents a mid", () => {
     const rows = applyStoredTapeQuote(
       marketsRowsFromBoundVenues(venues),
@@ -399,7 +565,7 @@ describe("MARKETS quotes", () => {
     expect(rows.find((row) => row.id === "bitvavo")?.quoteState).toBe("unavailable");
   });
 
-  it("prefers the contract instrument, then -SPOT, then the first instrument with a tick", () => {
+  it("accepts only the contract instrument or its explicit -SPOT alias", () => {
     const perp = instrument({ product: "BTCUSDT-USDS-M-PERPETUAL", kind: "perpetual" });
     const spot = instrument({ product: "BTCUSDT-SPOT" });
     const kraken = instrument({
@@ -414,7 +580,7 @@ describe("MARKETS quotes", () => {
     ).toBe(kraken);
     expect(
       pickQuoteInstrument({ instruments: [perp, kraken], contractProduct: "ETHUSDT" }, "ETHUSDT"),
-    ).toBe(kraken);
+    ).toBeUndefined();
     expect(
       pickQuoteInstrument({ instruments: [], contractProduct: "BTCUSDT" }, "BTCUSDT"),
     ).toBeUndefined();
@@ -442,6 +608,7 @@ describe("MARKETS quotes", () => {
             series: "DATA-1A",
             venue: "hyperliquid",
             contractProduct: "BTC-PERP",
+            runId: TERRAPC_SHARED_RETAIN_RUN_ID,
             instruments: [
               instrument({
                 product: "BTC-PERP",

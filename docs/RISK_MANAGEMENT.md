@@ -64,6 +64,14 @@ the next UTC day and ISO week; drawdown and stale-data halts do not.
 Reduce-only exits remain allowed when an entry halt is already breached so an
 open PAPER position can still flatten. Invalid or incomplete portfolio state
 raises rather than passing. Hard limits are never relaxed by this module.
+An intent marked reduce-only is rejected when the named asset has no exposure,
+even when other assets are open. The generic portfolio snapshot carries
+unsigned asset exposure, so the caller must still prove that a non-flat
+reduce-only intent has the correct direction and cannot over-close or reverse
+that asset. Portfolio net exposure is not a substitute for a signed asset
+position. Native PAPER constructs exits from its signed position; a complete
+public signed-asset reduce-only contract remains a separate offline fit-gate
+follow-up, not a guarantee of the generic gate.
 
 The bounded COURSE-1 / D22-A smoke book currently supplies a clean snapshot
 (starting cash, current position, mark). Daily, weekly and drawdown gates are

@@ -80,7 +80,7 @@ def require_stop_script_does_not_hardcode_live_targets(script_text: str) -> None
     """Refuse literal ``tmux send-keys -t <live-session>`` without isolation."""
 
     for session in PROTECTED_LIVE_SESSIONS:
-        target = r"tmux\s+send-keys\s+-t\s+['\"]?=?" + re.escape(session) + r"(?=['\"\s]|$)"
+        target = r"tmux\s+send-keys\s+-t\s+['\"]?=?" + re.escape(session) + r"(?=[:'\"\s]|$)"
         if re.search(target, script_text):
             raise OperatorStopIsolationError(
                 f"Stop helper hard-codes {session!r} as a tmux send-keys target. "

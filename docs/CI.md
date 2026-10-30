@@ -219,7 +219,9 @@ See the PR description for the same table. Summary:
    `--check-only` and stop refuse live or unknown names before querying tmux
    (`TEST_ISOLATION_NOOP`). Prefixes, patterns, session IDs and pane/window
    selectors are rejected. Helpers use [tmux exact session targets](https://man.openbsd.org/tmux.1#COMMANDS)
-   (`-t =name`); normal operator names are limited to 1–128 ASCII letters,
+   (`has-session -t =name`, `send-keys`/`pipe-pane -t =name:`). The trailing
+   colon explicitly selects the session, preventing window/pane fallback.
+   Normal operator names are limited to 1–128 ASCII letters,
    digits, underscores or hyphens, starting with a letter or digit.
    Operator subprocess tests prepend fake `tmux` and collector-refusing `uv`
    commands; they never contact the host's tmux server or start collectors.

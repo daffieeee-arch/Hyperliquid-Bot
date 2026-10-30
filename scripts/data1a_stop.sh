@@ -23,7 +23,7 @@ if ! tmux has-session -t "=${TMUX_SESSION}" 2>/dev/null; then
   exit 1
 fi
 
-tmux send-keys -t "=${TMUX_SESSION}" C-c
+tmux send-keys -t "=${TMUX_SESSION}:" C-c
 echo "tmux_session=${TMUX_SESSION}"
 echo "signal=SIGINT"
 echo "status=OPERATOR_STOP_REQUESTED"

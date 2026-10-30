@@ -101,9 +101,9 @@ mkdir -p "${ARTIFACT_ROOT}/logs"
 BANDWIDTH_WRAP="$(data1_bandwidth_wrap_command)"
 tmux new-session -d -s "${TMUX_SESSION}" \
   "cd $(printf '%q' "${REPO_ROOT}") && unset TRADING_MODE D41_EXECUTION_MODE && export PYTHONPATH=src && exec ${BANDWIDTH_WRAP} uv run --frozen python -m hyperliquid_bot.okx_public_research --artifact-root $(printf '%q' "${ARTIFACT_ROOT}") --run-id $(printf '%q' "${RUN_ID}") --duration-seconds $(printf '%q' "${DURATION_SECONDS}")"
-tmux pipe-pane -t "=${TMUX_SESSION}" -o "cat >> $(printf '%q' "${ARTIFACT_ROOT}/logs/capture-${RUN_ID}.log")" || true
+tmux pipe-pane -t "=${TMUX_SESSION}:" -o "cat >> $(printf '%q' "${ARTIFACT_ROOT}/logs/capture-${RUN_ID}.log")" || true
 
 echo "status=STARTED"
-echo "stop_with=tmux send-keys -t ${TMUX_SESSION} C-c"
+echo "stop_with=tmux send-keys -t =${TMUX_SESSION}: C-c"
 echo "never_touch=hl-capture,bn-capture,bv-capture,bv-std-capture,kr-capture"
 echo "do_not_send_c_c_during_72h_evidence=true"

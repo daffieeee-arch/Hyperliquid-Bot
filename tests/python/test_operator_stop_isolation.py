@@ -185,7 +185,7 @@ def test_explicit_fake_stops_use_an_exact_session_target(tmp_path: Path, lane: s
     assert result.returncode == 0, result.stderr
     assert (tmp_path / "tmux-invocations.log").read_text().splitlines() == [
         f"has-session -t ={session}",
-        f"send-keys -t ={session} C-c",
+        f"send-keys -t ={session}: C-c",
     ]
 
 
@@ -198,7 +198,7 @@ def test_normal_operator_stop_still_works_with_exact_default_target(
     result = _invoke(lane, "stop", env)
     assert result.returncode == 0, result.stderr
     session = CAPTURE_LANES[lane][0]
-    assert f"send-keys -t ={session} C-c" in (tmp_path / "tmux-invocations.log").read_text()
+    assert f"send-keys -t ={session}: C-c" in (tmp_path / "tmux-invocations.log").read_text()
 
 
 @pytest.mark.parametrize("marker", (*ISOLATION_MARKERS, {}))
@@ -280,15 +280,16 @@ def test_explicit_fake_start_and_check_only_remain_offline(tmp_path: Path, lane:
     assert "status=STARTED" in result.stdout
     calls = (tmp_path / "tmux-invocations.log").read_text()
     assert f"new-session -d -s {session} " in calls
-    assert f"pipe-pane -t ={session} " in calls
+    assert f"pipe-pane -t ={session}: " in calls
     # Fake tmux records but never executes the collector command string.
     assert not list((tmp_path / "artifacts").rglob("run-claim.json"))
 
 
 @pytest.mark.parametrize("quote", ("", "'", '"'))
 @pytest.mark.parametrize("exact", ("", "="))
+@pytest.mark.parametrize("window", ("", ":"))
 def test_literal_live_stop_scanner_also_rejects_quoted_exact_targets(
-    quote: str, exact: str
+    quote: str, exact: str, window: str
 ) -> None:
     from hyperliquid_bot.operator_stop_isolation import (
         OperatorStopIsolationError,
@@ -296,7 +297,7 @@ def test_literal_live_stop_scanner_also_rejects_quoted_exact_targets(
     )
 
     for session in PROTECTED_LIVE_SESSIONS:
-        command = "tmux send-keys -t " + quote + exact + session + quote + " C-c"
+        command = "tmux send-keys -t " + quote + exact + session + window + quote + " C-c"
         with pytest.raises(OperatorStopIsolationError):
             require_stop_script_does_not_hardcode_live_targets(command)
 

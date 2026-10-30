@@ -1,0 +1,17 @@
+{
+  "assessed_candidate": "1.231.0",
+  "decision": "HOLD; no candidate, D41 or root dependency upgrade",
+  "latest_published_2_0_rc_observed": "2.0.0rc8",
+  "observed_at_utc": "2026-10-30T23:25:39.594990+00:00",
+  "policy": "Legacy v1 has no new feature development; upstream accepts critical security backports for approximately three months after stable v2 release, then freezes the branch. This observation does not establish candidate execution readiness.",
+  "pypi_default_version": "1.231.0",
+  "rc_first_upload_utc": "2026-10-29T02:09:24.921717Z",
+  "schema": "hyperliquid-offline-candidate-maintenance-v1",
+  "sources": {
+    "legacy_release": "https://github.com/nautechsystems/nautilus_trader/releases/tag/v1.231.0",
+    "maintenance_rfc": "https://github.com/nautechsystems/nautilus_trader/issues/4042",
+    "pypi": "https://pypi.org/pypi/nautilus_trader/json",
+    "rc_release": "https://github.com/nautechsystems/nautilus_trader/releases/tag/v2.0.0rc8"
+  },
+  "stable_2_0_0_published": false
+}

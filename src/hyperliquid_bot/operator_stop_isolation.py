@@ -1,22 +1,29 @@
-"""Fail-closed isolation for operator stop helpers.
+"""Fail-closed test/CI isolation for capture operator start and stop helpers.
 
-The OPERATOR_STOP incident was a test/runbook helper sending SIGINT to a live
-TerraPC session (``hl-capture`` / ``bn-capture`` / ``bv-capture`` /
-``kr-capture``) without isolation. Committed stop scripts must interpolate
-``TMUX_SESSION`` and never hard-code those live names on ``tmux send-keys``.
-
-Tests and CI must never be able to stop live collectors, shared tmux sockets,
-runtime PIDs, or evidence. Prefer isolated fake session names. In a test or CI
-environment, targeting a protected live session is a no-op / refuse.
+Only six explicit fake session names are accepted during tests/CI. Normal
+operators may use simple session names, with exact tmux targeting in the shell
+helpers. This guard is accidental-operation prevention, not a sandbox against
+code that deliberately clears its environment or invokes tmux directly.
 """
 
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Iterable, Mapping
 from typing import Final
 
-PROTECTED_LIVE_SESSIONS: Final = ("hl-capture", "bn-capture", "bv-capture", "kr-capture")
+PROTECTED_LIVE_SESSIONS: Final = (
+    "hl-capture",
+    "bn-capture",
+    "bv-capture",
+    "bv-std-capture",
+    "kr-capture",
+    "okx-capture",
+)
+ISOLATED_FAKE_LANES: Final = ("hl", "bn", "bv", "bv-std", "kr", "okx")
+ISOLATED_FAKE_SESSIONS: Final = tuple(f"pytest-{lane}-isolated" for lane in ISOLATED_FAKE_LANES)
+SESSION_NAME_PATTERN: Final = r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}"
 TEST_ISOLATION_ENV_NAMES: Final = (
     "PYTEST_CURRENT_TEST",
     "CI",
@@ -43,18 +50,14 @@ def is_test_or_ci_environment(environment: Mapping[str, str] | None = None) -> b
     """True when pytest, CI, or an explicit isolation flag is present."""
 
     env = os.environ if environment is None else environment
-    if env.get("PYTEST_CURRENT_TEST"):
-        return True
-    if env.get("CI") in {"true", "1", "yes"}:
-        return True
-    return env.get("HYPERLIQUID_BOT_TEST_ISOLATION") == "1"
+    return any(env.get(name) for name in TEST_ISOLATION_ENV_NAMES)
 
 
 def isolated_fake_session(lane: str) -> str:
     """Return a pytest-only session name that is never a live retain."""
 
-    if type(lane) is not str or not lane:
-        raise OperatorStopIsolationError("lane must be a non-empty string")
+    if type(lane) is not str or lane not in ISOLATED_FAKE_LANES:
+        raise OperatorStopIsolationError("lane must identify one of the six isolated capture lanes")
     return f"{ISOLATED_FAKE_SESSION_PREFIX}{lane}-isolated"
 
 
@@ -63,13 +66,13 @@ def require_session_is_not_live_in_test_env(
     *,
     environment: Mapping[str, str] | None = None,
 ) -> None:
-    """Refuse live retain names when tests or CI invoke a stop helper."""
+    """Allow only explicit fake names in test/CI; reject tmux target syntax everywhere."""
 
-    if not is_test_or_ci_environment(environment):
-        return
-    if is_protected_live_session(session):
+    if type(session) is not str or re.fullmatch(SESSION_NAME_PATTERN, session) is None:
+        raise OperatorStopIsolationError("session must be a simple, bounded tmux session name")
+    if is_test_or_ci_environment(environment) and session not in ISOLATED_FAKE_SESSIONS:
         raise OperatorStopIsolationError(
-            f"test/CI isolation forbids stopping live capture session {session!r}"
+            f"test/CI isolation forbids capture session {session!r}; use an explicit isolated fake"
         )
 
 
@@ -77,8 +80,8 @@ def require_stop_script_does_not_hardcode_live_targets(script_text: str) -> None
     """Refuse literal ``tmux send-keys -t <live-session>`` without isolation."""
 
     for session in PROTECTED_LIVE_SESSIONS:
-        needle = f"tmux send-keys -t {session}"
-        if needle in script_text:
+        target = r"tmux\s+send-keys\s+-t\s+['\"]?=?" + re.escape(session) + r"(?=['\"\s]|$)"
+        if re.search(target, script_text):
             raise OperatorStopIsolationError(
                 f"Stop helper hard-codes {session!r} as a tmux send-keys target. "
                 "Use TMUX_SESSION interpolation and refuse foreign live sessions."

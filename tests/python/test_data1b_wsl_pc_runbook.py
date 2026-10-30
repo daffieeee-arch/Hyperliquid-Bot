@@ -11,6 +11,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from tests.operator_fakes import fake_operator_path
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = REPO_ROOT / "scripts"
 WSL_RUNBOOK = REPO_ROOT / "docs" / "runbooks" / "data1b-wsl-pc-retained-capture.md"
@@ -69,6 +71,8 @@ def _script_env(
     )
     if extra:
         env.update(extra)
+    env["PATH"] = fake_operator_path(tmp_path, env.get("PATH", ""))
+    env["HYPERLIQUID_BOT_TEST_ISOLATION"] = "1"
     return env
 
 

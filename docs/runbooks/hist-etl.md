@@ -20,6 +20,32 @@ not write. `sync` downloads what is missing, checks SHA256, writes monthly
 Parquet, and refreshes `hist_*` views. `verify` re-checks archives already on
 disk and exits non-zero when the gap report is not empty.
 
+Verification also reads pipeline Parquet output. Kraken uses the writer's
+`parquet/hist_etl/kraken/ohlcvt/` tree. Binance and Kraken require every
+financial price, quantity, volume, rate, open-interest and ratio field to be
+finite and non-null on ingest and when auditing existing output. Optional
+funding intervals and aggregate-trade flags retain their null conventions.
+Large aggregate-trade files are scanned without first copying the complete
+file into an in-memory table.
+
+For Hyperliquid funding, verification compares the exact output schema and
+normalized row multiset against the validated raw month: timestamps, slots,
+rates and their original text, premiums, instrument, interval and source
+identity. Output row order may differ; missing, duplicate, extra or changed
+rows fail. At most the expected month length plus one output row is fetched
+into Python. The raw checksum is computed from the same byte snapshot used
+for validation, without trusting a size/mtime cache. A same-source `sync`
+also checks existing output instead of accepting its sidecar alone.
+
+An invalid existing output is reported and left in place; `verify` never
+repairs or rebuilds Parquet or source archives. Stop research that depends
+on a failed verification and arrange a separate, explicit recovery of the
+affected temporary or operator-managed output. These source fixes do not
+change archived bytes, experiment/source pins, holdouts, cost assumptions or
+published study results. Older pinned studies, including the pending S4
+registration, need their existing version/data gates; do not silently repin
+or rerun them against this changed ETL.
+
 The archive root is `--root` or `HIST_ARCHIVES_ROOT`. There is no default host
 path. The dataset list is `config/hist_etl/datasets.toml` (override with
 `--manifest` or `HIST_ETL_MANIFEST`).

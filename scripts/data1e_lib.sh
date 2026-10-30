@@ -130,7 +130,7 @@ data1e_tmux_alive() {
     printf '%s\n' "tmux-missing"
     return 0
   fi
-  if tmux has-session -t "${session}" 2>/dev/null; then
+  if tmux has-session -t "=${session}" 2>/dev/null; then
     printf '%s\n' "yes"
   else
     printf '%s\n' "no"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import os
 from decimal import Decimal
 
@@ -19,6 +20,7 @@ from hyperliquid_bot.paper_risk import (
     REASON_MAX_LEVERAGE,
     REASON_MAX_NET,
     REASON_MAX_POSITIONS,
+    REASON_REDUCE_ONLY_FLAT,
     REASON_RISK_BASED_SIZE,
     REASON_STRATEGY_CONCENTRATION,
     REASON_VENUE_CONCENTRATION,
@@ -416,3 +418,29 @@ def test_documented_gates_are_explicit() -> None:
     encoded = DEFAULT_PAPER_RISK_LIMITS.to_dict()
     assert encoded["trading_mode"] == "PAPER"
     assert "LIVE" not in encoded.values()
+
+
+@pytest.mark.parametrize("other_positions", [False, True])
+def test_reduce_only_cannot_open_a_flat_asset_even_when_other_assets_are_open(
+    other_positions: bool,
+) -> None:
+    snapshot = paper_snapshot_for_bounded_book(
+        equity_usdc=Decimal("100000"), price=Decimal("100000"), current_position=Decimal("0")
+    )
+    if other_positions:
+        snapshot = dataclasses.replace(
+            snapshot,
+            open_position_count=1,
+            gross_exposure_usdc=Decimal("5000"),
+            net_exposure_usdc=Decimal("5000"),
+            strategy_exposure_usdc=Decimal("5000"),
+            venue_exposure_usdc=Decimal("5000"),
+        )
+    decision = evaluate_paper_hard_limits(
+        snapshot=snapshot,
+        intent=PaperOrderIntent(
+            side="BUY", quantity=Decimal("100"), price=Decimal("100000"), reduce_only=True
+        ),
+    )
+    assert decision.approved is False
+    assert REASON_REDUCE_ONLY_FLAT in decision.reasons

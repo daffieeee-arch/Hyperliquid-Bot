@@ -27,6 +27,7 @@ The browser never receives trading secrets.
 | DATA retain identity | four-venue strip binds | DATA-1A sample-run; BN/BV/KR **MISSING** unless `ARTIFACT_ROOT` | never blended with soak PnL |
 | Public HL mid / candles | credentialless `/info` `allMids` + `candleSnapshot` | n/a | **UNAVAILABLE** if the public route fails |
 | Position / assumed PnL | `paper-position.json` / `paper-pnl.json` | soak fixture | labeled **not venue-reconciled**; never D22-B |
+| Native PAPER snapshot (opt-in) | native claim/state/health + complete bounded ledger | explicit fixture binding only | **UNBOUND** / **UNAVAILABLE** without usable artifacts; no COURSE-1 fallback; liveness unverified |
 | Intents → fills | `orders.json` / `fills.json` | soak fixture (entry/exit) | REJECT rows always show a #65/`paper_risk` gate; soak is ACCEPT-only so the tape inserts a documented catalog demo reject (not LIVE, not a soak fill) |
 | `#65` gate catalog | documented `paper_risk` defaults | n/a | per-run halt state **UNAVAILABLE** |
 | Preflight caps | `run-claim.json` preflight | soak fixture | **not recorded** / **UNAVAILABLE** if omitted |
@@ -64,9 +65,16 @@ control, and on mobile the sidebar collapses into a drawer. Routes:
    (`result.json` + optional `report.md`). It is read-only: promotion stays
    forbidden unless the artifact records an H1 pass, and the screen never
    places an order.
-4. **`/paper` (COURSE-1 soak only):** What ran, why the last decision was
+4. **`/paper` (COURSE-1 by default):** What ran, why the last decision was
    accepted or rejected, assumed-overlay results, the intent tape and the
    read-only preflight caps. DATA retain stays a separate identity card.
+   Setting the server-only `COCKPIT_NATIVE_PAPER_RUN_DIR` selects a separate
+   native BTC-PERP/PAPER snapshot view, including when the value is empty
+   (UNBOUND). It reads the native ledger and projections through
+   `/api/native-paper-run`, without starting the engine or collectors.
+   Origin, source timestamps, read status and assumed/not-reconciled economics
+   remain explicit; `RUNNING` does not establish liveness. See
+   [the native snapshot contract](PAPER_ENGINE.md#optional-read-only-cockpit-snapshot).
 5. **`/system`:** run binding and picker, DATA-1A detail, the D01 /
    `paper_risk` bind, the Binance `usdm_public` callout, the reconstructable
    risk overlay and the documented #65 gate catalog. Start/stop is vetoed.

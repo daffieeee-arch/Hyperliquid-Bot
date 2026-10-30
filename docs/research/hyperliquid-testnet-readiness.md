@@ -16,11 +16,11 @@ remain PAPER-only. Research/source pins and holdouts are untouched.
 
 ## Evidence and its limits
 
-- [Package inspection](hyperliquid-testnet-packages.json) records exact PyPI
+- [Package inspection](../../fit_gates/hyperliquid_testnet_readiness/package-inspection.json) records exact PyPI
   metadata/wheel hashes. Only the small SDK wheel was downloaded to temporary
   inspection storage; it was not installed/imported and no upstream source is
   vendored here. Wheel acquisition is package-source access, not venue access.
-- [Actual optional probe](hyperliquid-testnet-probe.json) records the installed
+- [Actual optional probe](../../fit_gates/hyperliquid_testnet_readiness/nautilus-probe.json) records the installed
   isolated Nautilus package's configuration objects, two pure cloid conversions,
   method inventory and Python-source hashes on CPython 3.13.15/Linux x86_64,
   glibc 2.43. It does **not** establish that this installed package came from
@@ -167,11 +167,14 @@ without account/key variables. Example for the existing assessment environment:
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 /tmp/hl-ci-d01-venv/bin/python \
-  fit_gates/hyperliquid_testnet_readiness/probe.py
+  fit_gates/hyperliquid_testnet_readiness/probe.py > /tmp/hyperliquid-readiness-repeat.json
 ```
 
-It prints JSON to stdout and does not install packages, fetch sources or
-write artifacts. An interpreter without the candidate exits 2; do not add it
+The script prints JSON to stdout; the example saves a temporary comparison,
+leaving the recorded reference at
+`fit_gates/hyperliquid_testnet_readiness/nautilus-probe.json` unchanged. The
+script does not install packages, fetch sources or write artifacts itself.
+An interpreter without the candidate exits 2; do not add it
 to root dependencies to make this optional probe pass. The captured artifact
 is historical evidence; compare runtime, source hashes and observations when
 repeating, and review any drift instead of overwriting the previous result.

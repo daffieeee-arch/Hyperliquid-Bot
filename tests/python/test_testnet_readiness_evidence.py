@@ -19,11 +19,11 @@ from fit_gates.hyperliquid_testnet_readiness.probe import (
 from hyperliquid_bot.local_mode import UnsafeTradingModeError, require_local_paper_mode
 
 ROOT = Path(__file__).resolve().parents[2]
-RESEARCH = ROOT / "docs" / "research"
+EVIDENCE = ROOT / "fit_gates" / "hyperliquid_testnet_readiness"
 
 
 def test_recorded_evidence_is_versioned_and_does_not_claim_execution_conformance() -> None:
-    evidence = json.loads((RESEARCH / "hyperliquid-testnet-probe.json").read_text())
+    evidence = json.loads((EVIDENCE / "nautilus-probe.json").read_text())
     assert evidence["schema"] == "hyperliquid-offline-readiness-probe-v1"
     assert evidence["package_version"] == "1.231.0"
     assert evidence["evidence_kind"] == "configuration-pure-identity-and-source-inventory-only"
@@ -69,7 +69,7 @@ def test_recorded_evidence_is_versioned_and_does_not_claim_execution_conformance
 
 
 def test_package_inspection_preserves_pins_and_source_provenance() -> None:
-    packages = json.loads((RESEARCH / "hyperliquid-testnet-packages.json").read_text())
+    packages = json.loads((EVIDENCE / "package-inspection.json").read_text())
     assert packages["schema"] == "hyperliquid-offline-package-inspection-v1"
     assert packages["execution_readiness"] == "not established"
     assert packages["venue_requests"] == "not performed"

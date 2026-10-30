@@ -19,6 +19,7 @@ from hyperliquid_bot.hyperliquid_ws_client import HyperliquidTradesCollectorConf
 from hyperliquid_bot.local_mode import UnsafeTradingModeError
 from hyperliquid_bot.paper_engine import (
     HYPERLIQUID_PERP_BASE_TAKER_FEE_RATE,
+    BarEvent,
     BboEvent,
     MarketEvent,
     MarkEvent,
@@ -682,7 +683,9 @@ def test_stale_data_flattens_and_halts(tmp_path: Path) -> None:
     assert health["status"] == "FLATTEN_HALT"
 
 
-def test_on_clock_stale_uses_last_touch_not_a_synthetic_mid(tmp_path: Path) -> None:
+def test_on_clock_stale_waits_for_a_fresh_touch_instead_of_using_an_expired_one(
+    tmp_path: Path,
+) -> None:
     engine = _engine(
         tmp_path,
         "clock0001",
@@ -691,12 +694,21 @@ def test_on_clock_stale_uses_last_touch_not_a_synthetic_mid(tmp_path: Path) -> N
     )
     engine.on_event(_bbo(ns=0, bid="100000", ask="100001"))
     engine.on_clock(now_utc_ns=5_000_000_001, now_utc=CREATED + timedelta(seconds=6))
+    health = read_health(engine.health_path)
+    assert health["status"] == "FLATTEN_HALT"
+    assert health["position_quantity"] == "0.0001"
+    assert health["flatten_blocked_missing_price"] is True
+    assert health["mark_price"] is None
+    assert health["unrealized_pnl_usdc"] is None
+    assert health["equity_usdc"] is None
+    assert len(_objects(_state(engine)["fills"])) == 1
+    engine.on_event(_bbo(ns=7_000_000_000, bid="90000", ask="90001", ordinal=2))
     engine.close()
     health = read_health(engine.health_path)
     assert health["position_quantity"] == "0"
     fills = _objects(_state(engine)["fills"])
     assert [item["side"] for item in fills] == ["BUY", "SELL"]
-    assert fills[1]["price"] == "100000"
+    assert fills[1]["price"] == "90000"
     assert _text(health["observed_at_local"]).endswith("CEST")
 
 
@@ -1845,3 +1857,443 @@ def _raw_row(
         body,
         "0" * 64,
     )
+
+
+@pytest.mark.parametrize("channel", ["trades", "bbo", "activeAssetCtx"])
+@pytest.mark.parametrize("coin", ["ETH", "", None])
+def test_replay_rejects_wrong_or_missing_payload_coin(
+    tmp_path: Path, channel: str, coin: str | None
+) -> None:
+    if channel == "trades":
+        row = _trade_row(4, 2_000_000_000, tid=99, coin=coin, price="2000")
+    else:
+        data: dict[str, object] = {"coin": coin}
+        if channel == "bbo":
+            data.update(
+                time=1_784_000_002_000,
+                bbo=[{"px": "1999", "sz": "1"}, {"px": "2001", "sz": "1"}],
+            )
+        else:
+            data["ctx"] = {"markPx": "2000"}
+        row = _raw_row(4, 2_000_000_000, channel, {"channel": channel, "data": data})
+    _write_hyperliquid_parquet(tmp_path, extra_rows=(row,))
+    with pytest.raises(PaperTapeError, match="coin"):
+        load_hyperliquid_parquet_tape((tmp_path,))
+
+
+def test_replay_accepts_btc_context_but_checks_identity_before_skipping_missing_mark(
+    tmp_path: Path,
+) -> None:
+    row = _raw_row(
+        4,
+        2_000_000_000,
+        "activeAssetCtx",
+        {"channel": "activeAssetCtx", "data": {"coin": "BTC", "ctx": {}}},
+    )
+    _write_hyperliquid_parquet(tmp_path, extra_rows=(row,))
+    assert len(load_hyperliquid_parquet_tape((tmp_path,))) == 3
+
+
+def test_fresh_trades_do_not_keep_an_old_bbo_mark_or_fill_price_alive(tmp_path: Path) -> None:
+    engine = _engine(
+        tmp_path,
+        "trade-freshness",
+        strategy=_SilentAfterTargets((Decimal("0.1"),)),
+    )
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001"))
+    for second in range(1, 61):
+        engine.on_event(
+            _trade(ns=second * 1_000_000_000, price="70000", size="1", ordinal=second + 1)
+        )
+    state = _state(engine)
+    fills = state["fills"]
+    assert isinstance(fills, list)
+    assert [fill["price"] for fill in fills] == ["100001", "70000"]
+    assert state["realized_pnl_usdc"] == "-3000.1"
+    assert engine.position_quantity == 0
+    assert read_health(engine.health_path)["mark_price"] is None
+    engine.close()
+
+
+def test_fresh_mark_cannot_execute_a_stop_against_an_expired_book(tmp_path: Path) -> None:
+    engine = _engine(
+        tmp_path,
+        "mark-freshness",
+        strategy=_SilentAfterTargets((Decimal("0.1"),)),
+        config=_instant(stale_after_ns=5_000_000_000),
+    )
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001"))
+    engine.on_event(_mark(ns=4_000_000_000, price="100000", ordinal=2))
+    engine.on_event(_mark(ns=6_000_000_000, price="97000", ordinal=3))
+    health = read_health(engine.health_path)
+    assert engine.position_quantity == Decimal("0.1")
+    assert health["stop_exit_pending"] is True
+    assert health["flatten_blocked_missing_price"] is True
+    assert health["fill_count"] == 1
+    assert health["mark_price"] == "97000"
+    engine.on_event(_bbo(ns=7_000_000_000, bid="96999", ask="97001", ordinal=4))
+    assert engine.position_quantity == 0
+    assert _state(engine)["realized_pnl_usdc"] == "-300.2"
+    engine.close()
+
+
+@pytest.mark.parametrize("venue_mark", [False, True])
+def test_clock_expiry_rechecks_stop_against_a_still_fresh_trade(
+    tmp_path: Path, venue_mark: bool
+) -> None:
+    engine = _engine(
+        tmp_path,
+        "clock-fallback",
+        strategy=_SilentAfterTargets((Decimal("0.1"),)),
+        config=_instant(stale_after_ns=5_000_000_000),
+    )
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001"))
+    if venue_mark:
+        engine.on_event(_mark(ns=4_000_000_000, price="100000", ordinal=2))
+    trade_ns = 8_000_000_000 if venue_mark else 4_000_000_000
+    engine.on_event(_trade(ns=trade_ns, price="97000", size="1", ordinal=3))
+    assert engine.position_quantity == Decimal("0.1")
+    assert read_health(engine.health_path)["stop_exit_pending"] is False
+    clock_ns = trade_ns + 2_000_000_000
+    engine.on_clock(now_utc_ns=clock_ns, now_utc=CREATED + timedelta(seconds=clock_ns // 10**9))
+    assert engine.position_quantity == 0
+    health = read_health(engine.health_path)
+    assert health["fill_count"] == 2
+    assert health["mark_price"] is None
+    assert health["realized_pnl_usdc"] == "-300.1"
+    fills = _objects(_state(engine)["fills"])
+    assert fills[-1]["price"] == "97000"
+    assert fills[-1]["received_utc_ns"] == clock_ns
+    triggered = [
+        row for row in _ledger(tmp_path / "clock-fallback") if row["type"] == "stop_triggered"
+    ]
+    assert triggered[-1]["mark_source"] == "last_trade"
+    engine.close()
+
+
+def test_clock_expiry_applies_missing_price_halt_without_inventing_a_mark(tmp_path: Path) -> None:
+    engine = _engine(
+        tmp_path,
+        "clock-missing-mark",
+        strategy=_SilentAfterTargets((Decimal("0.1"),)),
+        config=_instant(stale_after_ns=5_000_000_000),
+    )
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001"))
+    engine.on_event(_trade(ns=4_000_000_000, price="100000", size="1", ordinal=2))
+    assert engine.kill_switch == "NONE"
+    engine.on_clock(now_utc_ns=6_000_000_000, now_utc=CREATED + timedelta(seconds=6))
+    health = read_health(engine.health_path)
+    assert engine.kill_switch == "HALT_NEW"
+    assert health["kill_reason"] == "missing_price"
+    assert health["mark_price"] is None
+    assert health["unrealized_pnl_usdc"] is None
+    assert health["equity_usdc"] is None
+    assert engine.position_quantity == Decimal("0.1")
+    assert health["fill_count"] == 1
+    engine.close()
+
+
+def test_clock_never_uses_expired_trade_or_bar_as_a_stop_price_or_mark(tmp_path: Path) -> None:
+    engine = _engine(
+        tmp_path,
+        "clock-all-prices-expired",
+        strategy=_SilentAfterTargets((Decimal("0.1"),)),
+        config=_instant(stale_after_ns=5_000_000_000),
+    )
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001"))
+    engine.on_event(_mark(ns=4_000_000_000, price="100000", ordinal=2))
+    engine.on_event(_trade(ns=4_000_000_000, price="97000", size="1", ordinal=3))
+    engine.on_event(
+        BarEvent(
+            venue=VENUE,
+            instrument_id=INSTRUMENT,
+            event_time_utc=CREATED + timedelta(seconds=8),
+            received_utc_ns=8_000_000_000,
+            source_event_id="bar-only-refresh",
+            open_price=Decimal("97000"),
+            high_price=Decimal("97000"),
+            low_price=Decimal("97000"),
+            close_price=Decimal("97000"),
+            volume=Decimal("1"),
+            bar_start_utc=CREATED,
+        )
+    )
+    assert engine.kill_switch == "NONE"
+    engine.on_clock(now_utc_ns=10_000_000_000, now_utc=CREATED + timedelta(seconds=10))
+    health = read_health(engine.health_path)
+    assert engine.kill_switch == "HALT_NEW"
+    assert health["kill_reason"] == "missing_price"
+    assert health["mark_price"] is None
+    assert health["stop_exit_pending"] is False
+    assert health["fill_count"] == 1
+    assert engine.position_quantity == Decimal("0.1")
+    engine.close()
+
+
+def test_clock_pending_stop_switches_to_a_fresh_trade_when_book_expires(tmp_path: Path) -> None:
+    engine = _engine(
+        tmp_path,
+        "clock-pending-fallback",
+        strategy=_SilentAfterTargets((Decimal("0.1"),)),
+        config=_instant(stale_after_ns=5_000_000_000),
+    )
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001", bid_size="0.04"))
+    engine.on_event(_trade(ns=4_000_000_000, price="97000", size="1", ordinal=2))
+    engine.on_event(_mark(ns=5_000_000_000, price="97000", ordinal=3))
+    assert engine.position_quantity == Decimal("0.06")
+    assert read_health(engine.health_path)["exit_waiting_for_quote"] is True
+    engine.on_clock(now_utc_ns=6_000_000_000, now_utc=CREATED + timedelta(seconds=6))
+    assert engine.position_quantity == 0
+    assert [row["price"] for row in _objects(_state(engine)["fills"])] == [
+        "100001",
+        "100000",
+        "97000",
+    ]
+    engine.close()
+
+
+def test_clock_fallback_fill_includes_fees_in_last_event_loss_window(tmp_path: Path) -> None:
+    engine = _engine(
+        tmp_path,
+        "clock-fee-loss",
+        strategy=_SilentAfterTargets((Decimal("0.1"),)),
+        config=_instant(
+            stale_after_ns=5_000_000_000,
+            taker_fee_rate=Decimal("0.0009"),
+            risk_limits=_loose_loss_limits(drawdown="0.5", daily="0.0031"),
+        ),
+    )
+    late = datetime(2026, 7, 15, 23, 59, 55, tzinfo=UTC)
+    engine.on_event(_bbo_at(ns=0, event_time=late, bid="100000", ask="100001", ordinal=1))
+    engine.on_event(
+        _trade(
+            ns=4_000_000_000,
+            price="97000",
+            size="1",
+            ordinal=2,
+            event_time=late + timedelta(seconds=4),
+        )
+    )
+    assert engine.kill_switch == "NONE"
+    engine.on_clock(now_utc_ns=6_000_000_000, now_utc=late + timedelta(seconds=6))
+    health = read_health(engine.health_path)
+    assert engine.position_quantity == 0
+    assert engine.kill_switch == "HALT_NEW"
+    assert health["kill_reason"] == "daily_loss"
+    assert health["fees_usdc"] == "17.73009"
+    assert health["realized_pnl_usdc"] == "-300.1"
+    assert health["equity_usdc"] == "99682.16991"
+    switches = [row for row in _ledger(tmp_path / "clock-fee-loss") if row["type"] == "kill_switch"]
+    assert [(row["state"], row["reason"]) for row in switches] == [("HALT_NEW", "daily_loss")]
+    engine.close()
+
+
+def test_clock_expires_a_used_book_while_a_separate_mark_remains_fresh(tmp_path: Path) -> None:
+    engine = _engine(
+        tmp_path,
+        "clock-book-age",
+        strategy=_SilentAfterTargets((Decimal("0.1"),)),
+        config=_instant(stale_after_ns=5_000_000_000, touch_refill_ns=5_000_000_000),
+    )
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001"))
+    engine.on_event(_bbo(ns=1_000_000_000, bid="97999", ask="98000", bid_size="0.04", ordinal=2))
+    engine.on_event(_mark(ns=4_000_000_000, price="97000", ordinal=3))
+    assert engine.position_quantity == Decimal("0.06")
+    assert read_health(engine.health_path)["exit_waiting_for_quote"] is True
+    engine.on_clock(now_utc_ns=7_000_000_000, now_utc=CREATED + timedelta(seconds=7))
+    health = read_health(engine.health_path)
+    assert engine.position_quantity == Decimal("0.06")
+    assert health["fill_count"] == 2
+    assert health["flatten_blocked_missing_price"] is True
+    assert health["mark_price"] == "97000"
+    engine.close()
+
+
+class _RecordViews:
+    strategy_id = "record-freshness"
+    configuration_version = "test-v1"
+    production_eligible = False
+    label = "Test source availability"
+
+    def __init__(self) -> None:
+        self.views: list[StrategyView] = []
+
+    def on_market(self, event: MarketEvent, view: StrategyView) -> TargetPosition | None:
+        del event
+        self.views.append(view)
+        return None
+
+
+def test_late_events_cannot_resurrect_expired_strategy_prices_after_a_clock_tick(
+    tmp_path: Path,
+) -> None:
+    strategy = _RecordViews()
+    engine = PaperEngine(
+        store_root=tmp_path,
+        run_id="late-source",
+        created_at_utc=CREATED,
+        strategy=strategy,
+        config=_instant(stale_after_ns=5_000_000_000),
+    )
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001"))
+    engine.on_event(_trade(ns=0, price="100000", size="1", ordinal=2))
+    engine.on_event(_mark(ns=4_000_000_000, price="100000", ordinal=3))
+    engine.on_clock(now_utc_ns=6_000_000_000, now_utc=CREATED + timedelta(seconds=6))
+    engine.on_event(_bbo(ns=500_000_000, bid="99999", ask="100000", ordinal=4))
+    view = strategy.views[-1]
+    assert view.bid_price is None
+    assert view.ask_price is None
+    assert view.mid_price is None
+    assert view.last_trade_price is None
+    assert view.venue_mark_price == Decimal("100000")
+    engine.close()
+
+
+def test_source_age_includes_the_exact_threshold_but_expires_one_nanosecond_later(
+    tmp_path: Path,
+) -> None:
+    strategy = _RecordViews()
+    engine = PaperEngine(
+        store_root=tmp_path,
+        run_id="source-boundary",
+        created_at_utc=CREATED,
+        strategy=strategy,
+        config=_instant(stale_after_ns=5_000_000_000),
+    )
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001"))
+    engine.on_event(_mark(ns=5_000_000_000, price="100000", ordinal=2))
+    assert strategy.views[-1].bid_price == Decimal("100000")
+    engine.on_event(_mark(ns=5_000_000_001, price="100000", ordinal=3))
+    assert strategy.views[-1].bid_price is None
+    assert strategy.views[-1].venue_mark_price == Decimal("100000")
+    engine.close()
+
+
+def test_late_eligible_quote_cannot_fill_an_order_after_its_source_expires(tmp_path: Path) -> None:
+    engine = _engine(
+        tmp_path,
+        "late-fill",
+        strategy=_SilentAfterTargets((Decimal("0.1"),)),
+        config=PaperEngineConfig(stale_after_ns=5_000_000_000, durable_ledger=False),
+    )
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001"))
+    engine.on_event(_mark(ns=4_000_000_000, price="100000", ordinal=2))
+    engine.on_clock(now_utc_ns=6_000_000_000, now_utc=CREATED + timedelta(seconds=6))
+    engine.on_event(_bbo(ns=300_000_000, bid="100000", ask="100001", ordinal=3))
+    assert engine.position_quantity == 0
+    state = _state(engine)
+    assert state["fills"] == []
+    orders = state["orders"]
+    assert isinstance(orders, list)
+    assert orders[-1]["status"] == "CANCELED"
+    assert orders[-1]["unfilled_reason"] == "stale_quote"
+    assert read_health(engine.health_path)["mark_price"] == "100000"
+    engine.close()
+
+
+def test_stop_fallback_does_not_turn_an_expired_late_print_into_a_trigger(tmp_path: Path) -> None:
+    engine = _engine(
+        tmp_path,
+        "old-stop-print",
+        strategy=_SilentAfterTargets((Decimal("0.1"),)),
+        config=_instant(stale_after_ns=5_000_000_000),
+    )
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001"))
+    engine.on_event(_bbo(ns=1_000_000_000, bid="100000", ask=None, ask_size=None, ordinal=2))
+    engine.on_event(
+        MarkEvent(
+            venue="hyperliquid",
+            instrument_id="BTC-PERP",
+            event_time_utc=CREATED + timedelta(seconds=6),
+            received_utc_ns=6_000_000_000,
+            source_event_id="missing-mark",
+            mark_price=None,
+        )
+    )
+    engine.on_event(_trade(ns=0, price="97000", size="1", ordinal=4))
+    assert engine.position_quantity == Decimal("0.1")
+    health = read_health(engine.health_path)
+    assert health["stop_exit_pending"] is False
+    assert health["mark_price"] is None
+    assert health["fill_count"] == 1
+    engine.close()
+
+
+@pytest.mark.parametrize(
+    ("max_notional", "expected_reason"), [("11000", "max_notional"), ("100000", "paper_risk")]
+)
+def test_pending_short_rechecks_actual_fill_price_against_hard_limits(
+    tmp_path: Path, max_notional: str, expected_reason: str
+) -> None:
+    engine = _engine(
+        tmp_path,
+        "short-fill-risk",
+        strategy=_SilentAfterTargets((Decimal("-0.1"),)),
+        config=PaperEngineConfig(max_notional_usdc=Decimal(max_notional), durable_ledger=False),
+    )
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001"))
+    engine.on_event(_bbo(ns=300_000_000, bid="200000", ask="200001", ordinal=2))
+    state = _state(engine)
+    assert engine.position_quantity == 0
+    assert state["fills"] == []
+    rejections = state["risk_rejections"]
+    orders = state["orders"]
+    assert isinstance(rejections, list) and isinstance(orders, list)
+    assert rejections[-1]["reason"] == expected_reason
+    assert orders[-1]["status"] == "CANCELED"
+    assert orders[-1]["unfilled_reason"] == "risk_rejected"
+    engine.close()
+
+
+def test_partial_fill_checks_the_actual_quantity_instead_of_the_full_working_order(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(
+        tmp_path,
+        "partial-fill-risk",
+        strategy=_SilentAfterTargets((Decimal("-0.1"),)),
+        config=PaperEngineConfig(max_notional_usdc=Decimal("11000"), durable_ledger=False),
+    )
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001"))
+    engine.on_event(_bbo(ns=300_000_000, bid="200000", ask="200001", bid_size="0.04", ordinal=2))
+    assert engine.position_quantity == Decimal("-0.04")
+    assert read_health(engine.health_path)["fill_count"] == 1
+    assert _state(engine)["risk_rejections"] == []
+    engine.close()
+
+
+def test_fill_time_portfolio_concentration_gate_is_not_only_a_notional_check(
+    tmp_path: Path,
+) -> None:
+    engine = _engine(
+        tmp_path,
+        "fill-concentration",
+        strategy=_SilentAfterTargets((Decimal("-0.1"),)),
+        config=PaperEngineConfig(
+            durable_ledger=False,
+            risk_limits=PaperRiskLimits(
+                risk_per_trade_fraction=Decimal("0.01"),
+                max_asset_concentration_fraction=Decimal("0.12"),
+            ),
+        ),
+    )
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001"))
+    engine.on_event(_bbo(ns=300_000_000, bid="130000", ask="130001", ordinal=2))
+    assert engine.position_quantity == 0
+    assert read_health(engine.health_path)["fill_count"] == 0
+    assert "asset concentration" in json.dumps(_state(engine)["risk_rejections"])
+    engine.close()
+
+
+def test_reduce_only_stop_exit_is_not_blocked_by_an_entry_notional_cap(tmp_path: Path) -> None:
+    engine = _engine(
+        tmp_path,
+        "exit-risk-cap",
+        strategy=_SilentAfterTargets((Decimal("-0.1"),)),
+        config=_instant(max_notional_usdc=Decimal("11000")),
+    )
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001"))
+    engine.on_event(_bbo(ns=1_000_000_000, bid="200000", ask="200001", ordinal=2))
+    assert engine.position_quantity == 0
+    assert read_health(engine.health_path)["fill_count"] == 2
+    engine.close()

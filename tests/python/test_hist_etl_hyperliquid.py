@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -10,6 +11,7 @@ import duckdb
 import pytest
 from pytest import CaptureFixture
 
+from research.hist_etl.checksums import cached_sha256
 from research.hist_etl.errors import HistEtlError
 from research.hist_etl.http import RateLimiter
 from research.hist_etl.hyperliquid import (
@@ -22,6 +24,7 @@ from research.hist_etl.hyperliquid import (
     funding_windows,
     hyperliquid_parquet_path,
     hyperliquid_rate,
+    materialize_funding_month,
     raw_funding_path,
 )
 from research.hist_etl.manifest import assert_known_ids, load_manifest
@@ -278,6 +281,128 @@ def test_verify_sees_an_edited_raw_file(tmp_path: Path) -> None:
     )
     report = json.loads((tmp_path / "logs" / "gap_report.json").read_text())
     assert [gap["kind"] for gap in report["gaps"]] == ["hyperliquid_sidecar"]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "corrupt",
+        "rate",
+        "rate_text",
+        "premium",
+        "premium_text",
+        "coin",
+        "time",
+        "slot",
+        "interval",
+        "dataset",
+        "source",
+        "missing",
+        "duplicate",
+        "schema",
+        "extra_column",
+        "nan",
+        "reordered",
+    ],
+)
+def test_verify_compares_funding_output_with_raw_without_rewriting(
+    tmp_path: Path, mutation: str
+) -> None:
+    start = datetime(2026, 9, 1, tzinfo=UTC)
+    today = date(2026, 10, 1)
+    manifest = _manifest(tmp_path, start="2026-09-01", end="2026-09-01")
+    poster = FakeFundingPoster(_hourly(start, 24), page_size=100)
+    assert _sync(tmp_path, manifest, poster, today) == 0
+    assert _view_count(tmp_path) == 24
+    spec = load_manifest(manifest).hyperliquid[0]
+    window = _window_for(tmp_path, manifest, "2026-09", today)
+    raw = raw_funding_path(tmp_path, window, settled=True)
+    output = hyperliquid_parquet_path(tmp_path, window)
+    original_raw = raw.read_bytes()
+    sidecar = output.with_name(output.name + ".sources.json")
+    original_sidecar = sidecar.read_bytes()
+    if mutation == "corrupt":
+        output.write_bytes(b"not a parquet file")
+    else:
+        expressions = {
+            "rate": "* REPLACE (funding_rate + 0.01 AS funding_rate)",
+            "rate_text": "* REPLACE ('0.9' AS funding_rate_text)",
+            "premium": "* REPLACE (premium + 0.01 AS premium)",
+            "premium_text": "* REPLACE ('0.9' AS premium_text)",
+            "coin": "* REPLACE ('ETH' AS coin)",
+            "time": "* REPLACE (ts + INTERVAL 1 SECOND AS ts)",
+            "slot": "* REPLACE (slot_start + INTERVAL 1 HOUR AS slot_start)",
+            "interval": "* REPLACE (8 AS funding_interval_hours)",
+            "dataset": "* REPLACE ('other' AS dataset_id)",
+            "source": "* REPLACE ('other.json' AS source_name)",
+            "schema": "* EXCLUDE (funding_rate_text)",
+            "extra_column": "*, 1 AS unexpected",
+            "nan": "* REPLACE (CAST('NaN' AS DOUBLE) AS premium)",
+        }
+        staged = output.with_suffix(".edited")
+        connection = duckdb.connect()
+        try:
+            connection.execute(
+                f"CREATE TABLE edited AS SELECT {expressions.get(mutation, '*')} "
+                "FROM read_parquet(?)",
+                [str(output)],
+            )
+            if mutation == "missing":
+                connection.execute(
+                    "DELETE FROM edited WHERE funding_time_ms = "
+                    "(SELECT min(funding_time_ms) FROM edited)"
+                )
+            if mutation == "duplicate":
+                connection.execute("INSERT INTO edited SELECT * FROM edited LIMIT 1")
+            order = " ORDER BY funding_time_ms DESC" if mutation == "reordered" else ""
+            connection.execute(
+                f"COPY (SELECT * FROM edited{order}) TO ? (FORMAT PARQUET)", [str(staged)]
+            )
+        finally:
+            connection.close()
+        staged.replace(output)
+    before = output.read_bytes()
+    expected_code = 0 if mutation == "reordered" else 2
+    assert (
+        run_verify(root=tmp_path, manifest_path=manifest, today=today, dataset_ids=None, env={})
+        == expected_code
+    )
+    gaps = materialize_funding_month(
+        spec, window, raw, root=tmp_path, rebuild=False, provisional=False
+    )
+    assert bool(gaps) is (mutation != "reordered")
+    if gaps:
+        assert gaps[0].kind == "hyperliquid_parquet"
+    assert output.read_bytes() == before
+    assert raw.read_bytes() == original_raw
+    assert sidecar.read_bytes() == original_sidecar
+
+
+def test_materialize_does_not_reuse_cached_lineage_for_changed_raw_bytes(tmp_path: Path) -> None:
+    today = date(2026, 10, 1)
+    start = datetime(2026, 9, 1, tzinfo=UTC)
+    manifest = _manifest(tmp_path, start="2026-09-01", end="2026-09-01")
+    assert (
+        _sync(tmp_path, manifest, FakeFundingPoster(_hourly(start, 24), page_size=100), today) == 0
+    )
+    window = _window_for(tmp_path, manifest, "2026-09", today)
+    raw = raw_funding_path(tmp_path, window, settled=True)
+    output = hyperliquid_parquet_path(tmp_path, window)
+    before = output.read_bytes()
+    stat = raw.stat()
+    cached_sha256(tmp_path, raw)
+    raw.write_bytes(raw.read_bytes().replace(b"0.0000125", b"0.0000126", 1))
+    os.utime(raw, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    gaps = materialize_funding_month(
+        load_manifest(manifest).hyperliquid[0],
+        window,
+        raw,
+        root=tmp_path,
+        rebuild=False,
+        provisional=False,
+    )
+    assert gaps[0].kind == "refused_overwrite"
+    assert output.read_bytes() == before
 
 
 def test_plan_lists_fetch_open_and_present_months(

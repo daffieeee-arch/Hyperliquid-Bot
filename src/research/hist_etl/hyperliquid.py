@@ -24,12 +24,14 @@ lands in that hour's slot; a month's window is defined in those slots.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
 import re
 import urllib.error
 import urllib.request
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
@@ -39,7 +41,6 @@ from typing import Protocol
 
 import duckdb
 
-from research.hist_etl.checksums import cached_sha256, sha256_file
 from research.hist_etl.errors import HistEtlError
 from research.hist_etl.files import atomic_write_json, atomic_write_text, decide_output, warn
 from research.hist_etl.http import RETRYABLE_STATUS, RateLimiter, Sleeper
@@ -366,7 +367,7 @@ def materialize_funding_month(
     """
 
     try:
-        rows, covered = load_raw(raw_path, window, settled=not provisional)
+        rows, covered, source = _load_raw_source(raw_path, window, settled=not provisional)
     except RawWindowChanged as exc:
         return (Gap("hyperliquid_window_changed", spec.id, str(exc)),)
     except HistEtlError as exc:
@@ -375,11 +376,10 @@ def materialize_funding_month(
     if conflicts:
         return conflicts
     holes = funding_holes(spec, _hole_window(window, covered), rows)
-    source = SourceDigest(name=raw_path.name, sha256=cached_sha256(root, raw_path), path=raw_path)
     destination = hyperliquid_parquet_path(root, window)
     action = _decide(destination, source, covered, rebuild=rebuild)
     if action == "audit":
-        return holes
+        return (*holes, *_audit_parquet(destination, spec, rows, source))
     if action != "write":
         reason = (
             "no .sources.json sidecar"
@@ -411,13 +411,11 @@ def audit_funding_month(
     if not destination.is_file():
         return (Gap("missing_parquet", spec.id, destination.name),)
     try:
-        rows, covered = load_raw(raw_path, window, settled=use_settled)
+        rows, covered, source = _load_raw_source(raw_path, window, settled=use_settled)
     except RawWindowChanged as exc:
         return (Gap("hyperliquid_window_changed", spec.id, str(exc)),)
     except HistEtlError as exc:
         return (Gap("hyperliquid_schema", spec.id, str(exc)),)
-    # A fresh hash, not the size/mtime cache: verify must see any edit.
-    source = SourceDigest(name=raw_path.name, sha256=sha256_file(raw_path), path=raw_path)
     if _decide(destination, source, covered, rebuild=False) != "audit":
         return (
             Gap(
@@ -430,6 +428,7 @@ def audit_funding_month(
     return (
         *slot_conflicts(spec, rows),
         *funding_holes(spec, _hole_window(window, covered), rows),
+        *_audit_parquet(destination, spec, rows, source),
     )
 
 
@@ -443,9 +442,19 @@ def load_raw(
     window does. Disagreeing duplicates fail closed.
     """
 
+    rows, covered, _source = _load_raw_source(raw_path, window, settled=settled)
+    return rows, covered
+
+
+def _load_raw_source(
+    raw_path: Path, window: FundingWindow, *, settled: bool
+) -> tuple[tuple[FundingRow, ...], FundingWindow, SourceDigest]:
+    """Validate and hash the same byte snapshot, never a size/mtime cache."""
+
     try:
-        payload = json.loads(raw_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        content = raw_path.read_bytes()
+        payload = json.loads(content)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise HistEtlError(f"{raw_path.name} is not readable JSON: {exc}", exit_code=2) from exc
     if (
         not isinstance(payload, dict)
@@ -474,7 +483,8 @@ def load_raw(
                 f"{raw_path.name} has two different prints at {row.time_ms}", exit_code=2
             )
         by_time[row.time_ms] = row
-    return tuple(by_time[key] for key in sorted(by_time)), covered
+    source = SourceDigest(raw_path.name, hashlib.sha256(content).hexdigest(), raw_path)
+    return tuple(by_time[key] for key in sorted(by_time)), covered, source
 
 
 def slot_conflicts(spec: HyperliquidFundingSpec, rows: Sequence[FundingRow]) -> tuple[Gap, ...]:
@@ -590,6 +600,92 @@ def _write_parquet(
     *,
     provisional: bool,
 ) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    partial = destination.with_name(destination.name + ".partial")
+    connection = duckdb.connect()
+    try:
+        _stage_funding(connection, spec, rows, source)
+        connection.execute("COPY published TO ? (FORMAT PARQUET, COMPRESSION ZSTD)", [str(partial)])
+    finally:
+        connection.close()
+    os.replace(partial, destination)
+    sidecar = destination.with_name(destination.name + ".sources.json")
+    atomic_write_json(
+        sidecar,
+        {
+            "sources": [{"name": source.name, "sha256": source.sha256}],
+            "provisional": provisional,
+            "funding_interval_hours": spec.funding_interval_hours,
+            "start_ms": covered.start_ms,
+            "end_ms": covered.end_ms,
+        },
+    )
+
+
+def _audit_parquet(
+    destination: Path,
+    spec: HyperliquidFundingSpec,
+    rows: Sequence[FundingRow],
+    source: SourceDigest,
+) -> tuple[Gap, ...]:
+    """Compare schema and all normalized rows with the validated raw snapshot.
+
+    Read at most the expected month length plus one row from the output;
+    extra, missing and duplicate rows fail without loading an unbounded file.
+    Parquet row order is immaterial, but multiplicity and source identity are not.
+    """
+
+    connection = duckdb.connect()
+    try:
+        _stage_funding(connection, spec, rows, source)
+        expected_schema = connection.execute("DESCRIBE published").fetchall()
+        actual_schema = connection.execute(
+            "DESCRIBE SELECT * FROM read_parquet(?)", [str(destination)]
+        ).fetchall()
+        # Nullability metadata is not preserved by Parquet; names/types are.
+        if [(row[0], row[1]) for row in actual_schema] != [
+            (row[0], row[1]) for row in expected_schema
+        ]:
+            return (
+                Gap(
+                    "hyperliquid_parquet",
+                    spec.id,
+                    f"{destination.name} schema differs from normalized raw",
+                ),
+            )
+        expected = connection.execute("SELECT * FROM published").fetchall()
+        actual = connection.execute(
+            "SELECT * FROM read_parquet(?) LIMIT ?", [str(destination), len(expected) + 1]
+        ).fetchall()
+        if Counter(actual) != Counter(expected):
+            return (
+                Gap(
+                    "hyperliquid_parquet",
+                    spec.id,
+                    f"{destination.name} content differs from normalized raw",
+                ),
+            )
+        return ()
+    except duckdb.Error:
+        return (
+            Gap(
+                "hyperliquid_parquet",
+                spec.id,
+                f"{destination.name} is unreadable or has an invalid schema",
+            ),
+        )
+    finally:
+        connection.close()
+
+
+def _stage_funding(
+    connection: duckdb.DuckDBPyConnection,
+    spec: HyperliquidFundingSpec,
+    rows: Sequence[FundingRow],
+    source: SourceDigest,
+) -> None:
+    """One normalized representation shared by writing and read-only verification."""
+
     interval = spec.funding_interval_hours * _MS_PER_HOUR
     records = [
         (
@@ -606,13 +702,9 @@ def _write_parquet(
         )
         for row in rows
     ]
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    partial = destination.with_name(destination.name + ".partial")
-    connection = duckdb.connect()
-    try:
-        connection.execute("SET TimeZone='UTC'")
-        connection.execute(
-            """
+    connection.execute("SET TimeZone='UTC'")
+    connection.execute(
+        """
             CREATE TABLE staged (
                 time_ms BIGINT,
                 slot_ms BIGINT,
@@ -626,13 +718,11 @@ def _write_parquet(
                 source_name VARCHAR
             )
             """
-        )
-        if records:
-            connection.executemany(
-                "INSERT INTO staged VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", records
-            )
-        connection.execute(
-            """
+    )
+    if records:
+        connection.executemany("INSERT INTO staged VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", records)
+    connection.execute(
+        """
             CREATE TABLE published AS
             SELECT
                 CAST(make_timestamp(time_ms * 1000) AS TIMESTAMP) AS ts,
@@ -649,21 +739,6 @@ def _write_parquet(
             FROM staged
             ORDER BY time_ms
             """
-        )
-        connection.execute("COPY published TO ? (FORMAT PARQUET, COMPRESSION ZSTD)", [str(partial)])
-    finally:
-        connection.close()
-    os.replace(partial, destination)
-    sidecar = destination.with_name(destination.name + ".sources.json")
-    atomic_write_json(
-        sidecar,
-        {
-            "sources": [{"name": source.name, "sha256": source.sha256}],
-            "provisional": provisional,
-            "funding_interval_hours": spec.funding_interval_hours,
-            "start_ms": covered.start_ms,
-            "end_ms": covered.end_ms,
-        },
     )
 
 

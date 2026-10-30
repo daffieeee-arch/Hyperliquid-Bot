@@ -170,7 +170,7 @@ def _load_trades(
         quantity = _require_decimal(_require_text(row[5], field_name="size"), field_name="size")
         event_time_ms = _require_int(row[6], field_name="event_time_ms")
         trade_id = _require_text(row[7], field_name="trade_id")
-        coin = _require_text(row[8], field_name="coin")
+        coin = _require_btc_coin(row[8])
         identity = (event_time_ms, coin, trade_id)
         fingerprint = (side, price, quantity, row[9], row[10])
         known = seen.get(identity)
@@ -217,7 +217,8 @@ def _load_bbos(
             json_extract_string(decode(payload_bytes), '$.data.bbo[0].px') AS bid_price,
             json_extract_string(decode(payload_bytes), '$.data.bbo[0].sz') AS bid_size,
             json_extract_string(decode(payload_bytes), '$.data.bbo[1].px') AS ask_price,
-            json_extract_string(decode(payload_bytes), '$.data.bbo[1].sz') AS ask_size
+            json_extract_string(decode(payload_bytes), '$.data.bbo[1].sz') AS ask_size,
+            json_extract_string(decode(payload_bytes), '$.data.coin') AS coin
         FROM {relation}
         WHERE venue = 'hyperliquid'
           AND product = ?
@@ -229,6 +230,7 @@ def _load_bbos(
     ).fetchall()
     events: list[BboEvent] = []
     for row in rows:
+        _require_btc_coin(row[7])
         message_ordinal = _require_int(row[0], field_name="message_ordinal")
         received_utc_ns = _require_int(row[1], field_name="received_utc_ns")
         event_time = utc_from_epoch_ms(_require_int(row[2], field_name="event_time_ms"))
@@ -263,7 +265,8 @@ def _load_marks(
         SELECT
             message_ordinal,
             received_utc_ns,
-            json_extract_string(decode(payload_bytes), '$.data.ctx.markPx') AS mark_price
+            json_extract_string(decode(payload_bytes), '$.data.ctx.markPx') AS mark_price,
+            json_extract_string(decode(payload_bytes), '$.data.coin') AS coin
         FROM {relation}
         WHERE venue = 'hyperliquid'
           AND product = ?
@@ -275,6 +278,7 @@ def _load_marks(
     ).fetchall()
     events: list[MarkEvent] = []
     for row in rows:
+        _require_btc_coin(row[3])
         message_ordinal = _require_int(row[0], field_name="message_ordinal")
         received_utc_ns = _require_int(row[1], field_name="received_utc_ns")
         mark_text = row[2]
@@ -314,6 +318,13 @@ def _require_text(value: object, *, field_name: str) -> str:
     if type(value) is not str or not value:
         raise PaperTapeError(f"{field_name} is missing.")
     return value
+
+
+def _require_btc_coin(value: object) -> str:
+    coin = _require_text(value, field_name="coin")
+    if coin != "BTC":
+        raise PaperTapeError("payload coin does not match the BTC-PERP tape.")
+    return coin
 
 
 def _optional_decimal(value: object, *, field_name: str) -> Decimal | None:

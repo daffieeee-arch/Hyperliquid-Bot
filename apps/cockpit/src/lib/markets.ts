@@ -315,19 +315,25 @@ export function applyStoredTapeQuote(
   rows: readonly MarketRow[],
   tape: MarketTapeResponse,
   freshMaxS: number,
+  displayAt?: string,
 ): MarketRow[] {
   if (!tape.ok) {
     return rows.map((row) =>
       unavailableStoredRow(row, `stored market data unavailable · ${tape.error}`),
     );
   }
+  const readAt = tape.tape.observed_at;
+  // Display time ages a retained/paused read; it never establishes a new read
+  // or lets a backwards browser clock rejuvenate the backend's source age.
+  const observedAt =
+    displayAt !== undefined && Date.parse(displayAt) > Date.parse(readAt) ? displayAt : readAt;
   return rows.map((row) => {
     const venue = tape.tape.venues.find((item) => item.id === row.id);
     if (venue === undefined) {
       return unavailableStoredRow(row, "stored venue is missing from this tape read");
     }
     try {
-      return applyStoredVenue(row, venue, tape.tape.observed_at, freshMaxS);
+      return applyStoredVenue(row, venue, observedAt, freshMaxS);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : "unreadable stored quote";
       return unavailableStoredRow(row, `stored quote unreadable · ${message}`);

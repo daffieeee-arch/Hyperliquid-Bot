@@ -604,18 +604,31 @@ export function applyTapeRow(state: VenueTapeState, row: RawTapeRow): void {
   }
   const at = nsToIso(row.received_utc_ns);
   const entry = instrument(state, row.venue, row.product);
-  if (isQuoteRow(row) && row.session_id !== undefined && entry.quoteSessionId !== row.session_id) {
-    invalidateQuote(entry);
-    entry.quoteSessionId = row.session_id;
-  }
   noteChannel(entry, row.channel, at);
 
   let payload: unknown;
   try {
     payload = JSON.parse(row.payload);
   } catch {
+    if (isHyperliquidPriceRow(row)) refuseHyperliquidIdentity(entry);
     if (isQuoteRow(row)) invalidateQuote(entry);
     return;
+  }
+  if (isHyperliquidPriceRow(row)) validateHyperliquidIdentity(entry, row, payload);
+  if (isQuoteRow(row)) {
+    const session = row.session_id;
+    if (typeof session !== "string" || session === "" || session !== session.trim()) {
+      invalidateQuote(
+        entry,
+        "quote session identity is missing or invalid; a new snapshot is required",
+      );
+      entry.quoteSessionId = undefined;
+      return;
+    }
+    if (entry.quoteSessionId !== session) {
+      invalidateQuote(entry);
+      entry.quoteSessionId = session;
+    }
   }
   if (isQuoteRow(row) && !isRecord(payload)) {
     invalidateQuote(entry);
@@ -678,6 +691,40 @@ function isQuoteRow(row: RawTapeRow): boolean {
       (BITVAVO_BOOK_CHANNELS.includes(row.channel) ||
         BITVAVO_TICKER_CHANNELS.includes(row.channel)))
   );
+}
+
+function isHyperliquidPriceRow(row: RawTapeRow): boolean {
+  return (
+    row.venue === "hyperliquid" &&
+    row.direction === "inbound" &&
+    ["trades", "bbo", "activeAssetCtx"].includes(row.channel)
+  );
+}
+
+function refuseHyperliquidIdentity(entry: InstrumentState): never {
+  invalidateQuote(entry, "Hyperliquid payload coin does not match the BTC-PERP capture");
+  entry.tape.lastTrade = undefined;
+  entry.tape.lastContext = undefined;
+  entry.tape.recentTrades = [];
+  throw new Error("Hyperliquid BTC-PERP payload coin is missing, invalid or does not match BTC.");
+}
+
+function validateHyperliquidIdentity(
+  entry: InstrumentState,
+  row: RawTapeRow,
+  payload: unknown,
+): void {
+  if (row.product !== "BTC-PERP" || !isRecord(payload)) refuseHyperliquidIdentity(entry);
+  if (row.channel === "trades") {
+    if (
+      !Array.isArray(payload.data) ||
+      payload.data.some((item: unknown) => !isRecord(item) || item.coin !== "BTC")
+    ) {
+      refuseHyperliquidIdentity(entry);
+    }
+  } else if (!isRecord(payload.data) || payload.data.coin !== "BTC") {
+    refuseHyperliquidIdentity(entry);
+  }
 }
 
 function invalidateQuote(

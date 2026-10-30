@@ -218,10 +218,23 @@ export function MarketsScreen({
   const strip = stripPoll.data;
   const mid = usePublicBtcPerp(token);
   const origin = stripOrigin(strip);
+  const nowIso = useNow();
+  const quoteReadError = stripPoll.degraded
+    ? `capture strip refresh failed · ${stripPoll.error ?? "unreadable response"}`
+    : tapePoll.degraded
+      ? `market tape refresh failed · ${tapePoll.error ?? "unreadable response"}`
+      : undefined;
+  const quoteTape: MarketTapeResponse =
+    quoteReadError === undefined ? tapePoll.data : { ok: false, error: quoteReadError };
 
   const freshMaxS = strip.ok ? strip.strip.fresh_max_s : 180;
   const rows = strip.ok
-    ? applyStoredTapeQuote(marketsRowsFromBoundVenues(strip.strip.venues), tapePoll.data, freshMaxS)
+    ? applyStoredTapeQuote(
+        marketsRowsFromBoundVenues(strip.strip.venues),
+        quoteTape,
+        freshMaxS,
+        nowIso,
+      )
     : [];
   const soak = soakMarkRow(soakPnl);
 

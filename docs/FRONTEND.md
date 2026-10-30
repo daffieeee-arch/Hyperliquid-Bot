@@ -125,6 +125,9 @@ control, and on mobile the sidebar collapses into a drawer. Routes:
   **UNAVAILABLE** carries the honest reason (capture MISSING, tape unreadable,
   no trade/BBO decoded yet). One bad venue does not clear the others. No venue
   API is called from the browser.
+  The client clock keeps aging each source while reads are paused or in
+  flight; it never counts as a new read. A failed tape or capture-strip poll
+  makes the main quote table **UNAVAILABLE** until both reads recover.
 - **L2 availability requires a snapshot.** The stored reader starts with at
   most three recent parts and does not scan history for a bootstrap. L2
   deltas without a snapshot in that window cannot create a BBO. An incomplete
@@ -135,6 +138,10 @@ control, and on mobile the sidebar collapses into a drawer. Routes:
   omits an unavailable `lastBbo` and can supply `bboUnavailableReason` rather
   than inventing a Mid. Before every read, including a cache hit, tape and
   capture-strip reuse the same schema/path/run/signing claim validation.
+  Missing/invalid quote-session identity invalidates a known book and cannot
+  bootstrap a new one. Hyperliquid trade/BBO/context payloads must identify
+  `coin: BTC` inside the `BTC-PERP` envelope; contradictions clear retained
+  financial values and fail the venue read.
 - **Readable at desk density.** Body 15px (hybrid) / 14px (terminal), meta
   and eyebrows 12px, table body 13px with 11.5px muted headers, badges ≥ 11px.
   Primary Last / Mid cells use `.quote-primary` (15.2px, 16px on phones,

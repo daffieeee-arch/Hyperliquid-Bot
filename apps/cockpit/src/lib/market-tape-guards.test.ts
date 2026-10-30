@@ -117,6 +117,30 @@ describe("bounded L2 quote provenance", () => {
     expect(snapshotInstruments(state)[0]?.lastBbo?.ask).toBe("101.00");
   });
 
+  it.each([undefined, "", " ", "public-1 ", null, 1])(
+    "refuses an update with invalid session identity %j and requires a fresh valid snapshot",
+    (session) => {
+      const state = createVenueTapeState();
+      applyTapeRow(state, snapshot());
+      applyTapeRow(state, {
+        ...bookRow({
+          message_type: "update",
+          events: [
+            { side: "bid", price: "100.00", qty: "0" },
+            { side: "bid", price: "99.00", qty: "1" },
+          ],
+        }),
+        session_id: session as string | undefined,
+      });
+      expect(snapshotInstruments(state)[0]?.lastBbo).toBeUndefined();
+      expect(snapshotInstruments(state)[0]?.bboUnavailableReason).toMatch(/session identity/);
+      applyTapeRow(state, bookRow({ message_type: "update", events: levels }));
+      expect(snapshotInstruments(state)[0]?.lastBbo).toBeUndefined();
+      applyTapeRow(state, snapshot());
+      expect(snapshotInstruments(state)[0]?.lastBbo?.bid).toBe("100.00");
+    },
+  );
+
   it.each([
     ["session", "disconnected"],
     ["session", "reconnected"],
@@ -183,6 +207,70 @@ describe("bounded L2 quote provenance", () => {
   });
 });
 
+describe("Hyperliquid inner coin identity", () => {
+  function hlRow(channel: string, coin: unknown): RawTapeRow {
+    const data =
+      channel === "trades"
+        ? [{ coin, px: "2000", sz: "1", side: "B", time: 1_788_631_200_000 }]
+        : channel === "bbo"
+          ? {
+              coin,
+              bbo: [
+                { px: "1999", sz: "1" },
+                { px: "2001", sz: "1" },
+              ],
+            }
+          : { coin, ctx: { markPx: "2000", funding: "0.001" } };
+    return {
+      ...bookRow({ data }),
+      venue: "hyperliquid",
+      product: "BTC-PERP",
+      channel,
+      direction: "inbound",
+      frame_type: "text",
+    };
+  }
+
+  it.each(["trades", "bbo", "activeAssetCtx"])("accepts an explicit BTC %s identity", (channel) => {
+    const state = createVenueTapeState();
+    applyTapeRow(state, hlRow(channel, "BTC"));
+    const item = snapshotInstruments(state)[0];
+    if (item === undefined) throw new Error("expected decoded BTC instrument");
+    expect(item.tradeCount + item.bboCount + item.contextCount).toBe(1);
+  });
+
+  it.each(["trades", "bbo", "activeAssetCtx"])(
+    "clears retained values and fails closed on bad %s identity",
+    (channel) => {
+      for (const coin of ["ETH", undefined, "", "btc", 1]) {
+        const state = createVenueTapeState();
+        for (const goodChannel of ["trades", "bbo", "activeAssetCtx"])
+          applyTapeRow(state, hlRow(goodChannel, "BTC"));
+        expect(() => applyTapeRow(state, hlRow(channel, coin))).toThrow(/payload coin/);
+        const item = snapshotInstruments(state)[0];
+        expect(item?.lastTrade).toBeUndefined();
+        expect(item?.lastBbo).toBeUndefined();
+        expect(item?.lastContext).toBeUndefined();
+        expect(item?.recentTrades).toEqual([]);
+      }
+    },
+  );
+
+  it("validates the entire trade batch before accepting any item", () => {
+    const state = createVenueTapeState();
+    const mixed = hlRow("trades", "BTC");
+    mixed.payload = JSON.stringify({
+      data: [
+        { coin: "BTC", px: "100000", sz: "1", side: "B" },
+        { coin: "ETH", px: "2000", sz: "1", side: "B" },
+      ],
+    });
+    expect(() => applyTapeRow(state, mixed)).toThrow(/payload coin/);
+    expect(snapshotInstruments(state)[0]?.tradeCount).toBe(0);
+    expect(snapshotInstruments(state)[0]?.lastTrade).toBeUndefined();
+  });
+});
+
 describe("capture claim validation before tape ingestion or cache hits", () => {
   function prepare() {
     const root = mkdtempSync(join(tmpdir(), "market-tape-claim-"));
@@ -233,5 +321,39 @@ describe("capture claim validation before tape ingestion or cache hits", () => {
     );
     expect(result.tape.status).toBe("error");
     expect(result.tape.instruments).toEqual([]);
+  });
+
+  it("refuses an inconsistent payload in a new part instead of serving earlier cached quotes", async () => {
+    const { run, env } = prepare();
+    const contract = VENUE_CAPTURE_CONTRACTS.hl;
+    expect(
+      (await loadVenueMarketTape(contract, env, repoRoot, {}, observedAt)).tape.instruments[0]
+        ?.lastBbo,
+    ).toBeDefined();
+    writeFileSync(join(run, "raw/part-000002.parquet"), Buffer.alloc(16));
+    const bad = {
+      ...bookRow({
+        data: {
+          coin: "ETH",
+          bbo: [
+            { px: "1999", sz: "1" },
+            { px: "2001", sz: "1" },
+          ],
+        },
+      }),
+      venue: "hyperliquid",
+      product: "BTC-PERP",
+      channel: "bbo",
+      direction: "inbound",
+      frame_type: "text",
+    };
+    const { payload, ...raw } = bad;
+    vi.mocked(parquet.parquetReadObjects).mockResolvedValue([{ ...raw, payload_bytes: payload }]);
+    for (let read = 0; read < 2; read += 1) {
+      const result = await loadVenueMarketTape(contract, env, repoRoot, {}, observedAt);
+      expect(result.tape.status).toBe("error");
+      expect(result.tape.error).toMatch(/payload coin/);
+      expect(result.tape.instruments).toEqual([]);
+    }
   });
 });

@@ -451,6 +451,20 @@ describe("MARKETS quotes", () => {
     });
   });
 
+  it("ages each retained source against display time without a subsequent backend read", () => {
+    const rows = marketsRowsFromBoundVenues(venues);
+    const before = applyStoredTapeQuote(rows, storedTape, 180)[1];
+    expect(before?.lastQuote.state).toBe("ok");
+    expect(before?.midQuote.state).toBe("ok");
+    const expired = applyStoredTapeQuote(rows, storedTape, 180, "2026-09-06T10:19:01.000Z")[1];
+    expect(expired?.lastQuote.state).toBe("stale");
+    expect(expired?.midQuote.state).toBe("stale");
+    expect(expired?.quoteState).toBe("stale");
+    const backwards = applyStoredTapeQuote(rows, storedTape, 10, "2026-09-06T10:00:00.000Z")[1];
+    expect(backwards?.quoteState).toBe("stale");
+    expect(backwards?.midQuote.age).toBe("14s");
+  });
+
   it("does not substitute another contract or quote currency", () => {
     const venue = storedTape.tape.venues.find((item) => item.id === "binance");
     if (venue === undefined) throw new Error("missing test venue");

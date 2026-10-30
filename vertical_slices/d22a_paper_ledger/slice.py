@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
@@ -38,6 +39,8 @@ from nautilus_trader.model.identifiers import ClientOrderId  # type: ignore[impo
 
 from hyperliquid_bot.paper_risk import (
     PaperOrderIntent,
+    PaperPositionKey,
+    PaperSignedPosition,
     extend_d01_risk_decision,
     paper_snapshot_for_bounded_book,
 )
@@ -60,6 +63,7 @@ from vertical_slices.d01_btc_perp.slice import (
 )
 from vertical_slices.d01_btc_perp.slice import run_identity as d01_run_identity
 from vertical_slices.d01_btc_perp.slice import source_identity as d01_source_identity
+from vertical_slices.paper_position import sandbox_position_truth
 
 D22A_SCHEMA: Final = "d22a-paper-ledger-v1"
 LEDGER_USER_VERSION: Final = 1
@@ -241,6 +245,7 @@ def make_pre_submit_record(
     reduce_only: bool,
     current_position: Decimal,
     risk_price: Decimal,
+    position: PaperSignedPosition | None = None,
 ) -> tuple[str, str, str, dict[str, object], LedgerRecord]:
     risk = evaluate_order_risk(
         side=side,
@@ -256,6 +261,7 @@ def make_pre_submit_record(
             equity_usdc=context.config.starting_cash_usdc,
             price=risk_price,
             current_position=current_position,
+            position=position,
         ),
         intent=PaperOrderIntent(
             side=side.name,
@@ -263,6 +269,11 @@ def make_pre_submit_record(
             price=risk_price,
             reduce_only=reduce_only,
             stop_distance_fraction=context.config.assumed_stop_distance_fraction,
+            asset_id=INSTRUMENT_ID.value,
+            venue_id=INSTRUMENT_ID.venue.value,
+            strategy_id="unavailable" if position is None else position.key.strategy_id,
+            position_key=None if position is None else position.key,
+            position_version=None if position is None else position.version,
         ),
         trading_mode=os.environ.get("TRADING_MODE"),
     )
@@ -614,6 +625,21 @@ def project_ledger(context: RunContext, records: Sequence[LedgerRecord]) -> Ledg
             reduce_only=reduce_only,
             current_position=position,
             risk_price=Decimal(_text(risk.get("risk_price"), "risk price")),
+            # Verification of this already-validated local ledger prefix is
+            # not an authorization to submit or resume a venue order.
+            position=PaperSignedPosition(
+                key=PaperPositionKey(
+                    "PAPER",
+                    f"d22a-ledger:{context.logical_run_identity}",
+                    INSTRUMENT_ID.venue.value,
+                    INSTRUMENT_ID.value,
+                    "D01SmokeStrategy",
+                ),
+                quantity=position,
+                version=f"ledger-prefix:{cursor}",
+                pending_order_quantity=Decimal("0"),
+                reconciled=True,
+            ),
         )
         if pre_submit != expected:
             raise LedgerConflictError("D22-A pre-submit record does not recompute exactly.")
@@ -704,6 +730,7 @@ class LedgerBackedD01Strategy(D01SmokeStrategy):
         self.ledger = ledger
         self.project_ids: list[tuple[str, str]] = []
         self.entry_fill_durable = False
+        self._paper_position_epoch = uuid.uuid4().hex
 
     def _submit_market(
         self,
@@ -730,6 +757,7 @@ class LedgerBackedD01Strategy(D01SmokeStrategy):
             reduce_only=reduce_only,
             current_position=self.signed_position_quantity,
             risk_price=Decimal(str(self.inputs[-1]["price"])),
+            position=sandbox_position_truth(self, epoch=self._paper_position_epoch),
         )
         self.risk_decisions.append(risk)
         if d01_intent_sha256 in self.intent_keys:

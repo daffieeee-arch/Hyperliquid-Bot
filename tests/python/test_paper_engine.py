@@ -2297,3 +2297,64 @@ def test_reduce_only_stop_exit_is_not_blocked_by_an_entry_notional_cap(tmp_path:
     assert engine.position_quantity == 0
     assert read_health(engine.health_path)["fill_count"] == 2
     engine.close()
+
+
+def test_negative_equity_still_allows_a_proven_emergency_reduction(tmp_path: Path) -> None:
+    engine = _engine(
+        tmp_path, "negative-equity-exit", strategy=_SilentAfterTargets((Decimal("-0.1"),))
+    )
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001"))
+    engine.on_event(_bbo(ns=1_000_000_000, bid="2000000", ask="2000001", ordinal=2))
+    assert engine.position_quantity == 0
+    health = read_health(engine.health_path)
+    assert health["fill_count"] == 2
+    assert health["equity_usdc"] == "-90094.600045"
+    assert health["fees_usdc"] == "94.500045"
+    assert _objects(_state(engine)["fills"])[-1]["side"] == "BUY"
+    engine.close()
+
+
+def test_unknown_position_truth_cannot_use_the_negative_equity_exception(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = _engine(
+        tmp_path, "unknown-emergency", strategy=_SilentAfterTargets((Decimal("-0.1"),))
+    )
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001"))
+    known = engine._paper_position()
+    monkeypatch.setattr(
+        engine, "_paper_position", lambda **_: dataclasses.replace(known, quantity=None)
+    )
+    engine.on_event(_bbo(ns=1_000_000_000, bid="2000000", ask="2000001", ordinal=2))
+    assert engine.position_quantity == Decimal("-0.1")
+    assert read_health(engine.health_path)["fill_count"] == 1
+    assert "unavailable or unreconciled" in json.dumps(_state(engine)["risk_rejections"])
+    engine.close()
+
+
+def test_pending_ioc_cannot_fill_under_a_different_account_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = _engine(
+        tmp_path,
+        "pending-account-binding",
+        strategy=ScriptedStrategy((Decimal("-0.1"), Decimal("0"))),
+        config=PaperEngineConfig(durable_ledger=False),
+    )
+    engine.on_event(_bbo(ns=0, bid="100000", ask="100001"))
+    engine.on_event(_bbo(ns=300_000_000, bid="100000", ask="100001", ordinal=2))
+    assert engine.position_quantity == Decimal("-0.1")
+    known = engine._paper_position()
+    wrong = dataclasses.replace(
+        known,
+        key=dataclasses.replace(known.key, account_id="other-account"),
+        pending_order_quantity=Decimal("0"),
+    )
+    monkeypatch.setattr(engine, "_paper_position", lambda **_: wrong)
+    engine.on_event(_bbo(ns=600_000_000, bid="100000", ask="100001", ordinal=3))
+    assert engine.position_quantity == Decimal("-0.1")
+    assert read_health(engine.health_path)["fill_count"] == 1
+    assert "identities do not match" in json.dumps(_state(engine)["risk_rejections"])
+    engine.close()

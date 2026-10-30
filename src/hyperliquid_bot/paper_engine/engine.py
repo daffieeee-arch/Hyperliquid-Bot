@@ -76,9 +76,12 @@ from hyperliquid_bot.paper_risk import (
     DEFAULT_PAPER_RISK_LIMITS,
     PAPER_DEFAULT_STOP_DISTANCE_FRACTION,
     PaperOrderIntent,
+    PaperPositionKey,
     PaperRiskLimits,
+    PaperSignedPosition,
     effective_stop_distance_fraction,
     evaluate_paper_hard_limits,
+    paper_position_rejection_reasons,
     paper_snapshot_for_bounded_book,
     size_paper_notional_usdc,
     size_paper_quantity,
@@ -255,6 +258,7 @@ class _WorkingOrder:
     clipped: bool
     # A kill flatten or stop exit: zero latency, never replaced by itself.
     immediate_exit: bool
+    position_key: PaperPositionKey
 
 
 @dataclass(frozen=True, slots=True)
@@ -290,6 +294,13 @@ class PaperEngine:
         )
         _require_strategy(self._strategy)
         self._store = RunStore(store_root, run_id, durable=self._config.durable_ledger)
+        self._position_key = PaperPositionKey(
+            environment=self._mode,
+            account_id=f"native-paper:{self._store.run_id}",
+            venue_id=self._config.venue,
+            instrument_id=self._config.instrument_id,
+            strategy_id=self._strategy.strategy_id,
+        )
         self._size_increment = size_increment(self._config.sz_decimals)
         self._max_price_decimals = perp_max_price_decimals(self._config.sz_decimals)
         self._position = PositionState(
@@ -958,6 +969,7 @@ class PaperEngine:
             reason=reason,
             clipped=clipped,
             immediate_exit=immediate,
+            position_key=self._position_key,
         )
         self._missing_flatten = False
         self._last_block = None
@@ -1021,7 +1033,26 @@ class PaperEngine:
         reduce_only: bool,
         received_ns: int,
         desired: _DesiredOrder,
+        evaluating_order: _WorkingOrder | None = None,
     ) -> bool:
+        position = self._paper_position(evaluating_order=evaluating_order)
+        reasons = paper_position_rejection_reasons(
+            position=position,
+            key=self._position_key if evaluating_order is None else evaluating_order.position_key,
+            version=position.version,
+            side=side,
+            quantity=quantity,
+            reduce_only=reduce_only,
+            trading_mode=self._mode,
+        )
+        if reasons:
+            self._reject(
+                reason="paper_risk",
+                detail="; ".join(reasons),
+                received_utc_ns=received_ns,
+                desired=desired,
+            )
+            return False
         equity = self._equity()
         if equity is None:
             if not reduce_only:
@@ -1051,6 +1082,7 @@ class PaperEngine:
             daily_pnl_usdc=self._last_daily_pnl,
             weekly_pnl_usdc=self._last_weekly_pnl,
             peak_equity_usdc=peak,
+            position=position,
         )
         decision = evaluate_paper_hard_limits(
             snapshot=snapshot,
@@ -1064,6 +1096,8 @@ class PaperEngine:
                 asset_id=self._config.instrument_id,
                 strategy_id=self._strategy.strategy_id,
                 venue_id=self._config.venue,
+                position_key=position.key,
+                position_version=position.version,
             ),
             limits=self._config.risk_limits,
             trading_mode=self._mode,
@@ -1077,6 +1111,24 @@ class PaperEngine:
             desired=desired,
         )
         return False
+
+    def _paper_position(
+        self, *, evaluating_order: _WorkingOrder | None = None
+    ) -> PaperSignedPosition:
+        # This engine owns one create-only local account and at most one IOC.
+        # Applying that same accepted order is not a second submission; any
+        # other pending order must settle/cancel before a new risk decision.
+        pending = Decimal("0")
+        if self._working is not None and self._working is not evaluating_order:
+            pending = self._working.quantity
+        return PaperSignedPosition(
+            key=self._position_key,
+            quantity=self._position.position_quantity,
+            version=f"{self._store.run_id}:{self._next_order_number}:{self._order_count}:{self._fill_count}",
+            pending_order_quantity=pending,
+            reconciled=not self._failed
+            and self._strategy.strategy_id == self._position_key.strategy_id,
+        )
 
     def _price_order(self, side: str) -> tuple[Decimal, Decimal] | None:
         """Return the real touch. A one-sided or crossed book is not a price."""
@@ -1159,6 +1211,16 @@ class PaperEngine:
         )
         if beyond_limit:
             return None, "price_band"
+        if working.reduce_only and not self._paper_risk_allows(
+            side=working.side,
+            quantity=working.quantity,
+            price=quote.price,
+            reduce_only=True,
+            received_ns=received_ns,
+            desired=_DesiredOrder(working.side, working.desired_quantity, True),
+            evaluating_order=working,
+        ):
+            return None, "risk_rejected"
         if not working.reduce_only and not self._entry_fill_allows(working, quote, received_ns):
             return None, "risk_rejected"
         return quote, None
@@ -1188,6 +1250,7 @@ class PaperEngine:
             reduce_only=False,
             received_ns=received_ns,
             desired=desired,
+            evaluating_order=working,
         )
 
     def _complete_ioc(

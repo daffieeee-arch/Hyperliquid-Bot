@@ -195,6 +195,49 @@ live path rather than copying it: the live cache is per collector process
 keeps one window per tape and product. The same identity with a different
 print raises `PaperTapeError`; a corrupt tape stops the replay.
 
+## Optional read-only cockpit snapshot
+
+Set the server-only `COCKPIT_NATIVE_PAPER_RUN_DIR` to one existing native
+PAPER run directory to select the native view at `/paper`. This reads
+`run-claim.json`, `state.json`, `health.json` and `ledger.jsonl`; it does not
+create or resume a run. Unset the variable to retain the existing COURSE-1
+view. An explicitly empty binding selects an UNBOUND native view; missing or
+invalid artifacts never fall back to COURSE-1 data. Requests cannot choose a
+filesystem path.
+
+SSR and `/api/native-paper-run` use the same `native-paper-cockpit-v1`
+projection. The existing cockpit refresh clock rereads the snapshot with
+no-store caching. Only PAPER, Hyperliquid and BTC-PERP are supported. No
+collector, account request, signing, deployment or durable-data write occurs.
+On the native `/paper` view, shell branding and refresh controls describe
+snapshot reads; the shell does not poll or display unrelated capture-origin
+badges. Other workspaces retain their capture context. The binding is resolved
+at server runtime, and only its presence is passed to the browser shell.
+
+Repository fixtures are DEMO; a bound non-fixture directory is a HISTORICAL
+SNAPSHOT with liveness unverified. Even `RUNNING` is only the recorded engine
+status. `observed_at_utc` is engine event/replay time, not a wall-clock
+heartbeat. The UI separates source observation, snapshot read time, run
+closure and read state; reading old artifacts does not make them fresh.
+
+Each JSON artifact is limited to 256 KiB; the complete ledger must fit within
+2 MiB and 5,000 records. Over-limit, malformed, failed or inconsistent
+artifacts fail closed with no economic snapshot. Partial writes are pending,
+missing files are missing, and source age above 180 seconds or a stale-data
+halt is stale. A failed browser refresh marks previously displayed values as
+not current. State arrays are bounded recent records; complete history and
+counts come from the validated ledger, with the last eight rows per category
+shown. Completed/canceled orders exclude accepted orders still open.
+
+The adapter checks source identity, overlapping projections, ledger counts
+and recent suffixes. There is no cross-file transaction or event commit
+watermark, so these checks do not certify atomic event completion. PnL
+remains assumed and not venue-reconciled; funding is not settled. Decimal
+strings and unavailable marks/equity remain exact or null. Realized PnL is
+gross of separately reported fees; cash is a simulated ledger balance, not
+free margin. No start-capital return or venue PnL is inferred. The reader
+does not expose potentially rounded JSON nanosecond timestamps as exact times.
+
 ## Residual limits
 
 - No queue position, no partial-book walk beyond the touch, no funding

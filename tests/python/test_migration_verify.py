@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import time
 from pathlib import Path
 from typing import cast
 
@@ -536,3 +537,60 @@ def test_same_device_nested_mount_id_rejected_before_claim_read(
     report = verifier.inventory(root, identity, copy_complete=True)
     assert "invalid" in set(verifier._states(report))
     assert cast(list[dict[str, object]], report["captures"])[0]["state"] == "invalid"
+
+
+@pytest.mark.parametrize("invalid_suffix", [False, True])
+def test_short_reads_validate_the_whole_json_document(
+    mounted: tuple[Path, verifier.MountIdentity],
+    monkeypatch: pytest.MonkeyPatch,
+    invalid_suffix: bool,
+) -> None:
+    root, identity = mounted
+    run = _run(root)
+    claim_path = run / "capture-claim.json"
+    # In the suffix case the first read is itself valid JSON; trailing bytes
+    # still belong to the stable file. The valid case splits JSON mid-document.
+    content = claim_path.read_bytes()
+    if invalid_suffix:
+        claim_path.write_bytes(content + b"not-valid-json-trailing-bytes")
+    original_read = os.read
+    chunks = 0
+
+    def short_read(descriptor: int, size: int) -> bytes:
+        nonlocal chunks
+        chunks += 1
+        if Path(os.readlink(f"/proc/self/fd/{descriptor}")) == claim_path:
+            return original_read(
+                descriptor, min(size, len(content) if invalid_suffix else len(content) // 2)
+            )
+        return original_read(descriptor, size)
+
+    monkeypatch.setattr(os, "read", short_read)
+    report = verifier.inventory(root, identity, copy_complete=True)
+    assert _first_run(report)["claim"] == ("invalid" if invalid_suffix else "present")
+    assert chunks >= 3  # claim content, claim EOF/suffix, plus health
+
+
+def test_premature_eof_cannot_accept_a_valid_json_prefix(
+    mounted: tuple[Path, verifier.MountIdentity], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, identity = mounted
+    path = root / "claim.json"
+    prefix = b'{"signing":false}'
+    path.write_bytes(prefix + b"not-valid-json-trailing-bytes")
+    original_read = os.read
+    first = True
+
+    def truncated_read(descriptor: int, size: int) -> bytes:
+        nonlocal first
+        if first:
+            first = False
+            return original_read(descriptor, len(prefix))
+        return b""
+
+    monkeypatch.setattr(os, "read", truncated_read)
+    observed, _ = verifier._bound_mount(root, identity)
+    scan = verifier._Scan(observed, verifier.ScanLimits(), time.monotonic)
+    state, document = verifier._json_file(scan, path)
+    assert state == "in_progress"
+    assert document is None

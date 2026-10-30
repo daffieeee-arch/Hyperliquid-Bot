@@ -273,8 +273,18 @@ def _json_file(scan: _Scan, path: Path) -> tuple[str, dict[str, object] | None]:
             if before.st_size > scan.limits.json_bytes:
                 scan.reasons.add("json_byte_limit")
                 return "not_checked", None
-            content = os.read(descriptor, scan.limits.json_bytes + 1)
+            content = bytearray()
+            # A short read can end at a valid JSON prefix. Read through EOF,
+            # within the byte budget, before accepting the complete document.
+            while len(content) <= scan.limits.json_bytes:
+                scan.tick()
+                chunk = os.read(descriptor, scan.limits.json_bytes + 1 - len(content))
+                if not chunk:
+                    break
+                content.extend(chunk)
             if _signature(before) != _signature(os.fstat(descriptor)):
+                return "in_progress", None
+            if len(content) != before.st_size:
                 return "in_progress", None
         finally:
             os.close(descriptor)

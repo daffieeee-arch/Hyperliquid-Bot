@@ -1,5 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
 
+import type { MarketTapeResponse } from "../../src/lib/market-tape-types";
+import type { VenueCaptureStripResponse } from "../../src/lib/types";
+
 /**
  * The public Hyperliquid routes are stubbed so the regress never depends on the
  * network: the cockpit must keep its PAPER chrome and labels even when the
@@ -23,6 +26,104 @@ async function stubPublicMarketRoutes(page: Page): Promise<void> {
 }
 
 test.describe("PAPER cockpit chrome", () => {
+  test("keeps Last/Mid freshness separate and clears prices during a run-selection race", async ({
+    page,
+  }) => {
+    await stubPublicMarketRoutes(page);
+    const response = await page.request.get("/api/venue-capture-health");
+    const strip = (await response.json()) as VenueCaptureStripResponse;
+    if (!strip.ok) throw new Error("fixture capture strip unavailable");
+    const hl = strip.strip.venues.find((venue) => venue.id === "hl");
+    if (hl === undefined) throw new Error("fixture HL chip unavailable");
+    const observed = new Date().toISOString();
+    const fresh = new Date(Date.now() - 1_000).toISOString();
+    const old = new Date(Date.now() - 36_000_000).toISOString();
+    const run = "browser-quote-provenance";
+    strip.strip.venues = [{ ...hl, run_id: run }];
+    const tape: MarketTapeResponse = {
+      ok: true,
+      tape: {
+        observed_at: observed,
+        cache: { runsCached: 1, partsParsedThisCall: 0 },
+        venues: [
+          {
+            id: "hl",
+            chip: "HL",
+            series: "DATA-1A",
+            venue: "hyperliquid",
+            contractProduct: "BTC-PERP",
+            runId: run,
+            bindingSource: "query",
+            status: "ok",
+            error: undefined,
+            observedAt: observed,
+            parts: {
+              published: 1,
+              processed: 1,
+              skippedOnColdStart: 0,
+              bytes: 1,
+              newestPartName: undefined,
+              newestPartMtimeUtc: undefined,
+            },
+            lastEventUtc: fresh,
+            lastEventAgeS: 1,
+            publicationLagS: 0,
+            note: "Synthetic browser fixture only",
+            instruments: [
+              {
+                product: "BTC-PERP",
+                kind: "perpetual",
+                base: "BTC",
+                quote: "USDC",
+                tradeCount: 1,
+                bboCount: 1,
+                contextCount: 0,
+                lastTrade: { at: fresh, price: "81180.10", size: "1", side: "buy" },
+                lastBbo: {
+                  at: old,
+                  bid: "81179.90",
+                  ask: "81180.10",
+                  bidSize: "1",
+                  askSize: "1",
+                  spread: "0.20",
+                  spreadBps: "0.02",
+                },
+                lastContext: undefined,
+                recentTrades: [],
+                lastEventUtc: fresh,
+                channelsSeen: ["trades", "bbo"],
+              },
+            ],
+          },
+        ],
+      },
+    };
+    await page.route("**/api/venue-capture-health**", async (route) => {
+      await route.fulfill({ json: strip });
+    });
+    await page.route("**/api/market-tape**", async (route) => {
+      await route.fulfill({ json: tape });
+    });
+    await page.goto("/markets");
+    const row = page
+      .locator("section.card")
+      .filter({
+        has: page.getByRole("heading", { name: "Bound venues · last / mid", exact: true }),
+      })
+      .locator("tbody tr");
+    await expect(row).toHaveCount(1);
+    await expect(row.locator("td").nth(2)).toContainText("FRESH");
+    await expect(row.locator("td").nth(3)).toContainText("STALE");
+    await expect(row.locator("td").nth(3)).toContainText("81,180.00");
+    await expect(row.locator("td").nth(5)).toContainText("STALE");
+
+    tape.tape.venues[0]!.runId = "other-selected-run";
+    await page.getByRole("button", { name: "Refresh now", exact: true }).click();
+    await expect(row.locator("td").nth(2)).toHaveText("UNAVAILABLE");
+    await expect(row.locator("td").nth(3)).toHaveText("UNAVAILABLE");
+    await expect(row).toContainText("run does not match");
+  });
+
   test("shows PAPER fail-closed chrome and no LIVE affordances on every workspace", async ({
     page,
   }) => {

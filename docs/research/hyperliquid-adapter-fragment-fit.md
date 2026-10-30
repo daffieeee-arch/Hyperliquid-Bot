@@ -126,9 +126,9 @@ is performed to make the probe pass.
 
 Normal CI does **not** install Nautilus or execute these actual adapter
 methods. It checks frozen evidence arithmetic/limits/source linkage and the
-runner's pre-import and coroutine guards. Existing Python change areas cover
-`fit_gates/`, the tests and this research documentation; the docs-read property
-guard remains in the checks. No new heavy CI job or parallel workflow is
+runner's pre-import and coroutine guards. Changes under `fit_gates/` and the new tests select the existing Python
+jobs. Documentation-only changes retain the normal docs-only skip, and the
+docs-read property guard remains in the checks. No new heavy CI job or parallel workflow is
 needed. Repeating the actual optional runner belongs to a separately reported
 isolated check. No merge, future probe or green CI authorizes network testing,
 keys, deployment, automatic promotion or real capital.

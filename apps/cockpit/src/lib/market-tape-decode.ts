@@ -18,16 +18,19 @@ export type RawTapeRow = {
   venue: string;
   product: string;
   channel: string;
+  session_id?: string;
   direction: string;
   frame_type: string;
   received_utc_ns: bigint;
   payload: string;
 };
 
-type BookSide = Map<string, string>;
+type BookLevel = { price: string; quantity: string };
+type BookSide = Map<string, BookLevel>;
 
 type InstrumentState = {
   tape: InstrumentTape;
+  quoteSessionId: string | undefined;
   /** Kraken / Bitvavo L2 top-of-book is reconstructed from snapshot + updates. */
   book: { bids: BookSide; asks: BookSide } | undefined;
   /** Bitvavo ticker sends partial updates; keep the last complete values. */
@@ -203,6 +206,7 @@ function instrument(state: VenueTapeState, venue: string, product: string): Inst
       channelsSeen: [],
     },
     book: undefined,
+    quoteSessionId: undefined,
     ticker: undefined,
   };
   state.instruments.set(product, created);
@@ -255,10 +259,22 @@ function setBbo(
   bidSize: string | undefined,
   askSize: string | undefined,
 ): void {
+  if (
+    !positiveDecimal(bid) ||
+    !positiveDecimal(ask) ||
+    compareDecimals(bid, ask) >= 0 ||
+    (bidSize !== undefined && !positiveDecimal(bidSize)) ||
+    (askSize !== undefined && !positiveDecimal(askSize))
+  ) {
+    entry.tape.lastBbo = undefined;
+    entry.tape.bboUnavailableReason = "stored BBO is incomplete, crossed or invalid";
+    return;
+  }
   const { spread, spreadBps } = computeSpread(bid, ask);
   const bbo: TapeBbo = { at, bid, bidSize, ask, askSize, spread, spreadBps };
   entry.tape.bboCount += 1;
   entry.tape.lastBbo = bbo;
+  delete entry.tape.bboUnavailableReason;
 }
 
 function side(
@@ -285,6 +301,7 @@ function applyHyperliquid(
   if (!isRecord(payload) || row.direction !== "inbound") {
     return;
   }
+  if (row.channel === "bbo") entry.tape.lastBbo = undefined;
   if (row.channel === "trades" && Array.isArray(payload.data)) {
     for (const item of payload.data) {
       if (!isRecord(item)) {
@@ -361,6 +378,7 @@ function applyBinance(entry: InstrumentState, row: RawTapeRow, payload: unknown,
     return;
   }
   if (row.channel === "normalized_spot_bbo") {
+    entry.tape.lastBbo = undefined;
     const bid = text(payload.bid_price);
     const ask = text(payload.ask_price);
     if (bid !== undefined && ask !== undefined) {
@@ -407,31 +425,46 @@ function applyBookFrame(
   payload: Record<string, unknown>,
   at: string,
 ): void {
-  if (!Array.isArray(payload.events)) {
+  if (
+    !Array.isArray(payload.events) ||
+    (payload.message_type !== "snapshot" && payload.message_type !== "update")
+  ) {
+    invalidateQuote(entry, "stored L2 frame is malformed; a new snapshot is required");
     return;
   }
-  const book = entry.book ?? { bids: new Map<string, string>(), asks: new Map<string, string>() };
-  if (payload.message_type === "snapshot") {
-    book.bids.clear();
-    book.asks.clear();
+  // A bounded cold start may miss the bootstrap. Deltas cannot establish one.
+  const book =
+    payload.message_type === "snapshot"
+      ? { bids: new Map<string, BookLevel>(), asks: new Map<string, BookLevel>() }
+      : entry.book;
+  if (book === undefined) {
+    entry.tape.lastBbo = undefined;
+    entry.tape.bboUnavailableReason = "no L2 snapshot in the bounded stored tape";
+    return;
   }
+  if (payload.message_type === "update" && payload.events.length === 0) return;
   for (const item of payload.events) {
     if (!isRecord(item)) {
-      continue;
+      invalidateQuote(entry, "stored L2 frame is malformed; a new snapshot is required");
+      return;
     }
     const price = text(item.price);
     const qty = text(item.qty ?? item.quantity);
-    if (price === undefined || qty === undefined) {
-      continue;
-    }
     const target = item.side === "bid" ? book.bids : item.side === "ask" ? book.asks : undefined;
-    if (target === undefined) {
-      continue;
+    if (
+      target === undefined ||
+      price === undefined ||
+      qty === undefined ||
+      !positiveDecimal(price) ||
+      !nonnegativeDecimal(qty)
+    ) {
+      invalidateQuote(entry, "stored L2 level is invalid; a new snapshot is required");
+      return;
     }
-    if (Number(qty) === 0 || item.action === "delete") {
-      target.delete(price);
+    if (!positiveDecimal(qty) || item.action === "delete") {
+      target.delete(decimalKey(price));
     } else {
-      target.set(price, qty);
+      target.set(decimalKey(price), { price, quantity: qty });
     }
   }
   entry.book = book;
@@ -439,6 +472,10 @@ function applyBookFrame(
   const ask = bestOf(book.asks, "min");
   if (bid !== undefined && ask !== undefined) {
     setBbo(entry, at, bid[0], ask[0], bid[1], ask[1]);
+    if (entry.tape.lastBbo === undefined) entry.book = undefined;
+  } else {
+    entry.tape.lastBbo = undefined;
+    entry.tape.bboUnavailableReason = "stored L2 book has no complete bid and ask";
   }
 }
 
@@ -488,17 +525,39 @@ function applyBitvavo(entry: InstrumentState, row: RawTapeRow, payload: unknown,
   }
 }
 
+function nonnegativeDecimal(value: string): boolean {
+  return /^\d+(?:\.\d+)?$/.test(value);
+}
+
+function positiveDecimal(value: string): boolean {
+  return nonnegativeDecimal(value) && /[1-9]/.test(value);
+}
+
+function decimalKey(value: string): string {
+  const [whole = "0", fraction = ""] = value.split(".");
+  const integer = whole.replace(/^0+(?=\d)/, "");
+  const fractional = fraction.replace(/0+$/, "");
+  return fractional === "" ? integer : `${integer}.${fractional}`;
+}
+
+/** Compare validated decimal strings without rounding away a tick. */
+function compareDecimals(left: string, right: string): number {
+  const [leftWhole = "0", leftFraction = ""] = left.split(".");
+  const [rightWhole = "0", rightFraction = ""] = right.split(".");
+  const scale = Math.max(leftFraction.length, rightFraction.length);
+  const a = BigInt(leftWhole + leftFraction.padEnd(scale, "0"));
+  const b = BigInt(rightWhole + rightFraction.padEnd(scale, "0"));
+  return a === b ? 0 : a < b ? -1 : 1;
+}
+
 function bestOf(sideMap: BookSide, pick: "max" | "min"): [string, string] | undefined {
   let best: [string, string] | undefined;
-  let bestValue = pick === "max" ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY;
-  for (const [price, qty] of sideMap) {
-    const value = Number(price);
-    if (!Number.isFinite(value)) {
-      continue;
-    }
-    if ((pick === "max" && value > bestValue) || (pick === "min" && value < bestValue)) {
-      bestValue = value;
-      best = [price, qty];
+  for (const { price, quantity } of sideMap.values()) {
+    if (
+      best === undefined ||
+      (pick === "max" ? compareDecimals(price, best[0]) > 0 : compareDecimals(price, best[0]) < 0)
+    ) {
+      best = [price, quantity];
     }
   }
   return best;
@@ -551,7 +610,58 @@ export function applyTapeRow(state: VenueTapeState, row: RawTapeRow): void {
   try {
     payload = JSON.parse(row.payload);
   } catch {
+    if (isHyperliquidPriceRow(row)) refuseHyperliquidIdentity(entry);
+    if (isQuoteRow(row)) invalidateQuote(entry);
     return;
+  }
+  if (isHyperliquidPriceRow(row)) validateHyperliquidIdentity(entry, row, payload);
+  if (isQuoteRow(row)) {
+    const session = row.session_id;
+    if (typeof session !== "string" || session === "" || session !== session.trim()) {
+      invalidateQuote(
+        entry,
+        "quote session identity is missing or invalid; a new snapshot is required",
+      );
+      entry.quoteSessionId = undefined;
+      return;
+    }
+    if (entry.quoteSessionId !== session) {
+      invalidateQuote(entry);
+      entry.quoteSessionId = session;
+    }
+  }
+  if (isQuoteRow(row) && !isRecord(payload)) {
+    invalidateQuote(entry);
+    return;
+  }
+
+  if (
+    isRecord(payload) &&
+    isMarker(row) &&
+    // Kraken L3 has its own connection, separate from the public L2/trades.
+    !(row.venue === "kraken" && payload.stream === "l3") &&
+    ((row.channel === "session" &&
+      [
+        "session_started",
+        "connected",
+        "reconnected",
+        "disconnected",
+        "connection_failed",
+        "reconnect_failed",
+        "session_stopped",
+      ].includes(String(payload.event))) ||
+      (row.channel === "data_quality" &&
+        [
+          "gap_detected",
+          "checksum_error",
+          "ordering_error",
+          "schema_error",
+          "sequence_error",
+          "sequence_gap",
+          "sequence_overlap",
+        ].includes(String(payload.event))))
+  ) {
+    invalidateQuotes(state);
   }
 
   switch (row.venue) {
@@ -570,6 +680,65 @@ export function applyTapeRow(state: VenueTapeState, row: RawTapeRow): void {
     default:
       return;
   }
+}
+
+function isQuoteRow(row: RawTapeRow): boolean {
+  return (
+    (row.venue === "hyperliquid" && row.channel === "bbo") ||
+    (row.venue === "binance" && row.channel === "normalized_spot_bbo") ||
+    (row.venue === "kraken" && row.channel === "normalized_book") ||
+    (row.venue === "bitvavo" &&
+      (BITVAVO_BOOK_CHANNELS.includes(row.channel) ||
+        BITVAVO_TICKER_CHANNELS.includes(row.channel)))
+  );
+}
+
+function isHyperliquidPriceRow(row: RawTapeRow): boolean {
+  return (
+    row.venue === "hyperliquid" &&
+    row.direction === "inbound" &&
+    ["trades", "bbo", "activeAssetCtx"].includes(row.channel)
+  );
+}
+
+function refuseHyperliquidIdentity(entry: InstrumentState): never {
+  invalidateQuote(entry, "Hyperliquid payload coin does not match the BTC-PERP capture");
+  entry.tape.lastTrade = undefined;
+  entry.tape.lastContext = undefined;
+  entry.tape.recentTrades = [];
+  throw new Error("Hyperliquid BTC-PERP payload coin is missing, invalid or does not match BTC.");
+}
+
+function validateHyperliquidIdentity(
+  entry: InstrumentState,
+  row: RawTapeRow,
+  payload: unknown,
+): void {
+  if (row.product !== "BTC-PERP" || !isRecord(payload)) refuseHyperliquidIdentity(entry);
+  if (row.channel === "trades") {
+    if (
+      !Array.isArray(payload.data) ||
+      payload.data.some((item: unknown) => !isRecord(item) || item.coin !== "BTC")
+    ) {
+      refuseHyperliquidIdentity(entry);
+    }
+  } else if (!isRecord(payload.data) || payload.data.coin !== "BTC") {
+    refuseHyperliquidIdentity(entry);
+  }
+}
+
+function invalidateQuote(
+  entry: InstrumentState,
+  reason = "capture quote invalidated; a fresh snapshot or complete quote is required",
+): void {
+  entry.book = undefined;
+  entry.ticker = undefined;
+  entry.tape.lastBbo = undefined;
+  entry.tape.bboUnavailableReason = reason;
+}
+
+function invalidateQuotes(state: VenueTapeState): void {
+  for (const entry of state.instruments.values()) invalidateQuote(entry);
 }
 
 /** Serialisable snapshot of the state, instruments sorted for stable output. */

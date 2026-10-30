@@ -25,6 +25,7 @@ import {
   marketsRowsFromBoundVenues,
   soakMarkRow,
   type MarketQuoteState,
+  type MarketQuoteRead,
   type MarketRow,
 } from "../../lib/markets";
 import type { MarketTapeResponse } from "../../lib/market-tape-types";
@@ -106,15 +107,16 @@ function QuoteWhen({ row }: { row: MarketRow }) {
         {clock}
       </span>
       <Detail nowrap>{ago}</Detail>
-      <Detail nowrap>{quoteSourceLabel(row)}</Detail>
+      <Detail nowrap>{`${quoteSourceLabel(row)} · oldest available source`}</Detail>
     </>
   );
 }
 
-function QuoteCell({ value, reason }: { value: string; reason: string | undefined }) {
+export function MarketQuoteCell({ value, read }: { value: string; read: MarketQuoteRead }) {
+  const nowIso = useNow();
   if (value === MARKET_QUOTE_UNAVAILABLE) {
     return (
-      <span className="quote-primary tone-warn" title={reason}>
+      <span className="quote-primary tone-warn" title={read.reason}>
         UNAVAILABLE
       </span>
     );
@@ -122,7 +124,24 @@ function QuoteCell({ value, reason }: { value: string; reason: string | undefine
   if (value === "—") {
     return <span className="quote-primary tone-muted">…</span>;
   }
-  return <span className="quote-primary">{formatGroupedNumber(value)}</span>;
+  const age =
+    read.at === undefined
+      ? "source time unavailable"
+      : updatedAgoLabel(read.at, nowIso, `updated ${read.age} ago`);
+  return (
+    <>
+      <span
+        className={`quote-primary${read.state === "ok" ? "" : " tone-warn"}`}
+        title={read.reason}
+      >
+        {formatGroupedNumber(value)}
+      </span>
+      <Detail
+        title={localClockLabel(read.at)}
+        nowrap
+      >{`${read.state === "unavailable" ? "UNAVAILABLE" : QUOTE_STATE_LABEL[read.state]} · ${age}`}</Detail>
+    </>
+  );
 }
 
 const columns: DataTableColumns<MarketRow> = helper.columns([
@@ -140,11 +159,11 @@ const columns: DataTableColumns<MarketRow> = helper.columns([
   }),
   helper.accessor("last", {
     header: "Last",
-    cell: ({ row }) => <QuoteCell value={row.original.last} reason={row.original.quoteReason} />,
+    cell: ({ row }) => <MarketQuoteCell value={row.original.last} read={row.original.lastQuote} />,
   }),
   helper.accessor("mid", {
     header: "Mid",
-    cell: ({ row }) => <QuoteCell value={row.original.mid} reason={row.original.quoteReason} />,
+    cell: ({ row }) => <MarketQuoteCell value={row.original.mid} read={row.original.midQuote} />,
   }),
   helper.accessor("quoteAge", {
     header: "When",
@@ -199,10 +218,23 @@ export function MarketsScreen({
   const strip = stripPoll.data;
   const mid = usePublicBtcPerp(token);
   const origin = stripOrigin(strip);
+  const nowIso = useNow();
+  const quoteReadError = stripPoll.degraded
+    ? `capture strip refresh failed · ${stripPoll.error ?? "unreadable response"}`
+    : tapePoll.degraded
+      ? `market tape refresh failed · ${tapePoll.error ?? "unreadable response"}`
+      : undefined;
+  const quoteTape: MarketTapeResponse =
+    quoteReadError === undefined ? tapePoll.data : { ok: false, error: quoteReadError };
 
   const freshMaxS = strip.ok ? strip.strip.fresh_max_s : 180;
   const rows = strip.ok
-    ? applyStoredTapeQuote(marketsRowsFromBoundVenues(strip.strip.venues), tapePoll.data, freshMaxS)
+    ? applyStoredTapeQuote(
+        marketsRowsFromBoundVenues(strip.strip.venues),
+        quoteTape,
+        freshMaxS,
+        nowIso,
+      )
     : [];
   const soak = soakMarkRow(soakPnl);
 

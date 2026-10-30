@@ -54,6 +54,7 @@ function row(
     venue,
     product,
     channel,
+    session_id: "fixture-session",
     direction: local ? "local" : "inbound",
     frame_type: local ? "marker" : "text",
     received_utc_ns: 1_788_631_200_000_000_000n + BigInt(ordinal) * 1_000_000_000n,
@@ -110,8 +111,8 @@ describe("market tape decoding", () => {
         "trades",
         {
           data: [
-            { px: "100.0", sz: "0.5", side: "B", time: 1_788_631_201_000 },
-            { px: "99.5", sz: "0.1", side: "A", time: 1_788_631_201_500 },
+            { coin: "BTC", px: "100.0", sz: "0.5", side: "B", time: 1_788_631_201_000 },
+            { coin: "BTC", px: "99.5", sz: "0.1", side: "A", time: 1_788_631_201_500 },
           ],
         },
         1,
@@ -125,6 +126,7 @@ describe("market tape decoding", () => {
         "bbo",
         {
           data: {
+            coin: "BTC",
             time: 1_788_631_202_000,
             bbo: [
               { px: "99.0", sz: "2" },

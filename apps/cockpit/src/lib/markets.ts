@@ -17,6 +17,13 @@ export type MarketQuoteKind = "stored-tape" | "unavailable" | "soak-mark";
 /** Freshness of the quote itself, independent of the capture chip status. */
 export type MarketQuoteState = "ok" | "stale" | "unavailable";
 
+export type MarketQuoteRead = {
+  at: string | undefined;
+  age: string;
+  state: MarketQuoteState;
+  reason: string | undefined;
+};
+
 export type MarketRow = {
   id: VenueCaptureChip["id"] | "soak-mark";
   venue: string;
@@ -26,9 +33,11 @@ export type MarketRow = {
   instrument: string;
   last: string;
   mid: string;
+  lastQuote: MarketQuoteRead;
+  midQuote: MarketQuoteRead;
   quoteKind: MarketQuoteKind;
   quoteSource: string;
-  /** Venue/event time of the newest quote tick (UTC ISO). */
+  /** Oldest available Last/Mid source time (UTC ISO); each field retains its own clock. */
   quoteAt: string | undefined;
   /** Age of `quoteAt` relative to the backend read, formatted; "n/a" when unknown. */
   quoteAge: string;
@@ -38,6 +47,8 @@ export type MarketRow = {
   captureStatus: VenueCaptureChipStatus | undefined;
   lastPartAge: string;
   runId: string;
+  /** Raw binding identity; presentation escaping must not affect matching. */
+  boundRunId: string | undefined;
   live: boolean;
   tone: VenueCaptureChip["tone"] | "warn";
 };
@@ -55,6 +66,8 @@ function boundInstrumentRow(venue: VenueCaptureChip): MarketRow {
     instrument: venue.product,
     last: MARKET_QUOTE_UNAVAILABLE,
     mid: MARKET_QUOTE_UNAVAILABLE,
+    lastQuote: unavailableQuote("no stored trade decoded yet"),
+    midQuote: unavailableQuote("no stored BBO decoded yet"),
     quoteKind: "unavailable",
     quoteSource: MARKET_BBO_NOT_IN_COCKPIT_APIS,
     quoteAt: undefined,
@@ -67,6 +80,7 @@ function boundInstrumentRow(venue: VenueCaptureChip): MarketRow {
     captureStatus: venue.status,
     lastPartAge: venue.last_part_age,
     runId: presentCopiedText(venue.run_id),
+    boundRunId: venue.run_id,
     live: venue.live,
     tone: venue.tone,
   };
@@ -137,9 +151,8 @@ export function decimalMidpoint(bid: string, ask: string): string | undefined {
  *
  * Collectors key instruments by their own product strings (`BTCUSDT-SPOT`
  * for the Binance `BTCUSDT` contract, `BTC/USD`, `BTC-EUR`, `BTC-PERP`), so
- * an exact match is tried first, then the `-SPOT` variant, then any spot
- * instrument sharing the prefix, and only then the first instrument that has
- * a trade or a BBO at all.
+ * only an exact match or the explicit `-SPOT` variant is accepted. A tick
+ * from another instrument or quote currency cannot stand in for the contract.
  */
 export function pickQuoteInstrument(
   venue: Pick<VenueMarketTape, "instruments" | "contractProduct">,
@@ -150,21 +163,40 @@ export function pickQuoteInstrument(
     venue.instruments.find(predicate);
   return (
     byProduct((item) => candidates.includes(item.product)) ??
-    byProduct((item) => candidates.some((product) => item.product === `${product}-SPOT`)) ??
-    byProduct(
-      (item) =>
-        item.kind === "spot" && candidates.some((product) => item.product.startsWith(product)),
-    ) ??
-    byProduct((item) => item.lastTrade !== undefined) ??
-    byProduct((item) => item.lastBbo !== undefined)
+    byProduct((item) => candidates.some((product) => item.product === `${product}-SPOT`))
   );
 }
 
-function newestIso(...values: (string | undefined)[]): string | undefined {
+function oldestIso(...values: (string | undefined)[]): string | undefined {
   return values
     .filter((value): value is string => value !== undefined)
     .sort()
-    .at(-1);
+    .at(0);
+}
+
+function unavailableQuote(reason: string): MarketQuoteRead {
+  return { at: undefined, age: "n/a", state: "unavailable", reason };
+}
+
+function quoteRead(
+  label: string,
+  value: string | undefined,
+  at: string | undefined,
+  observedAt: string,
+  freshMaxS: number,
+): MarketQuoteRead {
+  if (value === undefined) return unavailableQuote(`no ${label} decoded yet`);
+  const ageS = secondsBetween(at, observedAt);
+  if (ageS === undefined) return unavailableQuote(`${label} source timestamp is unavailable`);
+  const stale = ageS > freshMaxS;
+  return {
+    at,
+    age: formatAgeSeconds(ageS),
+    state: stale ? "stale" : "ok",
+    reason: stale
+      ? `${label} is ${formatAgeSeconds(ageS)} old (fresh ≤ ${String(freshMaxS)}s)`
+      : undefined,
+  };
 }
 
 function storedSource(venue: VenueMarketTape, instrument: InstrumentTape): string {
@@ -177,6 +209,8 @@ function unavailableStoredRow(row: MarketRow, quoteReason: string): MarketRow {
     ...row,
     last: MARKET_QUOTE_UNAVAILABLE,
     mid: MARKET_QUOTE_UNAVAILABLE,
+    lastQuote: unavailableQuote(quoteReason),
+    midQuote: unavailableQuote(quoteReason),
     quoteKind: "unavailable",
     quoteSource: MARKET_BBO_NOT_IN_COCKPIT_APIS,
     quoteAt: undefined,
@@ -200,6 +234,18 @@ function applyStoredVenue(
         : `stored data unreadable · ${venue.error ?? venue.note}`,
     );
   }
+  if (row.boundRunId === undefined || venue.runId !== row.boundRunId) {
+    return unavailableStoredRow(
+      row,
+      "stored tape run does not match the bound capture run; waiting for matching reads",
+    );
+  }
+  if (venue.contractProduct !== row.product) {
+    return unavailableStoredRow(
+      row,
+      "stored tape product does not match the bound capture product",
+    );
+  }
   const instrument = pickQuoteInstrument(venue, row.product);
   if (instrument === undefined) {
     return unavailableStoredRow(row, `no instrument decoded yet · ${venue.note}`);
@@ -218,29 +264,42 @@ function applyStoredVenue(
       `no trade or BBO decoded yet in run ${presentCopiedText(venue.runId)} · channels ${instrument.channelsSeen.join(", ") || "none"}`,
     );
   }
-  const quoteAt = newestIso(
-    last === undefined ? undefined : instrument.lastTrade?.at,
-    storedMid === undefined ? undefined : instrument.lastBbo?.at,
-  );
+  const lastQuote = quoteRead("trade", last, instrument.lastTrade?.at, observedAt, freshMaxS);
+  const midQuote =
+    storedMid === undefined && instrument.bboUnavailableReason !== undefined
+      ? unavailableQuote(instrument.bboUnavailableReason)
+      : quoteRead("BBO", storedMid, instrument.lastBbo?.at, observedAt, freshMaxS);
+  const quoteAt = oldestIso(lastQuote.at, midQuote.at);
   const ageS = secondsBetween(quoteAt, observedAt);
-  const stale = ageS !== undefined && ageS > freshMaxS;
+  const stale = lastQuote.state === "stale" || midQuote.state === "stale";
+  const available = lastQuote.state !== "unavailable" || midQuote.state !== "unavailable";
   return {
     ...row,
     instrument: instrument.product,
-    last: last ?? MARKET_QUOTE_UNAVAILABLE,
-    mid: storedMid ?? MARKET_QUOTE_UNAVAILABLE,
+    last:
+      lastQuote.state === "unavailable"
+        ? MARKET_QUOTE_UNAVAILABLE
+        : (last ?? MARKET_QUOTE_UNAVAILABLE),
+    mid:
+      midQuote.state === "unavailable"
+        ? MARKET_QUOTE_UNAVAILABLE
+        : (storedMid ?? MARKET_QUOTE_UNAVAILABLE),
+    lastQuote,
+    midQuote,
     quoteKind: "stored-tape",
     quoteSource: storedSource(venue, instrument),
     quoteAt,
     quoteAge: formatAgeSeconds(ageS),
-    quoteState: stale ? "stale" : "ok",
+    quoteState: stale ? "stale" : available ? "ok" : "unavailable",
     quoteReason: stale
-      ? `newest stored tick is ${formatAgeSeconds(ageS)} old (fresh ≤ ${String(freshMaxS)}s)`
-      : last === undefined
-        ? "no trade decoded yet · mid from stored BBO"
-        : storedMid === undefined
-          ? "no BBO decoded yet · last from stored trades"
-          : undefined,
+      ? [lastQuote.reason, midQuote.reason].filter((reason) => reason !== undefined).join(" · ")
+      : !available
+        ? "stored quote source timestamps are unavailable"
+        : last === undefined
+          ? "no trade decoded yet · mid from stored BBO"
+          : storedMid === undefined
+            ? "no BBO decoded yet · last from stored trades"
+            : undefined,
   };
 }
 
@@ -256,19 +315,25 @@ export function applyStoredTapeQuote(
   rows: readonly MarketRow[],
   tape: MarketTapeResponse,
   freshMaxS: number,
+  displayAt?: string,
 ): MarketRow[] {
   if (!tape.ok) {
     return rows.map((row) =>
       unavailableStoredRow(row, `stored market data unavailable · ${tape.error}`),
     );
   }
+  const readAt = tape.tape.observed_at;
+  // Display time ages a retained/paused read; it never establishes a new read
+  // or lets a backwards browser clock rejuvenate the backend's source age.
+  const observedAt =
+    displayAt !== undefined && Date.parse(displayAt) > Date.parse(readAt) ? displayAt : readAt;
   return rows.map((row) => {
     const venue = tape.tape.venues.find((item) => item.id === row.id);
     if (venue === undefined) {
-      return row;
+      return unavailableStoredRow(row, "stored venue is missing from this tape read");
     }
     try {
-      return applyStoredVenue(row, venue, tape.tape.observed_at, freshMaxS);
+      return applyStoredVenue(row, venue, observedAt, freshMaxS);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : "unreadable stored quote";
       return unavailableStoredRow(row, `stored quote unreadable · ${message}`);
@@ -287,6 +352,8 @@ export function soakMarkRow(pnl: PaperPnl | undefined): MarketRow | undefined {
     instrument: pnl.instrument_id,
     last: MARKET_QUOTE_UNAVAILABLE,
     mid: pnl.mark_price,
+    lastQuote: unavailableQuote("soak mark is not a trade"),
+    midQuote: unavailableQuote("soak mark source timestamp is not recorded"),
     quoteKind: "soak-mark",
     quoteSource: MARKET_SOAK_MARK_SOURCE,
     quoteAt: undefined,
@@ -296,6 +363,7 @@ export function soakMarkRow(pnl: PaperPnl | undefined): MarketRow | undefined {
     captureStatus: undefined,
     lastPartAge: "n/a",
     runId: "n/a",
+    boundRunId: undefined,
     live: false,
     tone: "warn",
   };

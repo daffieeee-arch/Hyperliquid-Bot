@@ -151,3 +151,24 @@ as the pinned harness counts it; unfunded halts retain their separate
 count. The original helper omitted that uncovered exposure. The
 helper is outside the broad `src` pin; its amended bytes are separately
 identified by the reviewed PR head and local preparation provenance.
+
+## Actual first preparation and discovered source gaps
+
+The sealed local derived-input copy completed with 84,770 files and
+197,151,375 bytes. Every source-copy/source-fresh/local SHA256 matched;
+all local files were rehashed and their identities checked before and
+after the first builder invocation. The bounded builder stopped at
+BNXUSDT 2022-04-17 before writing a panel. No second unchanged-input
+build, shape/lock or strategy run followed.
+
+A full timestamp/symbol-only kline audit then found 323 interior missing
+day/symbol pairs across 52 symbols and 103 months; all 636,990 existing
+rows match their sidecar counts and their file symbol/month/close clocks.
+Two checked retained monthly ZIPs contain the same gaps as Parquet and
+pass their retained checksums/CRC. The explicit source diagnosis and
+proposed uniform daily-source recovery are in
+[the data-recovery amendment](exp_xs_usdm.data-repair.md), which needs its
+own independent before-recovery review and new closed data identity.
+File presence and correct copy hashes alone have not established S4 data
+readiness. The preregistration remains a draft; its placeholders are not
+filled from partial or failed builds.

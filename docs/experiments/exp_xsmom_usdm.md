@@ -3,11 +3,10 @@
 > **Draft, not mergeable yet.** The code it pins is on main: the S4 panel
 > change merged in #145 (`694497a`), which adds `--exclude-symbols`,
 > `--rank-requires-funding` and the carry column (`carry_7d` in this
-> table). Two steps on the VPS remain:
-> the classification of every contract from Binance's metadata, which gives
-> the non-crypto list, and a shape-only build of the panel, which reads no
-> price, no funding value and no return. The values in angle brackets come
-> from those two steps. This note goes when they are filled.
+> table). The frozen classification is complete. The current source/
+> environment amendment and uncompleted data gates are recorded in
+> [S4 readiness](exp_xs_usdm.readiness.md). Panel, rebuild and shape
+> placeholders remain unmeasured; no strategy has been scored.
 
 PAPER research only. This document **pre-registers** the cross-sectional
 momentum study, one of the two families of step S4 of the research plan. The
@@ -222,8 +221,8 @@ delisted ones included. On each decision day the universe is, point in time:
   - The run refuses any other table, whether a different builder, a broken
     sync, another exclusion list or another DuckDB version produced it.
 - **Pre-registered code**: everything under `src` is pinned to commit
-  `694497a089409b15b49d1ed7ad4abe9db2986054`, the merge of the S4 panel
-  change (#145), together with `uv.lock`, `pyproject.toml`,
+  `0cd7666392928b0af3f4a0c0ef5c8fc34a516d58`, the documented source/environment
+  amendment described in [S4 readiness](exp_xs_usdm.readiness.md), together with `uv.lock`, `pyproject.toml`,
   `.python-version` and the universe file. That covers the harness (version
   6, panel portfolios), the builder, hist_etl, the locked dependencies and
   the interpreter. If a later commit touches `src`, `uv.lock`,
@@ -864,7 +863,7 @@ export STUDY_DIR=...            # must not exist yet; outside the repository
   study="$(realpath -m "$STUDY_DIR")"
   repo="$(realpath "$REPO_ROOT")"
   case "$study/" in "$repo"/*) echo "STUDY_DIR is inside the repository" >&2; exit 1 ;; esac
-  pin=694497a089409b15b49d1ed7ad4abe9db2986054
+  pin=0cd7666392928b0af3f4a0c0ef5c8fc34a516d58
   pinned=(src uv.lock pyproject.toml .python-version
     config/hist_etl/universe/binance-um-usdt-1d-2026-10-08.json)
   # The pre-registered code: no change, tracked, untracked or ignored.

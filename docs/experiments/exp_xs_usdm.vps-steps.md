@@ -1,18 +1,21 @@
-# S4 VPS steps: what a Claude session on the VPS fills before merge
+# S4 preparation steps: original contract and Ubuntu VM continuation
 
 PAPER research only. The two drafts, `exp_xsmom_usdm.md` and
 `exp_xscarry_usdm.md`, leave the values in angle brackets open. Every one
 of them comes from the universe's metadata or the panel's **shape**. None
 may come from a price, a return, a funding value or a strategy run.
 
-Nothing waits for a date. The code pin is known: the S4 panel change merged
-in #145 as `694497a089409b15b49d1ed7ad4abe9db2986054`. The panel ends with
+The original panel change merged in #145 as `694497a089409b15b49d1ed7ad4abe9db2986054`. The declared panel ends with
 `--end 2026-09-01` (axis 2020-01-01 to 2026-08-31, 2,435 days), and the
 month the builder reads after the window for a still-published funding run,
 2026-09, is the universe file's latest month and is published for every
 such run, so the shape-only build and the study's own build read the same
-files. The steps below can run now, in order, from a Claude session on the
-VPS (`chupa`).
+files. The original research contract below is retained. The current Ubuntu VM
+continuation, source/environment amendment and measured prerequisite
+status are in [S4 readiness](exp_xs_usdm.readiness.md). Complete its
+source/environment review and archive coverage gates before a panel build.
+The introduction of the builder in #145 is historical; the active source
+pin is the documented amendment, not that historical commit.
 
 ## What "shape-only" allows
 
@@ -36,26 +39,35 @@ VPS (`chupa`).
 
 ## Before step 1: the session itself
 
-- Work on the pre-registration branch of draft PR #146,
-  `claude/project-analysis-code-review-59mcsr`, in a clean tree: `git fetch
-  origin`, `git checkout claude/project-analysis-code-review-59mcsr`, `git
-  pull --ff-only`, then `uv sync --frozen`. Every file of step 6 is already
-  on that branch; fill them in place, so every edit is in the PR's diff.
-- Set `HIST_ARCHIVES_ROOT` to the research archive root
-  (`$HOME/Hyperliquid Project/hist-archives` unless the operator keeps it
-  elsewhere). It is outside `data-capture`; the study directories (`$DIR`)
-  are new folders outside the repository. Nothing here touches durable
-  runtime capture data or the runtime containers.
-- Run the sync and the builds inside `tmux`, with at least 10 GiB free
-  where the archive root lives (`df -h`).
+- Continue the existing draft PR #146 in an isolated worktree. Fetch and
+  merge current main without rewriting history. Follow `AGENTS.md` and
+  `docs/GITHUB_WORKFLOW.md`: independent Codex correctness/quant review,
+  source/environment security review and a separate merge agent. The
+  operator is not required to review routine code changes.
+- DEV is the Ubuntu VM. The archive is currently
+  `/mnt/hyperliquid-archive/vps-chupa/hist-archives`, on the verified
+  `192.168.1.234:/mnt/tank/hyperliquid-archive` NFS4 export. Before every
+  run, revalidate the expected effective mount and explicit input list.
+  A path from the historical VPS is not proof of a local archive.
+- Keep the archive read-only for this preparation. A missing/invalid file
+  is a blocker, not permission to run the sync below or rewrite Parquet.
+  Recovery/downloads into a durable store require separate operational
+  scope. Local panel/study outputs belong in new private DEV directories,
+  outside Git and outside either NAS mount.
+- Match the amended commit's pinned source and lockfile, Python and
+  DuckDB versions before building. No ignored source, untracked source or
+  dependency override may bypass the broad pin check.
+- Bound the process's CPU, memory and scratch; leave running services
+  untouched. The 1/2/8/32-thread rebuild checks below remain the original
+  contract, not evidence that 32 CPU cores exist on this VM.
 
 ## Order
 
-### 1. Check the code pin → `694497a089409b15b49d1ed7ad4abe9db2986054`
+### 1. Check the amended code pin → `0cd7666392928b0af3f4a0c0ef5c8fc34a516d58`
 
 - The pin is #145's merge commit. Confirm nothing later touched the pinned
   files, the same list the run scripts' `pinned` array checks:
-  `git diff --exit-code 694497a089409b15b49d1ed7ad4abe9db2986054 origin/main -- src uv.lock pyproject.toml .python-version config/hist_etl/universe/binance-um-usdt-1d-2026-10-08.json`.
+  `git diff --exit-code 0cd7666392928b0af3f4a0c0ef5c8fc34a516d58 origin/main -- src uv.lock pyproject.toml .python-version config/hist_etl/universe/binance-um-usdt-1d-2026-10-08.json`.
   If something did, the pin moves to the newest such commit, both docs'
   Data sections and run scripts change with it, `exp_xs_usdm_beta.py` is
   re-checked on a synthetic run (step 6), and steps 3 to 5 run at the new
@@ -112,20 +124,15 @@ redone, the same way for every symbol:
 
 ### 3. Sync and build the panel twice → `<PARQUET_SHA256>`, `<ROW_COUNT>`, `<SYMBOL_COUNT>`, `<RANKED_COUNT>`, `<REBUILD_CHECK>`
 
-- Sync at the pin, inside `tmux`, with the archive root outside
-  `data-capture`:
-
-  ```bash
-  HIST_ETL_REQUESTS_PER_SECOND=4 PYTHONPATH=src uv run --frozen \
-    python -m research.hist_etl sync --dataset bn-um-usdt-1d
-  PYTHONPATH=src uv run --frozen python -m research.hist_etl verify --dataset bn-um-usdt-1d
-  ```
-
-  About 43,300 monthly archives plus the daily tails of 864 open runs, two
-  GETs each: about 7 hours at 4 requests a second, 14 at the default 2.
-  Exit 2 with gaps is expected for contracts delisted after the universe
-  file was taken (their daily files stop); the build below refuses any
-  missing month inside the range, which is the real check.
+- First reconcile every explicit month path required by the pinned
+  builder, including its warm-up and funding edge files, and the original
+  S4 requirement that published following-funding months are present.
+  Check source sidecars and full time/symbol coverage before claiming
+  archive readiness. File presence alone is insufficient.
+- Historical `hist_etl sync` instructions are not part of this read-only
+  VM preparation. Missing or invalid inputs stop this step; record their
+  exact paths and arrange scoped recovery separately. Do not redownload
+  or rewrite the archive automatically, and do not silently omit a symbol.
 - Build twice, into two new directories outside the repository, with the
   exact arguments of the docs and the frozen list of step 2:
 
@@ -320,9 +327,10 @@ tolerance of the decision rules.
 - Remove the draft notes at the top of both docs once every value is in.
 - Run `ruff check`, `ruff format --check` and `mypy` on the four scripts.
 - Commit on the branch, with a message that lists the filled values, and
-  push it to update draft PR #146. Leave the PR a draft: the Claude Code
-  session that opened it reviews the filled version (`/code-review`),
-  marks it ready and merges. If this session cannot push, say so and leave
+  push it to update draft PR #146. Leave the PR a draft until all acceptance placeholders are measured
+  and independent final review is complete. A separate Codex reviewer
+  reviews the final version; the separate merge agent checks current-head
+  CI and explicitly squash-merges it according to `AGENTS.md`. If this session cannot push, say so and leave
   the commit in place. The PR is docs and config, but it touches
   `docs/experiments/**` and `config/**`, so the `python` CI area runs. It
   enables no LIVE, SHADOW or TESTNET mode and moves no capital.
@@ -341,8 +349,9 @@ tolerance of the decision rules.
   (momentum), `457009762711c0ac113719360fc7d04431f67f63ce10a88a6d02b74e0f0db44a`
   (carry). Both specs pass `validate_spec` (alpha 0.05, `holdout_bars`
   608).
-- Code pin: `694497a089409b15b49d1ed7ad4abe9db2986054` (#145), unless step
-  1 moves it.
+- Original builder introduction: `694497a089409b15b49d1ed7ad4abe9db2986054` (#145).
+- Amended preparation/source pin: `0cd7666392928b0af3f4a0c0ef5c8fc34a516d58`;
+  see the separately reviewed [source/environment record](exp_xs_usdm.readiness.md).
 - Universe file sha256:
   `add8d0f26d6b7c2bdf18963cf1f77752f0b1aa8a943a64c868e097951f4ec520`; its
   latest month is 2026-09, and no still-published run ends before it.

@@ -3,10 +3,9 @@
 > **Draft, not mergeable yet.** Its signal `carry_7d` (minus the 7-day mean
 > funding over traded days with a rate, ties broken by a hashed draw) comes
 > from the S4 panel change, merged in #145 (`694497a`), which this study
-> pins. Values in angle brackets come from the classification of every
-> contract on the VPS and from a shape-only build there, which reads no
-> price, no funding value and no return. This note goes when they are
-> filled.
+> uses. The current source/environment amendment and uncompleted data
+> gates are recorded in [S4 readiness](exp_xs_usdm.readiness.md). Values
+> in angle brackets remain unmeasured; no strategy has been scored.
 
 PAPER research only. This document **pre-registers** the cross-sectional
 funding carry study, one of the two families of step S4 of the research
@@ -154,8 +153,8 @@ funding itself, and Hyperliquid's funding settles hourly at its own level.
   Independent builds give identical bytes: `<REBUILD_CHECK>`. The run
   refuses any other table.
 - **Pre-registered code**: everything under `src` is pinned to commit
-  `694497a089409b15b49d1ed7ad4abe9db2986054`, the merge of the S4 panel
-  change (#145), with `uv.lock`, `pyproject.toml`, `.python-version` and
+  `0cd7666392928b0af3f4a0c0ef5c8fc34a516d58`, the documented source/environment
+  amendment described in [S4 readiness](exp_xs_usdm.readiness.md), with `uv.lock`, `pyproject.toml`, `.python-version` and
   the universe file, checked as in `exp_xsmom_usdm` before anything syncs.
   If a later commit touches `src`, `uv.lock`, `pyproject.toml`,
   `.python-version` or the universe file
@@ -604,7 +603,7 @@ export STUDY_DIR=...            # must not exist yet; outside the repository
   study="$(realpath -m "$STUDY_DIR")"
   repo="$(realpath "$REPO_ROOT")"
   case "$study/" in "$repo"/*) echo "STUDY_DIR is inside the repository" >&2; exit 1 ;; esac
-  pin=694497a089409b15b49d1ed7ad4abe9db2986054
+  pin=0cd7666392928b0af3f4a0c0ef5c8fc34a516d58
   pinned=(src uv.lock pyproject.toml .python-version
     config/hist_etl/universe/binance-um-usdt-1d-2026-10-08.json)
   # The pre-registered code: no change, tracked, untracked or ignored.

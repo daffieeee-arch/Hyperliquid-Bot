@@ -2,9 +2,9 @@
 # Use research.btc_flow_cli, not the generic close-price harness CLI.
 hypothesis_id: btc-spot-flow-confirmed-hl-continuation-v1
 universe: Hyperliquid BTC-PERP; Binance BTCUSDT Spot is a dimensionless signal only
-dataset_version: btc-flow-v1; receipt-minute; prospective 72h after reviewed prereg merge; historical runs exploratory
-h0: No predeclared flow-confirmed continuation configuration has positive mean net return after observed spread, fees and slippage.
-h1: A validation-selected configuration has positive mean net return on fresh prospective OOS under all declared cost stresses.
+dataset_version: btc-flow-v1; receipt-minute; hl-fundingHistory-api-clock-v1; model-conditional PAPER research; prospective 72h after reviewed prereg merge; historical runs exploratory
+h0: Under the declared quote-fill and complete fundingHistory API-clock models, no predeclared flow-confirmed continuation configuration has positive mean return after modeled spread, fees and slippage.
+h1: Under those conditional models, a validation-selected configuration has positive mean return on fresh prospective OOS under all declared cost stresses; no claim of actual funding-free execution or deployable profitability.
 alpha: 0.05
 selection_method: holm
 direction: signed

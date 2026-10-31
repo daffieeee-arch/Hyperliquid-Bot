@@ -11,9 +11,13 @@ not an H1 scaffold upgrade, and not a smaller rerun of S4.
 Binance BTCUSDT **Spot** aggressive notional imbalance confirms the direction
 of the immediately preceding Hyperliquid BTC-PERP minute and predicts an
 executable continuation over the following 1 or 5 minutes. H0 is nonpositive
-mean net return after both fills' costs. H1 is positive mean net return for a
+mean return after both fills' modeled costs. H1 is positive mean return for a
 validation-selected configuration on fresh prospective OOS under all declared
-cost stresses. The signal uses no USD-M mark/aggTrade fallback.
+cost stresses, **conditional on the quote-fill and funding API-clock models**.
+This tests those models, not actual funding-free execution or deployable
+profitability. All result labels identify the conditional model and all
+promotion fields remain forbidden, including prospective nested decisions.
+The signal uses no USD-M mark/aggTrade fallback.
 
 At each UTC minute boundary `t`, use only observations received by `t`:
 
@@ -97,14 +101,36 @@ price difference minus both fees, divided by $100. Stress multiplies the entire
 observed base execution-cost amount by 1.0/1.5/2.0; it does not claim a replay of
 new quotes at a different latency.
 
-The funding rule is an **exposure restriction**, not zero-filled funding data.
-The earliest possible entry and latest possible exit, including the scheduling
-delay and both latency/wait budgets, must stay within one UTC hour and strictly
-outside the ±60-second hourly settlement guard. Otherwise no order is planned.
-A missing exit never extends the position through the guard in the simulation.
-This study has no modeled funding exposure. A broader holding policy needs
-realized HL funding and a separately reviewed contract. There is no dependency
-on or waiver of S4's unrelated native funding failures.
+The ±60-second UTC-hour guard is only a conservative engineering entry filter;
+it does **not** prove that actual funding payments occur inside that guard.
+Its earliest-entry/latest-exit budgets, including both latency/wait intervals,
+remain unchanged. Official hourly/end-of-interval documentation does not provide
+a hard UTC phase or maximum payment delay. Neither an API record timestamp nor
+historical API timestamp jitter proves an onchain account payment time.
+
+The separate `hl-fundingHistory-api-clock-v1` model requires hash-bound original
+native BTC `fundingHistory` JSON snapshots and independently accepted provenance
+before any financial frame is read. There must be exactly one record in every
+native hourly slot covering the selected 72 hours plus one hour on each side,
+without missing/duplicate slots or known-hole waivers. Existing `slot_of` is
+used only to qualify that coverage. Exposure uses the **exact returned `time`
+in milliseconds**, never the mapped hour. An API event inside a closed actual
+quote-entry/exit holding interval invalidates the **whole study window** for
+any of the four configurations or the momentum benchmark; it never removes a
+trade, skips a configuration or becomes a fabricated cashflow. Nanosecond entry
+is rounded down and exit up to milliseconds for conservative boundary checks.
+Missing or uncertain exits already invalidate the window independently.
+
+Within this explicitly conditional model, complete event coverage and zero
+position/event intersections permit zero modeled funding cashflow without
+interpreting funding rates or inventing oracle prices. This is analogous to
+the declared quote-fill assumptions: it is **not** proof of zero actual onchain
+funding, whose settlement phase is unverified. Realized funding/oracle inputs
+and a new reviewed contract are needed to make that stronger claim or permit
+event-crossing positions. No funding cap or rate retuning is introduced. Missing
+or invalid timing qualification records metadata-only `funding_unqualified`,
+with no financial decode, scoring or override flag. S4's unrelated native
+funding failures are neither a dependency nor waived.
 
 ## Chronological periods and immutable OOS
 
@@ -124,8 +150,14 @@ No real capture or extraction is started by this PR.
 
 The first 12 hours are training/history (no parameter fitting). The next 36 hours
 are three expanding 12-hour validation folds. The final 24 hours are reserved
-OOS. The harness never requests OOS trade windows unless validation selects a
-configuration. At least three folds, 30 validation fills and 30 OOS fills are
+OOS. The reader initially decodes and aggregates only the first 48 hours. The
+existing harness requests the OOS trade window only after validation selects a
+configuration; that request first opens the final 24 hours plus one previously
+decoded minute for fixed feature warm-up. Validation benchmarks use the same
+staged source, and their OOS benchmark is also selection-gated. Stale clocks,
+malformed payloads and quality markers in sealed OOS cannot affect validation
+through eager financial decoding. Opaque complete-file hashes may be verified
+before selection. At least three folds, 30 validation fills and 30 OOS fills are
 required. Shorter input spans produce `not_enough_data` before financial-frame
 reads; no shorter split, relaxed sample floor or selected good-days subset is
 substituted. If the prospective window is insufficient, record that verdict;
@@ -145,24 +177,50 @@ A 72-hour pilot proves neither multi-regime stability nor deployable profitabili
 After review/merge and separate data qualification, use a new local output root:
 
 ```bash
-python -B -X pycache_prefix=/path/to/fresh-private-pycache -m research.btc_flow_cli \
+PYTHONPATH=src python -B -X pycache_prefix=/path/to/fresh-private-pycache -m research.btc_flow_cli \
   --spec docs/experiments/exp_btc_spot_flow.spec.yaml \
   --inputs /path/to/approved-inputs.json --inputs-sha256 <approved-manifest-sha256> \
   --source-commit <reviewed-main-sha> --output /path/to/new-private-study
 ```
 
-The input JSON has exactly `format:1`, `phase` (`exploratory`/`prospective`),
+The input JSON has exactly `format:2`, `phase` (`exploratory`/`prospective`),
 `start_ns`, `end_ns`, `preregistration_commit`, `preregistration_merged_ns`, and
-`parts:[{path:<absolute-part>,sha256:<opaque-file-hash>},...]`. Exploratory merge
+`parts:[{path:<absolute-part>,sha256:<opaque-file-hash>},...]`, plus
+`funding:null` or `funding:{path:<absolute-proof-json>,sha256:<proof-hash>}`.
+Exploratory merge
 fields are null. Qualifying metadata/claims/session records must be accepted
 before generating that manifest; hashing alone is not evidence of data quality.
+
+The funding proof has exactly `format:1`, `model:hl-fundingHistory-api-clock-v1`,
+`endpoint:https://api.hyperliquid.xyz/info`, `coin:BTC`, `snapshot_cutoff_ns`,
+`frozen_utc_ns`, `known_holes:[]` and `sources:[{path,sha256},...]` (one or two
+native monthly JSONs). Freeze it after the fixed window plus right padding,
+before outcomes are computed; record the acquisition cutoff and never resync
+because of a result. A native snapshot retains the existing `source`, `coin`,
+`start_ms`, `end_ms`, `rows:[{coin,fundingRate,premium,time},...]` format. The
+reader checks times, coin, structural types and complete unique slots only;
+rate/premium strings are opaque unused fields, and no oracle is imputed.
+Native snapshots are capped at 1 MiB/800 rows each, proof at 16 KiB, and all
+paths are literal/no-follow. Complete funding timing metadata may be qualified
+before validation, while OOS quotes/flow remain sealed. Cutoff/freeze assertions
+are **not self-authenticating**: independent source/provenance acceptance must
+precede approval of the input-manifest hash. Funding proof/raw hashes are
+rechecked after scoring and included in the result and spec/input lock.
 
 Outputs are create-only private local `result.json`, copied `spec.yaml` and its
 spec/input hash lock. Failure/insufficiency records contain no invented PnL;
 incomplete directories remain retained and cannot be resumed/overwritten.
-Limits are 10,000 parts / 100 GiB source bytes, 512 MiB per part, one million HL
-quotes / 25 million Spot trades; bounds fail, never truncate. DuckDB uses two
-threads / 2 GB, no spill or extension autoload/install. No new CI jobs, runtime,
+Fixed engineering admission limits are 70,000 parts / 32 MiB manifest /
+100 GiB source bytes, 512 MiB per part, two million HL quotes / 25 million Spot
+trades **per staged load** (48h validation; 24h OOS plus one warm-up minute).
+These limits accommodate native small-part capture layout; they change no
+sample floor, economic parameter or quality rule. Bounds fail, never truncate.
+DuckDB uses two threads / 2 GB, no spill or extension autoload/install. The CLI
+caps total process address space at 8 GiB (or a stricter inherited limit); run
+one heavy study at a time on the 12-vCPU/23-GiB VM. Source hashing is sequential,
+financial parsing uses bounded batches, and OOS has no second eager full-72h
+copy. Exceeding the cap is an incomplete fail-closed attempt, not permission to
+retry with a changed cap or reuse the prospective OOS. No new CI jobs, runtime,
 network dependency, credentials, order path or automatic promotion is introduced.
 
 HL add-on captures may use the container product `BTC-PERP` for BTC, ETH and SOL

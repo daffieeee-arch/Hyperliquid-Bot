@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import resource
 from dataclasses import replace
 from decimal import Decimal
 from itertools import pairwise
@@ -27,8 +28,11 @@ from research.btc_flow import (
 )
 from research.btc_flow_cli import (
     DAY,
+    FUNDING_MODEL,
+    StagedFlowSource,
     checked_paths,
     exact_part_path,
+    funding_timeline,
     load_source,
     receipt_freshness,
     run,
@@ -52,7 +56,12 @@ def quote(when: int, ordinal: int, mid: str = "1000", session: str = "hl") -> Qu
     return Quote(when, session, ordinal, D(mid) - 1, D(mid) + 1, D(1), D(1))
 
 
-def source(*, gaps: tuple[int, ...] = (), quotes: tuple[Quote, ...] | None = None) -> FlowSource:
+def source(
+    *,
+    gaps: tuple[int, ...] = (),
+    quotes: tuple[Quote, ...] | None = None,
+    funding_events_ms: tuple[int, ...] | None = None,
+) -> FlowSource:
     if quotes is None:
         quotes = tuple(
             quote(m * MINUTE + offset, m * 4 + i, str(1000 + m))
@@ -60,7 +69,9 @@ def source(*, gaps: tuple[int, ...] = (), quotes: tuple[Quote, ...] | None = Non
             for i, offset in enumerate((0, LATENCY, 2 * LATENCY, 3 * LATENCY))
         )
     flow = {m: Flow(D(6), D(10), frozenset({"bn"}), 2) for m in range(40)}
-    return FlowSource(spec(), 0, 40 * MINUTE, quotes, flow, gaps)
+    return FlowSource(
+        spec(), 0, 40 * MINUTE, quotes, flow, gaps, funding_events_ms=funding_events_ms
+    )
 
 
 def test_aggressor_notional_aggregation_and_half_open_receipt_clock() -> None:
@@ -236,13 +247,14 @@ def test_existing_harness_calls_holdout_only_after_validation_selection() -> Non
 
 def manifest(start: int, end: int, phase: str = "exploratory") -> dict[str, object]:
     return {
-        "format": 1,
+        "format": 2,
         "phase": phase,
         "start_ns": start,
         "end_ns": end,
         "preregistration_commit": None,
         "preregistration_merged_ns": None,
         "parts": [],
+        "funding": None,
     }
 
 
@@ -281,7 +293,10 @@ def test_nonpaper_fails_before_input_filesystem(
         run(SPEC, tmp_path / "absent", "0" * 64, tmp_path / "out")
 
 
-def test_original_raw_frame_parser_ignores_normalization_duplicates(tmp_path: Path) -> None:
+@pytest.mark.parametrize("other", ["ETH", "SOL", " ", "BTC ", "btc", "UNKNOWN", None])
+def test_original_raw_frame_parser_ignores_normalization_duplicates(
+    tmp_path: Path, other: object
+) -> None:
     path = tmp_path / "part.parquet"
     connection = duckdb.connect()
     rows = []
@@ -358,7 +373,7 @@ def test_original_raw_frame_parser_ignores_normalization_duplicates(tmp_path: Pa
         )
     )
     other_coin = json.dumps(
-        {"channel": "bbo", "data": {"coin": "ETH", "bbo": "not-decoded"}}
+        {"channel": "bbo", "data": {"coin": other, "bbo": "not-decoded"}}
     ).encode()
     rows.append(
         (
@@ -385,8 +400,14 @@ def test_original_raw_frame_parser_ignores_normalization_duplicates(tmp_path: Pa
     connection.execute("COMMIT")
     connection.execute("COPY frames TO ? (FORMAT PARQUET)", [str(path)])
     connection.close()
-    parsed = load_source(spec(), 0, 3 * MINUTE, [str(path)])
-    assert len(parsed.quotes) == 3 and parsed.flow[0].trades == 1 and parsed.flow[0].imbalance == 1
+    if other in ("ETH", "SOL"):
+        parsed = load_source(spec(), 0, 3 * MINUTE, [str(path)])
+        assert (
+            len(parsed.quotes) == 3 and parsed.flow[0].trades == 1 and parsed.flow[0].imbalance == 1
+        )
+    else:
+        with pytest.raises(IntegrityError, match="coin identity"):
+            load_source(spec(), 0, 3 * MINUTE, [str(path)])
 
 
 def test_event_clock_freshness_is_not_a_strategy_availability_clock() -> None:
@@ -481,6 +502,7 @@ def test_complete_synthetic_economic_runner_is_not_a_noise_only_scaffold(tmp_pat
     connection.execute("COPY frames TO ? (FORMAT PARQUET)", [str(part)])
     connection.close()
     inputs = manifest(0, 3 * DAY)
+    inputs["funding"] = funding_fixture(tmp_path)[0]
     inputs["parts"] = [{"path": str(part), "sha256": hashlib.sha256(part.read_bytes()).hexdigest()}]
     raw = json.dumps(inputs).encode()
     path = tmp_path / "inputs.json"
@@ -490,8 +512,8 @@ def test_complete_synthetic_economic_runner_is_not_a_noise_only_scaffold(tmp_pat
     assert result["promotion_decision"] == "forbidden"
     decision = result["decision"]
     assert isinstance(decision, dict) and decision["label"] in (
-        "exploratory_no_edge",
-        "exploratory_interesting_but_fragile",
+        "model_conditional_exploratory_no_edge",
+        "model_conditional_exploratory_interesting_but_fragile",
     )
     assert decision["promotion_decision"] == "forbidden"
     assert all(score["validation_net"]["1.0"]["mean_return"] < 0 for score in decision["scores"])
@@ -600,3 +622,336 @@ def test_quality_errors_are_never_silently_ignored(tmp_path: Path, event: object
         assert parsed.hl_gaps == (10 * SECOND,)
         parsed.confirmed = False
         assert parsed.signal(MINUTE) is None  # Momentum benchmark respects the same HL gap.
+
+
+def sealed_oos_fixture(path: Path) -> None:
+    """Valid validation quotes, opaque malformed OOS that must remain sealed."""
+    connection = duckdb.connect()
+    connection.execute(
+        "CREATE TABLE frames(schema_version INTEGER,venue VARCHAR,product VARCHAR,"
+        "channel VARCHAR,session_id VARCHAR,message_ordinal BIGINT,received_utc_ns BIGINT,"
+        "received_monotonic_ns BIGINT,direction VARCHAR,payload_bytes BLOB,payload_sha256 VARCHAR)"
+    )
+    for ordinal, when in enumerate((0, MINUTE, 2 * DAY)):
+        payload = (
+            b"financial OOS must not be decoded"
+            if when == 2 * DAY
+            else json.dumps(
+                {
+                    "channel": "bbo",
+                    "data": {
+                        "coin": "BTC",
+                        "time": when // 1_000_000,
+                        "bbo": [{"px": "999", "sz": "1"}, {"px": "1001", "sz": "1"}],
+                    },
+                }
+            ).encode()
+        )
+        connection.execute(
+            "INSERT INTO frames VALUES (1,'hyperliquid','BTC-PERP','bbo','hl',?,?,?,'inbound',?,?)",
+            [ordinal, when, when, payload, hashlib.sha256(payload).hexdigest()],
+        )
+    connection.execute("COPY frames TO ? (FORMAT PARQUET)", [str(path)])
+    connection.close()
+
+
+def test_actual_reader_never_decodes_oos_after_failed_validation_including_benchmark(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import research.btc_flow_cli as cli
+
+    part = tmp_path / "sealed.parquet"
+    sealed_oos_fixture(part)
+    decoded: list[bytes] = []
+    original = cli._json
+
+    def observed(raw: bytes) -> dict[str, object]:
+        decoded.append(raw)
+        return original(raw)
+
+    monkeypatch.setattr(cli, "_json", observed)
+    staged = StagedFlowSource(spec(), 0, 3 * DAY, [str(part)])
+    result = decide_source(staged)
+    assert result.label == "not_enough_data" and result.selected_config_id is None
+    for fold in result.folds:
+        staged.benchmark_window(spec().configs[0], fold.test_start, fold.test_end)
+    assert len(decoded) == 2 and not staged.holdout_decoding_started
+    # The same actual parser would reject this OOS; failure cannot contaminate
+    # the previous validation result because it is first decoded at this request.
+    with pytest.raises(json.JSONDecodeError):
+        staged.window(spec().configs[0], 2880, 4320)
+    assert len(decoded) == 3 and staged.holdout_decoding_started
+
+
+def test_actual_reader_opens_oos_only_after_harness_validation_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    part = tmp_path / "sealed.parquet"
+    sealed_oos_fixture(part)
+    staged = StagedFlowSource(spec(), 0, 3 * DAY, [str(part)])
+    calls: list[tuple[int, int]] = []
+
+    def passing_validation(config: ConfigSpec, start: int, end: int) -> TradeSeries:
+        assert not staged.holdout_decoding_started
+        assert end <= 2880
+        calls.append((start, end))
+        gross = tuple(0.01 + (i % 2) * 0.001 for i in range(40))
+        return TradeSeries(gross, (0.0,) * 40, (0.0,) * 40, (1.0,) * 40, (0.0,) * 40)
+
+    monkeypatch.setattr(staged._sources[(False, True)], "window", passing_validation)
+    with pytest.raises(json.JSONDecodeError):
+        decide_source(staged)
+    assert len(calls) == 12 and staged.holdout_decoding_started
+
+
+def funding_fixture(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:
+    from research.hist_etl.hyperliquid import FundingRow, FundingWindow, render_raw
+
+    hour_ms = 3_600_000
+    window = FundingWindow("native-fixture", "BTC", "1970-01", -hour_ms, 73 * hour_ms, True)
+    native = tmp_path / "BTC-funding-native.json"
+    native.write_text(
+        render_raw(
+            window,
+            tuple(
+                FundingRow(i * hour_ms, "opaque-unused-rate", "opaque-unused-premium")
+                for i in range(-1, 73)
+            ),
+        )
+    )
+    proof = tmp_path / "funding-proof.json"
+    proof.write_text(
+        json.dumps(
+            {
+                "format": 1,
+                "model": FUNDING_MODEL,
+                "endpoint": "https://api.hyperliquid.xyz/info",
+                "coin": "BTC",
+                "snapshot_cutoff_ns": 3 * DAY + 61 * MINUTE,
+                "frozen_utc_ns": 3 * DAY + 62 * MINUTE,
+                "known_holes": [],
+                "sources": [
+                    {"path": str(native), "sha256": hashlib.sha256(native.read_bytes()).hexdigest()}
+                ],
+            }
+        )
+    )
+    return (
+        {"path": str(proof), "sha256": hashlib.sha256(proof.read_bytes()).hexdigest()},
+        proof,
+        native,
+    )
+
+
+def rebind_funding(proof: Path, native: Path) -> dict[str, str]:
+    document = json.loads(proof.read_bytes())
+    document["sources"][0]["sha256"] = hashlib.sha256(native.read_bytes()).hexdigest()
+    proof.write_text(json.dumps(document))
+    return {"path": str(proof), "sha256": hashlib.sha256(proof.read_bytes()).hexdigest()}
+
+
+def test_native_funding_timeline_qualifies_times_without_numeric_rate_or_oracle_inputs(
+    tmp_path: Path,
+) -> None:
+    reference, proof, native = funding_fixture(tmp_path)
+    events, hashes = funding_timeline(reference, 0, 3 * DAY)
+    assert events == tuple(i * 3_600_000 for i in range(-1, 73))
+    assert hashes == {
+        str(proof): reference["sha256"],
+        str(native): hashlib.sha256(native.read_bytes()).hexdigest(),
+    }
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "missing",
+        "last_padding",
+        "duplicate",
+        "unknown_model",
+        "known_hole",
+        "stale_cutoff",
+        "future_freeze",
+        "wrong_coin",
+        "raw_mutation",
+        "proof_mutation",
+    ],
+)
+def test_funding_timeline_rejects_unqualified_native_metadata(tmp_path: Path, failure: str) -> None:
+    reference, proof, native = funding_fixture(tmp_path)
+    data, control = json.loads(native.read_bytes()), json.loads(proof.read_bytes())
+    if failure == "missing":
+        del data["rows"][20]
+    elif failure == "last_padding":
+        data["rows"].pop()
+    elif failure == "duplicate":
+        data["rows"].insert(20, dict(data["rows"][20], time=data["rows"][20]["time"] - 1))
+    elif failure == "unknown_model":
+        control["model"] = "actual-onchain-settlement"
+    elif failure == "known_hole":
+        control["known_holes"] = [0]
+    elif failure == "stale_cutoff":
+        control["snapshot_cutoff_ns"] = 3 * DAY
+    elif failure == "future_freeze":
+        control["frozen_utc_ns"] = 10**30
+    elif failure == "wrong_coin":
+        data["rows"][20]["coin"] = "ETH"
+    elif failure == "proof_mutation":
+        control["coin"] = "ETH"
+    native.write_text(json.dumps(data))
+    proof.write_text(json.dumps(control))
+    if failure == "raw_mutation":
+        reference = {"path": str(proof), "sha256": hashlib.sha256(proof.read_bytes()).hexdigest()}
+    elif failure != "proof_mutation":
+        reference = rebind_funding(proof, native)
+    with pytest.raises(IntegrityError):
+        funding_timeline(reference, 0, 3 * DAY)
+
+
+@pytest.mark.parametrize("phase", ["exploratory", "prospective"])
+def test_unqualified_funding_stops_before_any_financial_part_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str
+) -> None:
+    import research.btc_flow_cli as cli
+
+    inputs = manifest(3 * DAY, 6 * DAY, phase)
+    if phase == "prospective":
+        inputs.update(preregistration_commit="a" * 40, preregistration_merged_ns=DAY + 1)
+    path = tmp_path / "inputs.json"
+    raw = json.dumps(inputs).encode()
+    path.write_bytes(raw)
+
+    def forbidden(*_args: object) -> None:
+        raise AssertionError("no financial input read before funding qualification")
+
+    monkeypatch.setattr(cli, "checked_paths", forbidden)
+    monkeypatch.setattr(cli, "load_source", forbidden)
+    result = run(SPEC, path, hashlib.sha256(raw).hexdigest(), tmp_path / "out")
+    assert result["status"] == "funding_unqualified"
+    assert result["financial_frames_read"] is False and result["promotion_decision"] == "forbidden"
+    assert "decision" not in result
+
+
+@pytest.mark.parametrize(
+    "boundary,offset,blocked",
+    [
+        ("entry", -1, False),
+        ("entry", 0, True),
+        ("entry", 1, True),
+        ("exit", -1, True),
+        ("exit", 0, True),
+        ("exit", 1, False),
+    ],
+)
+def test_exact_api_event_clock_closed_holding_interval_boundaries(
+    boundary: str, offset: int, blocked: bool
+) -> None:
+    first = source().fills(CONFIG, 0, 40)[0]
+    when = first.entry.received_ns if boundary == "entry" else first.exit.received_ns
+    selected = source(funding_events_ms=(when // 1_000_000 + offset,))
+    if blocked:
+        with pytest.raises(IntegrityError, match="funding API-clock event"):
+            selected.window(CONFIG, 0, 40)
+    else:
+        assert selected.window(CONFIG, 0, 40).gross
+
+
+@pytest.mark.parametrize("confirmed", [False, True])
+def test_late_api_event_inside_holding_fails_whole_window_including_benchmark(
+    confirmed: bool,
+) -> None:
+    original = source()
+    selected = FlowSource(
+        original.spec,
+        original.start_ns,
+        original.end_ns,
+        original.quotes,
+        original.flow,
+        confirmed=confirmed,
+        funding_events_ms=((2 * MINUTE + 500_000_000) // 1_000_000,),
+    )
+    for config in original.spec.configs:
+        with pytest.raises(IntegrityError, match="funding API-clock event"):
+            selected.window(config, 0, 40)
+
+
+@pytest.mark.parametrize("boundary", ["entry", "exit"])
+def test_submillisecond_holding_boundaries_are_conservative(boundary: str) -> None:
+    original = source()
+    first = original.fills(CONFIG, 0, 40)[0]
+    shifted = source(
+        quotes=tuple(
+            replace(q, received_ns=q.received_ns + 123) if q in (first.entry, first.exit) else q
+            for q in original.quotes
+        )
+    )
+    actual = shifted.fills(CONFIG, 0, 40)[0]
+    event = (
+        actual.entry.received_ns // 1_000_000
+        if boundary == "entry"
+        else (actual.exit.received_ns + 999_999) // 1_000_000
+    )
+    selected = source(quotes=shifted.quotes, funding_events_ms=(event,))
+    with pytest.raises(IntegrityError, match="funding API-clock event"):
+        selected.window(CONFIG, 0, 40)
+
+
+def test_fixed_engineering_part_admission_accepts_native_small_parts_without_truncation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import research.btc_flow_cli as cli
+
+    data = b"opaque closed file bytes"
+    digest = hashlib.sha256(data).hexdigest()
+    monkeypatch.setattr(cli, "_read", lambda _path, _limit: data)
+    inputs = manifest(0, 3 * DAY)
+    inputs["parts"] = [{"path": f"/fixture/{i}.parquet", "sha256": digest} for i in range(10_001)]
+    assert len(checked_paths(inputs)[0]) == 10_001
+    inputs["parts"] = [{}] * 70_001
+    with pytest.raises(IntegrityError, match="raw part count"):
+        checked_paths(inputs)
+
+
+@pytest.mark.parametrize("inherited", [(8 << 30, 8 << 30), (-1, -1), (4 << 30, 6 << 30)])
+def test_cli_address_space_cap_never_relaxes_stricter_inherited_limit(
+    monkeypatch: pytest.MonkeyPatch, inherited: tuple[int, int]
+) -> None:
+    import research.btc_flow_cli as cli
+
+    applied = []
+    monkeypatch.setattr(resource, "getrlimit", lambda _kind: inherited)
+    monkeypatch.setattr(resource, "setrlimit", lambda kind, values: applied.append((kind, values)))
+    cli.bound_address_space()
+    expected = 4 << 30 if inherited[0] == 4 << 30 else 8 << 30
+    assert applied == [(resource.RLIMIT_AS, (expected, expected))]
+
+
+def test_full_runner_keeps_malformed_oos_sealed_after_failed_validation(tmp_path: Path) -> None:
+    part = tmp_path / "sealed.parquet"
+    sealed_oos_fixture(part)
+    inputs = manifest(0, 3 * DAY)
+    inputs["funding"] = funding_fixture(tmp_path)[0]
+    inputs["parts"] = [{"path": str(part), "sha256": hashlib.sha256(part.read_bytes()).hexdigest()}]
+    raw = json.dumps(inputs).encode()
+    path = tmp_path / "inputs.json"
+    path.write_bytes(raw)
+    result = run(SPEC, path, hashlib.sha256(raw).hexdigest(), tmp_path / "out")
+    assert result["status"] == "completed"
+    assert result["promotion_decision"] == "forbidden"
+    decision = result["decision"]
+    assert isinstance(decision, dict)
+    assert decision["label"] == "model_conditional_exploratory_not_enough_data"
+    assert decision["selected_config_id"] is None and decision["promotion_decision"] == "forbidden"
+    assert "momentum_without_flow_holdout_benchmark" not in result
+
+
+def test_complete_native_timeline_with_late_event_still_invalidates_exposure(
+    tmp_path: Path,
+) -> None:
+    _, proof, native = funding_fixture(tmp_path)
+    data = json.loads(native.read_bytes())
+    data["rows"][1]["time"] = (2 * MINUTE + 500_000_000) // 1_000_000
+    native.write_text(json.dumps(data))
+    events, _ = funding_timeline(rebind_funding(proof, native), 0, 3 * DAY)
+    with pytest.raises(IntegrityError, match="funding API-clock event"):
+        source(funding_events_ms=events).window(CONFIG, 0, 40)

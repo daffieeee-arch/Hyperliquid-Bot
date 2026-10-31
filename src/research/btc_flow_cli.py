@@ -10,8 +10,10 @@ import argparse
 import hashlib
 import json
 import os
+import resource
 import stat
 import subprocess
+import time
 from collections.abc import Iterator
 from dataclasses import asdict
 from decimal import Decimal
@@ -24,8 +26,9 @@ from hyperliquid_bot.binance_spot_trades import BinanceTimestampUnit, decode_bin
 from hyperliquid_bot.local_mode import require_local_paper_mode
 from research.btc_flow import MINUTE, SECOND, FlowSource, Quote, SpotTrade, aggregate_flow, require
 from research.harness.errors import HarnessError
-from research.harness.evaluate import decide_source, summarize
+from research.harness.evaluate import TradeSeries, decide_source, summarize
 from research.harness.spec import (
+    ConfigSpec,
     HypothesisSpec,
     Json,
     load_document,
@@ -33,13 +36,18 @@ from research.harness.spec import (
     validate_spec,
     write_lock,
 )
+from research.hist_etl.hyperliquid import slot_of
 
 STUDY_ID = "btc-spot-flow-confirmed-hl-continuation-v1"
-MAX_QUOTES = 1_000_000
+MAX_QUOTES = 2_000_000
 MAX_TRADES = 25_000_000
-MAX_PARTS = 10_000
+MAX_PARTS = 70_000
 MAX_SOURCE_BYTES = 100 << 30
+MAX_MANIFEST_BYTES = 32 << 20
+MAX_PROCESS_BYTES = 8 << 30
 DAY = 24 * 60 * MINUTE
+HOUR_MS = 3_600_000
+FUNDING_MODEL = "hl-fundingHistory-api-clock-v1"
 
 
 def _unique(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -102,11 +110,14 @@ def validate_manifest(document: dict[str, object]) -> tuple[int, int, str]:
             "preregistration_commit",
             "preregistration_merged_ns",
             "parts",
+            "funding",
         },
         "input manifest keys",
     )
     require(
-        document["format"] == 1 and document["phase"] in ("exploratory", "prospective"),
+        type(document["format"]) is int
+        and document["format"] == 2
+        and document["phase"] in ("exploratory", "prospective"),
         "input manifest version/phase",
     )
     start, end = document["start_ns"], document["end_ns"]
@@ -168,6 +179,114 @@ def checked_paths(document: dict[str, object]) -> tuple[list[str], dict[str, str
     return sorted(hashes), hashes
 
 
+def funding_timeline(
+    reference: object, start: int, end: int
+) -> tuple[tuple[int, ...], dict[str, str]]:
+    """Qualify native timing metadata only; never interpret rates or premiums.
+
+    Provenance clocks are assertions requiring independent acceptance before
+    the manifest is approved. Hashes bind them; they do not authenticate them.
+    """
+    require(isinstance(reference, dict), "funding snapshot required")
+    proof_ref = cast(dict[str, object], reference)
+    require(set(proof_ref) == {"path", "sha256"}, "funding proof reference")
+
+    def bound(ref: dict[str, object], maximum: int) -> tuple[dict[str, object], str, str]:
+        path, expected = ref["path"], ref["sha256"]
+        require(isinstance(path, str) and isinstance(expected, str), "funding file identity")
+        path, expected = cast(str, path), cast(str, expected)
+        raw = _read(exact_part_path(path), maximum)
+        require(hashlib.sha256(raw).hexdigest() == expected, "funding file hash mismatch")
+        return _json(raw), path, expected
+
+    proof, path, digest = bound(proof_ref, 16 << 10)
+    require(
+        set(proof)
+        == {
+            "format",
+            "model",
+            "endpoint",
+            "coin",
+            "snapshot_cutoff_ns",
+            "frozen_utc_ns",
+            "known_holes",
+            "sources",
+        }
+        and type(proof["format"]) is int
+        and proof["format"] == 1
+        and proof["model"] == FUNDING_MODEL
+        and proof["endpoint"] == "https://api.hyperliquid.xyz/info"
+        and proof["coin"] == "BTC"
+        and proof["known_holes"] == [],
+        "funding provenance/model without hole waivers required",
+    )
+    cutoff, frozen = proof["snapshot_cutoff_ns"], proof["frozen_utc_ns"]
+    require(
+        type(cutoff) is int
+        and type(frozen) is int
+        and end + 60 * MINUTE <= cutoff <= frozen <= time.time_ns(),
+        "funding snapshot must be frozen after end plus padding and before scoring",
+    )
+    sources = proof["sources"]
+    require(isinstance(sources, list) and 1 <= len(sources) <= 2, "funding month count")
+    first = (start - 60 * MINUTE) // (HOUR_MS * 1_000_000)
+    last = -(-(end + 60 * MINUTE) // (HOUR_MS * 1_000_000))
+    required = set(range(first, last))
+    events: dict[int, int] = {}
+    hashes = {path: digest}
+    for item in cast(list[object], sources):
+        require(isinstance(item, dict), "funding source reference")
+        ref = cast(dict[str, object], item)
+        require(set(ref) == {"path", "sha256"}, "funding source keys")
+        raw, source_path, source_hash = bound(ref, 1 << 20)
+        require(source_path not in hashes, "duplicate funding source")
+        hashes[source_path] = source_hash
+        require(
+            set(raw) == {"source", "coin", "start_ms", "end_ms", "rows"}
+            and raw["source"] == "hyperliquid-info-fundingHistory"
+            and raw["coin"] == "BTC",
+            "native fundingHistory BTC snapshot required",
+        )
+        lo, hi, rows = raw["start_ms"], raw["end_ms"], raw["rows"]
+        require(
+            type(lo) is int
+            and type(hi) is int
+            and lo % HOUR_MS == hi % HOUR_MS == 0
+            and lo < hi <= cast(int, cutoff) // 1_000_000
+            and isinstance(rows, list)
+            and 0 < len(rows) <= 800,
+            "native funding window/row bound",
+        )
+        previous: int | None = None
+        used = False
+        for row in cast(list[dict[str, object]], rows):
+            require(
+                isinstance(row, dict)
+                and set(row) == {"coin", "fundingRate", "premium", "time"}
+                and row["coin"] == "BTC"
+                and type(row["time"]) is int
+                and isinstance(row["fundingRate"], str)
+                and isinstance(row["premium"], str),
+                "native funding row metadata schema",
+            )
+            when = cast(int, row["time"])
+            slot = slot_of(when, HOUR_MS)
+            require(
+                (previous is None or previous < when)
+                and cast(int, lo) // HOUR_MS <= slot < cast(int, hi) // HOUR_MS
+                and when * 1_000_000 <= cast(int, cutoff),
+                "native funding row ordering/window/cutoff",
+            )
+            previous = when
+            if slot in required:
+                require(slot not in events, "duplicate funding hour slot")
+                events[slot] = when
+                used = True
+        require(used, "irrelevant funding month refused")
+    require(set(events) == required, "complete funding hour slots including padding required")
+    return tuple(sorted(events.values())), hashes
+
+
 def receipt_freshness(received_ns: int, event_ns: int) -> None:
     # Event clocks validate freshness only; features still become available at
     # receipt. Stale frames invalidate the study, never disappear from its PnL.
@@ -179,6 +298,8 @@ def load_source(
     start: int,
     end: int,
     paths: list[str],
+    *,
+    funding_events_ms: tuple[int, ...] | None = None,
 ) -> FlowSource:
     """Read original economic frames once; local normalization markers never count."""
     require(bool(paths) and paths == sorted(set(paths)), "closed raw part list")
@@ -275,7 +396,7 @@ def load_source(
                     )
                     data = cast(dict[str, object], record["data"])
                     coin = data.get("coin")
-                    require(isinstance(coin, str) and bool(coin), "HL payload coin identity")
+                    require(coin in ("BTC", "ETH", "SOL"), "HL payload coin identity")
                     if coin != "BTC":
                         # Add-ons share the container product. Their prices are not this study.
                         continue
@@ -344,7 +465,83 @@ def load_source(
         flow,
         tuple(hl_gaps),
         tuple(bn_gaps),
+        funding_events_ms=funding_events_ms,
     )
+
+
+class StagedFlowSource:
+    """Conditional scenario source: financial OOS decoding happens on demand.
+
+    The existing harness requests the final window only after validation selects
+    a configuration. Validation and its benchmarks share only the first 48h;
+    OOS quality/clock errors cannot enter that read. This source does not qualify
+    funding and is not an executable economic-research permission.
+    """
+
+    def __init__(
+        self,
+        spec: HypothesisSpec,
+        start: int,
+        end: int,
+        paths: list[str],
+        *,
+        funding_events_ms: tuple[int, ...] | None = None,
+    ) -> None:
+        require(end - start == 3 * DAY, "fixed staged 72h axis")
+        self.spec, self.start, self.end = spec, start, end
+        self.boundary = end - spec.split.holdout_bars * MINUTE
+        require(self.boundary == start + 2 * DAY, "fixed 48h decode boundary")
+        self.paths = paths
+        self.funding_events_ms = funding_events_ms
+        self.holdout_decoding_started = False
+        self._sources = {
+            (False, True): load_source(
+                spec, start, self.boundary, paths, funding_events_ms=funding_events_ms
+            )
+        }
+
+    @property
+    def length(self) -> int:
+        return (self.end - self.start) // MINUTE
+
+    def _window(self, config: ConfigSpec, start: int, end: int, *, confirmed: bool) -> TradeSeries:
+        require(0 <= start < end <= self.length, "staged window outside axis")
+        split = (self.boundary - self.start) // MINUTE
+        require(end <= split or start >= split, "staged window crosses sealed OOS")
+        holdout = start >= split
+        if (holdout, True) not in self._sources:
+            self.holdout_decoding_started = True
+            # One previously decoded minute is the fixed feature warm-up. It is
+            # reread only after selection, together with the reserved OOS.
+            self._sources[(True, True)] = load_source(
+                self.spec,
+                self.boundary - MINUTE,
+                self.end,
+                self.paths,
+                funding_events_ms=self.funding_events_ms,
+            )
+        if (holdout, confirmed) not in self._sources:
+            original = self._sources[(holdout, True)]
+            self._sources[(holdout, confirmed)] = FlowSource(
+                self.spec,
+                original.start_ns,
+                original.end_ns,
+                original.quotes,
+                original.flow,
+                original.hl_gaps,
+                original.bn_gaps,
+                confirmed=confirmed,
+                funding_events_ms=self.funding_events_ms,
+            )
+        source = self._sources[(holdout, confirmed)]
+        offset = (source.start_ns - self.start) // MINUTE
+        return source.window(config, start - offset, end - offset)
+
+    def window(self, config: ConfigSpec, start: int, end: int) -> TradeSeries:
+        return self._window(config, start, end, confirmed=True)
+
+    def benchmark_window(self, config: ConfigSpec, start: int, end: int) -> TradeSeries:
+        return self._window(config, start, end, confirmed=False)
 
 
 def study_spec(path: Path) -> tuple[dict[str, Json], HypothesisSpec]:
@@ -354,6 +551,7 @@ def study_spec(path: Path) -> tuple[dict[str, Json], HypothesisSpec]:
         spec.hypothesis_id == STUDY_ID and spec.selection_method == "holm" and spec.alpha == 0.05,
         "fixed hypothesis",
     )
+    require(FUNDING_MODEL in spec.dataset_version, "fixed conditional funding model")
     require(
         sorted((c.threshold, c.horizon_bars) for c in spec.configs)
         == [(0.2, 1), (0.2, 5), (0.4, 1), (0.4, 5)],
@@ -424,7 +622,7 @@ def run(
     source_commit: str | None = None,
 ) -> dict[str, object]:
     require_local_paper_mode(os.environ.get("TRADING_MODE"))
-    manifest_bytes = _read(manifest_path, 4 << 20)
+    manifest_bytes = _read(manifest_path, MAX_MANIFEST_BYTES)
     require(hashlib.sha256(manifest_bytes).hexdigest() == expected, "approved manifest hash")
     inputs = _json(manifest_bytes)
     start, end, phase = validate_manifest(inputs)
@@ -446,11 +644,27 @@ def run(
         }
         _result(output, insufficient)
         return insufficient
-    evaluation_started = False
+    try:
+        funding_events, funding_hashes = funding_timeline(inputs["funding"], start, end)
+    except (HarnessError, ValueError, TypeError, KeyError, OSError, ArithmeticError):
+        unqualified: dict[str, object] = {
+            "status": "funding_unqualified",
+            "reason": "complete independently accepted frozen funding API-clock timeline required",
+            "promotion_decision": "forbidden",
+            "financial_frames_read": False,
+            "funding_model": FUNDING_MODEL,
+            "onchain_cashflow_qualified": False,
+            "source_manifest_sha256": expected,
+            "source_commit": source_commit,
+            "spec_sha256": spec_sha256(document),
+            "phase": phase,
+        }
+        _result(output, unqualified)
+        return unqualified
+    source: StagedFlowSource | None = None
     try:
         paths, hashes = checked_paths(inputs)
-        source = load_source(spec, start, end, paths)
-        evaluation_started = True
+        source = StagedFlowSource(spec, start, end, paths, funding_events_ms=funding_events)
         decision = decide_source(source)
         payload: dict[str, object] = {
             "status": "completed",
@@ -460,63 +674,63 @@ def run(
             "phase": phase,
             "exploratory_only": phase == "exploratory",
             "decision": asdict(decision),
-            "promotion_decision": "forbidden"
-            if phase == "exploratory"
-            else decision.promotion_decision,
+            "promotion_decision": "forbidden",
             "execution_cost_model": (
                 "observed two-sided quotes + both fill fees + adverse slippage; "
                 "cost-vector stress1/1.5/2"
             ),
-            "funding_model": (
-                "no exposure inside hourly settlement guard; no missing settlement imputed"
-            ),
+            "funding_model": FUNDING_MODEL,
+            "model_conditional": True,
+            "onchain_cashflow_qualified": False,
+            "funding_event_count_including_padding": len(funding_events),
+            "funding_source_sha256": funding_hashes,
             "flat_benchmark_net": 0.0,
             "source_manifest_sha256": expected,
             "source_part_sha256": hashes,
             "venue_orders_submitted": False,
             "deployment": False,
         }
-        momentum = FlowSource(
-            spec,
-            start,
-            end,
-            source.quotes,
-            source.flow,
-            source.hl_gaps,
-            source.bn_gaps,
-            confirmed=False,
-        )
         baseline: list[float] = []
         for fold in decision.folds:
             config = next(c for c in spec.configs if c.id == decision.primary_config_id)
             baseline.extend(
-                momentum.window(config, fold.test_start, fold.test_end).net(spec.costs, 1.0)
+                source.benchmark_window(config, fold.test_start, fold.test_end).net(spec.costs, 1.0)
             )
         payload["momentum_without_flow_validation_benchmark"] = asdict(summarize(baseline))
         if decision.selected_config_id is not None:
             selected = next(c for c in spec.configs if c.id == decision.selected_config_id)
             payload["momentum_without_flow_holdout_benchmark"] = asdict(
                 summarize(
-                    momentum.window(selected, decision.holdout_start, decision.holdout_end).net(
-                        spec.costs, 1.0
-                    )
+                    source.benchmark_window(
+                        selected, decision.holdout_start, decision.holdout_end
+                    ).net(spec.costs, 1.0)
                 )
             )
         require(
-            checked_paths(inputs)[1] == hashes and _read(manifest_path, 4 << 20) == manifest_bytes,
+            checked_paths(inputs)[1] == hashes
+            and funding_timeline(inputs["funding"], start, end) == (funding_events, funding_hashes)
+            and _read(manifest_path, MAX_MANIFEST_BYTES) == manifest_bytes,
             "source mutation after study",
         )
-        if phase == "exploratory":
-            reported = cast(dict[str, object], payload["decision"])
-            reported["label"] = "exploratory_" + decision.label
-            reported["promotion_decision"] = "forbidden"
+        reported = cast(dict[str, object], payload["decision"])
+        reported["label"] = (
+            "model_conditional_"
+            + ("exploratory_" if phase == "exploratory" else "")
+            + decision.label
+        )
+        reported["promotion_decision"] = "forbidden"
         local_spec = output / "spec.yaml"
         require(spec_path.read_bytes() == spec_bytes, "spec changed during study")
         local_spec.write_bytes(spec_bytes)
         write_lock(
             local_spec,
             cast(
-                dict[str, Json], {"source_manifest_sha256": expected, "source_part_sha256": hashes}
+                dict[str, Json],
+                {
+                    "source_manifest_sha256": expected,
+                    "source_part_sha256": hashes,
+                    "funding_source_sha256": funding_hashes,
+                },
             ),
         )
         _result(output, payload)
@@ -526,16 +740,27 @@ def run(
             "status": "failed_closed",
             "promotion_decision": "forbidden",
             "reason": "no valid complete study outcome; do not resume or reuse OOS",
-            "holdout_scoring_may_have_been_attempted": evaluation_started,
+            "holdout_scoring_may_have_been_attempted": (
+                source is not None and source.holdout_decoding_started
+            ),
             "failure_kind": error.failure_kind,
             "unknown_execution_outcomes_at_least": 1 if "BTC flow: unknown" in str(error) else 0,
             "source_manifest_sha256": expected,
             "source_commit": source_commit,
             "spec_sha256": spec_sha256(document),
             "phase": phase,
+            "funding_model": FUNDING_MODEL,
+            "model_conditional": True,
+            "onchain_cashflow_qualified": False,
         }
         _result(output, failure)
         return failure
+
+
+def bound_address_space() -> None:
+    soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+    cap = min(value for value in (soft, hard, MAX_PROCESS_BYTES) if value != resource.RLIM_INFINITY)
+    resource.setrlimit(resource.RLIMIT_AS, (cap, cap))
 
 
 def main() -> int:
@@ -548,6 +773,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         require_local_paper_mode(os.environ.get("TRADING_MODE"))
+        bound_address_space()
         repo = Path(__file__).absolute().parents[2]
         git = [
             "git",
@@ -578,7 +804,7 @@ def main() -> int:
             [*git, "show", args.source_commit + ":docs/experiments/exp_btc_spot_flow.spec.yaml"]
         )
         require(args.spec.read_bytes() == frozen_spec, "committed preregistration spec")
-        inputs = _json(_read(args.inputs, 4 << 20))
+        inputs = _json(_read(args.inputs, MAX_MANIFEST_BYTES))
         validate_manifest(inputs)
         if inputs["phase"] == "prospective":
             prereg = cast(str, inputs["preregistration_commit"])
@@ -624,6 +850,7 @@ def main() -> int:
         OSError,
         duckdb.Error,
         ArithmeticError,
+        MemoryError,
         subprocess.SubprocessError,
     ):
         print("BTC flow study failed closed; source/financial error details withheld.")

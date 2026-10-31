@@ -104,7 +104,7 @@ def aggregate_flow(trades: Iterable[SpotTrade]) -> dict[int, Flow]:
 
 
 def settlement_safe(decision_ns: int, horizon_minutes: int) -> bool:
-    """Worst-case entry AND exit waits remain inside one guarded UTC hour."""
+    """Engineering calendar exclusion; not proof of actual funding timing."""
     earliest_entry = decision_ns + ENTRY_DELAY
     latest_exit = (
         decision_ns + ENTRY_DELAY + MAX_WAIT + horizon_minutes * MINUTE + LATENCY + MAX_WAIT
@@ -193,6 +193,7 @@ class FlowSource:
         bn_gaps: tuple[int, ...] = (),
         *,
         confirmed: bool = True,
+        funding_events_ms: tuple[int, ...] | None = None,
     ) -> None:
         require(start_ns % MINUTE == end_ns % MINUTE == 0 and end_ns > start_ns, "minute axis")
         require((end_ns - start_ns) // MINUTE <= spec.data.max_rows, "decision row bound")
@@ -234,6 +235,7 @@ class FlowSource:
         changes = tuple(b.received_ns for a, b in pairwise(quotes) if a.session != b.session)
         self.hl_gaps, self.bn_gaps = tuple(sorted((*hl_gaps, *changes))), tuple(sorted(bn_gaps))
         self.confirmed = confirmed
+        self.funding_events_ms = funding_events_ms
 
     @property
     def length(self) -> int:
@@ -319,6 +321,17 @@ class FlowSource:
                 and not self._gap(self.hl_gaps, entry.received_ns, exit_quote.received_ns),
                 "unknown exit across gap/session/window",
             )
+            if self.funding_events_ms is not None:
+                # Returned API time is a declared model clock, not proof of
+                # onchain payment time. Round both closed holding boundaries
+                # conservatively to the API's millisecond precision.
+                first = entry.received_ns // 1_000_000
+                last = (exit_quote.received_ns + 999_999) // 1_000_000
+                at = bisect_left(self.funding_events_ms, first)
+                require(
+                    at == len(self.funding_events_ms) or self.funding_events_ms[at] > last,
+                    "funding API-clock event intersects possible holding interval",
+                )
             fill = quote_fill(
                 when,
                 decision_quote.mid,
@@ -338,6 +351,8 @@ class FlowSource:
         require(all(math.isfinite(f.gross) for f in fills), "nonfinite trade return")
         return TradeSeries(
             gross=tuple(f.gross for f in fills),
+            # Conditional API-clock scenario only. The public runner requires a
+            # separately qualified complete timeline before any financial read.
             funding_paid=(0.0,) * len(fills),
             funding_received=(0.0,) * len(fills),
             weights=tuple(f.weight for f in fills),

@@ -1,0 +1,31 @@
+{
+  "format": 1,
+  "policy_id": "operator-research-universe-2026-10-31",
+  "decision_date": "2026-10-31",
+  "decision_origin": "Explicit operator instruction: ICP will not be traded.",
+  "scope": "Research target universe; apply selection before input planning, coverage checks, features and ranking.",
+  "source_universe": {
+    "path": "config/hist_etl/universe/binance-um-usdt-1d-2026-10-08.json",
+    "sha256": "add8d0f26d6b7c2bdf18963cf1f77752f0b1aa8a943a64c868e097951f4ec520"
+  },
+  "selected_universe": {
+    "path": "universe/binance-um-usdt-1d-operator-2026-10-31.json",
+    "sha256": "feefa1055634d59044583d689c487eaca92868e393a1fcf1b48ed72864278cf8",
+    "member_count": 895
+  },
+  "manifest": {
+    "path": "datasets.toml",
+    "sha256": "29a7ca0361766d596faeda6fc47534da93bad0bc30d22fab8a0c48c2307b36b1",
+    "group": "bn-um-usdt-1d-operator-2026-10-31"
+  },
+  "excluded_symbols": {
+    "ICPUSDT": "operator_trading_preference"
+  },
+  "observations_before_decision": {
+    "icp_archive_availability_gaps_observed": true,
+    "s4_strategy_scoring_in_this_continuation": false,
+    "basis": "Operator trading preference recorded after source-gap observations and before strategy scoring; not chosen from strategy performance."
+  },
+  "classification_effect": "None. ICP is not reclassified as non-crypto or as a technically invalid ticker.",
+  "execution_enforcement": "This manifest selects research inputs only. It is not an execution or signing enforcement mechanism."
+}

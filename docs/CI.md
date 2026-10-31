@@ -182,6 +182,50 @@ draft PR) still reports `python-foundation`, `d01-publication`,
 The final `ci-gate` intentionally fails for draft-skip runs despite those
 individual success names.
 
+## Actual offline adapter observations in D01
+
+The existing `d01-publication` job reuses its exact isolated NautilusTrader
+`1.231.0` environment for the reviewed offline fragment runners. This supersedes
+the original evidence notes describing frozen-only CI checks. It adds no job,
+package installation, credential or runtime access. The existing 13 D01,
+7 D22-A and 10 COURSE-1 test gates retain their exact counts and no-skip rules.
+The new step uses the same Python-area/draft gate; classification failures
+still run the required work, and current-ready checks remain mandatory.
+
+`fit_gates.hyperliquid_testnet_readiness.verify_ci` invokes a fixed registry:
+5 historical lifecycle cases, 7 lifecycle edges and 46 report observations.
+The runners execute actual pinned adapter methods/core types behind their
+reviewed explicit offline seams. Guards refuse unsafe modes and credential
+presence before optional imports. No client, signer, factory, event loop,
+venue request, deployment or NAS scan is involved. Python audit hooks are not
+an OS network sandbox for native extensions.
+
+Every business JSON field is compared with frozen evidence, including source
+and runner hashes, identities, quantities, fees, classifications, limits and
+case order/completeness. Only the top-level `runtime` object is excluded, after
+strict key/type validation; recorded and observed Python/machine/libc metadata
+are printed separately. No nested field is excluded. Canonical encoding follows
+the runner CLIs (including report dataclass tuples encoded as JSON arrays),
+distinguishes boolean/integer/float scalars and rejects non-finite numbers,
+non-string object keys and duplicate frozen keys. No probe with a changing
+observation timestamp is in this registry.
+
+Success means all **58 expected observations reproduced**, including counted
+negative/HOLD cases. It never means adapter conformance passed. The three edge
+HOLD cases remain named in the log, overall decision remains HOLD and new-risk
+permission stays false. Missing/duplicate cases, changed business output,
+source drift, incorrect classifications, missing dependencies or runner errors
+fail the step; there is no successful skip, xfail or tolerated runner failure.
+The [edge](research/hyperliquid-lifecycle-edges.md) and
+[report](research/hyperliquid-report-trust.md) limitations still apply.
+
+This integration intentionally refreshes only the `ci.yml` byte count/hash in
+the existing D01 publication-integrity manifest because the workflow is part of
+that binding. Historical runner/evidence bytes, D41/root dependency locks,
+publication artifacts and study/holdout pins are unchanged. The ordinary
+unit suite tests comparison/guard mutations without importing the optional
+adapter; this existing isolated job performs the actual 58-case executions.
+
 ## D01 publication hash
 
 `.github/workflows/ci.yml` is part of the D01 publication integrity set.

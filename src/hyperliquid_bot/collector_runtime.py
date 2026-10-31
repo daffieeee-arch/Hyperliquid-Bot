@@ -253,6 +253,9 @@ def collect_campaign(
     os.umask(0o077)
     if os.environ.get("COLLECTOR_SOURCE_COMMIT") != plan.source_commit or os.getuid() != 1000:
         raise ValueError("Run only the reviewed source image as nonrootUID1000.")
+    # Native claim stamping reads this explicit start-time version because the
+    # immutable image intentionally contains no Git checkout/executable.
+    environment["CAPTURE_CODE_SHA"] = plan.source_commit
     for root in (spool, capture, archive):
         private_directory(root)
     if (

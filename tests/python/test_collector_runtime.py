@@ -15,6 +15,7 @@ import pytest
 from scripts.collector_network_gate import owned_veth, validate_container, verified_rate
 
 from hyperliquid_bot import collector_runtime as runtime
+from hyperliquid_bot.capture_live_status import process_code_version
 from hyperliquid_bot.collector_clock import parse_tracking
 from hyperliquid_bot.collector_storage import (
     CollectorStorageError,
@@ -504,6 +505,10 @@ def test_controller_publishes_only_completed_public_native_chunks(
             },
         )
         assert kwargs["env"]["TRADING_MODE"] == "PAPER" and kwargs["stdin"] == subprocess.DEVNULL
+        assert kwargs["env"]["CAPTURE_CODE_SHA"] == SOURCE
+        with monkeypatch.context() as child_context:
+            child_context.setattr("hyperliquid_bot.capture_live_status.os.environ", kwargs["env"])
+            assert process_code_version() == SOURCE
         return FakeChild(0)
 
     monkeypatch.setattr("hyperliquid_bot.collector_runtime.subprocess.Popen", fake_start)

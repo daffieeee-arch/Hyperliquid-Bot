@@ -231,6 +231,25 @@ def _read_mountinfo() -> str:
     return Path("/proc/self/mountinfo").read_text(encoding="utf-8")
 
 
+def _mount_target_identity(target: Path) -> tuple[str, str]:
+    # Only inspect the explicit mount target, never the selected data root.
+    # O_PATH does not activate an inactive autofs mount. Each no-follow lookup
+    # is relative to an open parent, so an ancestor swap cannot redirect it.
+    flags = os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW
+    descriptor = os.open("/", flags)
+    try:
+        for part in target.parts[1:]:
+            next_descriptor = os.open(part, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = next_descriptor
+        value = os.fstat(descriptor)
+        mount_id = _descriptor_mount_id(descriptor)
+        device = f"{os.major(value.st_dev)}:{os.minor(value.st_dev)}"
+        return mount_id, device
+    finally:
+        os.close(descriptor)
+
+
 def _bound_mount(
     root: Path, expected: MountIdentity
 ) -> tuple[MountIdentity, tuple[MountIdentity, ...]]:
@@ -247,7 +266,22 @@ def _bound_mount(
     candidates = [mount for mount in mounts if root.is_relative_to(mount.target)]
     if not candidates:
         raise _Unsafe("root_has_no_matching_mount")
-    observed = max(candidates, key=lambda mount: len(mount.target.parts))
+    depth = max(len(mount.target.parts) for mount in candidates)
+    deepest = [mount for mount in candidates if len(mount.target.parts) == depth]
+    # Reject absent/wrong targets and deeper covering mounts before any path
+    # lookup. An autofs entry and its active NFS overmount can share a target;
+    # neither line order nor numeric mount ID indicates which is visible.
+    if not any(
+        (mount.target, mount.source, mount.filesystem)
+        == (expected.target, expected.source, expected.filesystem)
+        for mount in deepest
+    ):
+        raise _Unsafe("mount_identity_mismatch")
+    mount_id, device = _mount_target_identity(expected.target)
+    visible = [mount for mount in deepest if mount.mount_id == mount_id and mount.device == device]
+    if len(visible) != 1:
+        raise _Unsafe("mount_descriptor_identity_mismatch")
+    observed = visible[0]
     if (observed.target, observed.source, observed.filesystem) != (
         expected.target,
         expected.source,

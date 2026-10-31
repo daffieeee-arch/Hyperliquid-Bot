@@ -39,6 +39,16 @@ a nested bind mount shares the same device. Kernel mount identity is checked
 again at the end. This identifies the
 selected export, not physical disks, storage-pool durability or backups.
 
+Systemd autofs and an active NFS overmount may have the same target in kernel
+mount metadata. The helper opens only the explicit mount target using anchored,
+no-follow directory descriptors, then matches its kernel descriptor mount ID
+and device to the deepest metadata entry. Mount-list order and larger numeric
+IDs do not establish visibility. A hidden expected export cannot authorize a
+different visible mount. An inactive autofs mount is not activated by this
+`O_PATH` lookup and remains invalid; mount/descriptor disagreement during a
+replacement also fails closed. The selected data root is inspected only after
+this check, and the existing per-open and final identity checks still apply.
+
 Use actual values independently verified by the operator; the public example
 below deliberately has no default source address or private NAS path:
 

@@ -87,6 +87,11 @@ root dispersion ≤250 ms, root delay 0–500 ms. These engineering bounds do no
 claim submillisecond alignment. The exporter only reads `chronyc -n tracking`;
 it never adjusts the clock.
 
+Interface counters and the container-veth TC policy cover public socket
+traffic in this container. Bind-mounted NFS publication uses the host's NFS
+client: its bytes and bandwidth are outside these counters and this TC policy.
+Measure NAS publication separately when budgeting host/NAS network capacity.
+
 ## Image delivery
 
 `Dockerfile.collector` pins Python3.13.15/uv0.12.5 base digests and frozen

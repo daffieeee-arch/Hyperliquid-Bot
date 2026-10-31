@@ -5,7 +5,9 @@
 > a new version of the still-unregistered proposal. See
 > [operator scope and preserved contracts](exp_xs_usdm.operator-scope.md).
 > Full-universe failures remain historical evidence; no strategy was
-> scored in this continuation. Recovery/build/shape gates remain pending.
+> scored in this continuation. Selected kline recovery and input-identity
+> acceptance passed; panel preparation is blocked on native funding
+> integrity. See [actual preparation evidence](exp_xs_usdm.operator-preparation.json).
 
 > **Draft, not mergeable yet.** Its signal `carry_7d` (minus the 7-day mean
 > funding over traded days with a rate, ties broken by a hashed draw) comes

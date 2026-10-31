@@ -5,7 +5,9 @@
 > a new version of the still-unregistered proposal. See
 > [operator scope and preserved contracts](exp_xs_usdm.operator-scope.md).
 > Full-universe failures remain historical evidence; no strategy was
-> scored in this continuation. Recovery/build/shape gates remain pending.
+> scored in this continuation. Selected kline recovery and input-identity
+> acceptance passed; panel preparation is blocked on native funding
+> integrity. See [actual preparation evidence](exp_xs_usdm.operator-preparation.json).
 
 > **Draft, not mergeable yet.** The code it pins is on main: the S4 panel
 > change merged in #145 (`694497a`), which adds `--exclude-symbols`,

@@ -98,7 +98,64 @@ boundaries remain mandatory. Approved conversion and equality checks may
 process source financial fields internally but expose only metadata and
 counts; no returns or strategy selection may be computed.
 
+## Actual selected preparation — 2026-10-31
+
+The before-recovery contract above and its machine-readable input amendment
+remain frozen. [Actual preparation evidence](exp_xs_usdm.operator-preparation.json)
+records the subsequent results separately, under executed proposal head
+`64a6c10ba88e08fa3c1d3cd73669393ab526d334` and source/config pin `d1378756`.
+
+The reviewed local curator restored all **297 native daily records** in
+102 months. All 2,630 existing rows in those months passed all-field
+preservation comparisons; the 42,170 unaffected selected pairs remained
+byte-identical to original B. Independent acceptance verified all
+84,544 selected data files and 798 staged ZIP/CHECKSUM files. C manifest
+SHA256 is `e9467146ff64f99ff7aef3b6961971ba8768442394f89d8a666d407a91bbd66d`;
+its file ledger is `df41c6914c765218fffda9be0480870f2a7a5f9c96e46672432a56718cf4fbed`.
+This passes input identity and the selected kline repair, not research readiness.
+
+The first bounded selected panel attempt produced no panel, locks or shape
+output. Its generic child error did not capture the original cause. A separate
+reviewed native integrity audit then passed kline coverage and funding reads,
+but stopped on `1000000BOBUSDT` at 2026-06-24 inside a funding run. The later
+complete metadata-only ledger covered 863 funding runs / 860 symbols,
+3,365,025 metadata rows and the **702 actually selected** following-boundary
+files. It froze **413 internal symbol/day failures across 406 symbols**;
+403 occur on 2026-06-24 and ten on nine other dates. Of these records,
+398 concern crypto and 15 the unchanged non-crypto exclusions. Independent
+record acceptance also rederived the 441 native-inferred due clocks and
+selected planning. The aggregate metadata-row count is run-reported.
+
+For the first BOB case, all 179 retained raw timestamp/interval pairs exactly
+match the converted file. Checksum and CRC pass. A bounded three-GET official
+probe found the current monthly ZIP unchanged and the funding-history API
+returning only 00:00:00.005 and 08:00:00.005 UTC on the relevant window,
+with no record within one minute of the native-inferred 04:00 time. All
+archive labels are four hours. This establishes no verified replacement
+from those two channels; the historical cause and actual settlement schedule
+remain unresolved. The concentration on one date is an observation, not
+proof of an exchange incident or zero funding.
+
+These are **pre-build funding integrity failures**, before any shape/reach
+evaluation. The later reach-rule remedy cannot waive them. No rate was
+invented, asset removed, funding repair attempted or panel automatically
+retried. Source/original/NAS bytes remain intact; no strategy was scored.
+
+The engineering resource amendment was accepted before execution: one heavy
+worker, 8 GiB process address-space limit and 2 GB DuckDB memory without spill.
+The panel worker had CPU/wall limits of 600 seconds and parent wall limit
+1,200 seconds; the diagnostic workers had CPU 300 seconds / wall 360 seconds
+and parent wall 900 seconds. Dataset, time, row, cost and statistical gate
+contracts did not change. All reported audits revalidated the complete C,
+source and acceptance identities before and after execution. A diagnostic
+COMPLETE verifies its record; a GAPS/STOP result remains blocked.
+
 ## Remaining preparation and merge gates
+
+The selected input identity is accepted, but native funding integrity now
+blocks panel preparation. Resolve or qualify it through a separately reviewed
+source/data contract supported by official evidence before any new build.
+There is no verified replacement record or approved waiver at this checkpoint.
 
 Only after that new complete input identity is independently accepted may
 the selected panel be built. Both independent builds and original

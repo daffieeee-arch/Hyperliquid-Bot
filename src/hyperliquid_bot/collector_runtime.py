@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
+from .collector_native_storage import require_native_storage
 from .collector_storage import (
     exclusive_json,
     private_directory,
@@ -51,8 +52,14 @@ class RuntimePlan:
     source_commit: str
     image_digest: str
     prune_spool: bool = False
+    storage_profile: str = "vm-nfs"
 
     def __post_init__(self) -> None:
+        if type(self.storage_profile) is not str or self.storage_profile not in {
+            "vm-nfs",
+            "truenas-zfs",
+        }:
+            raise ValueError("Unknown collector storage profile.")
         if (
             type(self.chunk_seconds) is not int
             or type(self.chunks) is not int
@@ -317,7 +324,7 @@ def collect_campaign(
     environment["CAPTURE_CODE_SHA"] = plan.source_commit
     for root in (spool, capture, archive):
         private_directory(root)
-    if (
+    if plan.storage_profile == "vm-nfs" and (
         mounted_filesystem(spool) not in {"ext4", "xfs", "btrfs"}
         or mounted_filesystem(capture) not in {"nfs", "nfs4"}
         or mounted_filesystem(archive) not in {"nfs", "nfs4"}
@@ -338,6 +345,18 @@ def collect_campaign(
         try:
             network = require_network_marker(network_marker, plan)
             clock = clock_evidence(clock_path, now_ns=time.time_ns())
+            if plan.storage_profile == "truenas-zfs":
+                if network.get("storage_profile") != "truenas-zfs":
+                    raise ValueError("Native collector requires native host admission.")
+                require_native_storage(
+                    network.get("storage_verification"),
+                    {
+                        "spool": spool,
+                        "capture": capture,
+                        "archive": archive,
+                        "control": clock_path.parent,
+                    },
+                )
             break
         except FileNotFoundError:
             if time.monotonic() >= startup_deadline:
@@ -371,6 +390,7 @@ def collect_campaign(
         "signing": False,
         "authenticated_feeds": False,
         "research_ready": False,
+        "storage_profile": plan.storage_profile,
     }
     try:
         exclusive_json(campaign / "campaign.json", provenance)
@@ -385,6 +405,10 @@ def collect_campaign(
         "source_commit": plan.source_commit,
         "image_digest": plan.image_digest,
         "research_ready": False,
+        "storage_profile": plan.storage_profile,
+        "lanes": list(plan.lanes),
+        "chunks": plan.chunks,
+        "chunk_seconds": plan.chunk_seconds,
     }
     children: list[subprocess.Popen[bytes]] = []
     stopping = False
@@ -562,6 +586,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--chunks", type=int)
     parser.add_argument("--pilot", action="store_true")
     parser.add_argument("--prune-spool", action="store_true")
+    parser.add_argument("--storage-profile", choices=("vm-nfs", "truenas-zfs"), default="vm-nfs")
     parser.add_argument("--spool", type=Path, default=Path("/spool"))
     parser.add_argument("--capture", type=Path, default=Path("/capture"))
     parser.add_argument("--archive", type=Path, default=Path("/archive"))
@@ -592,6 +617,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error("Reviewed image requires Python 3.13.15.")
         for module, _prefix in LANES.values():
             importlib.import_module("hyperliquid_bot." + module)
+        from .collector_status import check_assets
+
+        check_assets()
         print(
             json.dumps(
                 {
@@ -624,6 +652,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.expected_source,
             args.expected_image,
             args.prune_spool,
+            args.storage_profile,
         )
         collect_campaign(
             plan,

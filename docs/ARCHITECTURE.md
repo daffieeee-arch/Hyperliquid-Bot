@@ -14,8 +14,11 @@ Source development now happens on an Ubuntu VM on TrueNAS SCALE
 (operator-reported placement; observed Ubuntu 26.04.1 LTS / KVM) under
 **ADR-025**. The runtime boundary remains host-neutral Linux/amd64 OCI.
 **ADR-024** preserves the earlier Netcup profile; it does not prove a
-migrated runtime. Continuous services, data roots and release-image
-construction remain unverified or planned. See
+migrated runtime. **ADR-026** permits a narrowly scoped credentialless public
+collector Custom App on TrueNAS, with separate native storage, host clock/network
+admission and a read-only status service. The VM/NFS profile remains supported.
+Collector images use explicit trusted-main publication; other service delivery
+and continuous trading readiness remain separate gates. See
 [migration status](runbooks/ubuntu-vm-migration-status.md).
 
 ```mermaid

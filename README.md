@@ -6,17 +6,19 @@ repository is public; trading credentials and durable research data stay outside
 Primary development has moved to an **Ubuntu VM on TrueNAS SCALE**
 (operator-reported host placement; observed Ubuntu **26.04.1 LTS**, KVM).
 The source checkout is `$HOME/coding-projects/Hyperliquid-Bot`. GitHub Actions
-validates source; release-image construction is still planned. **ADR-025**
-records this development move without approving a migrated PAPER runtime.
-Capture data, historical archives and continuous services have not been
-verified on the VM. See the [migration status](docs/runbooks/ubuntu-vm-migration-status.md).
+validates source and a separate trusted-main workflow publishes the bounded
+public collector image. **ADR-025** records the development move;
+**ADR-026** permits a separately verified credentialless TrueNAS Custom App.
+Source CI, a release image and a bounded data-collection pilot do not certify
+continuous trading runtime. See the [migration status](docs/runbooks/ubuntu-vm-migration-status.md)
+and [TrueNAS App runbook](docs/runbooks/truenas-collector-app.md).
 
 > **Current stage:** research/PAPER engineering; development migration verification<br>
 > **Default trading mode:** PAPER<br>
 > **Live capital:** Disabled by design until explicit promotion gates are met<br>
 > **Primary development host:** Ubuntu VM on TrueNAS SCALE (**ADR-025**)<br>
 > **24/7 runtime boundary:** Host-neutral Linux/amd64 OCI<br>
-> **PAPER/capture migration:** unverified; Netcup profile retained as historical reference (**ADR-024**)<br>
+> **Runtime readiness:** bounded public-data admission is separate from continuous PAPER trading; Netcup remains historical (**ADR-024**)<br>
 > **Secondary operator environment:** TerraPC/WSL2
 
 The current delivery priority is one credentialless Hyperliquid BTC perpetual path from a bounded,
@@ -108,8 +110,8 @@ See [Venue Strategy](docs/VENUES.md).
 | Realtime state / event distribution | Redis when multi-process realtime state requires it |
 | Observability | Grafana + Grafana Alloy / OpenTelemetry |
 | Local development | Ubuntu VM on TrueNAS SCALE; TerraPC/WSL2 secondary |
-| Runtime | Host-neutral Linux/amd64 OCI; VM capture/runtime migration unverified (ADR-025) |
-| CI/CD | GitHub Actions checks; GHCR release pipeline planned |
+| Runtime | Host-neutral Linux/amd64 OCI; bounded public collector on verified VM/NAS profiles, separate trading admission |
+| CI/CD | GitHub Actions checks; explicit trusted-main GHCR collector publication, no automatic deployment |
 
 Redis and PostgreSQL remain planned platform components, but they are not mandatory blockers for the first thin vertical slice.
 

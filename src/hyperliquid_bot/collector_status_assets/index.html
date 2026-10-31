@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="nl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Hyperliquid · Marktdata</title>
+    <link rel="stylesheet" href="/status.css" />
+    <script src="/status.js" defer></script>
+  </head>
+  <body>
+    <div class="shell">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="Hyperliquid status"
+          ><span class="mark">H</span
+          ><span>HYPERLIQUID<span class="brand-sub">RESEARCH / DATA</span></span></a
+        >
+        <div class="top-right">
+          <span class="pill subtle">PAPER · OPENBARE DATA</span
+          ><span id="connection" class="connection">Verbinding maken…</span>
+        </div>
+      </header>
+      <main>
+        <section class="hero">
+          <div>
+            <p class="eyebrow">LIVE OVERZICHT</p>
+            <h1>Je marktdata,<br /><span>in beeld.</span></h1>
+            <p class="intro">Volg de ontvangst, opslag en gezondheid van je dataverzameling.</p>
+          </div>
+          <div class="hero-state">
+            <span id="overall" class="pill unknown">Status wordt opgehaald</span>
+            <p id="updated">Nog geen status ontvangen</p>
+            <p class="muted">Vernieuwt elke 5 seconden</p>
+          </div>
+        </section>
+
+        <div id="notice" class="notice" role="status">
+          De pagina is bereikbaar. De status van de datacollector wordt nog gecontroleerd.
+        </div>
+
+        <section class="summary-grid" aria-label="Samenvatting">
+          <article class="metric">
+            <p class="eyebrow">DATACOLLECTOR</p>
+            <h2 id="controller-phase">Onbekend</h2>
+            <p id="heartbeat">Geen bevestigde status</p>
+          </article>
+          <article class="metric">
+            <p class="eyebrow">ACTIEVE BRONNEN</p>
+            <h2 id="source-count">—</h2>
+            <p id="chunk">Meetperiode onbekend</p>
+          </article>
+          <article class="metric">
+            <p class="eyebrow">TIJDELIJKE BUFFER</p>
+            <h2 id="spool-used">—</h2>
+            <p>Gemeten opgeslagen bytes</p>
+          </article>
+          <article class="metric">
+            <p class="eyebrow">KLOKCONTROLE</p>
+            <h2 id="clock-state">Onbekend</h2>
+            <p id="clock-detail">Geen recente klokmeting</p>
+          </article>
+        </section>
+
+        <section class="section">
+          <div class="section-heading">
+            <h2>Databronnen</h2>
+            <span class="muted">Ontvangst per beurs en datakanaal</span>
+          </div>
+          <div id="venues" class="venue-grid">
+            <div class="empty">Wachten op een herkenbare meetperiode…</div>
+          </div>
+          <p id="inactive-sources" class="muted"></p>
+        </section>
+
+        <section class="section">
+          <div class="section-heading">
+            <h2>Opslag</h2>
+            <span class="muted">Beschikbare ruimte wordt gedeeld met andere datasets</span>
+          </div>
+          <div id="storage" class="storage-grid"></div>
+        </section>
+
+        <details class="audit">
+          <summary>Meetperiode en herkomst</summary>
+          <dl>
+            <dt>Meetperiode</dt>
+            <dd id="campaign">—</dd>
+            <dt>Locatie</dt>
+            <dd id="profile">—</dd>
+            <dt>Bronversie</dt>
+            <dd id="source">—</dd>
+            <dt>Container-image</dt>
+            <dd id="image">—</dd>
+          </dl>
+          <p class="muted">
+            Een aanwezige publicatiemarker is nog geen onafhankelijke acceptatie van de
+            onderzoeksdata.
+          </p>
+        </details>
+      </main>
+      <footer>
+        <span><span class="footer-dot"></span> Alleen lezen · Geen orderuitvoering</span
+        ><span>Tijden: Nederland · Onderzoeksresultaten worden hier niet beoordeeld</span>
+      </footer>
+    </div>
+  </body>
+</html>

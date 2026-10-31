@@ -1674,6 +1674,56 @@ TrueNAS assets. A merge is not a deployment.
 
 ---
 
+## ADR-026 — Bounded credentialless TrueNAS collector App and read-only status
+
+**Date:** 2026-10-31.
+
+**Decision:** Support a native TrueNAS Custom App for bounded public market-data
+collection and a separate read-only ingestion-status page. The operator
+explicitly requested this deployment after read-only NAS inventory. This is a
+narrow exception to ADR-024/025's retirement of direct NAS-appliance runtime;
+it does not move source development, signing, execution or live credentials
+onto TrueNAS. The existing Ubuntu VM/NFS collector profile stays supported.
+
+**Boundaries:**
+
+- CI-built Linux/amd64 images are pinned by digest and source; a merge or image
+  publication never installs or starts an App.
+- An explicit native ZFS profile verifies private project roots and binds their
+  actual filesystem/source/device/inode identities into host admission. The
+  existing VM/NFS checks are preserved, not globally weakened to accept ZFS.
+- A trusted host operator supplies bounded read-only chrony telemetry and
+  verifies the exact container identity, mounts, resources and container-only
+  TC policy before clients start. Neither market clients nor the status service
+  receive a Docker socket, privileged mode or NAS administration credentials.
+- The initial native collector budget is at most two CPU and 2 GiB RAM; the
+  separate status service is at most 0.25 CPU and 256 MiB. These are limits,
+  not reservations or proof that a long capture fits. Fresh shared-host resource
+  checks and a measured pilot, including publication, precede retained capture.
+- Collection remains finite, create-only and credentialless, with explicit
+  cross-chunk gaps and no automatic retry/resume. A restart/reboot requires new
+  host admission; the status service being alive cannot imply fresh market data.
+- The UI reads bounded existing status projections, separates application,
+  controller and individual-feed freshness, and has no collector-control or
+  trading endpoints. Missing data is unknown, not a fabricated zero or success.
+- Preserve original claims, raw bytes and source data. Test canonical container
+  paths against NAS publications and VM research consumers. Sealed work/archive
+  copies do not establish untouched OOS or profitability.
+
+**Operational evidence:** Read-only host inventory confirmed TrueNAS
+27.0.0-RC.1, Linux/amd64 Docker/cgroup v2, chrony and TC tools, private numeric
+UID/GID1000 project roots, two separate single-NVMe data pools and an HDD RAIDZ1
+archive. This does not itself prove App installation, storage write admission,
+power-loss durability or continuous runtime. Exact private host identifiers and
+deployment evidence stay outside Git; the runbook defines admission steps.
+
+**Not authorized by this decision:** SHADOW/TESTNET/LIVE, account keys, capital,
+unrelated App administration, pool upgrades/topology changes, destructive ACLs,
+dataset deletion or unbounded unattended collection. The fixed BTC research
+window and its funding/input acceptance gates remain unchanged.
+
+---
+
 ## Pending ADR gates — not yet decisions
 
 The VM's data/capture/runtime cutover remains an evidence gate under ADR-025.

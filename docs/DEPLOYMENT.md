@@ -5,12 +5,18 @@ The credentialless collector has a separate
 start collection or certify VM runtime readiness; image, storage, network and
 pilot acceptance remain explicit deployment gates.
 
+The [TrueNAS Custom App runbook](runbooks/truenas-collector-app.md) adds a
+separately admitted native ZFS public-data profile and read-only status page.
+It does not enable order submission or migrate trading credentials. Development
+stays in the Ubuntu VM. All non-collector service delivery stages below remain
+target architecture unless their own release/admission evidence exists.
+
 ## Principle
 
 Source development has moved to an Ubuntu VM on TrueNAS SCALE (**ADR-025**).
-GitHub Actions runs source checks. Immutable Linux/amd64 OCI release images
-and their publication are a planned delivery stage, not an existing
-continuous deployment pipeline.
+GitHub Actions runs source checks. The bounded public collector has an explicit
+trusted-main Linux/amd64 image publication workflow. It never deploys; other
+service-image delivery remains planned.
 
 Production-like services must not run directly from the mutable development
 checkout. They must consume reviewed versioned images and verified persistent
@@ -37,8 +43,9 @@ PAPER, SHADOW and LIVE are distinct deployments with separate configuration, sec
 
 ## Software supply chain
 
-The release and deployment steps below are target architecture; source CI
-already exists, but no image publication or deployment is claimed.
+The release and deployment steps below describe target architecture. Collector
+image publication is implemented separately; each actual host deployment still
+requires its own immutable-image, storage, resource and pilot acceptance.
 
 ```text
 Cursor / Codex on the Ubuntu VM

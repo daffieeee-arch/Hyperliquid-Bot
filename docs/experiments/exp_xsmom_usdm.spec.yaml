@@ -8,9 +8,9 @@
 # #145 (--exclude-symbols, --rank-requires-funding); this spec reads none of
 # its new columns, but an older builder cannot produce the table.
 
-hypothesis_id: xsmom-bn-um-usdt-top50-1d-r14
-universe: binance-um-usdt-perps, crypto underlyings only, top 50 by 30-day quote volume on each day, point in time
-dataset_version: bn-um-usdt-1d universe 2026-10-08, panel 2020-01-01..2026-09-01, lookbacks 14, vol 30, volume 30, funding 7, carry 7 traded rate days hashed ties, non-crypto excluded 2026-10-08, rank requires funding
+hypothesis_id: xsmom-bn-um-usdt-top50-ex-icp-1d-r14
+universe: operator-selected Binance USD-M USDT perps excluding ICPUSDT, crypto underlyings only, top 50 by 30-day quote volume on each day, point in time within the selected scope
+dataset_version: bn-um-usdt-1d-operator-2026-10-31; src2026-10-08; exICP; native1d-repair297-v1; panel2020-01-01..2026-09-01; r14,v30,qv30,f7; 221noncrypto; rankfunding
 h0: Mean net return per period of the cross-sectional momentum portfolio (long the top, short the bottom of the 14-day return ranking) is less than or equal to zero after costs and funding.
 h1: Mean net return per period of the cross-sectional momentum portfolio is greater than zero after costs and funding on the holdout, scored once.
 alpha: 0.05

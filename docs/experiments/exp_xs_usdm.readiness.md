@@ -172,3 +172,15 @@ own independent before-recovery review and new closed data identity.
 File presence and correct copy hashes alone have not established S4 data
 readiness. The preregistration remains a draft; its placeholders are not
 filled from partial or failed builds.
+
+
+The complete source follow-up checked all 103 affected retained monthly
+archives: each target gap is already present in the raw input, with
+matching retained checksums and sidecar hashes. Official daily files
+recover 318 of 323 pairs; ICPUSDT 2022-09-22 through 2022-09-26 return
+404 for both ZIP and CHECKSUM. An exact-window official 1d API diagnostic
+returned an empty successful response. The historical reason is not
+established. The all-323 recovery gate therefore failed; no partial
+repair, new dataset, second panel build, lock, shape or scoring followed.
+The draft remains blocked on a reviewed source/missing-data remedy for
+those five days and all subsequent original gates.

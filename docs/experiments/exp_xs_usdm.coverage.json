@@ -1479,9 +1479,87 @@
   "research_ready": false,
   "financial_values_inspected": false,
   "limits": [
-    "Only two retained raw monthly archives classified; other source gaps still under investigation.",
-    "Daily official probes shown here cover three sample missing days; complete 323-day availability is pending.",
-    "Funding and post-recovery full coverage, rebuilds, fingerprints and shape gates remain unverified.",
-    "File transfer/checksum correctness does not establish calendar completeness."
-  ]
+    "All 103 affected retained monthly archives checked: the 323 missing timestamps already occur in those raw archives.",
+    "318 official daily replacements are verified; five ICPUSDT daily ZIPs and CHECKSUMs return 404.",
+    "One exact-window official 1d API diagnostic returned HTTP 200 with zero rows; this does not establish the historical reason for absence.",
+    "No partial recovery, second unchanged-input build, shape result, fingerprint or strategy scoring produced.",
+    "Funding coverage and remaining original rebuild/shape/final-review prerequisites remain unverified."
+  ],
+  "retained_monthly_full_check": {
+    "verified_months": 103,
+    "all_frozen_missing_days_absent_in_retained_raw": true,
+    "nas_bytes_read": 175309,
+    "monthly_result_sha256": "1cfb2c5b3a03028968cd4745dbdd01e7976ae61dbd7426cbba0609a746788558"
+  },
+  "official_daily_full_check": {
+    "checked_pairs": 323,
+    "status_counts": {
+      "not_found_404": 5,
+      "verified_available": 318
+    },
+    "http_requests": 640,
+    "reused_verified_pairs": 3,
+    "downloaded_bytes": 122055,
+    "all_pairs_recoverable": false,
+    "unavailable": [
+      {
+        "symbol": "ICPUSDT",
+        "day": "2022-09-22",
+        "zip_http_status": 404,
+        "checksum_http_status": 404,
+        "url": "https://data.binance.vision/data/futures/um/daily/klines/ICPUSDT/1d/ICPUSDT-1d-2022-09-22.zip"
+      },
+      {
+        "symbol": "ICPUSDT",
+        "day": "2022-09-23",
+        "zip_http_status": 404,
+        "checksum_http_status": 404,
+        "url": "https://data.binance.vision/data/futures/um/daily/klines/ICPUSDT/1d/ICPUSDT-1d-2022-09-23.zip"
+      },
+      {
+        "symbol": "ICPUSDT",
+        "day": "2022-09-24",
+        "zip_http_status": 404,
+        "checksum_http_status": 404,
+        "url": "https://data.binance.vision/data/futures/um/daily/klines/ICPUSDT/1d/ICPUSDT-1d-2022-09-24.zip"
+      },
+      {
+        "symbol": "ICPUSDT",
+        "day": "2022-09-25",
+        "zip_http_status": 404,
+        "checksum_http_status": 404,
+        "url": "https://data.binance.vision/data/futures/um/daily/klines/ICPUSDT/1d/ICPUSDT-1d-2022-09-25.zip"
+      },
+      {
+        "symbol": "ICPUSDT",
+        "day": "2022-09-26",
+        "zip_http_status": 404,
+        "checksum_http_status": 404,
+        "url": "https://data.binance.vision/data/futures/um/daily/klines/ICPUSDT/1d/ICPUSDT-1d-2022-09-26.zip"
+      }
+    ],
+    "result_sha256": "6da00669720e4d8619ea4dac007b527cb62d5b8ac47deb4938877f52f0527f8b"
+  },
+  "official_1d_api_diagnostic": {
+    "endpoint": "https://fapi.binance.com/fapi/v1/klines",
+    "params": {
+      "symbol": "ICPUSDT",
+      "interval": "1d",
+      "startTime": 1663804800000,
+      "endTime": 1664236799999,
+      "limit": 5
+    },
+    "read_only_public_market_data": true,
+    "financial_values_interpreted": false,
+    "curation_or_build": false,
+    "nas_writes": false,
+    "requests": 1,
+    "http_status": 200,
+    "body_bytes": 2,
+    "body_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "rows": 0,
+    "open_dates_utc": []
+  },
+  "recovery_gate": "STOP_ALL_323_NOT_RECOVERABLE_IN_CLOSED_SOURCE_SET",
+  "recovery_executed": false
 }

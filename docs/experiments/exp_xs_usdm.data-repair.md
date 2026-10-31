@@ -28,8 +28,13 @@ and their timestamp projections exactly match Parquet: BNXUSDT April
 2022 lacks April 17; FILUSDT February 2022 lacks February 26–28. Small
 fresh official monthly downloads have identical hashes and gaps. Official
 1d daily ZIP/CHECKSUM samples for BNX April 17 and FIL February 26/28 are
-available and contain exactly their requested day. This classifies those
-samples, not every source gap. Complete daily availability is pending.
+available and contain exactly their requested day. The completed closed-set follow-up verified all 103 retained monthly
+ZIP/CHECKSUM pairs (175,309 bytes read from NAS); all 323 missing timestamps
+are absent already from those raw sources. Of 323 official daily pairs,
+318 pass checksum/CRC/exact-day validation; ICPUSDT September 22–26,
+2022 return HTTP 404 for both ZIP and CHECKSUM. The exact-window public
+1d kline API diagnostic returned HTTP 200 and zero rows. This reports
+current source availability, not the historical cause of missing bars.
 
 Binance publishes both daily and monthly archives and their checksums;
 archives may later be corrected. Use only its [official public-data
@@ -84,6 +89,14 @@ the curated root. Before any eventual post-merge scoring, replace/reconcile
 the legacy run blocks with the reviewed frozen-input recipe and exact
 fingerprint checks; they are not usable as written for this amendment.
 
-No recovery has yet run when this proposal is recorded. Funding coverage,
+**Recovery is stopped:** the all-323 source gate failed. The 318 verified
+available days remain quarantined and are not applied as a partial repair.
+No curator was executed and no second panel build followed. The missing
+five source days require a separately reviewed source or missing-data
+contract proposal; do not silently drop ICPUSDT, estimate candles, accept
+gaps, change a threshold or move a study period. This is a failed
+preparation gate, not a scored strategy failure or evidence of no edge.
+
+No recovery has run. Funding coverage,
 rebuild/fingerprint/shape evidence and final preregistration review remain
 open. No NAS writes, strategy scoring or trading/runtime promotion follows.

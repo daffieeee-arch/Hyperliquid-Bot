@@ -71,6 +71,24 @@ regenerated through the reviewed native API against identical host/container
 absolute paths; HDD stores closed raw/provenance without a catalog. The offline
 fixture queries the regenerated native catalog and verifies destination paths.
 
+Each lane also gets a create-only `collector-plan.json` **before** its native
+process is spawned. It binds campaign/chunk/run/lane, venue/product, reviewed
+source/image and requested duration to a UTC/monotonic/UTC clock bracket (at
+most one second) and fresh host-clock evidence. Adding the duration to the
+prelaunch clocks gives a lower bound on an uninterrupted native timer's end,
+under the recorded clock model; it is not an actual stop or uptime guarantee.
+Early failures and unexpected gaps remain failures.
+
+At successful closure the original planning bytes are checked against their
+prelaunch SHA256 and copied exactly into the native run root. Both publications
+include those bytes and their hashes. Their per-run provenance uses schema
+`public-collector-run-provenance-v1` and binds `window_plan_sha256`, run and lane;
+the campaign-level record retains its existing schema. Native claims remain
+unchanged. Old captures are never retrofitted. Research consumers need separate
+part/run/claim/planning acceptance before using a planned-end entry filter;
+terminal health or first/last market events cannot supply a missing prelaunch
+time. No strategy or trading behavior is introduced by this record.
+
 All destination bytes are rehashed after copying/catalog creation. Manifest and
 private publishing marker are written/fsynced before an exclusive final hard
 link publishes `COMPLETE.json`. Failed reservations are retained, never resumed

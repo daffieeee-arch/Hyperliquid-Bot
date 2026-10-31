@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
 import math
 import os
@@ -36,6 +37,8 @@ LANES: Final = {
     "kraken": ("kraken_l3_research", "data-1b/kraken/BTC-USD"),
     "bitvavo-standard": ("bitvavo_standard_research", "data-1d/bitvavo/BTC-EUR"),
 }
+WINDOW_PLAN_NAME: Final = "collector-plan.json"
+WINDOW_PLAN_MAX_BYTES: Final = 16_384
 
 
 @dataclass(frozen=True)
@@ -110,6 +113,62 @@ def native_command(lane: str, artifact_root: Path, run_id: str, seconds: int) ->
         "--duration-seconds",
         str(seconds),
     ]
+
+
+def capture_window_plan(
+    plan: RuntimePlan,
+    lane: str,
+    chunk: int,
+    clock: dict[str, object],
+    *,
+    utc_before_ns: int,
+    monotonic_ns: int,
+    utc_after_ns: int,
+) -> dict[str, object]:
+    """Record a prelaunch lower bound on an uninterrupted native timer's end.
+
+    The UTC/monotonic bracket is sampled before spawning the child. Early
+    failures remain possible; this record cannot certify an actual stop time.
+    """
+    if lane not in plan.lanes or type(chunk) is not int or not 0 <= chunk < plan.chunks:
+        raise ValueError("Window plan must identify this campaign's lane and chunk.")
+    if (
+        any(
+            type(value) is not int or value <= 0
+            for value in (utc_before_ns, monotonic_ns, utc_after_ns)
+        )
+        or not 0 <= utc_after_ns - utc_before_ns <= 1_000_000_000
+    ):
+        raise ValueError("Prelaunch clock bracket is invalid or exceeds one second.")
+    sampled = clock.get("sampled_utc_ns")
+    if type(sampled) is not int or not 0 <= utc_before_ns - sampled <= 120_000_000_000:
+        raise ValueError("Window plan requires fresh prelaunch host-clock evidence.")
+    _, venue, product = LANES[lane][1].split("/")
+    duration_ns = plan.chunk_seconds * 1_000_000_000
+    result = {
+        "schema": "public-collector-window-plan-v1",
+        "campaign": plan.campaign,
+        "run_id": f"{plan.campaign}-{chunk:04d}",
+        "chunk_index": chunk,
+        "lane": lane,
+        "venue": venue,
+        "product": product,
+        "source_commit": plan.source_commit,
+        "image_digest": plan.image_digest,
+        "requested_duration_seconds": plan.chunk_seconds,
+        "prelaunch_utc_ns": utc_before_ns,
+        "prelaunch_monotonic_ns": monotonic_ns,
+        "prelaunch_utc_after_ns": utc_after_ns,
+        "clock_pair_order": "utc-monotonic-utc",
+        "earliest_planned_end_utc_ns": utc_before_ns + duration_ns,
+        "earliest_planned_end_monotonic_ns": monotonic_ns + duration_ns,
+        "end_semantics": "lower-bound-on-uninterrupted-native-timer-not-actual-stop",
+        "host_clock_evidence": clock,
+    }
+    content = (json.dumps(result, sort_keys=True, indent=2, allow_nan=False) + "\n").encode()
+    if len(content) > WINDOW_PLAN_MAX_BYTES:
+        raise ValueError("Prelaunch planning record exceeds its bound.")
+    return result
 
 
 def allocated_bytes(root: Path) -> int:
@@ -348,9 +407,27 @@ def collect_campaign(
             metrics_path.touch(mode=0o600, exist_ok=False)
             last_sample = float("-inf")
             status.update(phase="capturing", chunk=chunk, run_id=run_id)
+            window_plans: dict[str, dict[str, object]] = {}
+            window_hashes: dict[str, str] = {}
             for lane in plan.lanes:
                 lane_root = chunk_root / lane
                 lane_root.mkdir(mode=0o700)
+                clock = clock_evidence(clock_path, now_ns=time.time_ns())
+                utc_before = time.time_ns()
+                monotonic = time.monotonic_ns()
+                utc_after = time.time_ns()
+                window = capture_window_plan(
+                    plan,
+                    lane,
+                    chunk,
+                    clock,
+                    utc_before_ns=utc_before,
+                    monotonic_ns=monotonic,
+                    utc_after_ns=utc_after,
+                )
+                # Persist before Popen, outside the native create-only run root.
+                window_hashes[lane] = exclusive_json(lane_root / WINDOW_PLAN_NAME, window)
+                window_plans[lane] = window
                 output = (lane_root / "collector-output.log").open("xb")
                 try:
                     child = subprocess.Popen(
@@ -409,7 +486,25 @@ def collect_campaign(
                     or health.get("duration_seconds") != plan.chunk_seconds
                 ):
                     raise RuntimeError("Only completed credentialless chunks may be published.")
-                exclusive_json(source / "collector-runtime.json", provenance)
+                original_plan = read_bytes(
+                    chunk_root / lane / WINDOW_PLAN_NAME, limit=WINDOW_PLAN_MAX_BYTES
+                )
+                if hashlib.sha256(original_plan).hexdigest() != window_hashes[lane]:
+                    raise RuntimeError(
+                        "Original prelaunch planning bytes changed or were short-read."
+                    )
+                if (
+                    exclusive_json(source / WINDOW_PLAN_NAME, window_plans[lane])
+                    != window_hashes[lane]
+                ):
+                    raise RuntimeError("Closed-run planning copy differs from its prelaunch bytes.")
+                run_provenance = provenance | {
+                    "schema": "public-collector-run-provenance-v1",
+                    "run_id": run_id,
+                    "lane": lane,
+                    "window_plan_sha256": window_hashes[lane],
+                }
+                exclusive_json(source / "collector-runtime.json", run_provenance)
                 with (source / "collector-metrics.ndjson").open("xb") as stream:
                     stream.write(metrics)
                     stream.flush()
@@ -419,14 +514,14 @@ def collect_campaign(
                 first = publish_closed_chunk(
                     source,
                     capture / plan.campaign / lane / run_id,
-                    provenance=provenance,
+                    provenance=run_provenance,
                     catalogue=_catalogue,
                     progress=progress,
                 )
                 second = publish_closed_chunk(
                     source,
                     archive / plan.campaign / lane / run_id,
-                    provenance=provenance,
+                    provenance=run_provenance,
                     catalogue=None,
                     progress=progress,
                 )

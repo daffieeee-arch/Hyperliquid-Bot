@@ -24,6 +24,7 @@ from hyperliquid_bot.collector_storage import (
     checked_relative,
     exclusive_json,
     publish_closed_chunk,
+    read_bytes,
     read_json,
     remove_verified_spool_duplicate,
     snapshot_files,
@@ -524,15 +525,34 @@ class FakeChild:
         self.returncode = -9
 
 
-def test_controller_publishes_only_completed_public_native_chunks(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("planning_read", ["complete", "changed", "short"])
+def test_controller_binds_prelaunch_planning_before_spawn_and_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, planning_read: str
 ) -> None:
     roots = prepare_controller(tmp_path, monkeypatch)
+    planning_bytes: dict[str, bytes] = {}
+    original_read = read_bytes
+
+    def read(path: Path, *, limit: int) -> bytes:
+        content = original_read(path, limit=limit)
+        if planning_read == "short" and path.name == runtime.WINDOW_PLAN_NAME:
+            return content[:-1]
+        return content
+
+    monkeypatch.setattr(runtime, "read_bytes", read)
 
     def fake_start(command: list[str], **kwargs: Any) -> FakeChild:
         artifact = Path(command[command.index("--artifact-root") + 1])
         run_id = command[command.index("--run-id") + 1]
         lane = artifact.name
+        # This assertion runs at Popen's boundary, before any native run exists.
+        planning_bytes[lane] = (artifact / runtime.WINDOW_PLAN_NAME).read_bytes()
+        window = json.loads(planning_bytes[lane])
+        assert window["run_id"] == run_id and window["lane"] == lane
+        assert window["prelaunch_utc_ns"] <= time.time_ns()
+        assert window["source_commit"] == SOURCE and window["image_digest"] == IMAGE
+        if planning_read == "changed" and lane == "hyperliquid":
+            (artifact / runtime.WINDOW_PLAN_NAME).write_bytes(planning_bytes[lane][:-1])
         source = artifact / runtime.LANES[lane][1] / run_id
         source.mkdir(parents=True, mode=0o700)
         make_source_inner = private(source / "raw")
@@ -554,9 +574,24 @@ def test_controller_publishes_only_completed_public_native_chunks(
         return FakeChild(0)
 
     monkeypatch.setattr("hyperliquid_bot.collector_runtime.subprocess.Popen", fake_start)
+    if planning_read != "complete":
+        with pytest.raises(RuntimeError, match="planning bytes"):
+            runtime.collect_campaign(plan(), **roots)
+        assert not list(roots["capture"].rglob("COMPLETE.json"))
+        assert not list(roots["archive"].rglob("COMPLETE.json"))
+        return
     assert runtime.collect_campaign(plan(), **roots)["phase"] == "completed"
     assert len(list(roots["capture"].rglob("COMPLETE.json"))) == 2
     assert len(list(roots["archive"].rglob("COMPLETE.json"))) == 2
+    for root in (roots["capture"], roots["archive"]):
+        for lane, original in planning_bytes.items():
+            copied = root / "fixture" / lane / "fixture-0000" / runtime.WINDOW_PLAN_NAME
+            assert copied.read_bytes() == original
+            manifest = json.loads((copied.parent / "publication-manifest.json").read_bytes())
+            expected_hash = hashlib.sha256(original).hexdigest()
+            assert manifest["files"][runtime.WINDOW_PLAN_NAME]["sha256"] == expected_hash
+            assert manifest["provenance"]["window_plan_sha256"] == expected_hash
+            assert manifest["provenance"]["schema"] == "public-collector-run-provenance-v1"
 
 
 @pytest.mark.parametrize("failure", ["budget", "child", "clock"])
@@ -589,3 +624,63 @@ def test_controller_stops_all_siblings_without_partial_publication(
     assert read_json(roots["spool"] / "runtime-health.json")["phase"] == "failed"
     assert not list(roots["capture"].rglob("COMPLETE.json"))
     assert not list(roots["archive"].rglob("COMPLETE.json"))
+
+
+def test_capture_plan_preserves_drifted_prelaunch_deadline_and_clock_pair() -> None:
+    utc = 1000_000_000_000
+    mono = 50_000_000_000
+    window = runtime.capture_window_plan(
+        plan(),
+        "binance",
+        0,
+        clock_document(utc - 1_000_000),
+        utc_before_ns=utc,
+        monotonic_ns=mono,
+        utc_after_ns=utc + 100,
+    )
+    assert window["earliest_planned_end_utc_ns"] == utc + 600_000_000_000
+    assert window["earliest_planned_end_monotonic_ns"] == mono + 600_000_000_000
+    assert window["venue"] == "binance" and window["product"] == "BTCUSDT"
+    assert window["clock_pair_order"] == "utc-monotonic-utc"
+    assert window["end_semantics"] == "lower-bound-on-uninterrupted-native-timer-not-actual-stop"
+
+
+@pytest.mark.parametrize(
+    "utc_before,mono,utc_after,sample",
+    [
+        (1000, 100, 999, 900),
+        (1000, 100, 1_000_001_001, 900),
+        (1000, True, 1001, 900),
+        (1000, 100, 1001, 1001),
+        (200_000_000_000, 100, 200_000_000_001, 1),
+    ],
+)
+def test_invalid_prelaunch_clock_pair_or_stale_sample_is_rejected(
+    utc_before: int,
+    mono: int,
+    utc_after: int,
+    sample: int,
+) -> None:
+    with pytest.raises(ValueError):
+        runtime.capture_window_plan(
+            plan(),
+            "binance",
+            0,
+            clock_document(sample),
+            utc_before_ns=utc_before,
+            monotonic_ns=mono,
+            utc_after_ns=utc_after,
+        )
+
+
+def test_capture_plan_size_is_bounded_before_child_spawn() -> None:
+    with pytest.raises(ValueError, match="exceeds"):
+        runtime.capture_window_plan(
+            plan(),
+            "binance",
+            0,
+            clock_document(900) | {"unexpected": "x" * 16_384},
+            utc_before_ns=1000,
+            monotonic_ns=100,
+            utc_after_ns=1001,
+        )

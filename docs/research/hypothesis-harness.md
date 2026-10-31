@@ -536,3 +536,12 @@ Sharpe, flat half-spread costs, funding only from a declared column (stressed
 adversely), unit sizing unless `vol_target` is declared, overfitting
 diagnostics that never gate, and no detection of a leaked feature that was
 falsely stamped with the bar clock.
+
+A custom quote-aware `SeriesSource` may provide `TradeSeries.execution_costs`,
+a complete per-trade base execution-cost vector in equity-return units. This
+replaces the flat bps round trip (including its fees); it is not added to it.
+Stress scales that vector, with funding cashflows still stressed separately.
+The vector must be finite, nonnegative and match the trade count. Fold pooling
+preserves it and refuses mixed quote/flat models. Existing bar/panel sources
+leave it absent and retain their previous behavior. The narrowly preregistered
+[BTC Spot-flow / HL study](../experiments/exp_btc_spot_flow.md) is its first user.

@@ -1,0 +1,65 @@
+# New mechanism and dataset; not a rerun of exp_tsmom_btc or exp_funding_btc.
+# Use research.btc_flow_cli, not the generic close-price harness CLI.
+hypothesis_id: btc-spot-flow-confirmed-hl-continuation-v1
+universe: Hyperliquid BTC-PERP; Binance BTCUSDT Spot is a dimensionless signal only
+dataset_version: btc-flow-v1; receipt-minute; prospective 72h after reviewed prereg merge; historical runs exploratory
+h0: No predeclared flow-confirmed continuation configuration has positive mean net return after observed spread, fees and slippage.
+h1: A validation-selected configuration has positive mean net return on fresh prospective OOS under all declared cost stresses.
+alpha: 0.05
+selection_method: holm
+direction: signed
+signal_feature: confirmed_flow
+costs:
+  fee_bps: 4.5
+  slippage_bps: 1.0
+  spread_bps: 0.0
+  # One full minute scheduling delay, then 250ms physical latency.
+  # Fill is the first available quote thereafter, with <=5s additional wait.
+  latency_bars: 1
+split:
+  method: expanding
+  train_bars: 720
+  test_bars: 720
+  holdout_bars: 1440
+sample:
+  min_trades_validation: 30
+  min_trades_holdout: 30
+  min_folds: 3
+data:
+  backend: duckdb
+  # Logical minute decision relation of the custom SeriesSource; no external SQL.
+  view: btc_flow_minute
+  timestamp_column: ts
+  price_column: hl_mid
+  max_gap: 60000000000
+  max_rows: 4320
+  columns:
+    ts:
+      dtype: int64
+      role: timestamp
+    hl_mid:
+      dtype: float64
+      role: price
+    confirmed_flow:
+      dtype: float64
+      role: feature
+    available_ts:
+      dtype: int64
+      role: availability
+features:
+  - name: confirmed_flow
+    column: confirmed_flow
+    available_at_column: available_ts
+configs:
+  - id: flow20-h1
+    threshold: 0.2
+    horizon_bars: 1
+  - id: flow20-h5
+    threshold: 0.2
+    horizon_bars: 5
+  - id: flow40-h1
+    threshold: 0.4
+    horizon_bars: 1
+  - id: flow40-h5
+    threshold: 0.4
+    horizon_bars: 5

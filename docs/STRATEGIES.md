@@ -4,6 +4,15 @@
 
 No single strategy is assumed to be the winner. Multiple independent alpha engines are researched in parallel and evaluated on after-cost, out-of-sample performance.
 
+## Operator universe constraint
+
+The operator excludes ICP from the target trading and research universe
+(decision 2026-10-31, before S4 scoring in this continuation). The versioned
+[operator research selection](research/operator-universe.md) preserves the
+full source snapshot and selects a separate universe without ICP. Research
+using that selection needs its own explicit preregistration/input identity;
+this preference is not a reclassification of ICP or execution approval.
+
 ## 1. Spot Momentum
 
 **Hypothesis:** sustained relative strength accompanied by healthy spot-led volume and non-crowded derivatives positioning can continue over hours to days.

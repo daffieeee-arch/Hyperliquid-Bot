@@ -114,6 +114,24 @@ jobs:
         if: needs.changes.outputs.python != 'false'
         run: uv run --frozen python -m vertical_slices.course1_exit_gate.verify verify
 
+      - name: Build and validate credentialless collector image
+        if: needs.changes.outputs.python != 'false'
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          docker build --platform linux/amd64 -f Dockerfile.collector \
+            --build-arg "SOURCE_COMMIT=${SOURCE_COMMIT}" -t collector-ci .
+          docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges:true --memory 1g --cpus 2 \
+            collector-ci --check-image --expected-source "${SOURCE_COMMIT}"
+          if docker run --rm --network none --read-only --cap-drop ALL \
+            -e TRADING_MODE=LIVE collector-ci --check-image \
+            --expected-source "${SOURCE_COMMIT}"; then
+            echo "Collector incorrectly accepted LIVE" >&2
+            exit 1
+          fi
+
   d01-publication:
     needs: changes
     # Run even if the changes job failed: its outputs are then empty, so every

@@ -1,0 +1,83 @@
+name: hyperliquid-public-research
+services:
+  collector:
+    image: ${COLLECTOR_IMAGE:?Use the reviewed public GHCR image@sha256 digest}
+    platform: linux/amd64
+    container_name: hyperliquid-public-collector
+    user: "1000:1000"
+    read_only: true
+    init: true
+    restart: "no"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    cpus: 4
+    mem_limit: 8g
+    memswap_limit: 8g
+    pids_limit: 128
+    stop_grace_period: 90s
+    environment:
+      TRADING_MODE: PAPER
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=536870912,mode=1777
+    # Identical host/container absolute paths keep generated catalog views valid
+    # on the VM. Native capture claims retain their original spool paths.
+    volumes:
+      - type: bind
+        source: /home/chupa/hyperliquid-spool
+        target: /home/chupa/hyperliquid-spool
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /mnt/hyperliquid-work/market-data/capture
+        target: /mnt/hyperliquid-work/market-data/capture
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /mnt/hyperliquid-archive/market-data
+        target: /mnt/hyperliquid-archive/market-data
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /home/chupa/hyperliquid-runtime
+        target: /control
+        read_only: true
+        bind:
+          create_host_path: false
+    command:
+      - --expected-source
+      - ${COLLECTOR_SOURCE_COMMIT:?Full reviewed commit required}
+      - --expected-image
+      - ${COLLECTOR_IMAGE_DIGEST:?sha256 digest required}
+      - --campaign
+      - ${COLLECTOR_CAMPAIGN:?New create-only campaign required}
+      - --lane
+      - hyperliquid
+      - --lane
+      - binance
+      - --chunk-seconds
+      - "600"
+      - --chunks
+      - "1"
+      - --pilot
+      - --spool
+      - /home/chupa/hyperliquid-spool
+      - --capture
+      - /mnt/hyperliquid-work/market-data/capture
+      - --archive
+      - /mnt/hyperliquid-archive/market-data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -B
+        - -m
+        - hyperliquid_bot.collector_runtime
+        - --health
+        - --expected-source
+        - ${COLLECTOR_SOURCE_COMMIT:?Full reviewed commit required}
+        - --spool
+        - /home/chupa/hyperliquid-spool
+      interval: 30s
+      timeout: 5s
+      start_period: 120s
+      retries: 2

@@ -1,5 +1,10 @@
 # Deployment & Environment Promotion
 
+The credentialless collector has a separate
+[bounded OCI runbook](runbooks/public-collector-runtime.md). Its merge does not
+start collection or certify VM runtime readiness; image, storage, network and
+pilot acceptance remain explicit deployment gates.
+
 ## Principle
 
 Source development has moved to an Ubuntu VM on TrueNAS SCALE (**ADR-025**).

@@ -1,5 +1,12 @@
 # Continuous integration
 
+The existing Python foundation also builds the digest-based collector image
+and runs its source/PAPER import smoke with networking disabled, including LIVE
+refusal. PR builds have no package publisher credential. Manual
+`collector-image.yml` publishes only an explicit current successful-CI main SHA;
+it never deploys. The [runbook](runbooks/public-collector-runtime.md) defines
+anonymous-pull, storage, network and actual pilot gates.
+
 The delivery and separate-review policy is in [GITHUB_WORKFLOW.md](GITHUB_WORKFLOW.md).
 GitHub Free on the current public repository is the baseline. CodeQL uses
 GitHub's default setup alongside these source checks; paid Copilot review is

@@ -1,0 +1,99 @@
+# Pre-registered: cross-sectional momentum on Binance USD-M USDT perps
+# (exp_xsmom_usdm). See docs/experiments/exp_xsmom_usdm.md before changing
+# anything here: a change to any field is a new pre-registration with a new
+# spec_sha256, not a re-run. Comments are not part of the hash.
+# Copy it to a study directory outside the repository, build panel.parquet
+# next to the copy, then lock and run it there (see the Run section of the
+# doc). The table uses the two rank options of the panel change merged in
+# #145 (--exclude-symbols, --rank-requires-funding); this spec reads none of
+# its new columns, but an older builder cannot produce the table.
+
+hypothesis_id: xsmom-bn-um-usdt-top50-ex-icp-1d-r14
+universe: operator-selected Binance USD-M USDT perps excluding ICPUSDT, crypto underlyings only, top 50 by 30-day quote volume on each day, point in time within the selected scope
+dataset_version: bn-um-usdt-1d-operator-2026-10-31; src2026-10-08; exICP; native1d-repair297-v1; panel2020-01-01..2026-09-01; r14,v30,qv30,f7; 221noncrypto; rankfunding
+h0: Mean net return per period of the cross-sectional momentum portfolio (long the top, short the bottom of the 14-day return ranking) is less than or equal to zero after costs and funding.
+h1: Mean net return per period of the cross-sectional momentum portfolio is greater than zero after costs and funding on the holdout, scored once.
+alpha: 0.05
+selection_method: holm
+direction: signed
+signal_feature: momentum
+costs:
+  fee_bps: 4.5
+  slippage_bps: 4.0
+  spread_bps: 1.5
+  latency_bars: 1
+  funding_column: funding_rate
+# 371 days of panel before the first fold (2020-01-01..2021-01-05), then 16
+# expanding test folds of 91 days (2021-01-06..2024-12-31) and a 608-day
+# holdout (2025-01-01..2026-08-31) on a 2,435-day axis. With 1-day latency a
+# period is horizon + 1 days: per fold 11 (h7) or 6 (h14), in the holdout 75
+# or 40. The floors leave the h14 configs a quarter of their periods for
+# skipped decisions, in validation (96 against 72) and in the holdout (40
+# against 30).
+split:
+  method: expanding
+  train_bars: 371
+  test_bars: 91
+  holdout_bars: 608
+sample:
+  min_trades_validation: 72
+  min_trades_holdout: 30
+  min_folds: 16
+data:
+  backend: panel
+  parquet_path: panel.parquet
+  timestamp_column: ts
+  symbol_column: symbol
+  price_column: close
+  traded_column: traded
+  rank_column: volume_rank
+  max_gap: 86400000
+  max_rows: 2000000
+  columns:
+    ts:
+      dtype: int64
+      role: timestamp
+    symbol:
+      dtype: string
+      role: symbol
+    close:
+      dtype: float64
+      role: price
+    traded:
+      dtype: bool
+      role: traded
+    volume_rank:
+      dtype: int64
+      role: rank
+    ret_14d:
+      dtype: float64
+      role: feature
+    funding_rate:
+      dtype: float64
+      role: funding
+    funding_covered:
+      dtype: bool
+      role: covered
+    available_ts:
+      dtype: int64
+      role: availability
+features:
+  - name: momentum
+    column: ret_14d
+    available_at_column: available_ts
+portfolio:
+  universe_size: 50
+  min_names_per_leg: 5
+configs:
+  - id: q20-h7
+    quantile: 0.2
+    horizon_bars: 7
+  - id: q20-h14
+    quantile: 0.2
+    horizon_bars: 14
+  - id: q30-h7
+    quantile: 0.3
+    horizon_bars: 7
+  - id: q30-h14
+    quantile: 0.3
+    horizon_bars: 14

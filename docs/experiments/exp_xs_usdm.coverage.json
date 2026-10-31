@@ -1,0 +1,1565 @@
+{
+  "schema": "s4-preparation-kline-time-coverage-v1",
+  "source_pin": "0cd7666392928b0af3f4a0c0ef5c8fc34a516d58",
+  "audited_pr_head": "63e6fc4eba2f731081c7e250b656fd13cdf0887d",
+  "audit_date": "2026-10-31",
+  "files": 21357,
+  "rows": 636990,
+  "symbol_count": 860,
+  "failed_runs": 52,
+  "missing_interior_day_symbol_pairs": 323,
+  "affected_symbol_months": 103,
+  "duplicate_symbol_timestamps": 0,
+  "file_symbol_month_or_clock_issues": 0,
+  "sidecar_row_count_mismatches": 0,
+  "empty_files": 0,
+  "missing_days_by_month": {
+    "2022-04": 99,
+    "2022-06": 1,
+    "2022-08": 3,
+    "2023-02": 21,
+    "2022-02": 144,
+    "2022-09": 26,
+    "2023-03": 29
+  },
+  "original_build_failure": {
+    "symbol": "BNXUSDT",
+    "missing_date": "2022-04-17",
+    "stage": "preparation_time_coverage",
+    "panel_written": false,
+    "strategy_scoring": false
+  },
+  "retained_source_samples": [
+    {
+      "symbol": "BNXUSDT",
+      "month": "2022-04",
+      "csv_rows": 29,
+      "parquet_time_pairs_equal_csv": true,
+      "missing_calendar_days": [
+        "2022-04-17"
+      ],
+      "retained_zip_matches_sidecar_and_checksum": true
+    },
+    {
+      "symbol": "FILUSDT",
+      "month": "2022-02",
+      "csv_rows": 25,
+      "parquet_time_pairs_equal_csv": true,
+      "missing_calendar_days": [
+        "2022-02-26",
+        "2022-02-27",
+        "2022-02-28"
+      ],
+      "retained_zip_matches_sidecar_and_checksum": true
+    }
+  ],
+  "current_official_source_probes": [
+    {
+      "symbol": "BNXUSDT",
+      "frequency": "monthly",
+      "period": "2022-04",
+      "url": "https://data.binance.vision/data/futures/um/monthly/klines/BNXUSDT/1d/BNXUSDT-1d-2022-04.zip",
+      "zip_http_status": 200,
+      "checksum_http_status": 200,
+      "sha256": "ed5b9ca831e4ef112aa9855b9c99b7bff1e38bdeff65f9b416e16c72df2e4f5d",
+      "checksum_valid": true,
+      "time_rows": 29,
+      "open_dates_utc": [
+        "2022-04-01",
+        "2022-04-02",
+        "2022-04-03",
+        "2022-04-04",
+        "2022-04-05",
+        "2022-04-06",
+        "2022-04-07",
+        "2022-04-08",
+        "2022-04-09",
+        "2022-04-10",
+        "2022-04-11",
+        "2022-04-12",
+        "2022-04-13",
+        "2022-04-14",
+        "2022-04-15",
+        "2022-04-16",
+        "2022-04-18",
+        "2022-04-19",
+        "2022-04-20",
+        "2022-04-21",
+        "2022-04-22",
+        "2022-04-23",
+        "2022-04-24",
+        "2022-04-25",
+        "2022-04-26",
+        "2022-04-27",
+        "2022-04-28",
+        "2022-04-29",
+        "2022-04-30"
+      ],
+      "crc_valid": true
+    },
+    {
+      "symbol": "FILUSDT",
+      "frequency": "monthly",
+      "period": "2022-02",
+      "url": "https://data.binance.vision/data/futures/um/monthly/klines/FILUSDT/1d/FILUSDT-1d-2022-02.zip",
+      "zip_http_status": 200,
+      "checksum_http_status": 200,
+      "sha256": "37ff92ba7d6d15da592c4f0df58482c33be381b0722a5c0ff09ca98bec081220",
+      "checksum_valid": true,
+      "time_rows": 25,
+      "open_dates_utc": [
+        "2022-02-01",
+        "2022-02-02",
+        "2022-02-03",
+        "2022-02-04",
+        "2022-02-05",
+        "2022-02-06",
+        "2022-02-07",
+        "2022-02-08",
+        "2022-02-09",
+        "2022-02-10",
+        "2022-02-11",
+        "2022-02-12",
+        "2022-02-13",
+        "2022-02-14",
+        "2022-02-15",
+        "2022-02-16",
+        "2022-02-17",
+        "2022-02-18",
+        "2022-02-19",
+        "2022-02-20",
+        "2022-02-21",
+        "2022-02-22",
+        "2022-02-23",
+        "2022-02-24",
+        "2022-02-25"
+      ],
+      "crc_valid": true
+    },
+    {
+      "symbol": "BNXUSDT",
+      "frequency": "daily",
+      "period": "2022-04-17",
+      "url": "https://data.binance.vision/data/futures/um/daily/klines/BNXUSDT/1d/BNXUSDT-1d-2022-04-17.zip",
+      "zip_http_status": 200,
+      "checksum_http_status": 200,
+      "sha256": "515e4926e94e0267abdb5f2911082f76f78ac75d3d932255c79bcb4e4df23645",
+      "checksum_valid": true,
+      "time_rows": 1,
+      "open_dates_utc": [
+        "2022-04-17"
+      ],
+      "crc_valid": true
+    },
+    {
+      "symbol": "FILUSDT",
+      "frequency": "daily",
+      "period": "2022-02-26",
+      "url": "https://data.binance.vision/data/futures/um/daily/klines/FILUSDT/1d/FILUSDT-1d-2022-02-26.zip",
+      "zip_http_status": 200,
+      "checksum_http_status": 200,
+      "sha256": "d9f66de85a9db6326c85d650b9ceae1871bdd8b87567aac35efcd1ec1f216a56",
+      "checksum_valid": true,
+      "time_rows": 1,
+      "open_dates_utc": [
+        "2022-02-26"
+      ],
+      "crc_valid": true
+    },
+    {
+      "symbol": "FILUSDT",
+      "frequency": "daily",
+      "period": "2022-02-28",
+      "url": "https://data.binance.vision/data/futures/um/daily/klines/FILUSDT/1d/FILUSDT-1d-2022-02-28.zip",
+      "zip_http_status": 200,
+      "checksum_http_status": 200,
+      "sha256": "47ecb3e8ea1ea27c83fcbf42e9fb6636116bac5da41b4307ed50f0055704a30c",
+      "checksum_valid": true,
+      "time_rows": 1,
+      "open_dates_utc": [
+        "2022-02-28"
+      ],
+      "crc_valid": true
+    }
+  ],
+  "interior_missing_days": [
+    {
+      "symbol": "BNXUSDT",
+      "date": "2022-04-17"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2022-06-09"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2022-08-10"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2022-08-11"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2022-08-12"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-01"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-02"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-03"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-04"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-05"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-06"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-07"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-08"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-09"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-10"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-11"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-12"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-13"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-14"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-15"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-16"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-17"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-18"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-19"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-20"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-21"
+    },
+    {
+      "symbol": "FILUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "FILUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "FILUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "FILUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "FILUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "FLMUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "FLMUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "FLMUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "FLMUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "FLMUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "FLOWUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "FLOWUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "FLOWUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "FLOWUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "FLOWUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "FTMUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "FTMUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "FTMUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "FTMUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "FTMUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "GMTUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "GMTUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "GRTUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "GRTUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "GRTUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "GRTUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "GRTUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "GTCUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "GTCUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "GTCUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "GTCUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "GTCUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "HBARUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "HBARUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "HBARUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "HBARUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "HBARUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "HOTUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "HOTUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "HOTUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "HOTUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "HOTUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "ICPUSDT",
+      "date": "2022-09-01"
+    },
+    {
+      "symbol": "ICPUSDT",
+      "date": "2022-09-02"
+    },
+    {
+      "symbol": "ICPUSDT",
+      "date": "2022-09-03"
+    },
+    {
+      "symbol": "ICPUSDT",
+      "date": "2022-09-04"
+    },
+    {
+      "symbol": "ICPUSDT",
+      "date": "2022-09-05"
+    },
+    {
+      "symbol": "ICPUSDT",
+      "date": "2022-09-06"
+    },
+    {
+      "symbol": "ICPUSDT",
+      "date": "2022-09-07"
+    },
+    {
+      "symbol": "ICPUSDT",
+      "date": "2022-09-08"
+    },
+    {
+      "symbol": "ICPUSDT",
+      "date": "2022-09-09"
+    },
+    {
+      "symbol": "ICPUSDT",
+      "date": "2022-09-10"
+    },
+    {
+      "symbol": "ICPUSDT",
+      "date": "2022-09-11"
+    },
+    {
+      "symbol": "ICPUSDT",
+      "date": "2022-09-12"
+    },
+    {
+      "symbol": "ICPUSDT",
+      "date": "2022-09-13"
+    },
+    {
+      "symbol": "ICPUSDT",
+      "date": "2022-09-14"
+    },
+    {
+      "symbol": "ICPUSDT",
+      "date": "2022-09-15"
+    },
+    {
+      "symbol": "ICPUSDT",
+      "date": "2022-09-16"
+    },
+    {
+      "symbol": "ICPUSDT",
+      "date": "2022-09-17"
+    },
+    {
+      "symbol": "ICPUSDT",
+      "date": "2022-09-18"
+    },
+    {
+      "symbol": "ICPUSDT",
+      "date": "2022-09-19"
+    },
+    {
+      "symbol": "ICPUSDT",
+      "date": "2022-09-20"
+    },
+    {
+      "symbol": "ICPUSDT",
+      "date": "2022-09-21"
+    },
+    {
+      "symbol": "ICPUSDT",
+      "date": "2022-09-22"
+    },
+    {
+      "symbol": "ICPUSDT",
+      "date": "2022-09-23"
+    },
+    {
+      "symbol": "ICPUSDT",
+      "date": "2022-09-24"
+    },
+    {
+      "symbol": "ICPUSDT",
+      "date": "2022-09-25"
+    },
+    {
+      "symbol": "ICPUSDT",
+      "date": "2022-09-26"
+    },
+    {
+      "symbol": "IMXUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "IMXUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "IMXUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "IMXUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "IMXUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "IOTAUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "IOTAUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "IOTAUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "IOTAUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "IOTAUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "KNCUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "KNCUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "KNCUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "KNCUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "KNCUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "KSMUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "KSMUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "KSMUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "KSMUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "KSMUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "LINAUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "LINAUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "LINAUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "LINAUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "LINAUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "LITUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "LITUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "LITUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "LITUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "LITUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "LRCUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "LRCUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "LRCUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "LRCUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "LRCUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "LTCUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "LTCUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "LTCUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "LTCUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "LTCUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "LUNAUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "LUNAUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "LUNAUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "LUNAUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "LUNAUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "MANAUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "MANAUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "MANAUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "MANAUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "MANAUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "MASKUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "MASKUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "MASKUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "MASKUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "MASKUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "MKRUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "MKRUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "MKRUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "MKRUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "MKRUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "NEARUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "NEARUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "NEARUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "NEARUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "NEARUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "OCEANUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "OCEANUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "OCEANUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "OCEANUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "OCEANUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "OGNUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "OGNUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "OGNUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "OGNUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "OGNUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "OMGUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "OMGUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "OMGUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "OMGUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "OMGUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "ONEUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "ONEUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "ONEUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "ONEUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "ONEUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "PEOPLEUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "PEOPLEUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "PEOPLEUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "PEOPLEUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "PEOPLEUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "RLCUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "RLCUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "RLCUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "RLCUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "RLCUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "ROSEUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "ROSEUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "ROSEUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "ROSEUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "ROSEUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "RSRUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "RSRUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "RSRUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "RSRUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "RSRUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "RVNUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "RVNUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "RVNUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "RVNUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "RVNUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "SANDUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "SANDUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "SANDUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "SANDUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "SANDUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "SKLUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "SKLUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "SKLUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "SKLUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "SKLUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "SOLUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "SOLUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "SOLUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "SOLUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "SOLUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "STORJUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "STORJUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "STORJUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "STORJUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "STORJUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "SUSHIUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "SUSHIUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "SUSHIUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "SUSHIUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "SUSHIUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-01"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-02"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-03"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-04"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-05"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-06"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-07"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-08"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-09"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-10"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-11"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-12"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-13"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-14"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-15"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-16"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-17"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-18"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-19"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-20"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-21"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-22"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-23"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-24"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-25"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-26"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-27"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-28"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-29"
+    },
+    {
+      "symbol": "TRBUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "TRBUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "TRBUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "TRBUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "TRBUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "TRXUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "TRXUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "TRXUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "TRXUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "TRXUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "UNFIUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "UNFIUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "UNFIUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "UNFIUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "UNFIUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "VETUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "VETUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "VETUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "VETUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "VETUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "WAVESUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "WAVESUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "WAVESUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "WAVESUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "WAVESUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "XEMUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "XEMUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "XEMUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "XEMUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "XEMUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "XLMUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "XLMUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "XLMUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "XLMUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "XLMUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "XRPUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "XRPUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "XRPUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "XRPUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "XRPUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "YFIIUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "YFIIUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "YFIIUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "YFIIUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "YFIIUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "YFIUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "YFIUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "YFIUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "YFIUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "YFIUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "ZECUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "ZECUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "ZECUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "ZECUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "ZECUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "ZENUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "ZENUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "ZENUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "ZENUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "ZENUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "ZILUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "ZILUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "ZILUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "ZILUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "ZILUSDT",
+      "date": "2022-04-02"
+    }
+  ],
+  "research_ready": false,
+  "financial_values_inspected": false,
+  "limits": [
+    "All 103 affected retained monthly archives checked: the 323 missing timestamps already occur in those raw archives.",
+    "318 official daily replacements are verified; five ICPUSDT daily ZIPs and CHECKSUMs return 404.",
+    "One exact-window official 1d API diagnostic returned HTTP 200 with zero rows; this does not establish the historical reason for absence.",
+    "No partial recovery, second unchanged-input build, shape result, fingerprint or strategy scoring produced.",
+    "Funding coverage and remaining original rebuild/shape/final-review prerequisites remain unverified."
+  ],
+  "retained_monthly_full_check": {
+    "verified_months": 103,
+    "all_frozen_missing_days_absent_in_retained_raw": true,
+    "nas_bytes_read": 175309,
+    "monthly_result_sha256": "1cfb2c5b3a03028968cd4745dbdd01e7976ae61dbd7426cbba0609a746788558"
+  },
+  "official_daily_full_check": {
+    "checked_pairs": 323,
+    "status_counts": {
+      "not_found_404": 5,
+      "verified_available": 318
+    },
+    "http_requests": 640,
+    "reused_verified_pairs": 3,
+    "downloaded_bytes": 122055,
+    "all_pairs_recoverable": false,
+    "unavailable": [
+      {
+        "symbol": "ICPUSDT",
+        "day": "2022-09-22",
+        "zip_http_status": 404,
+        "checksum_http_status": 404,
+        "url": "https://data.binance.vision/data/futures/um/daily/klines/ICPUSDT/1d/ICPUSDT-1d-2022-09-22.zip"
+      },
+      {
+        "symbol": "ICPUSDT",
+        "day": "2022-09-23",
+        "zip_http_status": 404,
+        "checksum_http_status": 404,
+        "url": "https://data.binance.vision/data/futures/um/daily/klines/ICPUSDT/1d/ICPUSDT-1d-2022-09-23.zip"
+      },
+      {
+        "symbol": "ICPUSDT",
+        "day": "2022-09-24",
+        "zip_http_status": 404,
+        "checksum_http_status": 404,
+        "url": "https://data.binance.vision/data/futures/um/daily/klines/ICPUSDT/1d/ICPUSDT-1d-2022-09-24.zip"
+      },
+      {
+        "symbol": "ICPUSDT",
+        "day": "2022-09-25",
+        "zip_http_status": 404,
+        "checksum_http_status": 404,
+        "url": "https://data.binance.vision/data/futures/um/daily/klines/ICPUSDT/1d/ICPUSDT-1d-2022-09-25.zip"
+      },
+      {
+        "symbol": "ICPUSDT",
+        "day": "2022-09-26",
+        "zip_http_status": 404,
+        "checksum_http_status": 404,
+        "url": "https://data.binance.vision/data/futures/um/daily/klines/ICPUSDT/1d/ICPUSDT-1d-2022-09-26.zip"
+      }
+    ],
+    "result_sha256": "6da00669720e4d8619ea4dac007b527cb62d5b8ac47deb4938877f52f0527f8b"
+  },
+  "official_1d_api_diagnostic": {
+    "endpoint": "https://fapi.binance.com/fapi/v1/klines",
+    "params": {
+      "symbol": "ICPUSDT",
+      "interval": "1d",
+      "startTime": 1663804800000,
+      "endTime": 1664236799999,
+      "limit": 5
+    },
+    "read_only_public_market_data": true,
+    "financial_values_interpreted": false,
+    "curation_or_build": false,
+    "nas_writes": false,
+    "requests": 1,
+    "http_status": 200,
+    "body_bytes": 2,
+    "body_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "rows": 0,
+    "open_dates_utc": []
+  },
+  "recovery_gate": "STOP_ALL_323_NOT_RECOVERABLE_IN_CLOSED_SOURCE_SET",
+  "recovery_executed": false
+}

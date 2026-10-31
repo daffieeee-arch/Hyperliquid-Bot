@@ -82,6 +82,9 @@ class TradeSeries:
     funding_paid: tuple[float, ...]
     funding_received: tuple[float, ...]
     weights: tuple[float, ...]
+    # A quote-aware source can supply the complete observed round-trip cost,
+    # including fees/slippage. It replaces flat bps; it is not charged twice.
+    execution_costs: tuple[float, ...] | None = None
 
     @property
     def funding(self) -> tuple[float, ...]:
@@ -101,14 +104,24 @@ class TradeSeries:
         At 1.0x every value is the realized one.
         """
 
-        round_trip = round_trip_cost(costs, stress)
+        if self.execution_costs is not None:
+            if (
+                len(self.weights) != len(self.gross)
+                or len(self.execution_costs) != len(self.gross)
+                or any(not math.isfinite(value) or value < 0 for value in self.execution_costs)
+            ):
+                raise IntegrityError("invariant", "Invalid quote execution-cost vector.")
+            charges = tuple(value * stress for value in self.execution_costs)
+        else:
+            round_trip = round_trip_cost(costs, stress)
+            charges = tuple(weight * round_trip for weight in self.weights)
         return tuple(
-            gross - weight * round_trip - paid * stress + received / stress
-            for gross, paid, received, weight in zip(
+            gross - charge - paid * stress + received / stress
+            for gross, paid, received, charge in zip(
                 self.gross,
                 self.funding_paid,
                 self.funding_received,
-                self.weights,
+                charges,
                 strict=True,
             )
         )
@@ -699,11 +712,25 @@ def _window_trades(
 def _concat_series(parts: Sequence[TradeSeries]) -> TradeSeries:
     """The folds' trades pooled in order, as one validation series."""
 
+    if any(
+        part.execution_costs is not None
+        and (len(part.weights) != len(part.gross) or len(part.execution_costs) != len(part.gross))
+        for part in parts
+    ):
+        raise IntegrityError("invariant", "Invalid quote execution-cost vector within a fold.")
+    quoted = [part.execution_costs is not None for part in parts]
+    if any(quoted) and not all(quoted):
+        raise IntegrityError("invariant", "Cannot mix quote and flat-bps cost models across folds.")
     return TradeSeries(
         gross=tuple(value for part in parts for value in part.gross),
         funding_paid=tuple(value for part in parts for value in part.funding_paid),
         funding_received=tuple(value for part in parts for value in part.funding_received),
         weights=tuple(value for part in parts for value in part.weights),
+        execution_costs=(
+            tuple(value for part in parts for value in (part.execution_costs or ()))
+            if any(quoted)
+            else None
+        ),
     )
 
 

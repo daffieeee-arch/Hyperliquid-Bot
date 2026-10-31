@@ -25,8 +25,9 @@ publication pauses and real gaps. This is not seamless coverage, restart
 recovery, queue-position evidence or research readiness. There is no automatic
 restart, retry, resume, new campaign or permission for LIVE/SHADOW/TESTNET.
 
-Hyperliquid public L2 snapshots are not order-level data. Binance open interest
-is **one initial REST observation**, not periodic history. Liquidation messages
+Hyperliquid public L2 snapshots are not order-level data. New Binance open-interest
+captures sample immediately, then wait at least 60 seconds after each completed
+sample; old one-sample archives remain unchanged and there is no backfill. Liquidation messages
 are venue-specific observations, not every liquidation. Bitvavo Standard is
 neither MD Pro nor L3; Kraken L3 is excluded. ETH/SOL and actual funding-history
 expansion require separate source decisions. Existing UTC receipt/monotonic

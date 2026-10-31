@@ -1,0 +1,163 @@
+# Install as TrueNAS Custom App "hyperliquid-collector" after host admission.
+# The operator renders explicit pins/paths; no secrets or implicit bind creation.
+services:
+  collector:
+    image: ${COLLECTOR_IMAGE:?Reviewed CI image@sha256 required}
+    platform: linux/amd64
+    user: "1000:1000"
+    read_only: true
+    init: true
+    restart: "no"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    cpus: 2
+    mem_limit: 2g
+    memswap_limit: 2g
+    pids_limit: 128
+    stop_grace_period: 90s
+    environment:
+      TRADING_MODE: PAPER
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=536870912,mode=1777
+    volumes:
+      - type: bind
+        source: ${COLLECTOR_NATIVE_SPOOL:?Existing dedicated private spool required}
+        target: /home/chupa/hyperliquid-spool
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${COLLECTOR_NATIVE_CAPTURE:?Existing approved work capture root required}
+        target: /mnt/hyperliquid-work/market-data/capture
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${COLLECTOR_NATIVE_ARCHIVE:?Existing approved archive root required}
+        target: /mnt/hyperliquid-archive/market-data
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${COLLECTOR_NATIVE_CONTROL:?Existing private host-written controls required}
+        target: /control
+        read_only: true
+        bind:
+          create_host_path: false
+    command:
+      - --storage-profile
+      - truenas-zfs
+      - --expected-source
+      - ${COLLECTOR_SOURCE_COMMIT:?Full reviewed commit required}
+      - --expected-image
+      - ${COLLECTOR_IMAGE_DIGEST:?Image sha256 digest required}
+      - --campaign
+      - ${COLLECTOR_CAMPAIGN:?Fresh create-only campaign required}
+      - --lane
+      - hyperliquid
+      - --lane
+      - binance
+      - --chunk-seconds
+      - "600"
+      - --chunks
+      - "1"
+      - --pilot
+      - --spool
+      - /home/chupa/hyperliquid-spool
+      - --capture
+      - /mnt/hyperliquid-work/market-data/capture
+      - --archive
+      - /mnt/hyperliquid-archive/market-data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -B
+        - -m
+        - hyperliquid_bot.collector_runtime
+        - --health
+        - --expected-source
+        - ${COLLECTOR_SOURCE_COMMIT:?Full reviewed commit required}
+        - --spool
+        - /home/chupa/hyperliquid-spool
+      interval: 30s
+      timeout: 5s
+      start_period: 120s
+      retries: 2
+  status:
+    image: ${COLLECTOR_IMAGE:?Reviewed CI image@sha256 required}
+    platform: linux/amd64
+    user: "1000:1000"
+    read_only: true
+    init: true
+    restart: unless-stopped
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    cpus: 0.25
+    mem_limit: 256m
+    memswap_limit: 256m
+    pids_limit: 64
+    environment:
+      TRADING_MODE: PAPER
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16777216,mode=1777
+    entrypoint: [python, -B, -m, hyperliquid_bot.collector_status]
+    command:
+      - --spool
+      - /home/chupa/hyperliquid-spool
+      - --capture
+      - /mnt/hyperliquid-work/market-data/capture
+      - --archive
+      - /mnt/hyperliquid-archive/market-data
+      - --control
+      - /control
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+    ports:
+      - "${COLLECTOR_STATUS_BIND_IP:?Explicit NAS LAN address required}:${COLLECTOR_STATUS_PORT:-18790}:8080"
+    volumes:
+      - type: bind
+        source: ${COLLECTOR_NATIVE_SPOOL:?Existing dedicated private spool required}
+        target: /home/chupa/hyperliquid-spool
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${COLLECTOR_NATIVE_CAPTURE:?Existing approved work capture root required}
+        target: /mnt/hyperliquid-work/market-data/capture
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${COLLECTOR_NATIVE_ARCHIVE:?Existing approved archive root required}
+        target: /mnt/hyperliquid-archive/market-data
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${COLLECTOR_NATIVE_CONTROL:?Existing private host-written controls required}
+        target: /control
+        read_only: true
+        bind:
+          create_host_path: false
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3).close()"
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 2
+
+x-portals:
+  - name: Web UI
+    host: ${COLLECTOR_STATUS_BIND_IP:?Explicit NAS LAN address required}
+    port: ${COLLECTOR_STATUS_PORT:-18790}
+    scheme: http
+    path: /
+x-notes: |
+  Public market-data collection and a read-only live status page.
+  Collector campaigns are finite and require fresh host clock/storage/network
+  admission. A running status service does not imply active or fresh feeds.
+  No signing, trading credentials or order execution.

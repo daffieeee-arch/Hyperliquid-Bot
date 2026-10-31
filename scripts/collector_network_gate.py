@@ -9,8 +9,18 @@ import os
 import re
 import stat
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
+
+# The operator release retains reviewed scripts/ and src/ together. No package
+# installation or mutable development checkout is needed on the NAS.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from hyperliquid_bot.collector_native_storage import (
+    CONTAINER_ROOTS,
+    approved_host_root,
+    filesystem_identity,
+)
 
 CONTAINER = "hyperliquid-public-collector"
 ROOTS = {
@@ -32,7 +42,44 @@ def command(arguments: list[str]) -> str:
     ).stdout
 
 
-def validate_container(document: dict[str, Any], *, image: str, source: str) -> int:
+def validate_container(
+    document: dict[str, Any],
+    *,
+    image: str,
+    source: str,
+    profile: str = "vm-nfs",
+    host_roots: dict[str, Path] | None = None,
+    container: str = CONTAINER,
+) -> int:
+    if profile not in {"vm-nfs", "truenas-zfs"}:
+        raise ValueError("Unknown collector gate profile.")
+    native = profile == "truenas-zfs"
+    if native:
+        temporary = document["HostConfig"].get("Tmpfs")
+        expected_options = {"rw", "noexec", "nosuid", "size=536870912", "mode=1777"}
+        if not isinstance(temporary, dict) or set(temporary) != {"/tmp"}:
+            raise ValueError("Native collector requires only the bounded private tmpfs.")
+        options = temporary["/tmp"]
+        if (
+            not isinstance(options, str)
+            or len(options.split(",")) != len(expected_options)
+            or set(options.split(",")) != expected_options
+        ):
+            raise ValueError("Native tmpfs must match the reviewed size and isolation flags.")
+        if host_roots is None or set(host_roots) != set(CONTAINER_ROOTS):
+            raise ValueError("All four approved native host roots are required.")
+        for role, path in host_roots.items():
+            approved_host_root(role, path)
+        labels = document["Config"]["Labels"]
+        if (
+            re.fullmatch(r"ix-hyperliquid-collector-collector-[1-9][0-9]*", container) is None
+            or document.get("Name", "").lstrip("/") != container
+            or labels.get("com.docker.compose.project") != "ix-hyperliquid-collector"
+            or labels.get("com.docker.compose.service") != "collector"
+        ):
+            raise ValueError("Only the explicitly managed Hyperliquid collector may be admitted.")
+    elif host_roots is not None or container != CONTAINER:
+        raise ValueError("VM gate keeps its fixed container and mount identity.")
     config, host = document["Config"], document["HostConfig"]
     if (
         not document["State"]["Running"]
@@ -47,9 +94,9 @@ def validate_container(document: dict[str, Any], *, image: str, source: str) -> 
         or "ALL" not in host["CapDrop"]
         or host["SecurityOpt"] != ["no-new-privileges:true"]
         or host["PortBindings"]
-        or host["Memory"] != 8 * 1024**3
+        or host["Memory"] != (2 if native else 8) * 1024**3
         or host["MemorySwap"] != host["Memory"]
-        or host["NanoCpus"] != 4_000_000_000
+        or host["NanoCpus"] != (2 if native else 4) * 1_000_000_000
         or host["PidsLimit"] != 128
         or host["RestartPolicy"]["Name"] != "no"
     ):
@@ -65,9 +112,15 @@ def validate_container(document: dict[str, Any], *, image: str, source: str) -> 
         raise ValueError("Exactly the four approved data/control mounts are required.")
     for mount in mounts:
         destination = mount["Destination"]
+        if destination not in ROOTS:
+            raise ValueError("Unexpected container mount destination.")
         expected_source = (
             "/home/chupa/hyperliquid-runtime" if destination == "/control" else destination
         )
+        if native:
+            assert host_roots is not None
+            role = next(role for role, path in CONTAINER_ROOTS.items() if path == destination)
+            expected_source = str(host_roots[role])
         if (
             destination not in ROOTS
             or mount["Type"] != "bind"
@@ -76,6 +129,41 @@ def validate_container(document: dict[str, Any], *, image: str, source: str) -> 
         ):
             raise ValueError("Unexpected container storage or secret/source mount.")
     return int(document["State"]["Pid"])
+
+
+def native_storage_verification(
+    host_roots: dict[str, Path], container: str
+) -> dict[str, dict[str, object]]:
+    """Bind each host directory to the effective mount seen by this exact image."""
+    identities: dict[str, dict[str, object]] = {}
+    for role, path in host_roots.items():
+        approved_host_root(role, path)
+        identity = filesystem_identity(path)
+        if identity["filesystem"] != "zfs" or identity["source"] != "/".join(path.parts[2:4]):
+            raise ValueError("Native storage is not the explicitly approved ZFS dataset.")
+        identities[role] = identity
+    directory_ids = {(value["device"], value["inode"]) for value in identities.values()}
+    if len(directory_ids) != len(CONTAINER_ROOTS):
+        raise ValueError("Native roles must not alias the same actual directory.")
+    code = (
+        "import json;from pathlib import Path;"
+        "from hyperliquid_bot.collector_native_storage import CONTAINER_ROOTS,filesystem_identity;"
+        "print(json.dumps({r:filesystem_identity(Path(p)) for r,p in CONTAINER_ROOTS.items()}))"
+    )
+    actual = json.loads(command(["docker", "exec", container, "python", "-B", "-c", code]))
+    if actual != identities:
+        raise ValueError("Container mounts differ from independently verified host directories.")
+    # Recheck the host paths after the container read, before producing evidence.
+    if any(filesystem_identity(host_roots[role]) != value for role, value in identities.items()):
+        raise ValueError("Native storage identity changed during admission.")
+    return {
+        role: {
+            "host_path": str(host_roots[role]),
+            "container_path": CONTAINER_ROOTS[role],
+            "identity": value,
+        }
+        for role, value in identities.items()
+    }
 
 
 def owned_veth(host_links: list[dict[str, Any]], container_link: dict[str, Any]) -> str:
@@ -106,6 +194,10 @@ def main() -> int:
     parser.add_argument("--source", required=True)
     parser.add_argument("--image", required=True)
     parser.add_argument("--campaign", required=True)
+    parser.add_argument("--profile", choices=("vm-nfs", "truenas-zfs"), default="vm-nfs")
+    parser.add_argument("--container", default=CONTAINER)
+    for role in CONTAINER_ROOTS:
+        parser.add_argument("--" + role + "-host", type=Path)
     args = parser.parse_args()
     if (
         os.getuid() != 0
@@ -117,7 +209,19 @@ def main() -> int:
         or re.fullmatch(r"[a-z0-9][a-z0-9-]{0,35}", args.campaign) is None
     ):
         parser.error("Root, exact approved source/image and new campaign are required.")
-    marker = Path("/home/chupa/hyperliquid-runtime/network-ready.json")
+    supplied = {role: getattr(args, role + "_host") for role in CONTAINER_ROOTS}
+    host_roots = None
+    if args.profile == "truenas-zfs":
+        if any(path is None for path in supplied.values()):
+            parser.error("Native profile needs all four explicit project host roots.")
+        host_roots = {role: Path(path) for role, path in supplied.items()}
+        for role, path in host_roots.items():
+            approved_host_root(role, path)
+    elif any(path is not None for path in supplied.values()) or args.container != CONTAINER:
+        parser.error("VM profile does not accept alternative host roots or containers.")
+    marker = (
+        host_roots["control"] if host_roots else Path("/home/chupa/hyperliquid-runtime")
+    ) / "network-ready.json"
     parent = marker.parent.lstat()
     if (
         not stat.S_ISDIR(parent.st_mode)
@@ -129,14 +233,22 @@ def main() -> int:
         raise ValueError("Private control root and absent network marker required.")
 
     def inspect() -> tuple[int, int]:
-        documents = json.loads(command(["docker", "inspect", CONTAINER]))
-        pid = validate_container(documents[0], image=args.image, source=args.source)
+        documents = json.loads(command(["docker", "inspect", args.container]))
+        pid = validate_container(
+            documents[0],
+            image=args.image,
+            source=args.source,
+            profile=args.profile,
+            host_roots=host_roots,
+            container=args.container,
+        )
         inode = Path(f"/proc/{pid}/ns/net").stat().st_ino
         if inode == Path("/proc/self/ns/net").stat().st_ino:
             raise ValueError("Collector must have its own network namespace.")
         return pid, inode
 
     pid, inode = inspect()
+    storage = native_storage_verification(host_roots, args.container) if host_roots else None
     prefix = ["nsenter", "--target", str(pid), "--net"]
     link = json.loads(command([*prefix, "ip", "-d", "-j", "link", "show", "dev", "eth0"]))[0]
     peer = owned_veth(json.loads(command(["ip", "-d", "-j", "link", "show"])), link)
@@ -201,6 +313,9 @@ def main() -> int:
         "download_qdisc": download,
         "upload_qdisc": upload,
     }
+    if storage is not None:
+        report["storage_profile"] = "truenas-zfs"
+        report["storage_verification"] = storage
     content = (json.dumps(report, sort_keys=True, indent=2) + "\n").encode()
     publishing = marker.with_name(".network-ready.publishing")
     descriptor = os.open(publishing, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)

@@ -1,0 +1,108 @@
+name: Publish reviewed collector image
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: Exact current main commit with successful CI and independent reviews
+        required: true
+        type: string
+
+concurrency:
+  group: collector-image-publication
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main' && github.repository == 'daffieeee-arch/Hyperliquid-Bot'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+      packages: write
+    steps:
+      - name: Verify exact current main and its successful CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+          WORKFLOW_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "${SOURCE_COMMIT}" =~ ^[0-9a-f]{40}$ ]]
+          test "${SOURCE_COMMIT}" = "${WORKFLOW_COMMIT}"
+          current_main=$(gh api "repos/${GH_REPO}/commits/main" --jq .sha)
+          test "${SOURCE_COMMIT}" = "${current_main}"
+          gh api "repos/${GH_REPO}/actions/workflows/ci.yml/runs?head_sha=${SOURCE_COMMIT}&event=push" \
+            --jq '.workflow_runs' > "${RUNNER_TEMP}/collector-ci-runs.json"
+          gh api "repos/${GH_REPO}/commits/${SOURCE_COMMIT}/check-runs?per_page=100" \
+            --jq '.check_runs' > "${RUNNER_TEMP}/collector-ci-checks.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path(os.environ["RUNNER_TEMP"])
+          runs = json.loads((root / "collector-ci-runs.json").read_text())
+          checks = json.loads((root / "collector-ci-checks.json").read_text())
+          sha = os.environ["SOURCE_COMMIT"]
+          candidates = [run for run in runs if run["head_sha"] == sha
+                        and run["head_branch"] == "main" and run["event"] == "push"
+                        and run["name"] == "CI"]
+          if not candidates:
+              raise SystemExit("No successful current-main CI run")
+          latest = max(candidates, key=lambda item: (item["run_number"], item["run_attempt"]))
+          if latest["status"] != "completed" or latest["conclusion"] != "success":
+              raise SystemExit("Latest current-main CI is not successful")
+          run_id = latest["id"]
+          required = {"ci-gate", "python-foundation", "d01-publication", "actionlint", "secret-scan"}
+          for name in required:
+              current = [check for check in checks if check["name"] == name
+                         and check["head_sha"] == sha and check["app"]["slug"] == "github-actions"
+                         and f"/actions/runs/{run_id}/" in check["details_url"]]
+              if len(current) != 1 or current[0]["conclusion"] != "success":
+                  raise SystemExit("Required expected-publisher CI evidence unavailable: " + name)
+          PY
+
+      - name: Check out reviewed main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_commit }}
+          persist-credentials: false
+
+      - name: Build and smoke-test immutable Linux image
+        env:
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+          IMAGE: ghcr.io/daffieeee-arch/hyperliquid-bot/collector
+        run: |
+          set -euo pipefail
+          tag="${IMAGE}:sha-${SOURCE_COMMIT}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker build --platform linux/amd64 -f Dockerfile.collector \
+            --build-arg "SOURCE_COMMIT=${SOURCE_COMMIT}" -t "${tag}" .
+          docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges:true --memory 1g --cpus 2 \
+            "${tag}" --check-image --expected-source "${SOURCE_COMMIT}"
+          if docker run --rm --network none --read-only --cap-drop ALL \
+            -e TRADING_MODE=LIVE "${tag}" --check-image --expected-source "${SOURCE_COMMIT}"; then
+            exit 1
+          fi
+          printf '%s\n' "${tag}" > "${RUNNER_TEMP}/collector-image-tag"
+
+      - name: Publish reviewed image without deployment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          current_main=$(gh api "repos/${GH_REPO}/commits/main" --jq .sha)
+          test "${SOURCE_COMMIT}" = "${current_main}"
+          printf '%s' "${GH_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+          trap 'docker logout ghcr.io >/dev/null 2>&1' EXIT
+          tag=$(cat "${RUNNER_TEMP}/collector-image-tag")
+          docker push "${tag}"
+          docker image inspect "${tag}" --format '{{json .RepoDigests}}'
+          echo "Publication is not deployment. Verify public anonymous pull and digest/source before runtime."

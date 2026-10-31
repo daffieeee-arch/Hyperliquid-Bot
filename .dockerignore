@@ -1,0 +1,9 @@
+# Whitelist only dependency metadata and Python source. Never send Git, local
+# data, credentials, reports, .venv or operator environment files to a builder.
+**
+!pyproject.toml
+!uv.lock
+!src/
+!src/**
+**/__pycache__/
+**/*.pyc

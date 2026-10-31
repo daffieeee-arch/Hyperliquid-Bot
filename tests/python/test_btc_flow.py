@@ -525,6 +525,7 @@ def test_closed_part_paths_never_expand_duckdb_globs(tmp_path: Path, name: str) 
 @pytest.mark.parametrize(
     "event",
     [
+        "gap",
         "sequence_error",
         "truncation_error",
         "schema_error",

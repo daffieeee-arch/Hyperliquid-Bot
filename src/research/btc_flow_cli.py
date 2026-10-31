@@ -257,6 +257,7 @@ def load_source(
                         and event
                         in {
                             "gap_detected",
+                            "gap",
                             "liveness_gap",
                             "liveness_error",
                             "schema_error",

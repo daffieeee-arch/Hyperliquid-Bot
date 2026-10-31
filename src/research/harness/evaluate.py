@@ -105,8 +105,10 @@ class TradeSeries:
         """
 
         if self.execution_costs is not None:
-            if len(self.execution_costs) != len(self.gross) or any(
-                not math.isfinite(value) or value < 0 for value in self.execution_costs
+            if (
+                len(self.weights) != len(self.gross)
+                or len(self.execution_costs) != len(self.gross)
+                or any(not math.isfinite(value) or value < 0 for value in self.execution_costs)
             ):
                 raise IntegrityError("invariant", "Invalid quote execution-cost vector.")
             charges = tuple(value * stress for value in self.execution_costs)
@@ -711,7 +713,8 @@ def _concat_series(parts: Sequence[TradeSeries]) -> TradeSeries:
     """The folds' trades pooled in order, as one validation series."""
 
     if any(
-        part.execution_costs is not None and len(part.execution_costs) != len(part.gross)
+        part.execution_costs is not None
+        and (len(part.weights) != len(part.gross) or len(part.execution_costs) != len(part.gross))
         for part in parts
     ):
         raise IntegrityError("invariant", "Invalid quote execution-cost vector within a fold.")

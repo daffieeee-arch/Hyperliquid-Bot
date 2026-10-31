@@ -48,6 +48,10 @@ D = Decimal
 CONFIG = ConfigSpec("test-h1", 0.2, 1)
 
 
+def approved_parts(*paths: Path) -> dict[str, str]:
+    return {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in paths}
+
+
 def spec() -> HypothesisSpec:
     return study_spec(SPEC)[1]
 
@@ -401,13 +405,13 @@ def test_original_raw_frame_parser_ignores_normalization_duplicates(
     connection.execute("COPY frames TO ? (FORMAT PARQUET)", [str(path)])
     connection.close()
     if other in ("ETH", "SOL"):
-        parsed = load_source(spec(), 0, 3 * MINUTE, [str(path)])
+        parsed = load_source(spec(), 0, 3 * MINUTE, approved_parts(path))
         assert (
             len(parsed.quotes) == 3 and parsed.flow[0].trades == 1 and parsed.flow[0].imbalance == 1
         )
     else:
         with pytest.raises(IntegrityError, match="coin identity"):
-            load_source(spec(), 0, 3 * MINUTE, [str(path)])
+            load_source(spec(), 0, 3 * MINUTE, approved_parts(path))
 
 
 def test_event_clock_freshness_is_not_a_strategy_availability_clock() -> None:
@@ -541,7 +545,7 @@ def test_closed_part_paths_never_expand_duckdb_globs(tmp_path: Path, name: str) 
             }
         )
     with pytest.raises(IntegrityError, match="globs refused"):
-        load_source(spec(), 0, 2 * MINUTE, [str(path)])
+        load_source(spec(), 0, 2 * MINUTE, approved_parts(path))
 
 
 @pytest.mark.parametrize(
@@ -616,9 +620,9 @@ def test_quality_errors_are_never_silently_ignored(tmp_path: Path, event: object
     connection.close()
     if not isinstance(event, str) or event == "unreviewed_event":
         with pytest.raises(IntegrityError, match="quality marker"):
-            load_source(spec(), 0, 2 * MINUTE, [str(part)])
+            load_source(spec(), 0, 2 * MINUTE, approved_parts(part))
     else:
-        parsed = load_source(spec(), 0, 2 * MINUTE, [str(part)])
+        parsed = load_source(spec(), 0, 2 * MINUTE, approved_parts(part))
         assert parsed.hl_gaps == (10 * SECOND,)
         parsed.confirmed = False
         assert parsed.signal(MINUTE) is None  # Momentum benchmark respects the same HL gap.
@@ -670,7 +674,7 @@ def test_actual_reader_never_decodes_oos_after_failed_validation_including_bench
         return original(raw)
 
     monkeypatch.setattr(cli, "_json", observed)
-    staged = StagedFlowSource(spec(), 0, 3 * DAY, [str(part)])
+    staged = StagedFlowSource(spec(), 0, 3 * DAY, approved_parts(part))
     result = decide_source(staged)
     assert result.label == "not_enough_data" and result.selected_config_id is None
     for fold in result.folds:
@@ -688,7 +692,7 @@ def test_actual_reader_opens_oos_only_after_harness_validation_selection(
 ) -> None:
     part = tmp_path / "sealed.parquet"
     sealed_oos_fixture(part)
-    staged = StagedFlowSource(spec(), 0, 3 * DAY, [str(part)])
+    staged = StagedFlowSource(spec(), 0, 3 * DAY, approved_parts(part))
     calls: list[tuple[int, int]] = []
 
     def passing_validation(config: ConfigSpec, start: int, end: int) -> TradeSeries:
@@ -955,3 +959,131 @@ def test_complete_native_timeline_with_late_event_still_invalidates_exposure(
     events, _ = funding_timeline(rebind_funding(proof, native), 0, 3 * DAY)
     with pytest.raises(IntegrityError, match="funding API-clock event"):
         source(funding_events_ms=events).window(CONFIG, 0, 40)
+
+
+def test_quoted_costs_preserve_per_trade_weight_shape_per_fold() -> None:
+    costs = spec().costs
+    valid = TradeSeries((0.1,), (0.0,), (0.0,), (1.0,), (0.01,))
+    short = replace(valid, weights=())
+    long = replace(valid, weights=(1.0, 1.0))
+    for malformed in (short, long):
+        with pytest.raises(IntegrityError, match="vector"):
+            malformed.net(costs, 1.0)
+    with pytest.raises(IntegrityError, match="fold"):
+        _concat_series((short, long))
+    assert valid.net(costs, 1.0) == pytest.approx((0.09,))
+
+
+@pytest.mark.parametrize("attack", ["symlink", "inplace_aba"])
+def test_actual_reader_uses_approved_immutable_bytes_during_path_swap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, attack: str
+) -> None:
+    from contextlib import contextmanager
+
+    import research.btc_flow_cli as cli
+    from research.btc_flow_io import sealed_parquet
+
+    approved = tmp_path / "approved.parquet"
+    altered = tmp_path / "altered.parquet"
+    sealed_oos_fixture(approved)
+    c = duckdb.connect()
+    c.execute("CREATE TABLE changed AS SELECT * FROM read_parquet(?)", [str(approved)])
+    c.execute(
+        "UPDATE changed SET payload_bytes=encode(replace("
+        "replace(decode(payload_bytes), '999', '1999'), '1001', '2001'))"
+    )
+    c.execute("UPDATE changed SET payload_sha256=sha256(payload_bytes)")
+    c.execute("COPY changed TO ? (FORMAT PARQUET)", [str(altered)])
+    c.close()
+    hashes = approved_parts(approved)
+    original_bytes = approved.read_bytes()
+
+    @contextmanager
+    def swapped(path: Path, expected: str):  # type: ignore[no-untyped-def]
+        with sealed_parquet(path, expected) as bound:
+            backup = path.with_suffix(".retained")
+            if attack == "symlink":
+                path.rename(backup)
+                path.symlink_to(altered)
+            else:
+                path.write_bytes(altered.read_bytes())
+            try:
+                yield bound
+            finally:
+                if attack == "symlink":
+                    path.unlink()
+                    backup.rename(path)
+                else:
+                    path.write_bytes(original_bytes)
+
+    monkeypatch.setattr(cli, "sealed_parquet", swapped)
+    parsed = load_source(spec(), 0, 2 * MINUTE, hashes)
+    assert parsed.quotes[0].mid == D(1000)
+    assert approved_parts(approved) == hashes
+
+
+def test_actual_memfd_sql_seals_allowlist_and_successive_descriptor_reuse(tmp_path: Path) -> None:
+    import os
+
+    from research.btc_flow_io import sealed_parquet
+
+    numbers = []
+    for value in (17, 29):
+        path = tmp_path / f"part-{value}.parquet"
+        other = tmp_path / f"other-{value}.parquet"
+        connection = duckdb.connect()
+        connection.execute("CREATE TABLE data AS SELECT ? AS fixture", [value])
+        connection.execute("COPY data TO ? (FORMAT PARQUET)", [str(path)])
+        connection.execute("COPY (SELECT 99 AS fixture) TO ? (FORMAT PARQUET)", [str(other)])
+        connection.close()
+        with sealed_parquet(path, approved_parts(path)[str(path)]) as (sql, bound):
+            fd = int(bound.rsplit("/", 1)[1])
+            numbers.append(fd)
+            with pytest.raises(OSError):
+                os.write(fd, b"not mutable")
+            with pytest.raises(OSError):
+                os.ftruncate(fd, 0)
+            assert sql.execute("SELECT fixture FROM read_parquet(?)", [bound]).fetchone() == (
+                value,
+            )
+            with pytest.raises(duckdb.PermissionException):
+                sql.execute("SELECT * FROM read_parquet(?)", [str(other)])
+    assert numbers[0] == numbers[1]  # Fresh connections must not alias reused FD paths.
+
+
+@pytest.mark.parametrize("leaf", ["spec.yaml", "spec.yaml.lock.json", "result.json"])
+@pytest.mark.parametrize("race", [False, True])
+def test_anchored_output_refuses_directory_rebind_without_redirect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, leaf: str, race: bool
+) -> None:
+    from research.btc_flow_io import PrivateOutput
+
+    output, retained, target = tmp_path / "out", tmp_path / "retained", tmp_path / "other"
+    target.mkdir()
+    with pytest.raises(OSError):
+        with PrivateOutput(output) as writer:
+
+            def rebind() -> None:
+                output.rename(retained)
+                output.symlink_to(target, target_is_directory=True)
+
+            if race:
+                original = writer.assert_bound
+
+                def checked_then_swapped() -> None:
+                    original()
+                    rebind()
+
+                monkeypatch.setattr(writer, "assert_bound", checked_then_swapped)
+            else:
+                rebind()
+            writer.json(leaf, {"synthetic": True})
+    assert list(target.iterdir()) == []
+    assert not (target / leaf).exists()
+
+
+def test_wrong_approved_parquet_digest_is_rejected_before_sql(tmp_path: Path) -> None:
+    part = tmp_path / "part.parquet"
+    sealed_oos_fixture(part)
+    with pytest.raises(IntegrityError, match="approved Parquet bytes"):
+        load_source(spec(), 0, 2 * MINUTE, {str(part): "0" * 64})

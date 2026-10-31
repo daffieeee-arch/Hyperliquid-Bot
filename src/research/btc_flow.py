@@ -1,7 +1,7 @@
 """BTC spot-flow-confirmed HL continuation; research fills, not an order engine.
 
-All signal inputs use receipt clocks. Funding is avoided by a fixed calendar
-exposure guard, never by replacing an unknown settlement with zero.
+All signal inputs use receipt clocks. Funding qualification is conditional on
+a complete API-clock event model; a UTC calendar guard alone proves no payment timing.
 """
 
 from __future__ import annotations

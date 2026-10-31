@@ -51,6 +51,16 @@ writes no source/NAS data. It reads original inbound HL `bbo` and Binance Spot
 not additional economic events. Each selected raw payload hash is checked.
 The existing Spot decoder requires its documented original trade fields.
 
+Every actual Parquet read requires its approved SHA256. One no-follow, capped
+part is copied into a Linux sealed memfd after hashing; write/grow/shrink/seal
+protections are read back before SQL. Only that immutable FD path is permitted
+on a fresh DuckDB connection, with external access, external-file caching and
+extension autoload/install disabled. At most one part (up to 512 MiB) is held,
+not all capture descriptors. A pathname swap or in-place ABA modification
+during SQL cannot change the approved bytes. Each staged part validates its
+session/channel ordinal and receipt clocks; sorted metadata ranges validate
+continuity across parts without assuming path order or reading OOS frames.
+
 Event time is used **only for freshness**. Binance `T` is explicitly
 MICROSECONDS, HL `bbo.data.time` explicitly MILLISECONDS. Either may lag local
 receipt by at most 5 seconds or lead it by at most 1 second; an unknown/stale
@@ -210,6 +220,10 @@ rechecked after scoring and included in the result and spec/input lock.
 Outputs are create-only private local `result.json`, copied `spec.yaml` and its
 spec/input hash lock. Failure/insufficiency records contain no invented PnL;
 incomplete directories remain retained and cannot be resumed/overwritten.
+The reserved output-directory descriptor stays open through every artifact
+write. All leaf files use descriptor-relative exclusive/no-follow creation;
+directory device/inode/mount identity is checked before/after writes and return.
+Replacing the output path cannot redirect spec, lock or result writes to NAS.
 Fixed engineering admission limits are 70,000 parts / 32 MiB manifest /
 100 GiB source bytes, 512 MiB per part, two million HL quotes / 25 million Spot
 trades **per staged load** (48h validation; 24h OOS plus one warm-up minute).

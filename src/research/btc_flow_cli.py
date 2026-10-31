@@ -11,20 +11,21 @@ import hashlib
 import json
 import os
 import resource
-import stat
 import subprocess
 import time
 from collections.abc import Iterator
 from dataclasses import asdict
 from decimal import Decimal
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import duckdb
 
 from hyperliquid_bot.binance_spot_trades import BinanceTimestampUnit, decode_binance_spot_trade
 from hyperliquid_bot.local_mode import require_local_paper_mode
 from research.btc_flow import MINUTE, SECOND, FlowSource, Quote, SpotTrade, aggregate_flow, require
+from research.btc_flow_io import PrivateOutput, sealed_parquet
+from research.btc_flow_io import read_bytes as _read
 from research.harness.errors import HarnessError
 from research.harness.evaluate import TradeSeries, decide_source, summarize
 from research.harness.spec import (
@@ -34,7 +35,6 @@ from research.harness.spec import (
     load_document,
     spec_sha256,
     validate_spec,
-    write_lock,
 )
 from research.hist_etl.hyperliquid import slot_of
 
@@ -64,39 +64,6 @@ def _json(raw: bytes) -> dict[str, object]:
     )
     require(isinstance(value, dict), "JSON object required")
     return cast(dict[str, object], value)
-
-
-def _read(path: Path, maximum: int) -> bytes:
-    require(path.is_absolute() and ".." not in path.parts, "absolute source path required")
-    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        for index, name in enumerate(path.parts[1:]):
-            nxt = os.open(
-                name,
-                os.O_RDONLY
-                | os.O_NOFOLLOW
-                | (0 if index == len(path.parts) - 2 else os.O_DIRECTORY),
-                dir_fd=fd,
-            )
-            os.close(fd)
-            fd = nxt
-        before = os.fstat(fd)
-        require(
-            stat.S_ISREG(before.st_mode) and before.st_size <= maximum, "regular source byte limit"
-        )
-        content = bytearray()
-        while block := os.read(fd, 1 << 20):
-            content.extend(block)
-            require(len(content) <= maximum, "source byte limit")
-        after = os.fstat(fd)
-        require(
-            (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
-            == (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns),
-            "source changed while reading",
-        )
-        return bytes(content)
-    finally:
-        os.close(fd)
 
 
 def validate_manifest(document: dict[str, object]) -> tuple[int, int, str]:
@@ -293,50 +260,49 @@ def receipt_freshness(received_ns: int, event_ns: int) -> None:
     require(-SECOND <= received_ns - event_ns <= 5 * SECOND, "stale or future source event")
 
 
+def _raw_rows(
+    hashes: dict[str, str], start: int, end: int
+) -> Iterator[tuple[str, tuple[Any, ...]]]:
+    for path, expected in sorted(hashes.items()):
+        with sealed_parquet(exact_part_path(path), expected) as (connection, bound):
+            connection.execute(
+                "SELECT schema_version,venue,product,channel,session_id,message_ordinal,"
+                "received_utc_ns,received_monotonic_ns,direction,payload_bytes,payload_sha256 "
+                "FROM read_parquet(?) "
+                "WHERE received_utc_ns>=? AND received_utc_ns<? AND "
+                "((venue='hyperliquid' AND product='BTC-PERP' "
+                "AND channel='bbo' AND direction='inbound') "
+                "OR (venue='binance' AND product='BTCUSDT-SPOT' "
+                "AND channel='spot_trade' AND direction='inbound') "
+                "OR (venue IN ('hyperliquid','binance') "
+                "AND channel='data_quality' AND direction='local')) "
+                "ORDER BY session_id,message_ordinal",
+                [[bound], start, end],
+            )
+            while batch := connection.fetchmany(10_000):
+                for row in batch:
+                    yield path, row
+
+
 def load_source(
     spec: HypothesisSpec,
     start: int,
     end: int,
-    paths: list[str],
+    hashes: dict[str, str],
     *,
     funding_events_ms: tuple[int, ...] | None = None,
 ) -> FlowSource:
     """Read original economic frames once; local normalization markers never count."""
-    require(bool(paths) and paths == sorted(set(paths)), "closed raw part list")
-    for path in paths:
-        exact_part_path(path)
-    connection = duckdb.connect(
-        config={
-            "threads": 2,
-            "memory_limit": "2GB",
-            "max_temp_directory_size": "0B",
-            "autoload_known_extensions": "false",
-            "autoinstall_known_extensions": "false",
-        }
-    )
+    require(0 < len(hashes) <= MAX_PARTS, "closed hash-bound raw part list")
+    clocks: dict[tuple[str, str, str, str], list[int]] = {}
     quotes: list[Quote] = []
     hl_gaps: list[int] = []
     bn_gaps: list[int] = []
 
     def trades() -> Iterator[SpotTrade]:
         count = 0
-        clocks: dict[tuple[str, str, str], tuple[int, int]] = {}
-        connection.execute(
-            "SELECT schema_version,venue,product,channel,session_id,message_ordinal,"
-            "received_utc_ns,received_monotonic_ns,direction,payload_bytes,payload_sha256 "
-            "FROM read_parquet(?) "
-            "WHERE received_utc_ns>=? AND received_utc_ns<? AND "
-            "((venue='hyperliquid' AND product='BTC-PERP' "
-            "AND channel='bbo' AND direction='inbound') "
-            "OR (venue='binance' AND product='BTCUSDT-SPOT' "
-            "AND channel='spot_trade' AND direction='inbound') "
-            "OR (venue IN ('hyperliquid','binance') "
-            "AND channel='data_quality' AND direction='local')) "
-            "ORDER BY session_id,message_ordinal",
-            [paths, start, end],
-        )
-        while batch := connection.fetchmany(10_000):
-            for (
+        for part, row in _raw_rows(hashes, start, end):
+            (
                 version,
                 venue,
                 product,
@@ -348,115 +314,130 @@ def load_source(
                 direction,
                 payload,
                 digest,
-            ) in batch:
+            ) = row
+            require(
+                type(version) is int
+                and version == 1
+                and isinstance(payload, bytes)
+                and len(payload) <= 1 << 20,
+                "raw frame schema/bound",
+            )
+            require(hashlib.sha256(payload).hexdigest() == digest, "raw payload hash")
+            record = _json(payload)
+            if direction == "inbound":
+                key = (part, venue, session, channel)
                 require(
-                    type(version) is int
-                    and version == 1
-                    and isinstance(payload, bytes)
-                    and len(payload) <= 1 << 20,
-                    "raw frame schema/bound",
+                    type(when) is int and type(monotonic) is int and type(ordinal) is int,
+                    "source receipt clocks/ordinal",
                 )
-                require(hashlib.sha256(payload).hexdigest() == digest, "raw payload hash")
-                record = _json(payload)
-                if direction == "inbound":
-                    key = (venue, session, channel)
-                    require(type(when) is int and type(monotonic) is int, "source receipt clocks")
-                    if key in clocks:
-                        require(
-                            when >= clocks[key][0] and monotonic >= clocks[key][1],
-                            "receipt clock regression within inbound session/channel",
-                        )
-                    clocks[key] = (when, monotonic)
-                require(
-                    type(when) is int and isinstance(session, str) and type(ordinal) is int,
-                    "raw metadata",
-                )
-                if channel == "data_quality":
-                    event = record.get("event")
+                if key in clocks:
+                    old = clocks[key]
                     require(
-                        isinstance(event, str)
-                        and event
-                        in {
-                            "gap_detected",
-                            "gap",
-                            "liveness_gap",
-                            "liveness_error",
-                            "schema_error",
-                            "truncation_error",
-                            "sequence_error",
-                            "snapshot_error",
-                        },
-                        "unknown or malformed quality marker",
+                        ordinal > old[1] and when >= old[3] and monotonic >= old[5],
+                        "receipt clock/ordinal regression within part/session/channel",
                     )
-                    (hl_gaps if venue == "hyperliquid" else bn_gaps).append(when)
-                elif venue == "hyperliquid":
-                    require(
-                        record.get("channel") == "bbo" and isinstance(record.get("data"), dict),
-                        "HL BBO payload",
-                    )
-                    data = cast(dict[str, object], record["data"])
-                    coin = data.get("coin")
-                    require(coin in ("BTC", "ETH", "SOL"), "HL payload coin identity")
-                    if coin != "BTC":
-                        # Add-ons share the container product. Their prices are not this study.
-                        continue
-                    book = cast(list[dict[str, str]], data.get("bbo"))
-                    require(
-                        data.get("coin") == "BTC" and isinstance(book, list) and len(book) == 2,
-                        "HL BBO identity",
-                    )
-                    require(
-                        all(isinstance(v, str) for side in book for v in (side["px"], side["sz"])),
-                        "HL decimal string fields",
-                    )
-                    require(type(data.get("time")) is int, "HL millisecond event clock")
-                    receipt_freshness(when, cast(int, data["time"]) * 1_000_000)
-                    require(
-                        data.get("isSnapshot") is None or data.get("isSnapshot") is False,
-                        "unexpected BBO snapshot flag",
-                    )
-                    quotes.append(
-                        Quote(
-                            when,
-                            session,
-                            ordinal,
-                            Decimal(book[0]["px"]),
-                            Decimal(book[1]["px"]),
-                            Decimal(book[0]["sz"]),
-                            Decimal(book[1]["sz"]),
-                        )
-                    )
-                    require(len(quotes) <= MAX_QUOTES, "quote row limit")
+                    clocks[key] = [old[0], ordinal, old[2], when, old[4], monotonic]
                 else:
-                    require(
-                        product == "BTCUSDT-SPOT" and direction == "inbound", "Spot family identity"
-                    )
-                    raw = record.get("data", record)
-                    require(
-                        isinstance(raw, dict)
-                        and (raw.get("isSnapshot") is None or raw.get("isSnapshot") is False),
-                        "Spot snapshots are not economic trades",
-                    )
-                    decoded = decode_binance_spot_trade(
-                        raw, timestamp_unit=BinanceTimestampUnit.MICROSECONDS
-                    )
-                    require(decoded.symbol == "BTCUSDT", "Spot symbol")
-                    receipt_freshness(when, decoded.trade_time * 1000)
-                    count += 1
-                    require(count <= MAX_TRADES, "Spot trade row limit")
-                    yield SpotTrade(
+                    clocks[key] = [ordinal, ordinal, when, when, monotonic, monotonic]
+            require(
+                type(when) is int and isinstance(session, str) and type(ordinal) is int,
+                "raw metadata",
+            )
+            if channel == "data_quality":
+                event = record.get("event")
+                require(
+                    isinstance(event, str)
+                    and event
+                    in {
+                        "gap_detected",
+                        "gap",
+                        "liveness_gap",
+                        "liveness_error",
+                        "schema_error",
+                        "truncation_error",
+                        "sequence_error",
+                        "snapshot_error",
+                    },
+                    "unknown or malformed quality marker",
+                )
+                (hl_gaps if venue == "hyperliquid" else bn_gaps).append(when)
+            elif venue == "hyperliquid":
+                require(
+                    record.get("channel") == "bbo" and isinstance(record.get("data"), dict),
+                    "HL BBO payload",
+                )
+                data = cast(dict[str, object], record["data"])
+                coin = data.get("coin")
+                require(coin in ("BTC", "ETH", "SOL"), "HL payload coin identity")
+                if coin != "BTC":
+                    # Add-ons share the container product. Their prices are not this study.
+                    continue
+                book = cast(list[dict[str, str]], data.get("bbo"))
+                require(
+                    data.get("coin") == "BTC" and isinstance(book, list) and len(book) == 2,
+                    "HL BBO identity",
+                )
+                require(
+                    all(isinstance(v, str) for side in book for v in (side["px"], side["sz"])),
+                    "HL decimal string fields",
+                )
+                require(type(data.get("time")) is int, "HL millisecond event clock")
+                receipt_freshness(when, cast(int, data["time"]) * 1_000_000)
+                require(
+                    data.get("isSnapshot") is None or data.get("isSnapshot") is False,
+                    "unexpected BBO snapshot flag",
+                )
+                quotes.append(
+                    Quote(
                         when,
                         session,
-                        decoded.trade_id,
-                        decoded.price,
-                        decoded.quantity,
-                        decoded.buyer_was_maker,
+                        ordinal,
+                        Decimal(book[0]["px"]),
+                        Decimal(book[1]["px"]),
+                        Decimal(book[0]["sz"]),
+                        Decimal(book[1]["sz"]),
                     )
+                )
+                require(len(quotes) <= MAX_QUOTES, "quote row limit")
+            else:
+                require(
+                    product == "BTCUSDT-SPOT" and direction == "inbound", "Spot family identity"
+                )
+                raw = record.get("data", record)
+                require(
+                    isinstance(raw, dict)
+                    and (raw.get("isSnapshot") is None or raw.get("isSnapshot") is False),
+                    "Spot snapshots are not economic trades",
+                )
+                decoded = decode_binance_spot_trade(
+                    raw, timestamp_unit=BinanceTimestampUnit.MICROSECONDS
+                )
+                require(decoded.symbol == "BTCUSDT", "Spot symbol")
+                receipt_freshness(when, decoded.trade_time * 1000)
+                count += 1
+                require(count <= MAX_TRADES, "Spot trade row limit")
+                yield SpotTrade(
+                    when,
+                    session,
+                    decoded.trade_id,
+                    decoded.price,
+                    decoded.quantity,
+                    decoded.buyer_was_maker,
+                )
 
-    try:
-        flow = aggregate_flow(trades())
-    finally:
-        connection.close()
+    flow = aggregate_flow(trades())
+    previous: dict[tuple[str, str, str], list[int]] = {}
+    # Parts may be presented in path order unrelated to source ordinal. Check
+    # only staged-window metadata ranges, preserving per-session semantics.
+    for key, values in sorted(clocks.items(), key=lambda item: (*item[0][1:], item[1][0])):
+        stream = key[1:]
+        if stream in previous:
+            old = previous[stream]
+            require(
+                values[0] > old[1] and values[2] >= old[3] and values[4] >= old[5],
+                "cross-part receipt clock/ordinal regression",
+            )
+        previous[stream] = values
     return FlowSource(
         spec,
         start,
@@ -483,7 +464,7 @@ class StagedFlowSource:
         spec: HypothesisSpec,
         start: int,
         end: int,
-        paths: list[str],
+        hashes: dict[str, str],
         *,
         funding_events_ms: tuple[int, ...] | None = None,
     ) -> None:
@@ -491,12 +472,12 @@ class StagedFlowSource:
         self.spec, self.start, self.end = spec, start, end
         self.boundary = end - spec.split.holdout_bars * MINUTE
         require(self.boundary == start + 2 * DAY, "fixed 48h decode boundary")
-        self.paths = paths
+        self.hashes = dict(hashes)
         self.funding_events_ms = funding_events_ms
         self.holdout_decoding_started = False
         self._sources = {
             (False, True): load_source(
-                spec, start, self.boundary, paths, funding_events_ms=funding_events_ms
+                spec, start, self.boundary, self.hashes, funding_events_ms=funding_events_ms
             )
         }
 
@@ -517,7 +498,7 @@ class StagedFlowSource:
                 self.spec,
                 self.boundary - MINUTE,
                 self.end,
-                self.paths,
+                self.hashes,
                 funding_events_ms=self.funding_events_ms,
             )
         if (holdout, confirmed) not in self._sources:
@@ -580,44 +561,15 @@ def study_spec(path: Path) -> tuple[dict[str, Json], HypothesisSpec]:
     return document, spec
 
 
-def _output_directory(path: Path) -> None:
-    require(path.is_absolute() and ".." not in path.parts, "absolute local output required")
-    # No mutable durable NAS output: resolve every parent without symlinks and
-    # require one of the supported local Linux filesystem types.
-    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        for name in path.parent.parts[1:]:
-            nxt = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
-            os.close(fd)
-            fd = nxt
-        info = Path(f"/proc/self/fdinfo/{fd}").read_text()
-        mount = next(line.split()[1] for line in info.splitlines() if line.startswith("mnt_id:"))
-        types = [
-            line.partition(" - ")[2].split()[0]
-            for line in Path("/proc/self/mountinfo").read_text().splitlines()
-            if line.split()[0] == mount
-        ]
-        require(
-            len(types) == 1 and types[0] in ("ext4", "xfs", "btrfs", "tmpfs"),
-            "local research output filesystem",
-        )
-        os.mkdir(path.name, 0o700, dir_fd=fd)
-    finally:
-        os.close(fd)
+def _result(output: PrivateOutput, payload: dict[str, object]) -> None:
+    output.json("result.json", payload)
 
 
-def _result(path: Path, payload: dict[str, object]) -> None:
-    fd = os.open(path / "result.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, "w") as handle:
-        json.dump(payload, handle, sort_keys=True, indent=2, allow_nan=False)
-        handle.write("\n")
-
-
-def run(
+def _run(
     spec_path: Path,
     manifest_path: Path,
     expected: str,
-    output: Path,
+    output: PrivateOutput,
     *,
     source_commit: str | None = None,
 ) -> dict[str, object]:
@@ -629,7 +581,6 @@ def run(
     spec_bytes = spec_path.read_bytes()
     document, spec = study_spec(spec_path)
     os.umask(0o077)
-    _output_directory(output)
     # Metadata-only insufficient-span verdict: never lower floors or inspect prices.
     if end - start < 3 * DAY:
         insufficient: dict[str, object] = {
@@ -663,8 +614,8 @@ def run(
         return unqualified
     source: StagedFlowSource | None = None
     try:
-        paths, hashes = checked_paths(inputs)
-        source = StagedFlowSource(spec, start, end, paths, funding_events_ms=funding_events)
+        _, hashes = checked_paths(inputs)
+        source = StagedFlowSource(spec, start, end, hashes, funding_events_ms=funding_events)
         decision = decide_source(source)
         payload: dict[str, object] = {
             "status": "completed",
@@ -719,19 +670,19 @@ def run(
             + decision.label
         )
         reported["promotion_decision"] = "forbidden"
-        local_spec = output / "spec.yaml"
         require(spec_path.read_bytes() == spec_bytes, "spec changed during study")
-        local_spec.write_bytes(spec_bytes)
-        write_lock(
-            local_spec,
-            cast(
-                dict[str, Json],
-                {
+        output.write("spec.yaml", spec_bytes)
+        output.json(
+            "spec.yaml.lock.json",
+            {
+                "spec_sha256": spec_sha256(document),
+                "canonical_spec": document,
+                "data_fingerprint": {
                     "source_manifest_sha256": expected,
                     "source_part_sha256": hashes,
                     "funding_source_sha256": funding_hashes,
                 },
-            ),
+            },
         )
         _result(output, payload)
         return payload
@@ -755,6 +706,20 @@ def run(
         }
         _result(output, failure)
         return failure
+
+
+def run(
+    spec_path: Path,
+    manifest_path: Path,
+    expected: str,
+    output: Path,
+    *,
+    source_commit: str | None = None,
+) -> dict[str, object]:
+    require_local_paper_mode(os.environ.get("TRADING_MODE"))
+    os.umask(0o077)
+    with PrivateOutput(output) as writer:
+        return _run(spec_path, manifest_path, expected, writer, source_commit=source_commit)
 
 
 def bound_address_space() -> None:

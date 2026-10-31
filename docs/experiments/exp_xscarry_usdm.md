@@ -1,5 +1,12 @@
 # Experiment: cross-sectional funding carry on Binance USD-M perps (exp_xscarry_usdm)
 
+> **Operator scope amendment (2026-10-31):** ICP is excluded at the
+> operator's explicit request, before input planning and ranking. This is
+> a new version of the still-unregistered proposal. See
+> [operator scope and preserved contracts](exp_xs_usdm.operator-scope.md).
+> Full-universe failures remain historical evidence; no strategy was
+> scored in this continuation. Recovery/build/shape gates remain pending.
+
 > **Draft, not mergeable yet.** Its signal `carry_7d` (minus the 7-day mean
 > funding over traded days with a rate, ties broken by a hashed draw) comes
 > from the S4 panel change, merged in #145 (`694497a`), which this study
@@ -19,7 +26,7 @@ is listed under [Seen before](#seen-before).
 
 - Spec: [`exp_xscarry_usdm.spec.yaml`](exp_xscarry_usdm.spec.yaml).
 - Canonical sha256, from `python -m research.harness hash`:
-  `457009762711c0ac113719360fc7d04431f67f63ce10a88a6d02b74e0f0db44a`.
+  `5aebc9cfecd6c85e07f7a5b35b72b5ae42a42c9db4f5c002c4c48337221cbef4`.
 
 Any change to the spec is a new pre-registration with a new hash, not a
 re-run.
@@ -82,8 +89,8 @@ USDT perpetuals from the committed universe file, delisted ones included;
 on each decision day the 50 best by `volume_rank` among the contracts that
 traded, have a 30-day mean quote volume and a funding rate that day, and
 are not on the non-crypto list
-(`config/research/binance-um-usdt-non-crypto-2026-10-08.json`, sha256
-`37dc30be8a1aa95c983ec0d2e091ed9297d9f452e85fd51ee03b75fbff5d5348`, from the classification of every contract,
+(`config/research/binance-um-usdt-non-crypto-operator-2026-10-31.json`, sha256
+`512277bd0d560b7950a51e8e6c779d3353e726624af6b789dc1b36ab832de58c`, from the classification of every contract,
 221 contracts: 159 `equity`, 38 `etf_or_etp`, 10 `commodity`, 6 `index`, 6 `private_company`, 2 `fiat_pegged_or_fx` and none `unverified`; six of them list before the holdout, the indices BTCDOM, DEFI, DOTECO, FOOTBALL and BLUEBIRD, and USDC). The reasons for both rules, the list's checks, the
 classification and the contracts that trade without a funding archive are
 given there.
@@ -135,12 +142,20 @@ funding itself, and Hyperliquid's funding settles hourly at its own level.
 
 ## Data (point-in-time)
 
-- **Datasets and table**: the `bn-um-usdt-1d` universe entry and the same
-  `research.bar_tables panel` table as `exp_xsmom_usdm`: `--group
-  bn-um-usdt-1d --start 2020-01-01 --end 2026-09-01 --lookbacks 14
-  --vol-window 30 --volume-window 30 --funding-window 7 --exclude-symbols
-  config/research/binance-um-usdt-non-crypto-2026-10-08.json
-  --rank-requires-funding`. `ret_14d` and `vol_30d` are unused here.
+- **Active operator input identity:** use manifest
+  `config/research/operator-universe-2026-10-31/datasets.toml` and group
+  `bn-um-usdt-1d-operator-2026-10-31`. Its selected universe SHA256 is
+  `feefa1055634d59044583d689c487eaca92868e393a1fcf1b48ed72864278cf8`.
+  It has 895 metadata members; the original full 896-member source and
+  classification remain retained. This explicit selected manifest and selected non-crypto pointer
+  govern every current build; original source identities remain audit
+  context.
+- **Datasets and table**: the same operator-selected
+  `bn-um-usdt-1d-operator-2026-10-31` group and table as momentum, with explicit
+  `--manifest config/research/operator-universe-2026-10-31/datasets.toml`, start 2020-01-01,
+  end 2026-09-01, lookbacks 14, volatility/volume windows 30, funding
+  window 7, selected non-crypto exclusions and rank requires funding.
+  `ret_14d` and `vol_30d` are unused by carry. No ICP input is opened.
 - **Shape**: `<ROW_COUNT>` rows, `<SYMBOL_COUNT>` symbols, 2,435 daily
   closes from 2020-01-01 to 2026-08-31, as for momentum. The panel ends
   with 2026-08 so that the funding month the builder reads after the
@@ -153,12 +168,12 @@ funding itself, and Hyperliquid's funding settles hourly at its own level.
   Independent builds give identical bytes: `<REBUILD_CHECK>`. The run
   refuses any other table.
 - **Pre-registered code**: everything under `src` is pinned to commit
-  `0cd7666392928b0af3f4a0c0ef5c8fc34a516d58`, the documented source/environment
+  `d1378756e25ba04a580061a304037290f1fc9538`, the documented source/environment
   amendment described in [S4 readiness](exp_xs_usdm.readiness.md), with `uv.lock`, `pyproject.toml`, `.python-version` and
-  the universe file, checked as in `exp_xsmom_usdm` before anything syncs.
+  the original universe file and complete operator config directory, checked as in `exp_xsmom_usdm` before local preparation.
   If a later commit touches `src`, `uv.lock`, `pyproject.toml`,
-  `.python-version` or the universe file
-  (`config/hist_etl/universe/binance-um-usdt-1d-2026-10-08.json`) before
+  `.python-version` or either the original universe file or selected operator config
+  directory before
   this document merges, the pin moves to that commit and the checks before
   merge are run again.
 - **Signal**: `carry_7d`, minus the mean of the daily `funding_rate` over
@@ -232,6 +247,14 @@ The same as `exp_xsmom_usdm`:
 The holdout is read once, and only if validation selects a config.
 
 ## Seen before
+
+- **Operator selection after the source audit:** the user explicitly
+  states ICP will not be traded. This version removes ICP before input
+  planning/ranking and recomputes the panel from that narrower universe.
+  The original 323-gap ledger is preserved; all 297 selected non-ICP
+  gaps have native daily source proofs. No strategy returns or numerical
+  signals informed this choice. Old spec hashes and the precise unchanged
+  contract are recorded in [the amendment](exp_xs_usdm.operator-inputs.json).
 
 - **2026-10-31 preparation checkpoint:** the metadata-only full coverage
   audit and failed first panel preparation are recorded in
@@ -585,111 +608,16 @@ When the family stops:
   exists.
 - **Exploration outside the harness** is not deflated (see Seen before).
 
-## Run (after this document is merged)
+## Run (after final preregistration merge)
 
-The same as [`exp_xsmom_usdm`](exp_xsmom_usdm.md#run-after-this-document-is-merged),
-with this document, this spec and its hash. It builds the same table into
-its own `STUDY_DIR`, so the two families can run in either order; the
-archive root is shared, so the second sync has little left to fetch.
-
-```bash
-export REPO_ROOT=...            # the repository checkout, on main
-export HIST_ARCHIVES_ROOT=...   # the hist_etl archive root, outside data-capture
-export STUDY_DIR=...            # must not exist yet; outside the repository
-(
-  set -euo pipefail
-  cd "$REPO_ROOT"
-  # Run from main as merged: HEAD is on origin/main, so commit.txt is too.
-  git fetch --quiet origin +main:refs/remotes/origin/main
-  git merge-base --is-ancestor HEAD origin/main
-  # ... with these decision rules, the exclusion list and the overlap and
-  # beta scripts as they stand on main today. The spec is checked by its
-  # hash below, the exclusion list also by the sha256 the build was made with.
-  git diff --exit-code origin/main -- docs/experiments/exp_xscarry_usdm.md \
-    config/research/binance-um-usdt-non-crypto-2026-10-08.json \
-    docs/experiments/exp_xs_usdm_overlap.py docs/experiments/exp_xs_usdm_beta.py
-  echo "37dc30be8a1aa95c983ec0d2e091ed9297d9f452e85fd51ee03b75fbff5d5348  config/research/binance-um-usdt-non-crypto-2026-10-08.json" \
-    | sha256sum -c -
-  # STUDY_DIR stays outside the repository, so the run cannot dirty it.
-  study="$(realpath -m "$STUDY_DIR")"
-  repo="$(realpath "$REPO_ROOT")"
-  case "$study/" in "$repo"/*) echo "STUDY_DIR is inside the repository" >&2; exit 1 ;; esac
-  pin=0cd7666392928b0af3f4a0c0ef5c8fc34a516d58
-  pinned=(src uv.lock pyproject.toml .python-version
-    config/hist_etl/universe/binance-um-usdt-1d-2026-10-08.json)
-  # The pre-registered code: no change, tracked, untracked or ignored.
-  git diff --exit-code "$pin" -- "${pinned[@]}"
-  changed="$(git status --porcelain --ignored --untracked-files=all -- "${pinned[@]}")"
-  stray="$(printf '%s\n' "$changed" | grep -v -e '^$' -e '/__pycache__/[^/]*\.pyc$' || true)"
-  test -z "$stray"
-  # The whole working tree is clean, so commit.txt describes what runs.
-  dirty="$(git status --porcelain --untracked-files=all)"
-  test -z "$dirty"
-  mkdir "$STUDY_DIR"
-  git rev-parse HEAD > "$STUDY_DIR/commit.txt"
-  # Bytecode only from a fresh folder: no cached .pyc from the checkout runs.
-  export PYTHONPYCACHEPREFIX="$STUDY_DIR/pycache"
-  # Exit 2 is normal while the current month is open or a contract delisted
-  # after the universe file stopped publishing, but hist_etl also reports
-  # some data failures as gap lines with exit 2. An `error` line or any
-  # other code stops here; for the rest, the fingerprint check below is the
-  # gate, and sync.log names the cause.
-  status=0
-  PYTHONPATH=src uv run --frozen python -m research.hist_etl sync \
-    --dataset bn-um-usdt-1d 2>&1 | tee "$STUDY_DIR/sync.log" || status=$?
-  test "$status" -eq 0 || test "$status" -eq 2
-  if grep -q '^error' "$STUDY_DIR/sync.log"; then exit 1; fi
-  cp docs/experiments/exp_xscarry_usdm.spec.yaml "$STUDY_DIR/spec.yaml"
-  PYTHONPATH=src uv run --frozen python -m research.bar_tables panel \
-    --group bn-um-usdt-1d --start 2020-01-01 --end 2026-09-01 \
-    --lookbacks 14 --vol-window 30 --volume-window 30 --funding-window 7 \
-    --exclude-symbols config/research/binance-um-usdt-non-crypto-2026-10-08.json \
-    --rank-requires-funding --out "$STUDY_DIR/panel.parquet"
-  PYTHONPATH=src uv run --frozen python -m research.harness lock "$STUDY_DIR/spec.yaml"
-  PYTHONPATH=src uv run --frozen python -c '
-import json, sys
-lock = json.load(open(sys.argv[1]))
-found = (lock.get("spec_sha256"), (lock.get("data_fingerprint") or {}).get("fingerprint_sha256"))
-expected = (
-    "457009762711c0ac113719360fc7d04431f67f63ce10a88a6d02b74e0f0db44a",
-    "<DATA_FINGERPRINT>",
-)
-sys.exit(0 if found == expected else f"not the pre-registered spec and table: {found}")
-' "$STUDY_DIR/spec.yaml.lock.json"
-  PYTHONPATH=src uv run --frozen python -m research.harness run "$STUDY_DIR/spec.yaml" \
-    --output-dir "$STUDY_DIR/out"
-  # Rule 4's beta: only when the harness scored a selected config on the
-  # holdout. The script fails closed on any other result.json. It runs
-  # before the overlap script, so that one cannot keep it from running.
-  if PYTHONPATH=src uv run --frozen python -c '
-import json, sys
-sys.exit(0 if json.load(open(sys.argv[1])).get("holdout") else 1)
-' "$STUDY_DIR/out/result.json"; then
-    PYTHONPATH=src uv run --frozen python docs/experiments/exp_xs_usdm_beta.py \
-      "$STUDY_DIR/spec.yaml" "$STUDY_DIR/out/result.json" > "$STUDY_DIR/beta.json"
-  fi
-  # Descriptive only, validation days only; it decides nothing.
-  PYTHONPATH=src uv run --frozen python docs/experiments/exp_xs_usdm_overlap.py \
-    "$STUDY_DIR/panel.parquet" > "$STUDY_DIR/overlap.json"
-)
-```
-
-The study runs only after both checks pass. If the fingerprint check fails,
-`sync.log` shows whether an archive inside the range is missing.
-
-The beta script runs before the overlap script, so a failure of the
-descriptive overlap script cannot leave rule 4 without `beta.json`. Such a
-failure decides nothing: the overlap script is fixed in a reviewed PR and
-run again on its own. A `beta.json` missing because the beta script never
-ran is produced by running it; a beta script that failed closed is read as
-rule 4 says.
-
-If code under `src` or another pinned file has changed on main since this
-was merged, the pin check refuses the newest main. Then check out the
-commit that merged this document instead: it is on main, it holds this
-document, and its code is the pinned code. Never edit the pin.
-
-The results go into `exp_xscarry_usdm.results.md` in a separate PR. That PR
-records the commit from `commit.txt`, the lock file, `result.json`,
-`overlap.json` and, when the holdout was scored, `beta.json`, each with its
-sha256, and applies the decision rules to their values.
+This draft supplies no executable scoring recipe for the amended input
+identity yet. The old full-universe sync/run block is superseded and must
+not be executed against the curated operator inputs. Before this PR can
+leave draft, the final recipe must verify source/config/exclusion hashes
+and the complete sealed local input manifest, rebuild the selected table
+with the unchanged declared parameters and resource limits, verify its
+pinned Parquet/fingerprint and canonical spec hash, and only then call
+the existing harness and original beta/overlap diagnostics after merge.
+The [operator preparation contract](exp_xs_usdm.operator-scope.md) and
+[preparation steps](exp_xs_usdm.vps-steps.md) control that work. No scoring
+or promotion is authorized by the current preparation task.

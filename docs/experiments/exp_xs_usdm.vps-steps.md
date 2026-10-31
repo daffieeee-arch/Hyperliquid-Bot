@@ -1,5 +1,12 @@
 # S4 preparation steps: original contract and Ubuntu VM continuation
 
+> **Current operator version:** the user's no-ICP target is now recorded
+> in [the operator amendment](exp_xs_usdm.operator-scope.md). The
+> full-universe source/pin/323-gap observations below are historical;
+> they are not declared passed or erased. Current recovery is scoped to
+> all 297 selected native-daily gaps after independent review. Follow the
+> explicit selected manifest; do not run legacy sync/scoring blocks.
+
 PAPER research only. The two drafts, `exp_xsmom_usdm.md` and
 `exp_xscarry_usdm.md`, leave the values in angle brackets open. Every one
 of them comes from the universe's metadata or the panel's **shape**. None

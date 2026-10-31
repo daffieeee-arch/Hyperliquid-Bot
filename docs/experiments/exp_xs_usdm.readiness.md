@@ -1,5 +1,12 @@
 # S4 preparation readiness on the Ubuntu VM
 
+> **Current operator version:** the user's no-ICP target is now recorded
+> in [the operator amendment](exp_xs_usdm.operator-scope.md). The
+> full-universe source/pin/323-gap observations below are historical;
+> they are not declared passed or erased. Current recovery is scoped to
+> all 297 selected native-daily gaps after independent review. Follow the
+> explicit selected manifest; do not run legacy sync/scoring blocks.
+
 This continues **existing draft PR #146** and issue #150. It is a
 pre-registration/source-environment amendment before any S4 panel build
 or shape inspection in this continuation. It does not register a new

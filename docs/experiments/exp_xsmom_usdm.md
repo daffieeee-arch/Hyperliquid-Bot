@@ -1,5 +1,12 @@
 # Experiment: cross-sectional momentum on Binance USD-M perps (exp_xsmom_usdm)
 
+> **Operator scope amendment (2026-10-31):** ICP is excluded at the
+> operator's explicit request, before input planning and ranking. This is
+> a new version of the still-unregistered proposal. See
+> [operator scope and preserved contracts](exp_xs_usdm.operator-scope.md).
+> Full-universe failures remain historical evidence; no strategy was
+> scored in this continuation. Recovery/build/shape gates remain pending.
+
 > **Draft, not mergeable yet.** The code it pins is on main: the S4 panel
 > change merged in #145 (`694497a`), which adds `--exclude-symbols`,
 > `--rank-requires-funding` and the carry column (`carry_7d` in this
@@ -20,7 +27,7 @@ is listed under [Seen before](#seen-before).
 
 - Spec: [`exp_xsmom_usdm.spec.yaml`](exp_xsmom_usdm.spec.yaml).
 - Canonical sha256, from `python -m research.harness hash`:
-  `c8c5d93142e27e468c642fd576d8cc7f2263dd05b70bdc2a0998c77285fbbd08`.
+  `3f9c6853c982daa39ea983341f4a471a50c43a23f8e5cb7a6db856083a50491d`.
 
 Any change to the spec is a new pre-registration with a new hash, not a
 re-run.
@@ -72,9 +79,13 @@ in the simulation, about 4 to 5 with independent configs, and at most about
 
 ## Universe
 
-Binance USD-M USDT perpetuals, every contract in the committed universe file
-[`binance-um-usdt-1d-2026-10-08.json`](../../config/hist_etl/universe/binance-um-usdt-1d-2026-10-08.json),
-delisted ones included. On each decision day the universe is, point in time:
+The operator-selected Binance USD-M USDT perpetual archive universe is
+[binance-um-usdt-1d-operator-2026-10-31.json](../../config/research/operator-universe-2026-10-31/universe/binance-um-usdt-1d-operator-2026-10-31.json), exactly the original full
+source snapshot minus ICPUSDT. Delisted contracts remain included; ICP
+is removed by the explicit operator target restriction, not by a claim
+that it is non-crypto. The [versioned policy](../../config/research/operator-universe-2026-10-31/policy.json)
+records the decision after source-gap observations and before scoring.
+On each decision day, point-in-time eligibility inside this fixed scope is:
 
 1. the contracts that traded that day (`traded`), have a 30-day mean quote
    volume, are not on the non-crypto list below, and have a funding rate
@@ -101,8 +112,8 @@ delisted ones included. On each decision day the universe is, point in time:
     symbols are in `config/research/binance-um-usdt-classification-2026-10-08.json`
     (sha256 `065f7ba001e4679ec22d2ca3ef5567dcd277ce0fbe0b7eab6b5078f96caacad7`); the list is its non-crypto symbols.
     The classification reads no price, volume or funding.
-  - The list is `config/research/binance-um-usdt-non-crypto-2026-10-08.json`
-    (sha256 `37dc30be8a1aa95c983ec0d2e091ed9297d9f452e85fd51ee03b75fbff5d5348`):
+  - The list is `config/research/binance-um-usdt-non-crypto-operator-2026-10-31.json`
+    (sha256 `512277bd0d560b7950a51e8e6c779d3353e726624af6b789dc1b36ab832de58c`):
     221 contracts: 159 `equity`, 38 `etf_or_etp`, 10 `commodity`, 6 `index`, 6 `private_company`, 2 `fiat_pegged_or_fx` and none `unverified`; six of them list before the holdout, the indices BTCDOM, DEFI, DOTECO, FOOTBALL and BLUEBIRD, and USDC.
   - The panel builder takes it with `--exclude-symbols` (#145). A listed
     contract keeps its rows and features, but its `volume_rank` is empty on
@@ -133,8 +144,7 @@ delisted ones included. On each decision day the universe is, point in time:
 - **A ranked contract has funding that day** (`--rank-requires-funding`,
   #145). The harness charges funding on every held day and fails the whole
   run closed on a traded day without a rate. Some contracts traded for
-  months before Binance Vision has any funding archive for them: ICPUSDT
-  from 2021-05 to 2022-08, TLMUSDT from 2021-07 to 2023-02, BNXUSDT from
+  months before Binance Vision has any funding archive for them: TLMUSDT from 2021-07 to 2023-02, BNXUSDT from
   2022-04 to 2023-01, and single months of QTUMUSDT (2020-02), LENDUSDT
   (2020-11), BTCSTUSDT (2022-01, between its two funding runs) and JUPUSDT
   (2024-01). The edges of a funding run may also hold traded days without
@@ -183,18 +193,25 @@ delisted ones included. On each decision day the universe is, point in time:
 
 ## Data (point-in-time)
 
-- **Datasets** (hist_etl): the `bn-um-usdt-1d` universe entry, which expands
-  to 1,794 per-symbol klines and fundingRate datasets. The universe file's
-  sha256 is
+- **Active operator input identity:** use manifest
+  `config/research/operator-universe-2026-10-31/datasets.toml` and group
+  `bn-um-usdt-1d-operator-2026-10-31`. Its selected universe SHA256 is
+  `feefa1055634d59044583d689c487eaca92868e393a1fcf1b48ed72864278cf8`.
+  It has 895 metadata members; the original full 896-member source and
+  classification remain retained. This explicit selected manifest and selected non-crypto pointer
+  govern every current build; original source identities remain audit
+  context.
+- **Datasets** (hist_etl): group `bn-um-usdt-1d-operator-2026-10-31` in the explicit
+  selected manifest expands into 1,792 per-symbol/run kline and funding
+  datasets. The retained original full inventory has 1,794; its SHA256 is
   `add8d0f26d6b7c2bdf18963cf1f77752f0b1aa8a943a64c868e097951f4ec520`.
-- **Table**: `research.bar_tables panel` with `--group bn-um-usdt-1d
-  --start 2020-01-01 --end 2026-09-01 --lookbacks 14 --vol-window 30
-  --volume-window 30 --funding-window 7 --exclude-symbols
-  config/research/binance-um-usdt-non-crypto-2026-10-08.json
-  --rank-requires-funding`. The two flags and the `carry_7d` column come
-  from the S4 panel change (#145). `vol_30d` and `carry_7d` are unused
-  here; the table is the one [`exp_xscarry_usdm`](exp_xscarry_usdm.md)
-  uses, so both families score the same universe on the same days.
+- **Table**: `research.bar_tables panel` with
+  `--manifest config/research/operator-universe-2026-10-31/datasets.toml` and
+  `--group bn-um-usdt-1d-operator-2026-10-31 --start 2020-01-01 --end 2026-09-01`,
+  lookbacks 14, volatility/volume windows 30, funding window 7, the
+  selected non-crypto file and `--rank-requires-funding`. The table and
+  native feature semantics are shared with carry. ICP is absent before
+  source planning, not merely unranked after missing-input validation.
 - **Shape**: `<ROW_COUNT>` rows, `<SYMBOL_COUNT>` symbols, `<RANKED_COUNT>`
   of them ranked on some day, on an evenly spaced axis of 2,435 daily closes
   from 2020-01-01 23:59:59.999 to 2026-08-31 23:59:59.999 UTC. Funding
@@ -221,19 +238,20 @@ delisted ones included. On each decision day the universe is, point in time:
   - The run refuses any other table, whether a different builder, a broken
     sync, another exclusion list or another DuckDB version produced it.
 - **Pre-registered code**: everything under `src` is pinned to commit
-  `0cd7666392928b0af3f4a0c0ef5c8fc34a516d58`, the documented source/environment
+  `d1378756e25ba04a580061a304037290f1fc9538`, the documented source/environment
   amendment described in [S4 readiness](exp_xs_usdm.readiness.md), together with `uv.lock`, `pyproject.toml`,
-  `.python-version` and the universe file. That covers the harness (version
+  `.python-version`, the original universe file and the complete
+  `config/research/operator-universe-2026-10-31/` directory. That covers the harness (version
   6, panel portfolios), the builder, hist_etl, the locked dependencies and
   the interpreter. If a later commit touches `src`, `uv.lock`,
-  `pyproject.toml`, `.python-version` or the universe file
-  (`config/hist_etl/universe/binance-um-usdt-1d-2026-10-08.json`) before
+  `pyproject.toml`, `.python-version` or either the original universe file or selected operator config
+  directory before
   this document merges, the pin moves to that commit and the checks before
   merge are run again. The
   run checks the pin as [`exp_funding_btc`](exp_funding_btc.md) does,
-  including untracked and ignored files, before it syncs anything. The
+  including untracked and ignored files, before local preparation. The
   exclusion list, the overlap script and the beta script are checked
-  against main, and the list also against `37dc30be8a1aa95c983ec0d2e091ed9297d9f452e85fd51ee03b75fbff5d5348`.
+  against main, and the list also against `512277bd0d560b7950a51e8e6c779d3353e726624af6b789dc1b36ab832de58c`.
 - **Signal**: `ret_14d`, the log return from the close 14 days earlier to
   the decision day's close. It needs 15 consecutive traded days, so a
   listing has none for its first two weeks and a halt restarts it.
@@ -303,7 +321,7 @@ value, a return or a signal. Nothing waits for a date: the panel ends with
 published, so the shape-only build and the study's own build read the same
 files. The classification of every contract, and the non-crypto list it
 gives, are fixed before the build, and the build uses exactly that list
-(`37dc30be8a1aa95c983ec0d2e091ed9297d9f452e85fd51ee03b75fbff5d5348`): a change to the list in review re-runs the build
+(`512277bd0d560b7950a51e8e6c779d3353e726624af6b789dc1b36ab832de58c`): a change to the list in review re-runs the build
 and these checks. Each gate's remedy below was written in the draft, before
 any count was seen. None drops or adds a symbol by hand, moves a period or
 changes a decision rule's tolerance; what applied is recorded under
@@ -320,6 +338,14 @@ changes a decision rule's tolerance; what applied is recorded under
 | Carry only: ranked rows with a rate but no `carry_7d`; ranked rows with an uncovered day in their carry window | none, reported | At 1% or more of a window's ranked rows, the carry document lists the symbols under Limitations. |
 
 ## Seen before
+
+- **Operator selection after the source audit:** the user explicitly
+  states ICP will not be traded. This version removes ICP before input
+  planning/ranking and recomputes the panel from that narrower universe.
+  The original 323-gap ledger is preserved; all 297 selected non-ICP
+  gaps have native daily source proofs. No strategy returns or numerical
+  signals informed this choice. Old spec hashes and the precise unchanged
+  contract are recorded in [the amendment](exp_xs_usdm.operator-inputs.json).
 
 - **2026-10-31 preparation checkpoint:** the metadata-only full coverage
   audit and failed first panel preparation are recorded in
@@ -843,114 +869,16 @@ When the family stops:
     "this family stops" is not evidence of absence there.
 - **Exploration outside the harness** is not deflated (see Seen before).
 
-## Run (after this document is merged)
+## Run (after final preregistration merge)
 
-Run from `main`, after this document is merged. The whole run is one
-subshell with `set -euo pipefail`: it stops at the first failure without
-closing your shell, and nothing syncs or runs before the code check passes.
-The universe sync is large (about 43,000 monthly archives); the shape-only
-build before merge synced it into the same archive root, so here it only
-tops it up. Run it inside `tmux` all the same.
-
-```bash
-export REPO_ROOT=...            # the repository checkout, on main
-export HIST_ARCHIVES_ROOT=...   # the hist_etl archive root, outside data-capture
-export STUDY_DIR=...            # must not exist yet; outside the repository
-(
-  set -euo pipefail
-  cd "$REPO_ROOT"
-  # Run from main as merged: HEAD is on origin/main, so commit.txt is too.
-  git fetch --quiet origin +main:refs/remotes/origin/main
-  git merge-base --is-ancestor HEAD origin/main
-  # ... with these decision rules, the exclusion list and the overlap and
-  # beta scripts as they stand on main today. The spec is checked by its
-  # hash below, the exclusion list also by the sha256 the build was made with.
-  git diff --exit-code origin/main -- docs/experiments/exp_xsmom_usdm.md \
-    config/research/binance-um-usdt-non-crypto-2026-10-08.json \
-    docs/experiments/exp_xs_usdm_overlap.py docs/experiments/exp_xs_usdm_beta.py
-  echo "37dc30be8a1aa95c983ec0d2e091ed9297d9f452e85fd51ee03b75fbff5d5348  config/research/binance-um-usdt-non-crypto-2026-10-08.json" \
-    | sha256sum -c -
-  # STUDY_DIR stays outside the repository, so the run cannot dirty it.
-  study="$(realpath -m "$STUDY_DIR")"
-  repo="$(realpath "$REPO_ROOT")"
-  case "$study/" in "$repo"/*) echo "STUDY_DIR is inside the repository" >&2; exit 1 ;; esac
-  pin=0cd7666392928b0af3f4a0c0ef5c8fc34a516d58
-  pinned=(src uv.lock pyproject.toml .python-version
-    config/hist_etl/universe/binance-um-usdt-1d-2026-10-08.json)
-  # The pre-registered code: no change, tracked, untracked or ignored.
-  git diff --exit-code "$pin" -- "${pinned[@]}"
-  changed="$(git status --porcelain --ignored --untracked-files=all -- "${pinned[@]}")"
-  stray="$(printf '%s\n' "$changed" | grep -v -e '^$' -e '/__pycache__/[^/]*\.pyc$' || true)"
-  test -z "$stray"
-  # The whole working tree is clean, so commit.txt describes what runs.
-  dirty="$(git status --porcelain --untracked-files=all)"
-  test -z "$dirty"
-  mkdir "$STUDY_DIR"
-  git rev-parse HEAD > "$STUDY_DIR/commit.txt"
-  # Bytecode only from a fresh folder: no cached .pyc from the checkout runs.
-  export PYTHONPYCACHEPREFIX="$STUDY_DIR/pycache"
-  # Exit 2 is normal while the current month is open or a contract delisted
-  # after the universe file stopped publishing, but hist_etl also reports
-  # some data failures as gap lines with exit 2. An `error` line or any
-  # other code stops here; for the rest, the fingerprint check below is the
-  # gate: a missing or broken archive inside the range cannot give the
-  # pinned table (the builder refuses it), and sync.log names the cause.
-  status=0
-  PYTHONPATH=src uv run --frozen python -m research.hist_etl sync \
-    --dataset bn-um-usdt-1d 2>&1 | tee "$STUDY_DIR/sync.log" || status=$?
-  test "$status" -eq 0 || test "$status" -eq 2
-  if grep -q '^error' "$STUDY_DIR/sync.log"; then exit 1; fi
-  cp docs/experiments/exp_xsmom_usdm.spec.yaml "$STUDY_DIR/spec.yaml"
-  PYTHONPATH=src uv run --frozen python -m research.bar_tables panel \
-    --group bn-um-usdt-1d --start 2020-01-01 --end 2026-09-01 \
-    --lookbacks 14 --vol-window 30 --volume-window 30 --funding-window 7 \
-    --exclude-symbols config/research/binance-um-usdt-non-crypto-2026-10-08.json \
-    --rank-requires-funding --out "$STUDY_DIR/panel.parquet"
-  PYTHONPATH=src uv run --frozen python -m research.harness lock "$STUDY_DIR/spec.yaml"
-  PYTHONPATH=src uv run --frozen python -c '
-import json, sys
-lock = json.load(open(sys.argv[1]))
-found = (lock.get("spec_sha256"), (lock.get("data_fingerprint") or {}).get("fingerprint_sha256"))
-expected = (
-    "c8c5d93142e27e468c642fd576d8cc7f2263dd05b70bdc2a0998c77285fbbd08",
-    "<DATA_FINGERPRINT>",
-)
-sys.exit(0 if found == expected else f"not the pre-registered spec and table: {found}")
-' "$STUDY_DIR/spec.yaml.lock.json"
-  PYTHONPATH=src uv run --frozen python -m research.harness run "$STUDY_DIR/spec.yaml" \
-    --output-dir "$STUDY_DIR/out"
-  # Rule 4's beta: only when the harness scored a selected config on the
-  # holdout. The script fails closed on any other result.json. It runs
-  # before the overlap script, so that one cannot keep it from running.
-  if PYTHONPATH=src uv run --frozen python -c '
-import json, sys
-sys.exit(0 if json.load(open(sys.argv[1])).get("holdout") else 1)
-' "$STUDY_DIR/out/result.json"; then
-    PYTHONPATH=src uv run --frozen python docs/experiments/exp_xs_usdm_beta.py \
-      "$STUDY_DIR/spec.yaml" "$STUDY_DIR/out/result.json" > "$STUDY_DIR/beta.json"
-  fi
-  # Descriptive only, validation days only; it decides nothing.
-  PYTHONPATH=src uv run --frozen python docs/experiments/exp_xs_usdm_overlap.py \
-    "$STUDY_DIR/panel.parquet" > "$STUDY_DIR/overlap.json"
-)
-```
-
-The study runs only after both checks pass. If the fingerprint check fails,
-`sync.log` shows whether an archive inside the range is missing.
-
-The beta script runs before the overlap script, so a failure of the
-descriptive overlap script cannot leave rule 4 without `beta.json`. Such a
-failure decides nothing: the overlap script is fixed in a reviewed PR and
-run again on its own. A `beta.json` missing because the beta script never
-ran is produced by running it; a beta script that failed closed is read as
-rule 4 says.
-
-If code under `src` or another pinned file has changed on main since this
-was merged, the pin check refuses the newest main. Then check out the
-commit that merged this document instead: it is on main, it holds this
-document, and its code is the pinned code. Never edit the pin.
-
-The results go into `exp_xsmom_usdm.results.md` in a separate PR. That PR
-records the commit from `commit.txt`, the lock file, `result.json`,
-`overlap.json` and, when the holdout was scored, `beta.json`, each with its
-sha256, and applies the decision rules to their values.
+This draft supplies no executable scoring recipe for the amended input
+identity yet. The old full-universe sync/run block is superseded and must
+not be executed against the curated operator inputs. Before this PR can
+leave draft, the final recipe must verify source/config/exclusion hashes
+and the complete sealed local input manifest, rebuild the selected table
+with the unchanged declared parameters and resource limits, verify its
+pinned Parquet/fingerprint and canonical spec hash, and only then call
+the existing harness and original beta/overlap diagnostics after merge.
+The [operator preparation contract](exp_xs_usdm.operator-scope.md) and
+[preparation steps](exp_xs_usdm.vps-steps.md) control that work. No scoring
+or promotion is authorized by the current preparation task.

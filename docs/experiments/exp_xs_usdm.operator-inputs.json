@@ -1,0 +1,1238 @@
+{
+  "schema": "s4-operator-input-amendment-v1",
+  "operator_decision_date": "2026-10-31",
+  "reason": "Explicit user instruction that ICP will not be traded; target restriction applies before input planning/ranking/scoring.",
+  "chronology": "Choice followed source-gap observations, before any strategy scoring in this continuation.",
+  "source_config_commit": "d1378756e25ba04a580061a304037290f1fc9538",
+  "superseded_full_scope_head": "c0e6c0d8f3b9433b04adc40ed2ce57398906ac23",
+  "policy_id": "operator-research-universe-2026-10-31",
+  "policy_sha256": "895dbd43fb5e09a22266f29a843c4ba6486cc4f7e30a393a01c5ec298e3d3438",
+  "manifest_sha256": "29a7ca0361766d596faeda6fc47534da93bad0bc30d22fab8a0c48c2307b36b1",
+  "derived_universe_sha256": "feefa1055634d59044583d689c487eaca92868e393a1fcf1b48ed72864278cf8",
+  "full_source_universe_sha256": "add8d0f26d6b7c2bdf18963cf1f77752f0b1aa8a943a64c868e097951f4ec520",
+  "source_classification_sha256": "065f7ba001e4679ec22d2ca3ef5567dcd277ce0fbe0b7eab6b5078f96caacad7",
+  "source_noncrypto_sha256": "37dc30be8a1aa95c983ec0d2e091ed9297d9f452e85fd51ee03b75fbff5d5348",
+  "selected_noncrypto_sha256": "512277bd0d560b7950a51e8e6c779d3353e726624af6b789dc1b36ab832de58c",
+  "source_classification_members": 896,
+  "selected_members": 895,
+  "source_crypto_members": 675,
+  "selected_crypto_members": 674,
+  "noncrypto_categories_unchanged": 221,
+  "original_missing_pairs": 323,
+  "selected_missing_pairs": 297,
+  "selected_affected_symbols": 51,
+  "selected_affected_months": 102,
+  "selected_pairs_sha256": "b4537b510a244056cd01f64d2a6f8606bb3acccf46d03038269fdac2a3c5da31",
+  "selected_required_file_pairs": 42272,
+  "selected_missing_days": [
+    {
+      "symbol": "BNXUSDT",
+      "date": "2022-04-17"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2022-06-09"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2022-08-10"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2022-08-11"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2022-08-12"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-01"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-02"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-03"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-04"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-05"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-06"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-07"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-08"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-09"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-10"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-11"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-12"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-13"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-14"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-15"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-16"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-17"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-18"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-19"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-20"
+    },
+    {
+      "symbol": "BNXUSDT",
+      "date": "2023-02-21"
+    },
+    {
+      "symbol": "FILUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "FILUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "FILUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "FILUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "FILUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "FLMUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "FLMUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "FLMUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "FLMUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "FLMUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "FLOWUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "FLOWUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "FLOWUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "FLOWUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "FLOWUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "FTMUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "FTMUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "FTMUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "FTMUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "FTMUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "GMTUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "GMTUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "GRTUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "GRTUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "GRTUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "GRTUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "GRTUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "GTCUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "GTCUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "GTCUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "GTCUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "GTCUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "HBARUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "HBARUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "HBARUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "HBARUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "HBARUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "HOTUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "HOTUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "HOTUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "HOTUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "HOTUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "IMXUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "IMXUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "IMXUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "IMXUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "IMXUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "IOTAUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "IOTAUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "IOTAUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "IOTAUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "IOTAUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "KNCUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "KNCUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "KNCUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "KNCUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "KNCUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "KSMUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "KSMUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "KSMUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "KSMUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "KSMUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "LINAUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "LINAUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "LINAUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "LINAUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "LINAUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "LITUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "LITUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "LITUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "LITUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "LITUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "LRCUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "LRCUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "LRCUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "LRCUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "LRCUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "LTCUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "LTCUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "LTCUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "LTCUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "LTCUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "LUNAUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "LUNAUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "LUNAUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "LUNAUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "LUNAUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "MANAUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "MANAUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "MANAUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "MANAUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "MANAUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "MASKUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "MASKUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "MASKUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "MASKUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "MASKUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "MKRUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "MKRUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "MKRUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "MKRUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "MKRUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "NEARUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "NEARUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "NEARUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "NEARUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "NEARUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "OCEANUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "OCEANUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "OCEANUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "OCEANUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "OCEANUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "OGNUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "OGNUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "OGNUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "OGNUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "OGNUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "OMGUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "OMGUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "OMGUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "OMGUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "OMGUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "ONEUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "ONEUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "ONEUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "ONEUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "ONEUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "PEOPLEUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "PEOPLEUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "PEOPLEUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "PEOPLEUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "PEOPLEUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "RLCUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "RLCUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "RLCUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "RLCUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "RLCUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "ROSEUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "ROSEUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "ROSEUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "ROSEUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "ROSEUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "RSRUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "RSRUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "RSRUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "RSRUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "RSRUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "RVNUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "RVNUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "RVNUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "RVNUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "RVNUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "SANDUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "SANDUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "SANDUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "SANDUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "SANDUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "SKLUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "SKLUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "SKLUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "SKLUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "SKLUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "SOLUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "SOLUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "SOLUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "SOLUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "SOLUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "STORJUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "STORJUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "STORJUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "STORJUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "STORJUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "SUSHIUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "SUSHIUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "SUSHIUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "SUSHIUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "SUSHIUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-01"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-02"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-03"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-04"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-05"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-06"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-07"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-08"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-09"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-10"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-11"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-12"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-13"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-14"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-15"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-16"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-17"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-18"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-19"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-20"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-21"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-22"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-23"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-24"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-25"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-26"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-27"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-28"
+    },
+    {
+      "symbol": "TLMUSDT",
+      "date": "2023-03-29"
+    },
+    {
+      "symbol": "TRBUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "TRBUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "TRBUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "TRBUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "TRBUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "TRXUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "TRXUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "TRXUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "TRXUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "TRXUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "UNFIUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "UNFIUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "UNFIUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "UNFIUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "UNFIUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "VETUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "VETUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "VETUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "VETUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "VETUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "WAVESUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "WAVESUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "WAVESUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "WAVESUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "WAVESUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "XEMUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "XEMUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "XEMUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "XEMUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "XEMUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "XLMUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "XLMUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "XLMUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "XLMUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "XLMUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "XRPUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "XRPUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "XRPUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "XRPUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "XRPUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "YFIIUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "YFIIUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "YFIIUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "YFIIUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "YFIIUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "YFIUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "YFIUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "YFIUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "YFIUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "YFIUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "ZECUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "ZECUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "ZECUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "ZECUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "ZECUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "ZENUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "ZENUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "ZENUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "ZENUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "ZENUSDT",
+      "date": "2022-04-02"
+    },
+    {
+      "symbol": "ZILUSDT",
+      "date": "2022-02-26"
+    },
+    {
+      "symbol": "ZILUSDT",
+      "date": "2022-02-27"
+    },
+    {
+      "symbol": "ZILUSDT",
+      "date": "2022-02-28"
+    },
+    {
+      "symbol": "ZILUSDT",
+      "date": "2022-04-01"
+    },
+    {
+      "symbol": "ZILUSDT",
+      "date": "2022-04-02"
+    }
+  ],
+  "spec_versions": {
+    "exp_xsmom_usdm": {
+      "previous_hypothesis_id": "xsmom-bn-um-usdt-top50-1d-r14",
+      "previous_spec_sha256": "c8c5d93142e27e468c642fd576d8cc7f2263dd05b70bdc2a0998c77285fbbd08",
+      "selected_hypothesis_id": "xsmom-bn-um-usdt-top50-ex-icp-1d-r14",
+      "selected_spec_sha256": "3f9c6853c982daa39ea983341f4a471a50c43a23f8e5cb7a6db856083a50491d",
+      "unchanged_contract_sha256": "908155ee02f9af0e9d8a4a2fade4644e8b1b13f96c320db2eb8cd6cd7c56ff0d"
+    },
+    "exp_xscarry_usdm": {
+      "previous_hypothesis_id": "xscarry-bn-um-usdt-top50-1d-f7",
+      "previous_spec_sha256": "457009762711c0ac113719360fc7d04431f67f63ce10a88a6d02b74e0f0db44a",
+      "selected_hypothesis_id": "xscarry-bn-um-usdt-top50-ex-icp-1d-f7",
+      "selected_spec_sha256": "5aebc9cfecd6c85e07f7a5b35b72b5ae42a42c9db4f5c002c4c48337221cbef4",
+      "unchanged_contract_sha256": "7b9c2727ba6f00ab49df84cf3e0db3e1a0dc97a87914ab91cad3474ea74b98f0"
+    }
+  },
+  "status": "PROPOSAL_REQUIRES_INDEPENDENT_BEFORE_RECOVERY_REVIEW",
+  "recovery_executed": false,
+  "panel_or_scoring_results": false,
+  "nas_writes": false,
+  "scope": "Frozen before-recovery input contract; any subsequent execution evidence is recorded separately."
+}

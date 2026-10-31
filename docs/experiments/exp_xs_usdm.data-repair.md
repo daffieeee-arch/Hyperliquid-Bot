@@ -1,5 +1,12 @@
 # S4 pre-build daily-source recovery amendment
 
+> **Current operator version:** the user's no-ICP target is now recorded
+> in [the operator amendment](exp_xs_usdm.operator-scope.md). The
+> full-universe source/pin/323-gap observations below are historical;
+> they are not declared passed or erased. Current recovery is scoped to
+> all 297 selected native-daily gaps after independent review. Follow the
+> explicit selected manifest; do not run legacy sync/scoring blocks.
+
 This is a proposed data-quality remedy for the existing draft #146/#150,
 not a new strategy or an authorization to score one. Review this amendment
 before any recovery or new panel build. The original failed preparation

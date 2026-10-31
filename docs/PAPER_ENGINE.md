@@ -224,6 +224,12 @@ print raises `PaperTapeError`; a corrupt tape stops the replay.
 
 ## Optional read-only cockpit snapshot
 
+For an explicit bounded offline command that stages completed parts locally,
+checks resources and publishes a create-only cockpit run, use the
+[native PAPER replay runbook](runbooks/native-paper-offline-replay.md).
+It uses this same engine and its unchanged defaults. The default strategy
+remains flat; optional toy mode has no researched edge.
+
 Set the server-only `COCKPIT_NATIVE_PAPER_RUN_DIR` to one existing native
 PAPER run directory to select the native view at `/paper`. This reads
 `run-claim.json`, `state.json`, `health.json` and `ledger.jsonl`; it does not

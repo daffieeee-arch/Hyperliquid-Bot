@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -42,12 +43,36 @@ _HYPERLIQUID_BUY: str = "B"
 _HYPERLIQUID_SELL: str = "A"
 
 
+@dataclass(frozen=True, slots=True)
+class ReplayResources:
+    """Opt-in offline resource profile; existing callers keep DuckDB defaults."""
+
+    threads: int = 1
+    memory_mib: int = 128
+
+    def __post_init__(self) -> None:
+        if type(self.threads) is not int or self.threads != 1:
+            raise PaperTapeError("bounded offline replay requires one DuckDB thread.")
+        if type(self.memory_mib) is not int or not 32 <= self.memory_mib <= 128:
+            raise PaperTapeError("DuckDB memory_mib must be between 32 and 128.")
+
+    def connection_config(self) -> dict[str, str | bool | int | float | list[str]]:
+        return {
+            "threads": self.threads,
+            "memory_limit": f"{self.memory_mib}MiB",
+            "max_temp_directory_size": "0B",
+            "autoload_known_extensions": False,
+            "autoinstall_known_extensions": False,
+        }
+
+
 def load_hyperliquid_parquet_tape(
     parquet_paths: Sequence[Path],
     *,
     instrument_id: str = "BTC-PERP",
     venue: str = "hyperliquid",
     product: str = "BTC-PERP",
+    resources: ReplayResources | None = None,
 ) -> tuple[MarketEvent, ...]:
     """Read completed raw Parquet parts into a deterministic event tuple."""
 
@@ -57,7 +82,13 @@ def load_hyperliquid_parquet_tape(
     if venue != "hyperliquid" or product != "BTC-PERP":
         raise PaperTapeError("this replay reader is the Hyperliquid BTC-PERP raw tape.")
     relation = _read_parquet_sql(files)
-    connection = duckdb.connect(":memory:")
+    if resources is not None and type(resources) is not ReplayResources:
+        raise PaperTapeError("resources must be ReplayResources or None.")
+    connection = (
+        duckdb.connect(":memory:")
+        if resources is None
+        else duckdb.connect(":memory:", config=resources.connection_config())
+    )
     try:
         trades = _load_trades(
             connection,

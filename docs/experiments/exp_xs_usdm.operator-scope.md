@@ -58,7 +58,11 @@ CHECKSUM/SHA256, CRC and exactly the requested UTC day. SHA256 of the
 canonical sorted-key compact JSON encoding of `selected_missing_days`
 is `b4537b510a244056cd01f64d2a6f8606bb3acccf46d03038269fdac2a3c5da31`.
 The existing planner requires **42,272** Parquet/sidecar pairs, with
-21,293 kline and 20,979 funding files; no ICP input is opened or required.
+21,293 kline and 20,979 funding files; selected planning, conversion and
+panel queries require no ICP inputs. The preservation check may still
+byte-hash the full original B seal, including legacy ICP files, solely to
+prove that originals remain unchanged. Those bytes are not decoded as
+selected research data or fed to the panel.
 Full time/funding coverage still needs actual preparation checks.
 
 The [historical daily-source recovery procedure](exp_xs_usdm.data-repair.md)

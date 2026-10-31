@@ -155,7 +155,8 @@ funding itself, and Hyperliquid's funding settles hourly at its own level.
   `--manifest config/research/operator-universe-2026-10-31/datasets.toml`, start 2020-01-01,
   end 2026-09-01, lookbacks 14, volatility/volume windows 30, funding
   window 7, selected non-crypto exclusions and rank requires funding.
-  `ret_14d` and `vol_30d` are unused by carry. No ICP input is opened.
+  `ret_14d` and `vol_30d` are unused by carry. The selected planner and panel require no ICP input; opaque original
+  B-preservation hashes are separate, as disclosed in the operator contract.
 - **Shape**: `<ROW_COUNT>` rows, `<SYMBOL_COUNT>` symbols, 2,435 daily
   closes from 2020-01-01 to 2026-08-31, as for momentum. The panel ends
   with 2026-08 so that the funding month the builder reads after the

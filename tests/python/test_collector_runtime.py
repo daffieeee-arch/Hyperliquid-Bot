@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import signal
 import subprocess
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, TypedDict
 
 import duckdb
@@ -450,9 +452,20 @@ def prepare_controller(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Contr
         runtime, "network_counters", lambda: {"received_bytes": 1, "transmitted_bytes": 2}
     )
     monkeypatch.setattr("hyperliquid_bot.collector_runtime.signal.signal", lambda *_args: None)
+    # GitHub's fixture owner is UID1001; deployment is deliberately UID1000.
+    # Isolate only the supervisor's process view, keeping storage.os.getuid real
+    # so private fixture ownership is still verified on either host.
     monkeypatch.setattr(
-        "hyperliquid_bot.collector_runtime.os.environ",
-        {"TRADING_MODE": "PAPER", "COLLECTOR_SOURCE_COMMIT": SOURCE},
+        "hyperliquid_bot.collector_runtime.os",
+        SimpleNamespace(
+            **(
+                vars(os)
+                | {
+                    "getuid": lambda: 1000,
+                    "environ": {"TRADING_MODE": "PAPER", "COLLECTOR_SOURCE_COMMIT": SOURCE},
+                }
+            )
+        ),
     )
     return {
         "spool": roots["spool"],
@@ -461,6 +474,35 @@ def prepare_controller(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Contr
         "network_marker": roots["control"] / "network.json",
         "clock_path": roots["control"] / "clock.json",
     }
+
+
+def test_production_guard_rejects_uid1001_before_storage(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "hyperliquid_bot.collector_runtime.os",
+        SimpleNamespace(
+            **(
+                vars(os)
+                | {
+                    "getuid": lambda: 1001,
+                    "environ": {"TRADING_MODE": "PAPER", "COLLECTOR_SOURCE_COMMIT": SOURCE},
+                }
+            )
+        ),
+    )
+
+    def forbidden_storage(_path: Path) -> None:
+        raise AssertionError("Production identity guard must precede storage access.")
+
+    monkeypatch.setattr(runtime, "private_directory", forbidden_storage)
+    with pytest.raises(ValueError, match="nonrootUID1000"):
+        runtime.collect_campaign(
+            plan(),
+            spool=Path("/unopened-spool"),
+            capture=Path("/unopened-capture"),
+            archive=Path("/unopened-archive"),
+            network_marker=Path("/unopened-marker"),
+            clock_path=Path("/unopened-clock"),
+        )
 
 
 class FakeChild:

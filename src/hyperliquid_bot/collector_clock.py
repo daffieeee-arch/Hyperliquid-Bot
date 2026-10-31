@@ -11,6 +11,8 @@ from pathlib import Path
 
 from .collector_storage import exclusive_json, private_directory
 
+MAX_EXPORTER_SECONDS = 96 * 60 * 60
+
 
 def parse_tracking(text: str, *, now_ns: int) -> dict[str, object]:
     pairs = [line.split(":", 1) for line in text.splitlines() if ":" in line]
@@ -45,8 +47,8 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--duration-seconds", type=int, required=True)
     args = parser.parse_args()
-    if not 1 <= args.duration_seconds <= 259_200 or not args.output.is_absolute():
-        parser.error("Use an absolute output path and an explicit duration up to 72h.")
+    if not 1 <= args.duration_seconds <= MAX_EXPORTER_SECONDS or not args.output.is_absolute():
+        parser.error("Use an absolute output path and an explicit duration up to 96h.")
     os.umask(0o077)
     private_directory(args.output.parent)
     if args.output.is_symlink() or (args.output.exists() and not args.output.is_file()):

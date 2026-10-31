@@ -156,9 +156,21 @@ uv run --frozen python -B -m hyperliquid_bot.collector_clock \
   --output /home/chupa/hyperliquid-runtime/clock.json --duration-seconds 1200
 ```
 
-The exporter must cover collection and publication grace. For later campaigns
-choose an explicit exporter duration up to72 hours and sufficient headroom;
-the admitted collection must finish before it expires. This PR installs no
+The exporter needs an explicit **wall-time** budget covering startup, the total
+requested capture duration, publication pauses between chunks, final publication,
+shutdown grace and operator headroom. Twelve six-hour chunks request 72 hours of
+collection but take longer in wall time. Choose an exporter duration up to
+**96 hours** (345,600 seconds); the capture admission limit stays 72 hours.
+Align the transient unit's `RuntimeMaxSec` with that whole exporter budget plus
+startup/drain headroom, rather than ending the unit at the capture duration.
+For example, a deliberately chosen 96-hour exporter budget needs a unit ceiling
+such as `RuntimeMaxSec=96h5m`, not `72h`.
+
+The ceiling does not guarantee completion within 96 hours: publication or other
+delays may exhaust the admitted wall-time budget. The operator must admit a
+campaign with adequate measured headroom; clock evidence still expires after
+120 seconds and the collector fails closed if export stops or becomes stale.
+No running exporter or unit is extended by this source change. This PR installs no
 boot-enabled service or watcher. Detached Docker collection is independent of
 the chat and restart is off.
 

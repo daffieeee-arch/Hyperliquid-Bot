@@ -126,3 +126,33 @@ def test_financial_values_do_not_change_metadata(shape: ModuleType, tmp_path: Pa
         )
     )
     assert second == first
+
+
+@pytest.mark.parametrize(
+    "traded,no_rate,uncovered,halt_unfunded,traded_unfunded",
+    [
+        (False, False, 1, 0, 0),
+        (False, True, 0, 1, 0),
+        (True, False, 1, 0, 0),
+        (True, True, 0, 0, 1),
+    ],
+)
+def test_reach_counts_present_uncovered_rates_on_halts_as_harness_does(
+    shape: ModuleType,
+    traded: bool,
+    no_rate: bool,
+    uncovered: int,
+    halt_unfunded: int,
+    traded_unfunded: int,
+) -> None:
+    days = [FIRST + i * DAY for i in range(DAYS)]
+    rows = {
+        371: (True, 1, True, False, False, False, False),
+        372: (True, None, True, False, False, False, False),
+        373: (traded, None, False, no_rate, False, False, False),
+    }
+    result = shape.reach({"BTCUSDT": rows}, days)
+    assert result["held_days"] == 1
+    assert result["uncovered_days"] == uncovered
+    assert result["halt_days_without_rate"] == halt_unfunded
+    assert result["traded_days_without_rate"] == traded_unfunded

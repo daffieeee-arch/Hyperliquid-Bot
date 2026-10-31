@@ -143,8 +143,11 @@ rejects the input instead of truncating it. Its projection still reads
 only approved metadata and four IS NULL presence predicates. No economic
 values, thresholds, split boundaries or predefined remedies change.
 
-`tests/python/test_s4_shape.py` supplies 26 synthetic Parquet regression
+`tests/python/test_s4_shape.py` supplies 30 synthetic regression
 cases for these failures, valid metadata, NULL ranks, the complete axis,
-row-limit failure and independence from numerical financial values. The
+row-limit failure and independence from numerical financial values. Four metadata-only holding-path cases also verify
+that an uncovered present funding rate is counted on a halt day exactly
+as the pinned harness counts it; unfunded halts retain their separate
+count. The original helper omitted that uncovered exposure. The
 helper is outside the broad `src` pin; its amended bytes are separately
 identified by the reviewed PR head and local preparation provenance.

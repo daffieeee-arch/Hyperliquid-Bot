@@ -232,7 +232,9 @@ def reach(by_symbol: dict[str, dict[int, Cell]], days: list[int]) -> dict[str, o
                     elif no_rate:
                         totals["traded_days_without_rate"] += 1
                         holes[symbol].append(held)
-                    elif not covered:
+                    # The harness charges a present rate on halt days too.
+                    # Unfunded halts have their own count, not an uncovered rate.
+                    if not no_rate and not covered:
                         totals["uncovered_days"] += 1
     return {
         **totals,

@@ -81,9 +81,10 @@ The canonical spec hashes remain:
 
 ## Exact archive coverage scope
 
-Archive root: `/mnt/hyperliquid-archive/vps-chupa/hist-archives`, bound
-explicitly to `/mnt/hyperliquid-archive` on
-`192.168.1.234:/mnt/tank/hyperliquid-archive`, filesystem `nfs4`.
+The private audit records bind the operator-verified archive root to the
+exact expected NFS4 mount target and export. Use `VERIFIED_HIST_ROOT`,
+`VERIFIED_MOUNT_TARGET` and `VERIFIED_MOUNT_SOURCE` from those local
+records; host addresses and export paths stay outside the public repo.
 Inputs are read-only. Legacy post-merge study run blocks still call
 `hist_etl sync`/`verify`; they are not authorized or executed by this
 preparation, and must not be pointed at the NAS. Before any eventual
@@ -106,12 +107,17 @@ contract assumes those published boundary files are present too, so they
 are checked explicitly as an additional S4 prerequisite; they are not
 silently treated as optional just because the builder would skip them.
 
-A bounded descriptor-anchored audit checks these explicit paths, effective
-mount identity and sidecar metadata. Presence is not row coverage or
-financial data validation. Actual audit results and remaining blockers
-must be recorded here before declaring readiness. At this amendment's
-creation, that audit is still running; panel/shape/fingerprint/rebuild
-placeholders remain unmeasured.
+The completed bounded descriptor-anchored audit checked all 42,385
+Parquet files and 42,385 sidecars on 2026-10-31, with zero missing,
+unsafe, mismatched or unchecked paths. Every sidecar parses and matches
+the expected monthly source basename, schema and SHA256 representation.
+All 703 following-funding boundary pairs are present. Total observed
+size is 197,151,375 bytes: 188,526,258 Parquet and 8,625,117 sidecar
+bytes. No Parquet payload, timestamps or numerical market values were
+read in this path/sidecar audit; source ZIP bytes/hashes and full row
+coverage remain unchecked. Private audit scripts, exact paths and
+per-file observations are retained outside Git. Panel/shape/fingerprint/
+rebuild placeholders remain unmeasured.
 
 A complete follow-up requires time/symbol coverage, source consistency,
 two independent panel builds and the original 1/2/8/32-thread byte checks,
@@ -120,3 +126,25 @@ its predeclared remedies. A missing input or failed shape gate is reported
 under those remedies; it never permits changing thresholds after seeing
 counts. Nothing in this record enables scoring, live/testnet orders,
 archive mutation or deployment.
+
+## Shape helper fail-closed repair
+
+Independent preparation review found that the original helper coerced
+malformed metadata (`"false"` became true, rank `1.9` became `1`, and a
+NULL symbol became `"None"`) and silently overwrote duplicate day/symbol
+rows. `harness lock` fingerprints input; it does not validate those
+shape-helper assumptions.
+
+The helper now checks the nine-column projected schema, strict metadata
+types, positive integer-or-NULL ranks, nonempty bounded symbols, unique
+day/symbol keys and the original complete 2,435-day axis before counting.
+It detects one row beyond the unchanged specs' 2,000,000-row limit and
+rejects the input instead of truncating it. Its projection still reads
+only approved metadata and four IS NULL presence predicates. No economic
+values, thresholds, split boundaries or predefined remedies change.
+
+`tests/python/test_s4_shape.py` supplies 26 synthetic Parquet regression
+cases for these failures, valid metadata, NULL ranks, the complete axis,
+row-limit failure and independence from numerical financial values. The
+helper is outside the broad `src` pin; its amended bytes are separately
+identified by the reviewed PR head and local preparation provenance.

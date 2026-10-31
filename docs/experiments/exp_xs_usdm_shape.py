@@ -27,6 +27,8 @@ from pathlib import Path
 import duckdb
 
 AXIS_DAYS = 2435
+MAX_ROWS = 2_000_000  # Both existing specs' data.max_rows, never a truncation allowance.
+MAX_SYMBOL_LENGTH = 128
 FIRST_TS = 1577923199999
 LAST_TS = 1788220799999
 DAY_MS = 86_400_000
@@ -49,26 +51,67 @@ def windows() -> list[tuple[str, int, int]]:
 def load(panel: Path) -> tuple[list[int], dict[str, dict[int, Cell]]]:
     connection = duckdb.connect()
     try:
-        rows = connection.execute(
+        projection = (
             "SELECT ts, symbol, traded, volume_rank, funding_covered, funding_rate IS NULL, "
-            "ret_14d IS NULL, carry_7d IS NULL, funding_7d IS NULL "
-            "FROM read_parquet(?) ORDER BY ts, symbol",
-            [str(panel)],
+            "ret_14d IS NULL, carry_7d IS NULL, funding_7d IS NULL FROM read_parquet(?)"
+        )
+        schema = connection.execute("DESCRIBE " + projection, [str(panel)]).fetchall()
+        if tuple(column[1] for column in schema) != (
+            "BIGINT",
+            "VARCHAR",
+            "BOOLEAN",
+            "BIGINT",
+            "BOOLEAN",
+            "BOOLEAN",
+            "BOOLEAN",
+            "BOOLEAN",
+            "BOOLEAN",
+        ):
+            raise ValueError("S4 shape refuses incompatible projected metadata types.")
+        rows = connection.execute(
+            projection + f" ORDER BY ts, symbol LIMIT {MAX_ROWS + 1}", [str(panel)]
         ).fetchall()
     finally:
         connection.close()
-    days = sorted({int(row[0]) for row in rows})
+    if len(rows) > MAX_ROWS:
+        raise ValueError("S4 shape exceeds the preregistered row bound; no counts are published.")
+    # These counts gate a fixed preregistration. Coercion or duplicate collapse
+    # could turn malformed metadata into plausible, but incorrect, gate counts.
+    seen: set[tuple[int, str]] = set()
+    for row in rows:
+        ts, symbol, traded, rank, covered, *presence = row
+        if (
+            type(ts) is not int
+            or not isinstance(symbol, str)
+            or not symbol
+            or symbol != symbol.strip()
+            or len(symbol) > MAX_SYMBOL_LENGTH
+        ):
+            raise ValueError("S4 shape requires integer timestamps and nonempty string symbols.")
+        if type(traded) is not bool or type(covered) is not bool:
+            raise ValueError("S4 shape requires boolean traded and funding_covered metadata.")
+        if rank is not None and (type(rank) is not int or rank <= 0):
+            raise ValueError("S4 shape requires positive integer ranks or NULL.")
+        if any(type(value) is not bool for value in presence):
+            raise ValueError("S4 shape requires boolean presence metadata.")
+        key = (ts, symbol)
+        if key in seen:
+            raise ValueError("S4 shape refuses duplicate timestamp/symbol rows.")
+        seen.add(key)
+    days = sorted({row[0] for row in rows})
+    if not days or not axis(days)["as_expected"]:
+        raise ValueError("S4 shape requires the preregistered complete daily timestamp axis.")
     index = {ts: position for position, ts in enumerate(days)}
     by_symbol: dict[str, dict[int, Cell]] = defaultdict(dict)
     for ts, symbol, traded, rank, covered, no_rate, no_mom, no_carry, no_mean in rows:
-        by_symbol[str(symbol)][index[int(ts)]] = (
-            bool(traded),
-            None if rank is None else int(rank),
-            bool(covered),
-            bool(no_rate),
-            bool(no_mom),
-            bool(no_carry),
-            bool(no_mean),
+        by_symbol[symbol][index[ts]] = (
+            traded,
+            rank,
+            covered,
+            no_rate,
+            no_mom,
+            no_carry,
+            no_mean,
         )
     return days, by_symbol
 

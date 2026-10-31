@@ -44,10 +44,10 @@ pin is the documented amendment, not that historical commit.
   `docs/GITHUB_WORKFLOW.md`: independent Codex correctness/quant review,
   source/environment security review and a separate merge agent. The
   operator is not required to review routine code changes.
-- DEV is the Ubuntu VM. The archive is currently
-  `/mnt/hyperliquid-archive/vps-chupa/hist-archives`, on the verified
-  `192.168.1.234:/mnt/tank/hyperliquid-archive` NFS4 export. Before every
-  run, revalidate the expected effective mount and explicit input list.
+- DEV is the Ubuntu VM. Use the private audit
+  `VERIFIED_HIST_ROOT`, `VERIFIED_MOUNT_TARGET` and
+  `VERIFIED_MOUNT_SOURCE` binding for the NFS4 archive. Before every run,
+  revalidate the expected effective mount and explicit input list.
   A path from the historical VPS is not proof of a local archive.
 - Keep the archive read-only for this preparation. A missing/invalid file
   is a blocker, not permission to run the sync below or rewrite Parquet.
@@ -65,7 +65,8 @@ pin is the documented amendment, not that historical commit.
 
 ### 1. Check the amended code pin → `0cd7666392928b0af3f4a0c0ef5c8fc34a516d58`
 
-- The pin is #145's merge commit. Confirm nothing later touched the pinned
+- The amended pin is documented in the source/environment record; #145
+  introduced the original builder. Confirm nothing later touched the pinned
   files, the same list the run scripts' `pinned` array checks:
   `git diff --exit-code 0cd7666392928b0af3f4a0c0ef5c8fc34a516d58 origin/main -- src uv.lock pyproject.toml .python-version config/hist_etl/universe/binance-um-usdt-1d-2026-10-08.json`.
   If something did, the pin moves to the newest such commit, both docs'

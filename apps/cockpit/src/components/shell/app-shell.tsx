@@ -9,6 +9,7 @@ import { ActiveThemeLabel } from "./active-theme-label";
 import { Attribution } from "./attribution";
 import { CapturePulse } from "./capture-pulse";
 import { NavLinks } from "./nav-links";
+import { SnapshotRefreshPulse } from "./snapshot-refresh-pulse";
 import { Button } from "../ui/button";
 import { ThemeToggle } from "../theme-toggle";
 import { activeRouteId, cockpitRoute } from "../../lib/navigation";
@@ -26,7 +27,7 @@ const CONSTRAINTS = [
   "PUBLIC MID != PAPER PNL",
 ];
 
-function Brand() {
+function Brand({ nativePaper }: { nativePaper: boolean }) {
   return (
     <div className="brand">
       <span className="brand-mark" aria-hidden="true">
@@ -34,19 +35,26 @@ function Brand() {
       </span>
       <span className="brand-copy">
         <strong>Operator Cockpit</strong>
-        <span>BTC-PERP · COURSE-1 · PAPER</span>
+        <span>{nativePaper ? "BTC-PERP · NATIVE · PAPER" : "BTC-PERP · COURSE-1 · PAPER"}</span>
       </span>
     </div>
   );
 }
 
-export function AppShell({ children }: { children: ReactNode }) {
+export function AppShell({
+  children,
+  nativePaperBound = false,
+}: {
+  children: ReactNode;
+  nativePaperBound?: boolean;
+}) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   const activeId = activeRouteId(pathname);
   const route = cockpitRoute(activeId);
+  const nativePaper = nativePaperBound && pathname === "/paper";
 
   const search = useMemo(() => {
     const params = new URLSearchParams();
@@ -94,7 +102,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     <div className="app-shell">
       <aside className="app-sidebar">
         <Link href={`/${search}`} style={{ textDecoration: "none", color: "inherit" }}>
-          <Brand />
+          <Brand nativePaper={nativePaper} />
         </Link>
         <NavLinks activeId={activeId} search={search} />
         <div className="nav-foot">
@@ -114,7 +122,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           />
           <div className="drawer" role="dialog" aria-modal="true" aria-label="Cockpit navigation">
             <div className="row">
-              <Brand />
+              <Brand nativePaper={nativePaper} />
               <Button
                 type="button"
                 variant="ghost"
@@ -174,7 +182,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               <span className="dot" aria-hidden="true" />
               Paper
             </span>
-            <CapturePulse query={query} />
+            {nativePaper ? <SnapshotRefreshPulse /> : <CapturePulse query={query} />}
           </div>
         </header>
 

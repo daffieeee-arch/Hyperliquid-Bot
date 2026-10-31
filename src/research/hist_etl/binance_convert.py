@@ -26,6 +26,7 @@ import duckdb
 
 from research.hist_etl.errors import HistEtlError
 from research.hist_etl.files import atomic_write_json, decide_output, warn
+from research.hist_etl.finite import invalid_financial_rows
 from research.hist_etl.models import (
     INTERVAL_SECONDS,
     MICROSECOND_THRESHOLD,
@@ -219,16 +220,22 @@ def _write_parquet(
 
 
 def _audit_existing(path: Path, spec: BinanceSpec, month: date, today: date) -> tuple[Gap, ...]:
-    if spec.dataset == "aggTrades":
-        return ()
     connection = duckdb.connect()
     try:
         connection.execute("SET TimeZone='UTC'")
-        connection.execute(
-            "CREATE TABLE published AS SELECT * FROM read_parquet(?)",
-            [str(path)],
+        # Aggregate-trade months can be large: scan rather than copy the
+        # complete file into an in-memory table before checking it.
+        connection.read_parquet(str(path)).create_view("published")
+        invalid = invalid_financial_rows(
+            connection, "published", _financial_columns(spec, typed=False)
         )
+        if invalid:
+            return (
+                Gap("schema", spec.id, f"{path.name} has {invalid} null/non-finite financial rows"),
+            )
         return _grid_gaps(connection, spec, month, today)
+    except duckdb.Error:
+        return (Gap("schema", spec.id, f"{path.name} is unreadable or has an invalid schema"),)
     finally:
         connection.close()
 
@@ -272,12 +279,55 @@ def _validate(
     connection: duckdb.DuckDBPyConnection, spec: BinanceSpec, month: date
 ) -> tuple[list[str], str]:
     if spec.dataset == "metrics":
-        return _validate_metrics(connection), "clock"
-    if spec.dataset == "fundingRate":
-        return _validate_funding(connection, spec, month)
+        problems, unit = _validate_metrics(connection), "clock"
+    elif spec.dataset == "fundingRate":
+        problems, unit = _validate_funding(connection, spec, month)
+    elif spec.dataset == "aggTrades":
+        problems, unit = _validate_agg(connection, spec, month)
+    else:
+        problems, unit = _validate_klines(connection, spec, month)
+    invalid = invalid_financial_rows(connection, "typed", _financial_columns(spec, typed=True))
+    if invalid:
+        problems.append(f"{invalid} rows with null/non-finite financial values")
+    return problems, unit
+
+
+def _financial_columns(spec: BinanceSpec, *, typed: bool) -> tuple[str, ...]:
+    """Required financial fields in the typed input and published schema."""
+
     if spec.dataset == "aggTrades":
-        return _validate_agg(connection, spec, month)
-    return _validate_klines(connection, spec, month)
+        return ("price_n", "quantity_n") if typed else ("price", "quantity")
+    if spec.dataset == "fundingRate":
+        return ("rate_n",) if typed else ("last_funding_rate",)
+    if spec.dataset == "metrics":
+        return (
+            ("oi", "oi_value", "count_top", "sum_top", "count_ls", "taker")
+            if typed
+            else _METRICS_FIELDS[1:]
+        )
+    return (
+        (
+            "open_px",
+            "high_px",
+            "low_px",
+            "close_px",
+            "volume_n",
+            "quote_n",
+            "taker_base_n",
+            "taker_quote_n",
+        )
+        if typed
+        else (
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "quote_volume",
+            "taker_buy_base_volume",
+            "taker_buy_quote_volume",
+        )
+    )
 
 
 def _validate_klines(

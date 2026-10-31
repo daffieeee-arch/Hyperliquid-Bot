@@ -9,6 +9,9 @@ import { DEFAULT_COCKPIT_THEME } from "../lib/theme";
 
 import "./globals.css";
 
+// Source selection is operator runtime configuration, never a build-time binding.
+export const dynamic = "force-dynamic";
+
 // Vendored IBM Plex (SIL OFL 1.1, from Fontsource 5.3.0): the build never
 // fetches fonts, so a Google Fonts outage cannot fail it.
 const plexSans = localFont({
@@ -54,7 +57,9 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <ThemeProvider>
           <CockpitRefreshProvider>
             <Suspense fallback={null}>
-              <AppShell>{children}</AppShell>
+              <AppShell nativePaperBound={process.env.COCKPIT_NATIVE_PAPER_RUN_DIR !== undefined}>
+                {children}
+              </AppShell>
             </Suspense>
           </CockpitRefreshProvider>
         </ThemeProvider>

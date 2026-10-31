@@ -27,6 +27,7 @@ The browser never receives trading secrets.
 | DATA retain identity | four-venue strip binds | DATA-1A sample-run; BN/BV/KR **MISSING** unless `ARTIFACT_ROOT` | never blended with soak PnL |
 | Public HL mid / candles | credentialless `/info` `allMids` + `candleSnapshot` | n/a | **UNAVAILABLE** if the public route fails |
 | Position / assumed PnL | `paper-position.json` / `paper-pnl.json` | soak fixture | labeled **not venue-reconciled**; never D22-B |
+| Native PAPER snapshot (opt-in) | native claim/state/health + complete bounded ledger | explicit fixture binding only | **UNBOUND** / **UNAVAILABLE** without usable artifacts; no COURSE-1 fallback; liveness unverified |
 | Intents → fills | `orders.json` / `fills.json` | soak fixture (entry/exit) | REJECT rows always show a #65/`paper_risk` gate; soak is ACCEPT-only so the tape inserts a documented catalog demo reject (not LIVE, not a soak fill) |
 | `#65` gate catalog | documented `paper_risk` defaults | n/a | per-run halt state **UNAVAILABLE** |
 | Preflight caps | `run-claim.json` preflight | soak fixture | **not recorded** / **UNAVAILABLE** if omitted |
@@ -64,9 +65,16 @@ control, and on mobile the sidebar collapses into a drawer. Routes:
    (`result.json` + optional `report.md`). It is read-only: promotion stays
    forbidden unless the artifact records an H1 pass, and the screen never
    places an order.
-4. **`/paper` (COURSE-1 soak only):** What ran, why the last decision was
+4. **`/paper` (COURSE-1 by default):** What ran, why the last decision was
    accepted or rejected, assumed-overlay results, the intent tape and the
    read-only preflight caps. DATA retain stays a separate identity card.
+   Setting the server-only `COCKPIT_NATIVE_PAPER_RUN_DIR` selects a separate
+   native BTC-PERP/PAPER snapshot view, including when the value is empty
+   (UNBOUND). It reads the native ledger and projections through
+   `/api/native-paper-run`, without starting the engine or collectors.
+   Origin, source timestamps, read status and assumed/not-reconciled economics
+   remain explicit; `RUNNING` does not establish liveness. See
+   [the native snapshot contract](PAPER_ENGINE.md#optional-read-only-cockpit-snapshot).
 5. **`/system`:** run binding and picker, DATA-1A detail, the D01 /
    `paper_risk` bind, the Binance `usdm_public` callout, the reconstructable
    risk overlay and the documented #65 gate catalog. Start/stop is vetoed.
@@ -105,12 +113,35 @@ control, and on mobile the sidebar collapses into a drawer. Routes:
   bound run: Last = `lastTrade.price`, Mid = `(bid + ask) / 2` in exact
   decimal-string arithmetic, source `stored capture · run <id> · <channels>`.
   The contract product is mapped to the collector's instrument
-  (`BTCUSDT → BTCUSDT-SPOT`, `BTC-EUR`, `BTC/USD`, `BTC-PERP`) before falling
-  back to the first instrument with a tick. The public `/info` mid is not
-  copied onto a venue row. Green is inside `fresh_max_s`, amber is stale, red
+  (`BTCUSDT → BTCUSDT-SPOT`, `BTC-EUR`, `BTC/USD`, `BTC-PERP`) by exact product
+  or the explicit `-SPOT` alias; another instrument/currency never substitutes.
+  The tape and capture strip must name the same raw run ID and contract
+  product. Independent polls that disagree show **UNAVAILABLE** until matching
+  reads arrive. The public `/info` mid is not copied onto a venue row.
+  Last and Mid each retain their own source timestamp, age, state and reason;
+  a fresh trade cannot refresh an old BBO, or vice versa. Each value shows its
+  own freshness, and the row/When uses the oldest available source. Green is
+  inside `fresh_max_s`, amber is stale, red
   **UNAVAILABLE** carries the honest reason (capture MISSING, tape unreadable,
   no trade/BBO decoded yet). One bad venue does not clear the others. No venue
   API is called from the browser.
+  The client clock keeps aging each source while reads are paused or in
+  flight; it never counts as a new read. A failed tape or capture-strip poll
+  makes the main quote table **UNAVAILABLE** until both reads recover.
+- **L2 availability requires a snapshot.** The stored reader starts with at
+  most three recent parts and does not scan history for a bootstrap. L2
+  deltas without a snapshot in that window cannot create a BBO. An incomplete
+  book clears the previous BBO; malformed/crossed books, quote-session changes
+  and public reconnect/gap/integrity markers invalidate the reconstruction.
+  A new snapshot or a complete independent quote is then required. Kraken's
+  separate L3 connection does not refresh or invalidate public L2. The API
+  omits an unavailable `lastBbo` and can supply `bboUnavailableReason` rather
+  than inventing a Mid. Before every read, including a cache hit, tape and
+  capture-strip reuse the same schema/path/run/signing claim validation.
+  Missing/invalid quote-session identity invalidates a known book and cannot
+  bootstrap a new one. Hyperliquid trade/BBO/context payloads must identify
+  `coin: BTC` inside the `BTC-PERP` envelope; contradictions clear retained
+  financial values and fail the venue read.
 - **Readable at desk density.** Body 15px (hybrid) / 14px (terminal), meta
   and eyebrows 12px, table body 13px with 11.5px muted headers, badges ≥ 11px.
   Primary Last / Mid cells use `.quote-primary` (15.2px, 16px on phones,
@@ -313,7 +344,8 @@ Later command center:
 First PAPER slice (now on the first screen): a `Bound venues · last / mid`
 table (Venue | Instrument | Last | Mid | When | Status) whose HL / Binance /
 Bitvavo / Kraken values come from the stored tape of the bound run via
-`/api/market-tape` (see *Stored quotes are wired* above). When shows
+`/api/market-tape` (see *Stored quotes are wired* above). Last and Mid have
+separate freshness labels; When shows the oldest available source in
 Europe/Amsterdam (CEST/CET) and a ticking `updated … ago`. A venue without a
 usable stored tick stays fail-closed **UNAVAILABLE** with its reason; nothing
 is fetched from a venue API and nothing is invented. The public HL candle

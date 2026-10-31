@@ -1,27 +1,30 @@
 # Hyperliquid Quant Trading Platform
 
-Private multi-strategy crypto quantitative research and trading platform.
+Multi-strategy crypto quantitative research and trading platform. The GitHub
+repository is public; trading credentials and durable research data stay outside Git.
 
-The project is developed primarily on the Netcup **Ubuntu 24.04 LTS** VPS
-(hostname `chupa`) through Cursor IDE Remote SSH, Cursor CLI (`agent`) and
-Codex CLI. GitHub Actions validates the source and packages immutable
-Linux/amd64 OCI images. **ADR-024** records this supported Ubuntu LTS VPS as
-the definitive primary development, capture and PAPER profile.
+Primary development has moved to an **Ubuntu VM on TrueNAS SCALE**
+(operator-reported host placement; observed Ubuntu **26.04.1 LTS**, KVM).
+The source checkout is `$HOME/coding-projects/Hyperliquid-Bot`. GitHub Actions
+validates source; release-image construction is still planned. **ADR-025**
+records this development move without approving a migrated PAPER runtime.
+Capture data, historical archives and continuous services have not been
+verified on the VM. See the [migration status](docs/runbooks/ubuntu-vm-migration-status.md).
 
-> **Current stage:** COURSE-1 core-engine fit gate, BTC-PERP vertical-slice planning, and first PAPER cockpit screen<br>
+> **Current stage:** research/PAPER engineering; development migration verification<br>
 > **Default trading mode:** PAPER<br>
 > **Live capital:** Disabled by design until explicit promotion gates are met<br>
-> **Primary development host:** Netcup Ubuntu 24.04 LTS VPS (`chupa`)<br>
+> **Primary development host:** Ubuntu VM on TrueNAS SCALE (**ADR-025**)<br>
 > **24/7 runtime boundary:** Host-neutral Linux/amd64 OCI<br>
-> **Primary PAPER/capture profile:** Netcup Ubuntu 24.04 LTS VPS (**ADR-024**)<br>
+> **PAPER/capture migration:** unverified; Netcup profile retained as historical reference (**ADR-024**)<br>
 > **Secondary operator environment:** TerraPC/WSL2
 
 The current delivery priority is one credentialless Hyperliquid BTC perpetual path from a bounded,
 deterministic replay through strategy, risk and PAPER execution to reproducible orders, fills,
 position and PnL. Further expansion of the dormant provenance/v3 path is deferred without deleting
 or weakening it. Existing trading engines are evaluated before the project builds backtesting,
-paper execution, order management or reconciliation infrastructure itself; no external engine has
-yet been adopted. See [Architecture](docs/ARCHITECTURE.md) and [Roadmap](docs/ROADMAP.md).
+paper execution, order management or reconciliation infrastructure itself. NautilusTrader is wrapped
+only for the bounded COURSE-1 proof; production-core adoption has not been approved. See [Architecture](docs/ARCHITECTURE.md) and [Roadmap](docs/ROADMAP.md).
 
 ## Mission
 
@@ -44,7 +47,7 @@ See [Product Vision](docs/PRODUCT_VISION.md) and [Strategies](docs/STRATEGIES.md
 - Free market data first. Paid data is considered only after measured incremental value.
 - **Observe many venues; trade on few venues.**
 - Keep interactive source work separate from running service containers and
-  persistent runtime volumes, even when both are on the VPS.
+  persistent runtime volumes, even when they share a host.
 - Build once in CI and promote the same image artifact through paper, shadow and live stages.
 - The same strategy and risk code path is used in backtest, paper, shadow, testnet and live modes.
 - Leverage is a consequence of risk-based position sizing, never the source of the edge.
@@ -56,30 +59,27 @@ See [Product Vision](docs/PRODUCT_VISION.md) and [Strategies](docs/STRATEGIES.md
 ## Environment model
 
 ```text
-Netcup Ubuntu 24.04 LTS VPS (chupa)
-├── Cursor Remote SSH / Cursor CLI / Codex CLI
-├── source: $HOME/Hyperliquid Project/Hyperliquid-Bot
-├── captures: $HOME/Hyperliquid Project/data-capture
-├── Python + TypeScript toolchains
-├── disposable development services
+Ubuntu VM on TrueNAS SCALE (development)
+├── source: $HOME/coding-projects/Hyperliquid-Bot
+├── feature branches / isolated worktrees
+├── pinned Python + TypeScript toolchains
 └── unit/integration tests
              │
              ▼
-          GitHub
-    pull request + CI
+       public GitHub repository
+    pull request + independent review + CI
              │
              ▼
-     private GHCR images
-   pinned tag + image digest
+      planned release-image pipeline
+       pinned tag + image digest
              │
              ▼
- Linux/amd64 OCI runtime
-    Netcup Ubuntu 24.04 LTS VPS
-       PAPER / SHADOW / LIVE
+  separately approved Linux/amd64 OCI runtime
+      PAPER first; deployment not verified
 ```
 
-TerraPC/WSL2 is a secondary operator environment and may be powered off
-without interrupting services on the VPS.
+TerraPC/WSL2 remains a secondary operator environment. Source synchronization
+does not prove that captures, historical datasets or runtime services moved.
 
 See [Development Workflow](docs/DEVELOPMENT.md) and [Deployment & Environments](docs/DEPLOYMENT.md).
 
@@ -107,9 +107,9 @@ See [Venue Strategy](docs/VENUES.md).
 | Configuration / control state | PostgreSQL when the control plane requires it |
 | Realtime state / event distribution | Redis when multi-process realtime state requires it |
 | Observability | Grafana + Grafana Alloy / OpenTelemetry |
-| Local development | Netcup Ubuntu 24.04 LTS VPS; TerraPC/WSL2 secondary |
-| Runtime | Host-neutral Linux/amd64 OCI on the Netcup VPS (ADR-024) |
-| CI/CD | GitHub Actions + private GitHub Container Registry |
+| Local development | Ubuntu VM on TrueNAS SCALE; TerraPC/WSL2 secondary |
+| Runtime | Host-neutral Linux/amd64 OCI; VM capture/runtime migration unverified (ADR-025) |
+| CI/CD | GitHub Actions checks; GHCR release pipeline planned |
 
 Redis and PostgreSQL remain planned platform components, but they are not mandatory blockers for the first thin vertical slice.
 
@@ -182,11 +182,11 @@ No stage may be skipped merely because an in-sample backtest looks attractive or
 The aim is to get useful output early rather than disappear into a months-long build:
 
 - Initial days: repository bootstrap, CI and disposable development services.
-- Current: time-boxed core-engine fit gate, then one local BTC-PERP replay-to-PAPER slice. A first PAPER cockpit screen now reads reconstructable COURSE-1 JSON plus public BTC-PERP mid, with a compact DESK banner, fail-closed MARKETS panel, and a first RISK slice that copies only existing PAPER fields and leaves missing leverage/margin/liquidation/VaR **UNAVAILABLE**.
-- Current operations: **ADR-024** records the Netcup Ubuntu 24.04 LTS
-  VPS/OCI profile; the VPS is now the primary interactive development,
-  capture and PAPER host. Service deployment still uses reviewed,
-  digest-pinned images and explicit operator approval.
+- Current: bounded BTC-PERP replay/PAPER proofs, a PAPER-only strategy/risk engine, research harness and operator cockpit. PAPER simulation remains distinct from venue reconciliation and strategy promotion.
+- Current operations: **ADR-025** records the Ubuntu VM development move.
+  Confirm durable data locations, catalog bindings and runtime ownership before
+  running research or capture. **ADR-024** and VPS runbooks remain historical
+  references; they do not approve deployment on the VM.
 - Week 3-6: robust research, validation, execution simulation and paper-vs-backtest comparison.
 - Week 6-12: production-grade recovery, reconciliation, security and live-readiness work while paper evidence accumulates.
 - Following weeks: shadow and very-small-capital validation before any material live allocation.
@@ -198,6 +198,8 @@ These are planning ranges, not promises of profitability.
 - [Product Vision](docs/PRODUCT_VISION.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Development Workflow](docs/DEVELOPMENT.md)
+- [GitHub workflow and independent review](docs/GITHUB_WORKFLOW.md)
+- [Ubuntu VM migration status](docs/runbooks/ubuntu-vm-migration-status.md)
 - [Deployment & Environments](docs/DEPLOYMENT.md)
 - [Venue Strategy](docs/VENUES.md)
 - [Roadmap](docs/ROADMAP.md)
@@ -211,7 +213,7 @@ These are planning ranges, not promises of profitability.
 - [Grafana & Observability](docs/GRAFANA.md)
 - [Security](docs/SECURITY.md)
 - [Hardware & Runtime Hosts](docs/HARDWARE.md)
-- [Linux VPS reference profile (PAPER capture target)](docs/runbooks/linux-vps-reference-profile.md)
+- [Historical Linux VPS reference profile](docs/runbooks/linux-vps-reference-profile.md)
 - [PAPER-only control-service health/readiness](docs/runbooks/control-service-local.md)
 - [Architecture Decision Records](docs/DECISIONS/README.md)
 

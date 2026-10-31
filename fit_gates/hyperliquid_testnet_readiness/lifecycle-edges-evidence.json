@@ -1,0 +1,887 @@
+{
+  "all_safety_cases_pass": false,
+  "cache_seam": "strict client/venue/instrument lookup; explicit order-visibility delay",
+  "candidate_version": "1.231.0",
+  "cases": [
+    {
+      "bounded_verdict": "PASS",
+      "case": "duplicate_fill",
+      "checks": {
+        "buffer_drained": true,
+        "core_commission": true,
+        "core_trade_ids": true,
+        "event_commission": true,
+        "expected_trade_ids": true,
+        "external_handoff_content": true,
+        "filled_quantity": true,
+        "no_unattributed_report": true,
+        "no_upstream_exception": true,
+        "one_submit": true,
+        "remaining_quantity": true,
+        "required_final_status": true,
+        "stable_identity": true,
+        "terminal_ioc_remainder": true,
+        "unique_fill_count": true
+      },
+      "client_order_id": "offline-fit-duplicate_fill",
+      "closed": false,
+      "core_commissions": [
+        "1.80000000 USDC"
+      ],
+      "core_trade_ids": [
+        "700001"
+      ],
+      "events": [
+        {
+          "client_order_id": "offline-fit-duplicate_fill",
+          "filled_quantity_after": "0.00000",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "status_after": "SUBMITTED",
+          "type": "OrderSubmitted"
+        },
+        {
+          "client_order_id": "offline-fit-duplicate_fill",
+          "filled_quantity_after": "0.00000",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "status_after": "ACCEPTED",
+          "type": "OrderAccepted",
+          "venue_order_id": "900001"
+        },
+        {
+          "client_order_id": "offline-fit-duplicate_fill",
+          "commission": "1.80000000 USDC",
+          "filled_quantity_after": "0.04000",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "last_quantity": "0.04000",
+          "price": "100000",
+          "status_after": "PARTIALLY_FILLED",
+          "trade_id": "700001",
+          "type": "OrderFilled",
+          "venue_order_id": "900001"
+        }
+      ],
+      "external_fill_reports": 0,
+      "external_fills": [],
+      "external_status_reports": 0,
+      "filled_quantity": "0.04000",
+      "final_status": "PARTIALLY_FILLED",
+      "fit": "pass",
+      "leaves_quantity": "0.06000",
+      "required": {
+        "commission_usdc": "1.80000000",
+        "filled_quantity": "0.04000",
+        "status": "PARTIALLY_FILLED",
+        "unique_fills": 1
+      },
+      "steps": [
+        {
+          "action": "accept",
+          "buffered_fills": 0,
+          "cloid_mappings": 1,
+          "closed": false,
+          "filled_quantity": "0.00000",
+          "reported_filled_quantity": "0.00000",
+          "reported_time_ns": 1793347200000000000,
+          "status": "ACCEPTED"
+        },
+        {
+          "action": "fill1",
+          "buffered_fills": 0,
+          "cloid_mappings": 1,
+          "closed": false,
+          "filled_quantity": "0.04000",
+          "reported_fill_quantity": "0.04000",
+          "reported_time_ns": 1793347200000000000,
+          "reported_trade_id": "700001",
+          "status": "PARTIALLY_FILLED"
+        },
+        {
+          "action": "fill1",
+          "buffered_fills": 0,
+          "cloid_mappings": 1,
+          "closed": false,
+          "filled_quantity": "0.04000",
+          "reported_fill_quantity": "0.04000",
+          "reported_time_ns": 1793347200000000000,
+          "reported_trade_id": "700001",
+          "status": "PARTIALLY_FILLED"
+        }
+      ],
+      "submit_calls": 1,
+      "upstream_errors": [],
+      "venue_order_id": "900001"
+    },
+    {
+      "bounded_verdict": "PASS",
+      "case": "fill_before_accept",
+      "checks": {
+        "buffer_drained": true,
+        "core_commission": true,
+        "core_trade_ids": true,
+        "event_commission": true,
+        "expected_trade_ids": true,
+        "external_handoff_content": true,
+        "filled_quantity": true,
+        "no_unattributed_report": true,
+        "no_upstream_exception": true,
+        "one_submit": true,
+        "remaining_quantity": true,
+        "required_final_status": true,
+        "stable_identity": true,
+        "terminal_ioc_remainder": true,
+        "unique_fill_count": true
+      },
+      "client_order_id": "offline-fit-fill_before_accept",
+      "closed": false,
+      "core_commissions": [
+        "1.80000000 USDC"
+      ],
+      "core_trade_ids": [
+        "700001"
+      ],
+      "events": [
+        {
+          "client_order_id": "offline-fit-fill_before_accept",
+          "filled_quantity_after": "0.00000",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "status_after": "SUBMITTED",
+          "type": "OrderSubmitted"
+        },
+        {
+          "client_order_id": "offline-fit-fill_before_accept",
+          "filled_quantity_after": "0.00000",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "status_after": "ACCEPTED",
+          "type": "OrderAccepted",
+          "venue_order_id": "900001"
+        },
+        {
+          "client_order_id": "offline-fit-fill_before_accept",
+          "commission": "1.80000000 USDC",
+          "filled_quantity_after": "0.04000",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "last_quantity": "0.04000",
+          "price": "100000",
+          "status_after": "PARTIALLY_FILLED",
+          "trade_id": "700001",
+          "type": "OrderFilled",
+          "venue_order_id": "900001"
+        }
+      ],
+      "external_fill_reports": 0,
+      "external_fills": [],
+      "external_status_reports": 0,
+      "filled_quantity": "0.04000",
+      "final_status": "PARTIALLY_FILLED",
+      "fit": "pass",
+      "leaves_quantity": "0.06000",
+      "required": {
+        "commission_usdc": "1.80000000",
+        "filled_quantity": "0.04000",
+        "status": "PARTIALLY_FILLED",
+        "unique_fills": 1
+      },
+      "steps": [
+        {
+          "action": "fill1",
+          "buffered_fills": 0,
+          "cloid_mappings": 1,
+          "closed": false,
+          "filled_quantity": "0.04000",
+          "reported_fill_quantity": "0.04000",
+          "reported_time_ns": 1793347200000000000,
+          "reported_trade_id": "700001",
+          "status": "PARTIALLY_FILLED"
+        },
+        {
+          "action": "accept",
+          "buffered_fills": 0,
+          "cloid_mappings": 1,
+          "closed": false,
+          "filled_quantity": "0.04000",
+          "reported_filled_quantity": "0.00000",
+          "reported_time_ns": 1793347200000000000,
+          "status": "PARTIALLY_FILLED"
+        },
+        {
+          "action": "accept",
+          "buffered_fills": 0,
+          "cloid_mappings": 1,
+          "closed": false,
+          "filled_quantity": "0.04000",
+          "reported_filled_quantity": "0.00000",
+          "reported_time_ns": 1793347200000000000,
+          "status": "PARTIALLY_FILLED"
+        }
+      ],
+      "submit_calls": 1,
+      "upstream_errors": [],
+      "venue_order_id": "900001"
+    },
+    {
+      "bounded_verdict": "PASS",
+      "case": "buffered_duplicate_fill",
+      "checks": {
+        "buffer_drained": true,
+        "core_commission": true,
+        "core_trade_ids": true,
+        "event_commission": true,
+        "expected_trade_ids": true,
+        "external_handoff_content": true,
+        "filled_quantity": true,
+        "no_unattributed_report": true,
+        "no_upstream_exception": true,
+        "one_submit": true,
+        "remaining_quantity": true,
+        "required_final_status": true,
+        "stable_identity": true,
+        "terminal_ioc_remainder": true,
+        "unique_fill_count": true
+      },
+      "client_order_id": "offline-fit-buffered_duplicate_fill",
+      "closed": false,
+      "core_commissions": [
+        "1.80000000 USDC"
+      ],
+      "core_trade_ids": [
+        "700001"
+      ],
+      "events": [
+        {
+          "client_order_id": "offline-fit-buffered_duplicate_fill",
+          "filled_quantity_after": "0.00000",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "status_after": "SUBMITTED",
+          "type": "OrderSubmitted"
+        },
+        {
+          "client_order_id": "offline-fit-buffered_duplicate_fill",
+          "filled_quantity_after": "0.00000",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "status_after": "ACCEPTED",
+          "type": "OrderAccepted",
+          "venue_order_id": "900001"
+        },
+        {
+          "client_order_id": "offline-fit-buffered_duplicate_fill",
+          "commission": "1.80000000 USDC",
+          "filled_quantity_after": "0.04000",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "last_quantity": "0.04000",
+          "price": "100000",
+          "status_after": "PARTIALLY_FILLED",
+          "trade_id": "700001",
+          "type": "OrderFilled",
+          "venue_order_id": "900001"
+        }
+      ],
+      "external_fill_reports": 0,
+      "external_fills": [],
+      "external_status_reports": 0,
+      "filled_quantity": "0.04000",
+      "final_status": "PARTIALLY_FILLED",
+      "fit": "pass",
+      "leaves_quantity": "0.06000",
+      "required": {
+        "commission_usdc": "1.80000000",
+        "filled_quantity": "0.04000",
+        "status": "PARTIALLY_FILLED",
+        "unique_fills": 1
+      },
+      "steps": [
+        {
+          "action": "hide_order",
+          "buffered_fills": 0,
+          "cloid_mappings": 1,
+          "closed": false,
+          "filled_quantity": "0.00000",
+          "status": "SUBMITTED"
+        },
+        {
+          "action": "fill1",
+          "buffered_fills": 1,
+          "cloid_mappings": 1,
+          "closed": false,
+          "filled_quantity": "0.00000",
+          "reported_fill_quantity": "0.04000",
+          "reported_time_ns": 1793347200000000000,
+          "reported_trade_id": "700001",
+          "status": "SUBMITTED"
+        },
+        {
+          "action": "fill1",
+          "buffered_fills": 2,
+          "cloid_mappings": 1,
+          "closed": false,
+          "filled_quantity": "0.00000",
+          "reported_fill_quantity": "0.04000",
+          "reported_time_ns": 1793347200000000000,
+          "reported_trade_id": "700001",
+          "status": "SUBMITTED"
+        },
+        {
+          "action": "show_order",
+          "buffered_fills": 2,
+          "cloid_mappings": 1,
+          "closed": false,
+          "filled_quantity": "0.00000",
+          "status": "SUBMITTED"
+        },
+        {
+          "action": "accept",
+          "buffered_fills": 0,
+          "cloid_mappings": 1,
+          "closed": false,
+          "filled_quantity": "0.04000",
+          "reported_filled_quantity": "0.00000",
+          "reported_time_ns": 1793347200000000000,
+          "status": "PARTIALLY_FILLED"
+        }
+      ],
+      "submit_calls": 1,
+      "upstream_errors": [],
+      "venue_order_id": "900001"
+    },
+    {
+      "bounded_verdict": "PASS",
+      "case": "ioc_partial_cancel",
+      "checks": {
+        "buffer_drained": true,
+        "core_commission": true,
+        "core_trade_ids": true,
+        "event_commission": true,
+        "expected_trade_ids": true,
+        "external_handoff_content": true,
+        "filled_quantity": true,
+        "no_unattributed_report": true,
+        "no_upstream_exception": true,
+        "one_submit": true,
+        "remaining_quantity": true,
+        "required_final_status": true,
+        "stable_identity": true,
+        "terminal_ioc_remainder": true,
+        "unique_fill_count": true
+      },
+      "client_order_id": "offline-fit-ioc_partial_cancel",
+      "closed": true,
+      "core_commissions": [
+        "1.80000000 USDC"
+      ],
+      "core_trade_ids": [
+        "700001"
+      ],
+      "events": [
+        {
+          "client_order_id": "offline-fit-ioc_partial_cancel",
+          "filled_quantity_after": "0.00000",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "status_after": "SUBMITTED",
+          "type": "OrderSubmitted"
+        },
+        {
+          "client_order_id": "offline-fit-ioc_partial_cancel",
+          "filled_quantity_after": "0.00000",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "status_after": "ACCEPTED",
+          "type": "OrderAccepted",
+          "venue_order_id": "900001"
+        },
+        {
+          "client_order_id": "offline-fit-ioc_partial_cancel",
+          "commission": "1.80000000 USDC",
+          "filled_quantity_after": "0.04000",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "last_quantity": "0.04000",
+          "price": "100000",
+          "status_after": "PARTIALLY_FILLED",
+          "trade_id": "700001",
+          "type": "OrderFilled",
+          "venue_order_id": "900001"
+        },
+        {
+          "client_order_id": "offline-fit-ioc_partial_cancel",
+          "filled_quantity_after": "0.04000",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "status_after": "CANCELED",
+          "type": "OrderCanceled"
+        }
+      ],
+      "external_fill_reports": 0,
+      "external_fills": [],
+      "external_status_reports": 0,
+      "filled_quantity": "0.04000",
+      "final_status": "CANCELED",
+      "fit": "pass",
+      "leaves_quantity": "0.06000",
+      "required": {
+        "commission_usdc": "1.80000000",
+        "filled_quantity": "0.04000",
+        "status": "CANCELED",
+        "unique_fills": 1
+      },
+      "steps": [
+        {
+          "action": "accept",
+          "buffered_fills": 0,
+          "cloid_mappings": 1,
+          "closed": false,
+          "filled_quantity": "0.00000",
+          "reported_filled_quantity": "0.00000",
+          "reported_time_ns": 1793347200000000000,
+          "status": "ACCEPTED"
+        },
+        {
+          "action": "fill1",
+          "buffered_fills": 0,
+          "cloid_mappings": 1,
+          "closed": false,
+          "filled_quantity": "0.04000",
+          "reported_fill_quantity": "0.04000",
+          "reported_time_ns": 1793347200000000000,
+          "reported_trade_id": "700001",
+          "status": "PARTIALLY_FILLED"
+        },
+        {
+          "action": "cancel4",
+          "buffered_fills": 0,
+          "cloid_mappings": 0,
+          "closed": true,
+          "filled_quantity": "0.04000",
+          "reported_filled_quantity": "0.04000",
+          "reported_time_ns": 1793347200000000000,
+          "status": "CANCELED"
+        }
+      ],
+      "submit_calls": 1,
+      "upstream_errors": [],
+      "venue_order_id": "900001"
+    },
+    {
+      "bounded_verdict": "HOLD",
+      "case": "late_partial_after_cancel",
+      "checks": {
+        "buffer_drained": true,
+        "core_commission": true,
+        "core_trade_ids": true,
+        "event_commission": true,
+        "expected_trade_ids": true,
+        "external_handoff_content": true,
+        "filled_quantity": true,
+        "no_unattributed_report": true,
+        "no_upstream_exception": true,
+        "one_submit": true,
+        "remaining_quantity": true,
+        "required_final_status": false,
+        "stable_identity": true,
+        "terminal_ioc_remainder": false,
+        "unique_fill_count": true
+      },
+      "client_order_id": "offline-fit-late_partial_after_cancel",
+      "closed": false,
+      "core_commissions": [
+        "3.15000000 USDC"
+      ],
+      "core_trade_ids": [
+        "700001",
+        "700002"
+      ],
+      "events": [
+        {
+          "client_order_id": "offline-fit-late_partial_after_cancel",
+          "filled_quantity_after": "0.00000",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "status_after": "SUBMITTED",
+          "type": "OrderSubmitted"
+        },
+        {
+          "client_order_id": "offline-fit-late_partial_after_cancel",
+          "filled_quantity_after": "0.00000",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "status_after": "ACCEPTED",
+          "type": "OrderAccepted",
+          "venue_order_id": "900001"
+        },
+        {
+          "client_order_id": "offline-fit-late_partial_after_cancel",
+          "commission": "1.80000000 USDC",
+          "filled_quantity_after": "0.04000",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "last_quantity": "0.04000",
+          "price": "100000",
+          "status_after": "PARTIALLY_FILLED",
+          "trade_id": "700001",
+          "type": "OrderFilled",
+          "venue_order_id": "900001"
+        },
+        {
+          "client_order_id": "offline-fit-late_partial_after_cancel",
+          "filled_quantity_after": "0.04000",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "status_after": "CANCELED",
+          "type": "OrderCanceled"
+        },
+        {
+          "client_order_id": "offline-fit-late_partial_after_cancel",
+          "commission": "1.35000000 USDC",
+          "filled_quantity_after": "0.07000",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "last_quantity": "0.03000",
+          "price": "100000",
+          "status_after": "PARTIALLY_FILLED",
+          "trade_id": "700002",
+          "type": "OrderFilled",
+          "venue_order_id": "900001"
+        }
+      ],
+      "external_fill_reports": 0,
+      "external_fills": [],
+      "external_status_reports": 0,
+      "filled_quantity": "0.07000",
+      "final_status": "PARTIALLY_FILLED",
+      "fit": "failure",
+      "leaves_quantity": "0.03000",
+      "required": {
+        "commission_usdc": "3.15000000",
+        "filled_quantity": "0.07000",
+        "status": "CANCELED",
+        "unique_fills": 2
+      },
+      "steps": [
+        {
+          "action": "accept",
+          "buffered_fills": 0,
+          "cloid_mappings": 1,
+          "closed": false,
+          "filled_quantity": "0.00000",
+          "reported_filled_quantity": "0.00000",
+          "reported_time_ns": 1793347200000000000,
+          "status": "ACCEPTED"
+        },
+        {
+          "action": "fill1",
+          "buffered_fills": 0,
+          "cloid_mappings": 1,
+          "closed": false,
+          "filled_quantity": "0.04000",
+          "reported_fill_quantity": "0.04000",
+          "reported_time_ns": 1793347200000000000,
+          "reported_trade_id": "700001",
+          "status": "PARTIALLY_FILLED"
+        },
+        {
+          "action": "cancel4",
+          "buffered_fills": 0,
+          "cloid_mappings": 0,
+          "closed": true,
+          "filled_quantity": "0.04000",
+          "reported_filled_quantity": "0.04000",
+          "reported_time_ns": 1793347200000000000,
+          "status": "CANCELED"
+        },
+        {
+          "action": "fill2",
+          "buffered_fills": 0,
+          "cloid_mappings": 0,
+          "closed": false,
+          "filled_quantity": "0.07000",
+          "reported_fill_quantity": "0.03000",
+          "reported_time_ns": 1793347200000000000,
+          "reported_trade_id": "700002",
+          "status": "PARTIALLY_FILLED"
+        },
+        {
+          "action": "cancel7",
+          "buffered_fills": 0,
+          "cloid_mappings": 0,
+          "closed": false,
+          "filled_quantity": "0.07000",
+          "reported_filled_quantity": "0.07000",
+          "reported_time_ns": 1793347200000000000,
+          "status": "PARTIALLY_FILLED"
+        }
+      ],
+      "submit_calls": 1,
+      "upstream_errors": [],
+      "venue_order_id": "900001"
+    },
+    {
+      "bounded_verdict": "HOLD",
+      "case": "cancel_before_fill",
+      "checks": {
+        "buffer_drained": true,
+        "core_commission": true,
+        "core_trade_ids": true,
+        "event_commission": true,
+        "expected_trade_ids": true,
+        "external_handoff_content": true,
+        "filled_quantity": true,
+        "no_unattributed_report": true,
+        "no_upstream_exception": true,
+        "one_submit": true,
+        "remaining_quantity": true,
+        "required_final_status": false,
+        "stable_identity": true,
+        "terminal_ioc_remainder": false,
+        "unique_fill_count": true
+      },
+      "client_order_id": "offline-fit-cancel_before_fill",
+      "closed": false,
+      "core_commissions": [
+        "1.80000000 USDC"
+      ],
+      "core_trade_ids": [
+        "700001"
+      ],
+      "events": [
+        {
+          "client_order_id": "offline-fit-cancel_before_fill",
+          "filled_quantity_after": "0.00000",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "status_after": "SUBMITTED",
+          "type": "OrderSubmitted"
+        },
+        {
+          "client_order_id": "offline-fit-cancel_before_fill",
+          "filled_quantity_after": "0.00000",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "status_after": "ACCEPTED",
+          "type": "OrderAccepted",
+          "venue_order_id": "900001"
+        },
+        {
+          "client_order_id": "offline-fit-cancel_before_fill",
+          "filled_quantity_after": "0.00000",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "status_after": "CANCELED",
+          "type": "OrderCanceled"
+        },
+        {
+          "client_order_id": "offline-fit-cancel_before_fill",
+          "commission": "1.80000000 USDC",
+          "filled_quantity_after": "0.04000",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "last_quantity": "0.04000",
+          "price": "100000",
+          "status_after": "PARTIALLY_FILLED",
+          "trade_id": "700001",
+          "type": "OrderFilled",
+          "venue_order_id": "900001"
+        }
+      ],
+      "external_fill_reports": 0,
+      "external_fills": [],
+      "external_status_reports": 0,
+      "filled_quantity": "0.04000",
+      "final_status": "PARTIALLY_FILLED",
+      "fit": "failure",
+      "leaves_quantity": "0.06000",
+      "required": {
+        "commission_usdc": "1.80000000",
+        "filled_quantity": "0.04000",
+        "status": "CANCELED",
+        "unique_fills": 1
+      },
+      "steps": [
+        {
+          "action": "accept",
+          "buffered_fills": 0,
+          "cloid_mappings": 1,
+          "closed": false,
+          "filled_quantity": "0.00000",
+          "reported_filled_quantity": "0.00000",
+          "reported_time_ns": 1793347200000000000,
+          "status": "ACCEPTED"
+        },
+        {
+          "action": "cancel0",
+          "buffered_fills": 0,
+          "cloid_mappings": 0,
+          "closed": true,
+          "filled_quantity": "0.00000",
+          "reported_filled_quantity": "0.00000",
+          "reported_time_ns": 1793347200000000000,
+          "status": "CANCELED"
+        },
+        {
+          "action": "fill1",
+          "buffered_fills": 0,
+          "cloid_mappings": 0,
+          "closed": false,
+          "filled_quantity": "0.04000",
+          "reported_fill_quantity": "0.04000",
+          "reported_time_ns": 1793347200000000000,
+          "reported_trade_id": "700001",
+          "status": "PARTIALLY_FILLED"
+        },
+        {
+          "action": "cancel4",
+          "buffered_fills": 0,
+          "cloid_mappings": 0,
+          "closed": false,
+          "filled_quantity": "0.04000",
+          "reported_filled_quantity": "0.04000",
+          "reported_time_ns": 1793347200000000000,
+          "status": "PARTIALLY_FILLED"
+        }
+      ],
+      "submit_calls": 1,
+      "upstream_errors": [],
+      "venue_order_id": "900001"
+    },
+    {
+      "bounded_verdict": "HOLD",
+      "case": "cancel_before_accept_late_fill",
+      "checks": {
+        "buffer_drained": true,
+        "core_commission": false,
+        "core_trade_ids": false,
+        "event_commission": false,
+        "expected_trade_ids": false,
+        "external_handoff_content": true,
+        "filled_quantity": false,
+        "no_unattributed_report": false,
+        "no_upstream_exception": true,
+        "one_submit": true,
+        "remaining_quantity": false,
+        "required_final_status": true,
+        "stable_identity": false,
+        "terminal_ioc_remainder": true,
+        "unique_fill_count": false
+      },
+      "client_order_id": "offline-fit-cancel_before_accept_late_fill",
+      "closed": true,
+      "core_commissions": [],
+      "core_trade_ids": [],
+      "events": [
+        {
+          "client_order_id": "offline-fit-cancel_before_accept_late_fill",
+          "filled_quantity_after": "0.00000",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "status_after": "SUBMITTED",
+          "type": "OrderSubmitted"
+        },
+        {
+          "client_order_id": "offline-fit-cancel_before_accept_late_fill",
+          "filled_quantity_after": "0.00000",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "status_after": "CANCELED",
+          "type": "OrderCanceled"
+        }
+      ],
+      "external_fill_reports": 1,
+      "external_fills": [
+        {
+          "client_order_id": "0x06713aed56da0d1cf17e4f4118fe6b69",
+          "commission": "1.80000000 USDC",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "last_quantity": "0.04000",
+          "trade_id": "700001",
+          "venue_order_id": "900001"
+        }
+      ],
+      "external_status_reports": 1,
+      "filled_quantity": "0.00000",
+      "final_status": "CANCELED",
+      "fit": "failure",
+      "leaves_quantity": "0.10000",
+      "required": {
+        "commission_usdc": "1.80000000",
+        "filled_quantity": "0.04000",
+        "status": "CANCELED",
+        "unique_fills": 1
+      },
+      "steps": [
+        {
+          "action": "cancel0",
+          "buffered_fills": 0,
+          "cloid_mappings": 0,
+          "closed": true,
+          "filled_quantity": "0.00000",
+          "reported_filled_quantity": "0.00000",
+          "reported_time_ns": 1793347200000000000,
+          "status": "CANCELED"
+        },
+        {
+          "action": "fill1",
+          "buffered_fills": 0,
+          "cloid_mappings": 0,
+          "closed": true,
+          "filled_quantity": "0.00000",
+          "reported_fill_quantity": "0.04000",
+          "reported_time_ns": 1793347200000000000,
+          "reported_trade_id": "700001",
+          "status": "CANCELED"
+        },
+        {
+          "action": "accept",
+          "buffered_fills": 0,
+          "cloid_mappings": 0,
+          "closed": true,
+          "filled_quantity": "0.00000",
+          "reported_filled_quantity": "0.00000",
+          "reported_time_ns": 1793347200000000000,
+          "status": "CANCELED"
+        }
+      ],
+      "submit_calls": 1,
+      "upstream_errors": [],
+      "venue_order_id": null
+    }
+  ],
+  "decision": "HOLD",
+  "event_delivery": "actual events applied inline; base generators/event bus bypassed",
+  "evidence_kind": "actual-unbound-adapter-methods-real-events-core-order-apply",
+  "executed_methods": [
+    "_submit_order",
+    "_check_time_in_force",
+    "_process_submit_reports",
+    "_handle_order_status_report_pyo3",
+    "_handle_fill_report_pyo3",
+    "_is_cloid_format",
+    "_resolve_cloid",
+    "_is_external_order",
+    "_cleanup_cloid_mapping",
+    "_drain_fill_buffer"
+  ],
+  "failed_cases": [
+    "late_partial_after_cancel",
+    "cancel_before_fill",
+    "cancel_before_accept_late_fill"
+  ],
+  "fixture_provenance": "hand-authored domain reports; not captured venue traffic",
+  "harness_sha256": "a550128b6dc8ed4e9558cc472c28d1b0e20f45653b2ae078a7f9dafbdf7fbfb2",
+  "installed_source_sha256": {
+    "__init__.py": "d5d5ff014167ba12813593e67fef6cc4e156f76a9967f3be07e2fa9e4529bbf6",
+    "config.py": "98ecb538b5e92015860d77a62604fefa566290d13f799d2d7446b6fee732fdff",
+    "execution.py": "64f94799a882f054b42b94f25cecc1ae9f16f578655c07dde72b79b5e7ea4c8b",
+    "factories.py": "d71755676ecfcf29940ba9041ac1a3c049a9edef8f3897a4173a566a5576b219"
+  },
+  "new_risk_permitted": false,
+  "not_executed": [
+    "client-construction",
+    "signer-construction",
+    "factory-create",
+    "event-bus",
+    "native-transport",
+    "native-retries",
+    "wire-response-parser",
+    "venue-requests",
+    "durable-recovery",
+    "reconciliation",
+    "account-balances",
+    "funding",
+    "cancel-request-transport"
+  ],
+  "observation_contract": "counted-pass-and-hold-outcomes-v1",
+  "published_wheel_binding_verified": false,
+  "runtime": {
+    "libc": [
+      "glibc",
+      "2.43"
+    ],
+    "machine": "x86_64",
+    "python": "3.13.15"
+  },
+  "schema": "hyperliquid-offline-lifecycle-edges-v1",
+  "shared_harness_sha256": "8c2f9e12aae0b8253ee56004b6ca1cd796fa0f40cc8b813ad5f088a8cb87a29c"
+}

@@ -15,10 +15,11 @@ from pathlib import Path
 from typing import cast
 from unittest.mock import patch
 
-from fit_gates.d41_nautilus.fit_gate import PROTECTED_CREDENTIAL_ENV_NAMES
+from fit_gates.d41_nautilus.fit_gate import INSTRUMENT_ID, PROTECTED_CREDENTIAL_ENV_NAMES
 from nautilus_trader.model.enums import OrderSide
 
 from hyperliquid_bot.local_mode import UnsafeTradingModeError
+from hyperliquid_bot.paper_risk import PaperPositionKey, PaperSignedPosition
 from vertical_slices.d01_btc_perp.slice import DEFAULT_CONFIG, D01SmokeStrategy
 from vertical_slices.d22a_paper_ledger.slice import (
     CRASH_EXIT_CODE,
@@ -38,6 +39,13 @@ from vertical_slices.d22a_paper_ledger.slice import (
 )
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+TEST_POSITION = PaperSignedPosition(
+    PaperPositionKey("PAPER", "D22A-UNIT", "HYPERLIQUID", INSTRUMENT_ID.value, "D01SmokeStrategy"),
+    Decimal("0"),
+    "unit-v1",
+    Decimal("0"),
+    True,
+)
 
 
 def entry_record(
@@ -54,6 +62,7 @@ def entry_record(
         reduce_only=False,
         current_position=Decimal(0),
         risk_price=Decimal("78047.0"),
+        position=TEST_POSITION,
     )
 
 
@@ -142,6 +151,7 @@ class D22ALedgerUnitTests(unittest.TestCase):
             reduce_only=False,
             current_position=Decimal(0),
             risk_price=Decimal("78047.0"),
+            position=TEST_POSITION,
         )
         self.assertEqual(first[:2], second[:2])
         self.assertNotEqual(first[2], second[2])

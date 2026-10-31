@@ -65,8 +65,8 @@
   "parent_basis": "cf50a77d99893f1f90cd8707ff41e0ce8c8211d9",
   "publication_files": {
     ".github/workflows/ci.yml": {
-      "bytes": 18075,
-      "sha256": "2efe8efc8d4c824902382314520613db3c1fa787a2d65307668f7f79af13b6eb"
+      "bytes": 19310,
+      "sha256": "155426988e01de2c2fba856e835a7908651cf11541907bddfdac4d4bf6804456"
     },
     "vertical_slices/__init__.py": {
       "bytes": 79,
@@ -159,8 +159,8 @@
       "sha256": "a7cc753fd5141ea915ed016562914f14dfcfabb149b19dba98449828ff320899"
     },
     "uv.lock": {
-      "bytes": 61885,
-      "sha256": "edb4ee09b2effca731043b49ea61477ebc72f8047dc2b7f16317f0b2ae9d905d"
+      "bytes": 61888,
+      "sha256": "eda24fdd682f62b175e68474b5a8f07627558b86d7dc72f333a5c742d6f9aa58"
     }
   },
   "run_binding": {

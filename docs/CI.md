@@ -1,5 +1,10 @@
 # Continuous integration
 
+The delivery and separate-review policy is in [GITHUB_WORKFLOW.md](GITHUB_WORKFLOW.md).
+GitHub Free on the current public repository is the baseline. CodeQL uses
+GitHub's default setup alongside these source checks; paid Copilot review is
+not required.
+
 PAPER-only GitHub Actions. This repository extends the existing
 `.github/workflows/ci.yml` and `.github/workflows/cockpit.yml` workflows. There
 is no parallel CI stack, no paid runner, and no LIVE/wallet/signing job.
@@ -84,6 +89,30 @@ outputs are empty and every heavy step runs, instead of the jobs reporting a
 skipped success. A failed diff inside `ci_scope.py` also runs everything.
 Pushes to `main` always run everything.
 
+## Final CI gate
+
+`ci-gate` runs with `always()` after all eight jobs in the CI workflow. Its
+dependency results must succeed, except `dependency-review` may be skipped on
+`push`, where it does not apply. The gate requires the existing classifier's
+explicit area outputs and reason; a missing classification or a draft-skip
+reason fails even if the PR became ready while the run was executing.
+
+For PRs, the gate reads the current GitHub PR with read-only permissions and
+requires an open, non-draft PR with the same number, head SHA and base SHA as
+the event. API errors, missing results, failures and cancellations fail closed.
+Both heavy areas may skip only for the explicit docs-only classification.
+Unchanged areas keep their existing selective checks.
+
+Draft PRs therefore have a red `ci-gate` while retaining cheap draft checks and
+skipping heavy tests. Marking the PR ready starts new applicable checks on that
+head. Old draft-era success job names are not merge-ready evidence.
+
+The gate aggregates only `ci.yml`; Cockpit's `first-paper-screen` remains a
+separate required check. It is not an independent AI-review publisher or an
+authorization boundary against someone allowed to change workflow code.
+Make `ci-gate` required only after its first successful ready-PR run establishes
+the check name and source, preserving every existing required check.
+
 ## Python tests in parallel
 
 `python-foundation` runs the suite with pytest-xdist over the runner's cores:
@@ -144,11 +173,58 @@ New names (add if branch protection requires them):
 | `dependency-review` | `pull_request` only | skipped on `push` to `main` |
 | `actionlint` | every CI run | workflow YAML |
 | `regress` | every CI run; its Python step needs the `python` area, its browser steps the `typescript` area (both skip on docs-only and draft PRs) | API + browser regress |
+| `ci-gate` | always after the CI workflow jobs | rejects draft-era skips, unavailable results and stale PR head/base; separate Cockpit check remains required |
 
 A job whose area is not affected (docs-only, the other area only, or a
 draft PR) still reports `python-foundation`, `d01-publication`,
 `typescript-foundation`, `regress`, and `first-paper-screen` as **success**
 (early skip step). Do not require `dependency-review` on `push` to `main`.
+The final `ci-gate` intentionally fails for draft-skip runs despite those
+individual success names.
+
+## Actual offline adapter observations in D01
+
+The existing `d01-publication` job reuses its exact isolated NautilusTrader
+`1.231.0` environment for the reviewed offline fragment runners. This supersedes
+the original evidence notes describing frozen-only CI checks. It adds no job,
+package installation, credential or runtime access. The existing 13 D01,
+7 D22-A and 10 COURSE-1 test gates retain their exact counts and no-skip rules.
+The new step uses the same Python-area/draft gate; classification failures
+still run the required work, and current-ready checks remain mandatory.
+
+`fit_gates.hyperliquid_testnet_readiness.verify_ci` invokes a fixed registry:
+5 historical lifecycle cases, 7 lifecycle edges and 46 report observations.
+The runners execute actual pinned adapter methods/core types behind their
+reviewed explicit offline seams. Guards refuse unsafe modes and credential
+presence before optional imports. No client, signer, factory, event loop,
+venue request, deployment or NAS scan is involved. Python audit hooks are not
+an OS network sandbox for native extensions.
+
+Every business JSON field is compared with frozen evidence, including source
+and runner hashes, identities, quantities, fees, classifications, limits and
+case order/completeness. Only the top-level `runtime` object is excluded, after
+strict key/type validation; recorded and observed Python/machine/libc metadata
+are printed separately. No nested field is excluded. Canonical encoding follows
+the runner CLIs (including report dataclass tuples encoded as JSON arrays),
+distinguishes boolean/integer/float scalars and rejects non-finite numbers,
+non-string object keys and duplicate frozen keys. No probe with a changing
+observation timestamp is in this registry.
+
+Success means all **58 expected observations reproduced**, including counted
+negative/HOLD cases. It never means adapter conformance passed. The three edge
+HOLD cases remain named in the log, overall decision remains HOLD and new-risk
+permission stays false. Missing/duplicate cases, changed business output,
+source drift, incorrect classifications, missing dependencies or runner errors
+fail the step; there is no successful skip, xfail or tolerated runner failure.
+The [edge](research/hyperliquid-lifecycle-edges.md) and
+[report](research/hyperliquid-report-trust.md) limitations still apply.
+
+This integration intentionally refreshes only the `ci.yml` byte count/hash in
+the existing D01 publication-integrity manifest because the workflow is part of
+that binding. Historical runner/evidence bytes, D41/root dependency locks,
+publication artifacts and study/holdout pins are unchanged. The ordinary
+unit suite tests comparison/guard mutations without importing the optional
+adapter; this existing isolated job performs the actual 58-case executions.
 
 ## D01 publication hash
 
@@ -178,8 +254,21 @@ See the PR description for the same table. Summary:
    `not venue-reconciled`. Relabeling as venue PnL fails the view contract.
 5. **OPERATOR_STOP / live tmux names** —
    Stop scripts and pytest sources must not contain
-   `tmux send-keys -t hl-capture` (or `bn-` / `bv-` / `kr-capture`). A mutated
+   literal live-session targets for `hl-capture`, `bn-capture`, `bv-capture`,
+   `bv-std-capture`, `kr-capture` or `okx-capture`. A mutated
    helper fixture expects `OperatorStopIsolationError`. Tests/CI must use
-   isolated fake session names and become a no-op when a live name is
-   targeted (`TEST_ISOLATION_NOOP`). No `pkill` / `killall` /
+   the six explicit `pytest-<lane>-isolated` names (`hl`, `bn`, `bv`,
+   `bv-std`, `kr`, `okx`). Any nonempty pytest/CI/isolation marker activates
+   the guard, including `CI=false` or an isolation value of `0`. Start,
+   `--check-only` and stop refuse live or unknown names before querying tmux
+   (`TEST_ISOLATION_NOOP`). Prefixes, patterns, session IDs and pane/window
+   selectors are rejected. Helpers use [tmux exact session targets](https://man.openbsd.org/tmux.1#COMMANDS)
+   (`has-session -t =name`, `send-keys`/`pipe-pane -t =name:`). The trailing
+   colon explicitly selects the session, preventing window/pane fallback.
+   Normal operator names are limited to 1–128 ASCII letters,
+   digits, underscores or hyphens, starting with a letter or digit.
+   Operator subprocess tests prepend fake `tmux` and collector-refusing `uv`
+   commands; they never contact the host's tmux server or start collectors.
+   This prevents accidental operations; it is not a sandbox for code that
+   deliberately removes every marker or invokes another binary. No `pkill` / `killall` /
    `tmux kill-server`.

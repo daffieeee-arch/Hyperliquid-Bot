@@ -1,0 +1,18 @@
+name: Bug report
+description: Report a reproducible correctness issue without secrets or bulk data.
+labels: [bug]
+body:
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction, expected result and actual result
+      description: Include a minimal fixture or command, source commit and mode. Redact credentials and personal data; never attach private keys.
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact and affected contracts
+      description: Explain whether research validity, data quality, PAPER risk or operator visibility is affected.
+    validations:
+      required: true

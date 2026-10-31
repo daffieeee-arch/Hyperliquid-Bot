@@ -26,6 +26,7 @@ jobs:
     outputs:
       python: ${{ steps.scope.outputs.python }}
       typescript: ${{ steps.scope.outputs.typescript }}
+      reason: ${{ steps.scope.outputs.reason }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -266,6 +267,16 @@ jobs:
               raise SystemExit(f"Soak was not an all-pass run: {nonpassing}")
           PY
 
+      - name: Reproduce all 58 offline adapter fragment observations
+        if: needs.changes.outputs.python != 'false'
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+          PYTHONPATH: src:.
+          TRADING_MODE: PAPER
+        run: |
+          "${RUNNER_TEMP}/d01-venv/bin/python" \
+            -m fit_gates.hyperliquid_testnet_readiness.verify_ci
+
       - name: Verify D01 publication and dependency closure
         if: needs.changes.outputs.python != 'false'
         env:
@@ -462,3 +473,33 @@ jobs:
 
       - name: Scan full history
         run: gitleaks git . --redact --no-banner --log-opts=--all
+
+  ci-gate:
+    # Run even after failures or cancellations so unavailable evidence is red.
+    if: ${{ always() }}
+    needs:
+      - changes
+      - python-foundation
+      - d01-publication
+      - typescript-foundation
+      - regress
+      - dependency-review
+      - actionlint
+      - secret-scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Require completed CI and a current ready pull request
+        env:
+          CI_NEEDS: ${{ toJSON(needs) }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/ci_gate.py

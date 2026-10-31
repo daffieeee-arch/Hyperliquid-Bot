@@ -2,12 +2,15 @@
 
 ## Decision
 
-Primary software development happens on the Netcup **Ubuntu 24.04 LTS** VPS
-(hostname `chupa`) through Cursor IDE Remote SSH, Cursor CLI (`agent`) or Codex
-CLI. The same VPS is the primary capture and PAPER host under **ADR-024**.
-Interactive source work remains isolated from running service containers and
-durable runtime volumes; long-running services consume reviewed,
-digest-pinned images rather than the mutable checkout.
+Primary software development happens on the **Ubuntu VM on TrueNAS SCALE**
+under **ADR-025**. The operator reported the TrueNAS placement; local
+inspection observed Ubuntu **26.04.1 LTS** and KVM. This development move does
+not approve a migrated capture or PAPER runtime. **ADR-024** and VPS-named
+runbooks retain the earlier Netcup profile as historical operational reference.
+
+Interactive source work stays separate from durable datasets and running
+services. Release images and runtime promotion remain separate planned work.
+See [migration status](runbooks/ubuntu-vm-migration-status.md).
 
 TerraPC/WSL2 is a secondary operator environment, not the primary development
 or capture host.
@@ -16,23 +19,22 @@ or capture host.
 
 Primary host:
 
-- Netcup VPS;
-- Ubuntu 24.04 LTS;
-- hostname `chupa`;
-- Cursor IDE with the Anysphere Remote SSH extension;
-- Cursor CLI (`agent`);
-- Codex CLI;
-- native Linux Python, Node.js and Docker tooling.
+- Ubuntu VM hosted on TrueNAS SCALE, as reported by the operator;
+- observed Ubuntu 26.04.1 LTS / KVM;
+- source under `$HOME/coding-projects/Hyperliquid-Bot`;
+- Codex with feature branches and isolated worktrees;
+- pinned project Python and Node.js tooling;
+- Cursor/Remote SSH and disposable Docker services when needed and installed.
 
-Netcup lists Ubuntu 24.04 among its KVM vServer images, Ubuntu classifies
-24.04 as an LTS release, and Docker supports Ubuntu Noble 24.04 for Docker
-Engine. Cursor documents Linux support for `agent`; OpenAI documents Linux
-support for Codex CLI. See the official references below.
+The VM OS and CI runner OS are separate choices. Use the repository-pinned
+Python/Node versions rather than the VM system Python. Docker compatibility
+and runtime prerequisites must be verified before introducing service
+containers on this host.
 
 ## Interactive tools
 
 Use Cursor Remote SSH when an editor is preferred. Use `agent` or `codex`
-directly in the VPS shell for terminal-first work. Run all tools from the
+directly in the VM shell for terminal-first work. Run all tools from the
 repository root unless a worktree is intentionally selected.
 
 Recommended permission posture:
@@ -46,21 +48,22 @@ Recommended permission posture:
 The primary paths are:
 
 ```bash
-export REPO_ROOT="$HOME/Hyperliquid Project/Hyperliquid-Bot"
-export ARTIFACT_ROOT="$HOME/Hyperliquid Project/data-capture"
+export REPO_ROOT="$HOME/coding-projects/Hyperliquid-Bot"
 cd "$REPO_ROOT"
+# Set ARTIFACT_ROOT and HIST_ARCHIVES_ROOT only to verified durable data roots.
 ```
 
-Keep capture data outside Git. The source checkout may coexist on the VPS with
-runtime services, but it is not mounted into production-like containers and
-is not the source of deployed service code.
+Keep capture data outside Git. The previous `$HOME/Hyperliquid Project/`
+layout was absent during the initial VM audit. Do not recreate an empty
+archive root and treat it as a completed data migration. Pass verified roots
+explicitly to existing helpers; legacy defaults still describe Netcup paths.
 
 ## Secondary TerraPC/WSL2 notes
 
 TerraPC/WSL2 may be used for isolated fallback development, GPU research, or
 the explicitly WSL-named operator runbooks. Keep any WSL checkout in its Linux
 filesystem, not under `/mnt/c` or a network share. WSL examples are secondary
-overrides; capture helper defaults always resolve to the VPS layout above.
+overrides; capture helper defaults still describe the legacy VPS layout.
 
 ### WSL2 resource guardrails
 
@@ -79,8 +82,8 @@ These values are starting limits, not permanent settings. Adjust them after obse
 
 ## Docker development model
 
-Use Docker Engine on Ubuntu 24.04 according to Docker's official Ubuntu
-installation guide. For secondary WSL use, Docker Desktop integration may be
+Before installing Docker Engine, verify support for the actual VM release
+using Docker's official Ubuntu installation guide. For secondary WSL use, Docker Desktop integration may be
 used; do not run a competing Docker Engine daemon in the same distribution.
 
 The local Compose stack is disposable and may include:
@@ -98,16 +101,21 @@ Local containers contain test/sample data only. They are not production state.
 
 ## Toolchain and version pinning
 
-Planned repository controls:
+Current repository controls:
 
-- Python version pinned in repository metadata;
+- Python 3.13.15 pinned in `.python-version` (system Python 3.14 is outside the supported range);
+- `uv` 0.12.5 pinned in `pyproject.toml`;
 - Python dependencies managed with `uv` and `uv.lock`;
-- Node.js LTS pinned through a repository version file;
-- `pnpm` version pinned through `packageManager` and lockfile;
-- base container images pinned to known versions and later to digests where practical;
+- Node.js 24.18.1 pinned in `.node-version`;
+- `pnpm` 11.23.0 pinned through `packageManager` and lockfile;
+- planned release-container bases must be pinned to reviewed versions/digests;
 - no production dependency uses an unreviewed floating `latest` tag.
 
-The exact versions are selected during repository bootstrap after compatibility checks with the official Hyperliquid SDK, FastAPI, Next.js and ClickHouse clients.
+Pinned tools were restored user-locally after the initial migration audit.
+Use `export PATH="$HOME/.local/bin:$PATH"` where needed. Locked dependencies
+were installed in the workflow feature worktree, not the main checkout.
+A passing local baseline still requires actual check results; see the
+[migration status](runbooks/ubuntu-vm-migration-status.md) for before/after evidence.
 
 ## Git and Codex workflow
 
@@ -135,19 +143,19 @@ open pull request → main
         ↓
 required CI green
         ↓
-independent agent/model review when material or high-risk
+separate Codex review agent checks final diff and test evidence
         ↓
-resolve blocking findings on the same branch; re-run CI
+extra security/quant review for high-risk changes
         ↓
-Cursor / Codex stop at Ready (do NOT merge feature PRs)
+resolve blocking findings; re-run affected tests, CI and review
         ↓
-Claude Code /code-review + Squash and Merge on its own after a clean last round
-(enabling LIVE/SHADOW/TESTNET, real capital, real credentials, live risk
- limits: Chupa OK first; Dependabot: on green CI)
+separate Codex merge agent verifies final head/base, CI and independent reviews
+        ↓
+explicit squash merge without branch-protection bypass
         ↓
 delete merged branch / worktree only if no leftover work
         ↓
-sync Netcup VPS main when deploy needed
+separately approved deployment; never implied by merge
 ```
 
 Rules:
@@ -158,23 +166,30 @@ Rules:
 - architecture changes must update the relevant documentation/ADR;
 - generated code must pass deterministic tests rather than rely on an LLM review alone;
 - default merge method is Squash and Merge;
-- **Cursor Cloud Agents and Codex do not merge feature PRs**; they leave PRs
-  Ready after CI and review fixes;
-- **Claude Code reviews feature PRs and squash-merges** them on its own once
-  CI is green and its last review round finds no correctness bug; high-risk
-  changes (execution, risk, secrets, CI, infra/runtime) get a separate
-  security round first; only a change that enables LIVE, SHADOW or TESTNET
-  trading, moves real capital, or adds or changes real credentials or live
-  risk limits needs Chupa's OK first; Dependabot may be merged on green CI;
+- implementation agents hand off to a separate Codex merge agent after CI and
+  independent review. Chupa authorizes routine merges through that agent without
+  asking him to read code or confirm each merge. The merge agent must not have
+  authored the change and uses an expected head SHA, without administrator bypass;
+- **A separate Codex review agent reviews feature PRs.** It checks the full
+  final diff, acceptance criteria and test evidence, and records head/base
+  commit identities with its findings. It does not implement that same change;
+- high-risk changes (execution, risk, secrets, CI, infra/runtime and non-trivial
+  strategy/data contracts) also receive an appropriate security/quant review;
+- Claude Code has no mandatory reviewer or merger role. LIVE/SHADOW/TESTNET, real capital,
+  real credentials or live risk-limit changes still need explicit operator approval;
+- follow [GitHub workflow](GITHUB_WORKFLOW.md) for review evidence and actual
+  merge gates. GitHub Free is sufficient for the current public repository;
+  no paid GitHub/Copilot reviewer is required;
 - extend CI only when existing workflows do not already cover the change;
   prefer the change-set areas and docs-only skip behavior in [CI](CI.md);
 - open a PR as a draft while review rounds still change it: a draft runs only
   the cheap checks, and marking it ready for review runs the full CI on its
   head, which must be green before merge;
-- independent review is required for material or high-risk changes (execution,
-  risk, secrets, LIVE gates, infra/runtime, non-trivial strategy/data
-  contracts); trivial docs/chore PRs may skip it unless requested;
+- independent review applies to feature changes; keep review proportionate for
+  trivial documentation/chore changes and honor an explicit review request;
 - no deployment occurs merely because a pull request was merged.
+- GitHub's unattended auto-merge stays disabled; the separate merge agent makes
+  the explicit gated squash merge during an active session.
 
 ## Local data policy
 
@@ -186,7 +201,8 @@ Development uses:
 - small local ClickHouse datasets;
 - read-only exports from an approved runtime store where explicitly needed.
 
-The full 24/7 dataset belongs on the VPS durable runtime store. Interactive
+The full retained dataset belongs on a verified durable runtime store. Its
+location and transfer to the VM remain unverified. Interactive
 development should not mutate the runtime ClickHouse instance. Heavy research
 can run as a controlled runtime research job or against a bounded exported
 dataset.
@@ -210,7 +226,7 @@ Where a later integration test genuinely needs a non-production secret, inject i
 ## Development versus runtime parity
 
 Parity is achieved through containers, contracts and tests—not by editing
-source inside running containers. Sharing a physical VPS does not merge the
+source inside running containers. Sharing a physical host does not merge the
 source checkout, disposable development services and durable runtime volumes.
 
 GitHub Actions Phase A, cockpit lint, and the PAPER API/browser regress
@@ -232,18 +248,17 @@ Keep consistent across local, CI and every runtime profile:
 
 Differences are limited to configuration, credentials, resource limits and persistent volumes.
 
-## Primary VPS bootstrap milestone
+## Ubuntu VM development bootstrap milestone
 
 The development environment is ready when all of the following are true:
 
-- Ubuntu 24.04 LTS is current and healthy;
-- hostname is `chupa`;
-- Cursor Remote SSH can open the repository;
-- `agent --version` and `codex --version` succeed;
-- repository and artifact roots match the primary paths above;
-- Git/GitHub authentication works from the VPS;
-- `docker run` and `docker compose` work on the VPS;
-- repository version managers/package tools are available;
+- the VM identity and source path match ADR-025;
+- the selected editor/Codex can open the repository;
+- Git/GitHub authentication works from the VM;
+- pinned Python, uv, Node.js and pnpm versions are available;
+- locked dependencies restore and relevant local checks pass;
+- runtime data roots are treated as unverified until separately inspected;
+- Docker prerequisites are checked when containers are actually needed;
 - no real trading credentials are present;
 - a feature branch can be pushed and a pull request created.
 

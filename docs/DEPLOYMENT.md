@@ -2,25 +2,28 @@
 
 ## Principle
 
-Source code is developed primarily on the Netcup Ubuntu 24.04 LTS VPS
-(hostname `chupa`), tested in CI and packaged into immutable Linux/amd64 OCI
-images for continuous services on that host.
+Source development has moved to an Ubuntu VM on TrueNAS SCALE (**ADR-025**).
+GitHub Actions runs source checks. Immutable Linux/amd64 OCI release images
+and their publication are a planned delivery stage, not an existing
+continuous deployment pipeline.
 
 Production-like services must not run directly from the mutable development
-checkout. They consume versioned images and persistent volumes even though
-development and runtime share the VPS.
+checkout. They must consume reviewed versioned images and verified persistent
+volumes, irrespective of whether development and runtime share a host.
 
-The architecture boundary is host-neutral Linux/OCI. **ADR-024** records a supported Ubuntu LTS
-VPS as the definitive primary development, capture and PAPER runtime profile.
-The selected host is the Netcup Ubuntu 24.04 LTS VPS.
+The architecture boundary remains host-neutral Linux/OCI. **ADR-024** records
+the historical Netcup Ubuntu LTS profile. **ADR-025** changes the development
+host only: capture, datasets and runtime operation on the VM still require
+verification and explicit deployment gates. See
+[migration status](runbooks/ubuntu-vm-migration-status.md).
 
 ## Environment matrix
 
 | Environment | Host | Purpose | Credentials | Persistence |
 |---|---|---|---|---|
-| DEV | Netcup Ubuntu 24.04 LTS VPS; TerraPC/WSL2 secondary | coding, unit tests, local integration tests, small research | no live exchange credentials | disposable/local |
-| CI | GitHub Actions | independent tests, security checks and image builds | repository-scoped workflow credentials | ephemeral |
-| PAPER | Netcup Ubuntu 24.04 LTS VPS (`chupa`) | 24/7 public data, paper execution, Grafana and cockpit | public data; no live trading key | durable |
+| DEV | Ubuntu VM on TrueNAS SCALE; TerraPC/WSL2 secondary | coding, unit tests, local integration tests, small research | no live exchange credentials | disposable/local |
+| CI | GitHub Actions | independent tests/security checks; image release planned | repository-scoped workflow credentials | ephemeral |
+| PAPER | separately approved runtime; VM migration unverified | bounded proofs exist; continuous services remain unverified | public data; no live trading key | verified durable volumes required |
 | SHADOW | approved isolated Linux/OCI runtime | live signals/account observation without submitting orders | read-only/account-scoped where needed | durable and isolated |
 | SMALL LIVE | approved supported isolated runtime | tightly capped real execution | dedicated trade-only credentials | durable and isolated |
 | PRODUCTION | approved supported isolated runtime | controlled scaled operation | least-privilege per service | durable, backed up and monitored |
@@ -29,8 +32,11 @@ PAPER, SHADOW and LIVE are distinct deployments with separate configuration, sec
 
 ## Software supply chain
 
+The release and deployment steps below are target architecture; source CI
+already exists, but no image publication or deployment is claimed.
+
 ```text
-Cursor / Codex on the Netcup VPS
+Cursor / Codex on the Ubuntu VM
       ↓
 feature branch / pull request
       ↓
@@ -78,7 +84,7 @@ The initial CI pipeline should include:
 - actionlint on workflow YAML;
 - a focused PAPER API/browser regress suite (fixtures only);
 - dependency review where available;
-- container build smoke test;
+- planned release-container build smoke test;
 - schema/contract compatibility checks;
 - configuration validation;
 - tests proving non-PAPER modes fail closed until explicitly implemented;
@@ -119,9 +125,12 @@ Image requirements:
 
 Do not deploy `latest` to PAPER, SHADOW or LIVE.
 
-## Private GitHub Container Registry
+## Planned GitHub Container Registry
 
-Images are published to private GHCR packages after CI and release gates pass. Naming is expected to follow a clear pattern such as:
+The planned release workflow will publish GHCR packages after CI and release
+gates pass. Package visibility and storage allowance must be chosen explicitly;
+the source repository is public and uses GitHub Free. Naming is expected to
+follow a clear pattern such as:
 
 ```text
 ghcr.io/daffieeee-arch/hyperliquid-bot-collector
@@ -132,14 +141,15 @@ ghcr.io/daffieeee-arch/hyperliquid-bot-cockpit
 
 Each deployment profile receives a dedicated registry credential with package-read access only. That credential is not used for Git repository writes and cannot publish packages.
 
-## Primary Ubuntu LTS VPS profile
+## Historical Ubuntu LTS VPS profile
 
-**ADR-024** selects Linux/amd64 OCI images and Compose-compatible declarative configuration on a
-supported Ubuntu LTS VPS (Ubuntu 24.04 LTS) as the definitive PAPER runtime
-profile. Deployments
-pin image digests; `PAPER` remains fail-closed; rollback is redeploy of a previous digest.
+**ADR-024** selected a Netcup Ubuntu 24.04 LTS VPS and digest-pinned
+Linux/amd64 OCI/Compose configuration. Keep this as a historical profile, not
+a claim that those services run on the new VM. **ADR-025** requires a fresh
+data/runtime verification before any cutover. Deployments still pin image
+digests; `PAPER` stays fail-closed and rollback restores a known-good digest.
 
-A PAPER-only reference size for multi-day market-data capture is
+The legacy PAPER-only sizing reference for multi-day market-data capture is
 [linux-vps-reference-profile.md](runbooks/linux-vps-reference-profile.md).
 
 ## Initial deployment policy

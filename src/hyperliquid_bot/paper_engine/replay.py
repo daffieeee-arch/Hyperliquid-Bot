@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -42,12 +43,36 @@ _HYPERLIQUID_BUY: str = "B"
 _HYPERLIQUID_SELL: str = "A"
 
 
+@dataclass(frozen=True, slots=True)
+class ReplayResources:
+    """Opt-in offline resource profile; existing callers keep DuckDB defaults."""
+
+    threads: int = 1
+    memory_mib: int = 128
+
+    def __post_init__(self) -> None:
+        if type(self.threads) is not int or self.threads != 1:
+            raise PaperTapeError("bounded offline replay requires one DuckDB thread.")
+        if type(self.memory_mib) is not int or not 32 <= self.memory_mib <= 128:
+            raise PaperTapeError("DuckDB memory_mib must be between 32 and 128.")
+
+    def connection_config(self) -> dict[str, str | bool | int | float | list[str]]:
+        return {
+            "threads": self.threads,
+            "memory_limit": f"{self.memory_mib}MiB",
+            "max_temp_directory_size": "0B",
+            "autoload_known_extensions": False,
+            "autoinstall_known_extensions": False,
+        }
+
+
 def load_hyperliquid_parquet_tape(
     parquet_paths: Sequence[Path],
     *,
     instrument_id: str = "BTC-PERP",
     venue: str = "hyperliquid",
     product: str = "BTC-PERP",
+    resources: ReplayResources | None = None,
 ) -> tuple[MarketEvent, ...]:
     """Read completed raw Parquet parts into a deterministic event tuple."""
 
@@ -57,7 +82,13 @@ def load_hyperliquid_parquet_tape(
     if venue != "hyperliquid" or product != "BTC-PERP":
         raise PaperTapeError("this replay reader is the Hyperliquid BTC-PERP raw tape.")
     relation = _read_parquet_sql(files)
-    connection = duckdb.connect(":memory:")
+    if resources is not None and type(resources) is not ReplayResources:
+        raise PaperTapeError("resources must be ReplayResources or None.")
+    connection = (
+        duckdb.connect(":memory:")
+        if resources is None
+        else duckdb.connect(":memory:", config=resources.connection_config())
+    )
     try:
         trades = _load_trades(
             connection,
@@ -170,7 +201,7 @@ def _load_trades(
         quantity = _require_decimal(_require_text(row[5], field_name="size"), field_name="size")
         event_time_ms = _require_int(row[6], field_name="event_time_ms")
         trade_id = _require_text(row[7], field_name="trade_id")
-        coin = _require_text(row[8], field_name="coin")
+        coin = _require_btc_coin(row[8])
         identity = (event_time_ms, coin, trade_id)
         fingerprint = (side, price, quantity, row[9], row[10])
         known = seen.get(identity)
@@ -217,7 +248,8 @@ def _load_bbos(
             json_extract_string(decode(payload_bytes), '$.data.bbo[0].px') AS bid_price,
             json_extract_string(decode(payload_bytes), '$.data.bbo[0].sz') AS bid_size,
             json_extract_string(decode(payload_bytes), '$.data.bbo[1].px') AS ask_price,
-            json_extract_string(decode(payload_bytes), '$.data.bbo[1].sz') AS ask_size
+            json_extract_string(decode(payload_bytes), '$.data.bbo[1].sz') AS ask_size,
+            json_extract_string(decode(payload_bytes), '$.data.coin') AS coin
         FROM {relation}
         WHERE venue = 'hyperliquid'
           AND product = ?
@@ -229,6 +261,7 @@ def _load_bbos(
     ).fetchall()
     events: list[BboEvent] = []
     for row in rows:
+        _require_btc_coin(row[7])
         message_ordinal = _require_int(row[0], field_name="message_ordinal")
         received_utc_ns = _require_int(row[1], field_name="received_utc_ns")
         event_time = utc_from_epoch_ms(_require_int(row[2], field_name="event_time_ms"))
@@ -263,7 +296,8 @@ def _load_marks(
         SELECT
             message_ordinal,
             received_utc_ns,
-            json_extract_string(decode(payload_bytes), '$.data.ctx.markPx') AS mark_price
+            json_extract_string(decode(payload_bytes), '$.data.ctx.markPx') AS mark_price,
+            json_extract_string(decode(payload_bytes), '$.data.coin') AS coin
         FROM {relation}
         WHERE venue = 'hyperliquid'
           AND product = ?
@@ -275,6 +309,7 @@ def _load_marks(
     ).fetchall()
     events: list[MarkEvent] = []
     for row in rows:
+        _require_btc_coin(row[3])
         message_ordinal = _require_int(row[0], field_name="message_ordinal")
         received_utc_ns = _require_int(row[1], field_name="received_utc_ns")
         mark_text = row[2]
@@ -314,6 +349,13 @@ def _require_text(value: object, *, field_name: str) -> str:
     if type(value) is not str or not value:
         raise PaperTapeError(f"{field_name} is missing.")
     return value
+
+
+def _require_btc_coin(value: object) -> str:
+    coin = _require_text(value, field_name="coin")
+    if coin != "BTC":
+        raise PaperTapeError("payload coin does not match the BTC-PERP tape.")
+    return coin
 
 
 def _optional_decimal(value: object, *, field_name: str) -> Decimal | None:

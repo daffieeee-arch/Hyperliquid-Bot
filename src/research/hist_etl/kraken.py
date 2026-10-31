@@ -20,16 +20,20 @@ import duckdb
 
 from research.hist_etl.errors import HistEtlError
 from research.hist_etl.files import atomic_write_json, decide_output, warn
+from research.hist_etl.finite import invalid_financial_rows
 from research.hist_etl.models import KRAKEN_MINUTES_TO_SLUG, Gap, KrakenSpec, SourceDigest
 
 _MEMBER = re.compile(r"(?i)(?:^|/)([A-Z0-9]+)_(\d+)\.csv$")
 _COLUMNS = ("source", "ts_raw", "open", "high", "low", "close", "volume", "trades")
+_FINANCIAL = ("open", "high", "low", "close", "volume")
 
 
 def kraken_parquet_path(root: Path, pair: str, interval: str, month: str) -> Path:
-    return (
-        root / "parquet" / "hist_etl" / "kraken" / "ohlcvt" / pair / interval / f"{month}.parquet"
-    )
+    return _parquet_directory(root, pair, interval) / f"{month}.parquet"
+
+
+def _parquet_directory(root: Path, pair: str, interval: str) -> Path:
+    return root / "parquet" / "hist_etl" / "kraken" / "ohlcvt" / pair / interval
 
 
 def ingest_kraken(
@@ -68,7 +72,7 @@ def audit_kraken_tree(spec: KrakenSpec, root: Path) -> tuple[Gap, ...]:
     gaps: list[Gap] = []
     for pair in spec.pairs:
         for interval in spec.intervals:
-            directory = root / "parquet" / "kraken" / "ohlcvt" / pair / interval
+            directory = _parquet_directory(root, pair, interval)
             files = sorted(directory.glob("*.parquet")) if directory.is_dir() else []
             if not files:
                 gaps.append(Gap("missing_parquet", spec.id, f"{pair} {interval} parquet is absent"))
@@ -134,6 +138,7 @@ def _materialize_series(
                 destination = kraken_parquet_path(root, pair, interval, month)
                 action = decide_output(destination, sources, rebuild=rebuild)
                 if action == "audit":
+                    refused.extend(_audit_file(spec.id, destination))
                     continue
                 if action != "write":
                     refused.append(_refuse_overwrite(destination, spec.id, action))
@@ -168,6 +173,8 @@ def _materialize_series(
 def _audit_file(dataset_id: str, path: Path) -> tuple[Gap, ...]:
     connection = duckdb.connect()
     try:
+        connection.read_parquet(str(path)).create_view("published")
+        invalid = invalid_financial_rows(connection, "published", _FINANCIAL)
         row = connection.execute(
             """
             SELECT
@@ -177,15 +184,26 @@ def _audit_file(dataset_id: str, path: Path) -> tuple[Gap, ...]:
                        OR open <= 0 OR close <= 0 OR volume < 0 OR trades < 0
                 ),
                 count(*) - count(DISTINCT ts)
-            FROM read_parquet(?)
+            FROM published
             """,
-            [str(path)],
         ).fetchone()
+    except duckdb.Error:
+        return (
+            Gap("kraken_schema", dataset_id, f"{path.name} is unreadable or has an invalid schema"),
+        )
     finally:
         connection.close()
     if row is None:
         return (Gap("kraken_schema", dataset_id, f"{path.name} could not be read"),)
     gaps: list[Gap] = []
+    if invalid:
+        gaps.append(
+            Gap(
+                "kraken_schema",
+                dataset_id,
+                f"{path.name} has {invalid} null/non-finite financial rows",
+            )
+        )
     if int(row[0]) > 0:
         gaps.append(
             Gap("kraken_schema", dataset_id, f"{path.name} has {int(row[0])} invalid OHLC rows")
@@ -299,6 +317,9 @@ def _validate(connection: duckdb.DuckDBPyConnection) -> list[str]:
         problems.append(f"{int(row[1])} Kraken rows have a bad timestamp or number")
     if int(row[2]) > 0:
         problems.append(f"{int(row[2])} Kraken rows fail OHLC checks")
+    invalid = invalid_financial_rows(connection, "typed", tuple(f"{name}_n" for name in _FINANCIAL))
+    if invalid:
+        problems.append(f"{invalid} Kraken rows have null/non-finite financial values")
     conflict = connection.execute(
         """
         SELECT count(*) FROM (

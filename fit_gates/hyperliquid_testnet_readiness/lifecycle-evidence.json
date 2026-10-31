@@ -1,0 +1,212 @@
+{
+  "candidate_version": "1.231.0",
+  "cases": [
+    {
+      "case": "ack",
+      "cloid": "0xf6af1deb3622cdd1cf7d7e6c4efe6c50",
+      "events": [
+        {
+          "client_order_id": "offline-fit-ack",
+          "filled_quantity_after": "0.00000",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "status_after": "SUBMITTED",
+          "type": "OrderSubmitted"
+        },
+        {
+          "client_order_id": "offline-fit-ack",
+          "filled_quantity_after": "0.00000",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "status_after": "ACCEPTED",
+          "type": "OrderAccepted",
+          "venue_order_id": "900001"
+        }
+      ],
+      "filled_quantity": "0.00000",
+      "final_status": "ACCEPTED",
+      "leaves_quantity": "0.10000",
+      "request": {
+        "client_order_id": "offline-fit-ack",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "price": "100000",
+        "quantity": "0.10000"
+      },
+      "submit_calls": 1,
+      "warnings": 0
+    },
+    {
+      "case": "reject",
+      "cloid": "0x78b1786e4c23b8fcfa9a9ef3b3498d6a",
+      "events": [
+        {
+          "client_order_id": "offline-fit-reject",
+          "filled_quantity_after": "0.00000",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "status_after": "SUBMITTED",
+          "type": "OrderSubmitted"
+        },
+        {
+          "client_order_id": "offline-fit-reject",
+          "filled_quantity_after": "0.00000",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "status_after": "REJECTED",
+          "type": "OrderRejected"
+        }
+      ],
+      "filled_quantity": "0.00000",
+      "final_status": "REJECTED",
+      "leaves_quantity": "0.10000",
+      "request": {
+        "client_order_id": "offline-fit-reject",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "price": "100000",
+        "quantity": "0.10000"
+      },
+      "submit_calls": 1,
+      "warnings": 0
+    },
+    {
+      "case": "partial",
+      "cloid": "0xfced2504da0246e6605ab23c4cdbda10",
+      "events": [
+        {
+          "client_order_id": "offline-fit-partial",
+          "filled_quantity_after": "0.00000",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "status_after": "SUBMITTED",
+          "type": "OrderSubmitted"
+        },
+        {
+          "client_order_id": "offline-fit-partial",
+          "filled_quantity_after": "0.00000",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "status_after": "ACCEPTED",
+          "type": "OrderAccepted",
+          "venue_order_id": "900001"
+        },
+        {
+          "client_order_id": "offline-fit-partial",
+          "commission": "1.80000000 USDC",
+          "filled_quantity_after": "0.04000",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "last_quantity": "0.04000",
+          "price": "100000",
+          "status_after": "PARTIALLY_FILLED",
+          "trade_id": "700001",
+          "type": "OrderFilled",
+          "venue_order_id": "900001"
+        }
+      ],
+      "filled_quantity": "0.04000",
+      "final_status": "PARTIALLY_FILLED",
+      "leaves_quantity": "0.06000",
+      "request": {
+        "client_order_id": "offline-fit-partial",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "price": "100000",
+        "quantity": "0.10000"
+      },
+      "submit_calls": 1,
+      "warnings": 0
+    },
+    {
+      "case": "timeout",
+      "cloid": "0x38b8506716af4475f8de39fa9cd9a77b",
+      "events": [
+        {
+          "client_order_id": "offline-fit-timeout",
+          "filled_quantity_after": "0.00000",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "status_after": "SUBMITTED",
+          "type": "OrderSubmitted"
+        }
+      ],
+      "filled_quantity": "0.00000",
+      "final_status": "SUBMITTED",
+      "leaves_quantity": "0.10000",
+      "request": {
+        "client_order_id": "offline-fit-timeout",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "price": "100000",
+        "quantity": "0.10000"
+      },
+      "submit_calls": 1,
+      "warnings": 1
+    },
+    {
+      "case": "missing_ack",
+      "cloid": "0xcbf3d0e9a2a08c954bae4da810b883f2",
+      "events": [
+        {
+          "client_order_id": "offline-fit-missing_ack",
+          "filled_quantity_after": "0.00000",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "status_after": "SUBMITTED",
+          "type": "OrderSubmitted"
+        }
+      ],
+      "filled_quantity": "0.00000",
+      "final_status": "SUBMITTED",
+      "leaves_quantity": "0.10000",
+      "request": {
+        "client_order_id": "offline-fit-missing_ack",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "price": "100000",
+        "quantity": "0.10000"
+      },
+      "submit_calls": 1,
+      "warnings": 0
+    }
+  ],
+  "decision": "HOLD",
+  "event_delivery": "actual events applied to the upstream order; event bus not exercised",
+  "evidence_kind": "actual-unbound-python-adapter-methods-and-core-order-apply",
+  "executed_methods": [
+    "_submit_order",
+    "_check_time_in_force",
+    "_process_submit_reports",
+    "_handle_order_status_report_pyo3",
+    "_handle_fill_report_pyo3",
+    "_is_cloid_format",
+    "_resolve_cloid",
+    "_is_external_order",
+    "_cleanup_cloid_mapping",
+    "_drain_fill_buffer"
+  ],
+  "fixture_provenance": "hand-authored synthetic report values; not recorded venue traffic",
+  "harness_sha256": "8c2f9e12aae0b8253ee56004b6ca1cd796fa0f40cc8b813ad5f088a8cb87a29c",
+  "installed_source_sha256": {
+    "__init__.py": "d5d5ff014167ba12813593e67fef6cc4e156f76a9967f3be07e2fa9e4529bbf6",
+    "config.py": "98ecb538b5e92015860d77a62604fefa566290d13f799d2d7446b6fee732fdff",
+    "execution.py": "64f94799a882f054b42b94f25cecc1ae9f16f578655c07dde72b79b5e7ea4c8b",
+    "factories.py": "d71755676ecfcf29940ba9041ac1a3c049a9edef8f3897a4173a566a5576b219"
+  },
+  "not_executed": [
+    "client-construction",
+    "signer-construction",
+    "factory-create",
+    "event-bus",
+    "native-transport",
+    "native-retries",
+    "wire-response-parser",
+    "venue-requests",
+    "durable-recovery",
+    "reconciliation",
+    "cancel-races",
+    "ioc-remainder-terminal-cancel",
+    "metadata-precision-validation",
+    "account-balances",
+    "funding",
+    "signature-domain",
+    "nonce-policy"
+  ],
+  "published_wheel_binding_verified": false,
+  "runtime": {
+    "libc": [
+      "glibc",
+      "2.43"
+    ],
+    "machine": "x86_64",
+    "python": "3.13.15"
+  },
+  "schema": "hyperliquid-offline-adapter-fragments-v1"
+}

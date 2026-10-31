@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import os
 from decimal import Decimal
 
@@ -19,13 +20,16 @@ from hyperliquid_bot.paper_risk import (
     REASON_MAX_LEVERAGE,
     REASON_MAX_NET,
     REASON_MAX_POSITIONS,
+    REASON_REDUCE_ONLY_FLAT,
     REASON_RISK_BASED_SIZE,
     REASON_STRATEGY_CONCENTRATION,
     REASON_VENUE_CONCENTRATION,
     REASON_WEEKLY_LOSS,
     PaperOrderIntent,
     PaperPortfolioSnapshot,
+    PaperPositionKey,
     PaperRiskLimits,
+    PaperSignedPosition,
     account_risk_budget_usdc,
     evaluate_paper_hard_limits,
     extend_d01_risk_decision,
@@ -44,6 +48,13 @@ D01_PRICE = Decimal("78047.0")
 D01_QUANTITY = Decimal("0.00013")
 D01_STOP = Decimal("0.02")
 SIZE_INCREMENT = Decimal("0.00001")
+POSITION_KEY = PaperPositionKey(
+    "PAPER", "risk-unit-account", "HYPERLIQUID", "BTC-USD-PERP", "D01SmokeStrategy"
+)
+
+
+def _position(quantity: Decimal) -> PaperSignedPosition:
+    return PaperSignedPosition(POSITION_KEY, quantity, "unit-position-v1", Decimal("0"), True)
 
 
 def _flat_snapshot(equity: Decimal = D01_EQUITY) -> PaperPortfolioSnapshot:
@@ -51,6 +62,7 @@ def _flat_snapshot(equity: Decimal = D01_EQUITY) -> PaperPortfolioSnapshot:
         equity_usdc=equity,
         price=D01_PRICE,
         current_position=Decimal("0"),
+        position=_position(Decimal("0")),
     )
 
 
@@ -61,6 +73,8 @@ def _entry(*, quantity: Decimal, reduce_only: bool = False) -> PaperOrderIntent:
         price=D01_PRICE,
         reduce_only=reduce_only,
         stop_distance_fraction=D01_STOP,
+        position_key=POSITION_KEY,
+        position_version="unit-position-v1",
     )
 
 
@@ -210,6 +224,7 @@ def test_risk_sized_entry_is_approved_when_inside_hard_caps() -> None:
                     equity_usdc=D01_EQUITY,
                     price=D01_PRICE,
                     current_position=Decimal("0"),
+                    position=_position(Decimal("0")),
                     daily_pnl_usdc=Decimal("-1000"),
                 ),
                 limits,
@@ -223,6 +238,7 @@ def test_risk_sized_entry_is_approved_when_inside_hard_caps() -> None:
                     equity_usdc=D01_EQUITY,
                     price=D01_PRICE,
                     current_position=Decimal("0"),
+                    position=_position(Decimal("0")),
                     weekly_pnl_usdc=Decimal("-3000"),
                 ),
                 limits,
@@ -236,6 +252,7 @@ def test_risk_sized_entry_is_approved_when_inside_hard_caps() -> None:
                     equity_usdc=Decimal("93000"),
                     price=D01_PRICE,
                     current_position=Decimal("0"),
+                    position=_position(Decimal("0")),
                     peak_equity_usdc=D01_EQUITY,
                 ),
                 limits,
@@ -249,6 +266,7 @@ def test_risk_sized_entry_is_approved_when_inside_hard_caps() -> None:
                     equity_usdc=D01_EQUITY,
                     price=D01_PRICE,
                     current_position=D01_QUANTITY,
+                    position=_position(D01_QUANTITY),
                 ),
                 limits,
             ),
@@ -284,6 +302,7 @@ def test_max_simultaneous_positions_rejects_an_additional_name() -> None:
         asset_exposure_usdc=Decimal("0"),
         strategy_exposure_usdc=Decimal("30"),
         venue_exposure_usdc=Decimal("30"),
+        position=_position(Decimal("0")),
     )
     decision = evaluate_paper_hard_limits(
         snapshot=snapshot,
@@ -299,6 +318,7 @@ def test_reduce_only_exit_is_allowed_when_entry_halts_are_already_breached() -> 
         equity_usdc=Decimal("90000"),
         price=D01_PRICE,
         current_position=D01_QUANTITY,
+        position=_position(D01_QUANTITY),
         daily_pnl_usdc=Decimal("-2000"),
         weekly_pnl_usdc=Decimal("-4000"),
         peak_equity_usdc=D01_EQUITY,
@@ -311,6 +331,8 @@ def test_reduce_only_exit_is_allowed_when_entry_halts_are_already_breached() -> 
             price=D01_PRICE,
             reduce_only=True,
             stop_distance_fraction=D01_STOP,
+            position_key=POSITION_KEY,
+            position_version="unit-position-v1",
         ),
         trading_mode="PAPER",
     )
@@ -386,12 +408,14 @@ def test_invalid_portfolio_state_fails_closed() -> None:
             equity_usdc=Decimal("0"),
             price=D01_PRICE,
             current_position=Decimal("0"),
+            position=_position(Decimal("0")),
         )
     with pytest.raises(ValueError, match="inconsistent"):
         paper_snapshot_for_bounded_book(
             equity_usdc=D01_EQUITY,
             price=D01_PRICE,
             current_position=Decimal("0"),
+            position=_position(Decimal("0")),
             peak_equity_usdc=Decimal("1"),
         )
     with pytest.raises(ValueError, match="stop_distance"):
@@ -416,3 +440,37 @@ def test_documented_gates_are_explicit() -> None:
     encoded = DEFAULT_PAPER_RISK_LIMITS.to_dict()
     assert encoded["trading_mode"] == "PAPER"
     assert "LIVE" not in encoded.values()
+
+
+@pytest.mark.parametrize("other_positions", [False, True])
+def test_reduce_only_cannot_open_a_flat_asset_even_when_other_assets_are_open(
+    other_positions: bool,
+) -> None:
+    snapshot = paper_snapshot_for_bounded_book(
+        equity_usdc=Decimal("100000"),
+        price=Decimal("100000"),
+        current_position=Decimal("0"),
+        position=_position(Decimal("0")),
+    )
+    if other_positions:
+        snapshot = dataclasses.replace(
+            snapshot,
+            open_position_count=1,
+            gross_exposure_usdc=Decimal("5000"),
+            net_exposure_usdc=Decimal("5000"),
+            strategy_exposure_usdc=Decimal("5000"),
+            venue_exposure_usdc=Decimal("5000"),
+        )
+    decision = evaluate_paper_hard_limits(
+        snapshot=snapshot,
+        intent=PaperOrderIntent(
+            side="BUY",
+            quantity=Decimal("100"),
+            price=Decimal("100000"),
+            reduce_only=True,
+            position_key=POSITION_KEY,
+            position_version="unit-position-v1",
+        ),
+    )
+    assert decision.approved is False
+    assert REASON_REDUCE_ONLY_FLAT in decision.reasons

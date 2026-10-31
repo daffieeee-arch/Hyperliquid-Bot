@@ -4,14 +4,18 @@
 
 The project isolates development and continuous runtime responsibilities:
 
-- **Primary profile:** Netcup Ubuntu 24.04 LTS VPS (hostname `chupa`) for
-  interactive development, capture and PAPER Linux/amd64 OCI workloads under
-  **ADR-024**.
+- **Development profile:** Ubuntu VM on TrueNAS SCALE (**ADR-025**), as
+  reported by the operator; Ubuntu 26.04.1 LTS / KVM observed locally.
+- **Runtime/capture profile:** VM migration is unverified. **ADR-024** remains
+  the historical Netcup Ubuntu 24.04 LTS VPS / Linux/amd64 OCI reference.
+  Hypervisor placement alone is not a runtime approval.
 - **Secondary profile:** TerraPC/WSL2 for optional fallback operator work and
   GPU research.
 
 Continuous services must not depend on TerraPC or an interactive SSH/CLI
-session remaining connected.
+session remaining connected. VM CPU/RAM allocation, persistent data mounts,
+backups and service health require verification before any continuous run.
+See [migration status](runbooks/ubuntu-vm-migration-status.md).
 
 ## Secondary TerraPC workstation
 
@@ -73,16 +77,19 @@ Tune after measurement. Keep sufficient RAM and CPU headroom for Windows, the Ch
 
 ### Workstation storage
 
-The primary repository and capture paths on the VPS are:
+The current development checkout is:
 
 ```bash
-export REPO_ROOT="$HOME/Hyperliquid Project/Hyperliquid-Bot"
-export ARTIFACT_ROOT="$HOME/Hyperliquid Project/data-capture"
+export REPO_ROOT="$HOME/coding-projects/Hyperliquid-Bot"
 ```
+
+Set `ARTIFACT_ROOT` and `HIST_ARCHIVES_ROOT` only after locating and verifying
+the durable data. The old `$HOME/Hyperliquid Project/` tree was not present
+in the initial VM audit.
 
 If the secondary WSL environment is used, keep its checkout in the Linux
 filesystem rather than `/mnt/c` or a network share. Disposable development
-volumes remain separate from durable VPS capture data.
+volumes remain separate from durable capture data.
 
 ### GPU
 
@@ -95,15 +102,16 @@ The RTX 4070 SUPER is optional capacity for later:
 
 Phase 1 must remain CPU-capable. No core collector, risk or execution process may require the GPU.
 
-## Primary runtime profile
+## Runtime profile and migration boundary
 
-The architecture target is a host-neutral Linux/amd64 OCI runtime. **ADR-024**
-records the Netcup Ubuntu 24.04 LTS VPS as the definitive primary
-development, capture and PAPER profile. VPS sizing and storage topology follow
-the companion reference runbook.
+The architecture target remains host-neutral Linux/amd64 OCI. **ADR-024**
+records the earlier Netcup Ubuntu LTS reference profile. **ADR-025** moves
+source development to the Ubuntu VM but does not certify runtime/data
+migration or revive direct NAS-appliance deployment. The companion VPS
+runbook is historical sizing guidance, not a statement of the VM allocation.
 
-The PAPER capture/ops reference size for four concurrent collectors in an EU
-region is recorded in
+The legacy PAPER capture/ops reference size for four concurrent collectors is
+recorded in
 [linux-vps-reference-profile.md](runbooks/linux-vps-reference-profile.md).
 
 ## Runtime resource philosophy
@@ -140,7 +148,7 @@ Do not start heavy research or build workloads when memory headroom is low. Graf
 
 ## Storage placement
 
-Recommended logical placement under durable VPS storage:
+Legacy Netcup storage example (not a verified VM mount or migration target):
 
 ```text
 $HOME/Hyperliquid Project/data-capture/
@@ -156,9 +164,10 @@ $HOME/Hyperliquid Project/data-capture/
   backups/
 ```
 
-Capture helper defaults use the home-directory path. Container services may
-use explicit `/var/lib` volumes. Exact production volume placement must be
-documented before deployment.
+Capture helper defaults still use the legacy home-directory path. Configure
+explicit verified roots on the VM. Container services may use explicit
+`/var/lib` volumes when introduced. Actual durable placement, ownership,
+capacity and backups must be documented before deployment.
 
 ## What not to run initially
 

@@ -17,13 +17,14 @@ import logging
 import os
 import ssl
 import time
+import uuid
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Final, Protocol, cast
+from typing import Any, Final, Protocol, cast
 
 from fit_gates.d41_nautilus.fit_gate import (
     INSTRUMENT_ID,
@@ -53,6 +54,7 @@ from hyperliquid_bot.hyperliquid_trades import (
 from hyperliquid_bot.local_mode import require_local_paper_mode
 from hyperliquid_bot.paper_risk import (
     PaperOrderIntent,
+    PaperSignedPosition,
     extend_d01_risk_decision,
     paper_snapshot_for_bounded_book,
 )
@@ -72,6 +74,7 @@ from vertical_slices.d01_btc_perp.slice import (
     assert_local_boundary,
     evaluate_order_risk,
 )
+from vertical_slices.paper_position import sandbox_position_truth
 
 SOAK_SCHEMA: Final = "course1-live-public-paper-v1"
 COMPLETION_SCHEMA: Final = "course1-live-public-paper-completed-v1"
@@ -100,6 +103,7 @@ def _paper_guarded_risk(
     reduce_only: bool,
     current_position: Decimal,
     config: SliceConfig,
+    position: PaperSignedPosition | None,
 ) -> dict[str, object]:
     """Run D01 smoke-risk first, then PAPER sizing and portfolio hard limits."""
 
@@ -117,6 +121,7 @@ def _paper_guarded_risk(
             equity_usdc=config.starting_cash_usdc,
             price=price,
             current_position=current_position,
+            position=position,
         ),
         intent=PaperOrderIntent(
             side=side.name,
@@ -124,17 +129,27 @@ def _paper_guarded_risk(
             price=price,
             reduce_only=reduce_only,
             stop_distance_fraction=config.assumed_stop_distance_fraction,
+            asset_id=INSTRUMENT_ID.value,
+            venue_id=INSTRUMENT_ID.venue.value,
+            strategy_id="unavailable" if position is None else position.key.strategy_id,
+            position_key=None if position is None else position.key,
+            position_version=None if position is None else position.version,
         ),
         trading_mode=os.environ.get("TRADING_MODE"),
     )
 
 
 @contextmanager
-def _bind_paper_risk_to_d01_path() -> Iterator[None]:
+def _bind_paper_risk_to_d01_path(strategy: D01SmokeStrategy) -> Iterator[None]:
     """Install PAPER hard limits on the D01 function the smoke strategy calls."""
 
     original = d01_slice.evaluate_order_risk
-    d01_slice.evaluate_order_risk = _paper_guarded_risk
+    epoch = uuid.uuid4().hex
+
+    def guarded(**kwargs: Any) -> dict[str, object]:
+        return _paper_guarded_risk(**kwargs, position=sandbox_position_truth(strategy, epoch=epoch))
+
+    d01_slice.evaluate_order_risk = guarded
     try:
         yield
     finally:
@@ -613,6 +628,9 @@ async def _collect_and_drive(
                                     reduce_only=False,
                                     current_position=Decimal(0),
                                     config=config,
+                                    position=sandbox_position_truth(
+                                        strategy, epoch="preflight-preview"
+                                    ),
                                 )
                                 if preview["approved"] is not True:
                                     risk_error = (
@@ -1060,7 +1078,7 @@ def run_soak(
     node.add_exec_client_factory(HYPERLIQUID, SandboxLiveExecClientFactory)
     node.build()
     try:
-        with _derived_internal_paper_mode(), _bind_paper_risk_to_d01_path():
+        with _derived_internal_paper_mode(), _bind_paper_risk_to_d01_path(strategy):
             reports, stream = loop.run_until_complete(
                 asyncio.wait_for(
                     _collect_and_drive(

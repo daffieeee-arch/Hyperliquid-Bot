@@ -1,0 +1,3326 @@
+{
+  "account_namespace": "synthetic-caller-scope-not-authenticated-client-configuration",
+  "candidate_version": "1.231.0",
+  "cases": [
+    {
+      "adapter_return": "None",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "consistent-bounded-observation",
+        "state": "BOUNDED_NOT_FOUND"
+      },
+      "case": "order:empty",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "6cc0a39f-0670-4d5d-bb8e-daccea997f6c",
+        "kind": "order",
+        "query": [
+          [
+            "venue_order_id",
+            "900001"
+          ],
+          [
+            "client_order_id",
+            null
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_order_status_report",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [],
+        "raw_count": 0,
+        "receipt_counts": [],
+        "report_identities": [],
+        "report_order_ids": [],
+        "report_types": [],
+        "request_count": 1,
+        "returned_count": 0,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "6cc0a39f-0670-4d5d-bb8e-daccea997f6c",
+          "kind": "order",
+          "query": [
+            [
+              "venue_order_id",
+              "900001"
+            ],
+            [
+              "client_order_id",
+              null
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": true
+      },
+      "returned_reports": []
+    },
+    {
+      "adapter_return": "report",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "consistent-bounded-observation",
+        "state": "BOUNDED_NONEMPTY"
+      },
+      "case": "order:nonempty",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "af75b5f8-f537-4b35-bfbf-55dc5081b41e",
+        "kind": "order",
+        "query": [
+          [
+            "venue_order_id",
+            "900001"
+          ],
+          [
+            "client_order_id",
+            null
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_order_status_report",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [],
+        "raw_count": 1,
+        "receipt_counts": [],
+        "report_identities": [
+          [
+            "HYPERLIQUID-OFFLINE",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "report_order_ids": [
+          [
+            "900001",
+            "offline-fit-report-order-nonempty"
+          ]
+        ],
+        "report_types": [
+          "OrderStatusReport"
+        ],
+        "request_count": 1,
+        "returned_count": 1,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "af75b5f8-f537-4b35-bfbf-55dc5081b41e",
+          "kind": "order",
+          "query": [
+            [
+              "venue_order_id",
+              "900001"
+            ],
+            [
+              "client_order_id",
+              null
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": true
+      },
+      "returned_reports": [
+        {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "avg_px": null,
+          "cancel_reason": null,
+          "client_order_id": "offline-fit-report-order-nonempty",
+          "contingency_type": 0,
+          "display_qty": null,
+          "expire_time": null,
+          "filled_qty": "0.00000",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "limit_offset": null,
+          "linked_order_ids": null,
+          "order_list_id": null,
+          "order_side": 1,
+          "order_status": 6,
+          "order_type": 2,
+          "parent_order_id": null,
+          "post_only": false,
+          "price": "100000",
+          "quantity": "0.10000",
+          "reduce_only": false,
+          "report_id": "00000000-0000-4000-8000-000000000000",
+          "time_in_force": 2,
+          "trailing_offset": null,
+          "trailing_offset_type": null,
+          "trigger_price": null,
+          "trigger_type": 0,
+          "ts_accepted": 1793347200000000000,
+          "ts_init": 1793347200000000000,
+          "ts_last": 1793347200000000000,
+          "ts_triggered": 0,
+          "type": "OrderStatusReport",
+          "venue_order_id": "900001",
+          "venue_position_id": null
+        }
+      ]
+    },
+    {
+      "adapter_return": "None",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "completion-unproved",
+        "state": "UNKNOWN"
+      },
+      "case": "order:timeout",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "6392a8a8-5d86-4f8d-aec0-e6268d27ccff",
+        "kind": "order",
+        "query": [
+          [
+            "venue_order_id",
+            "900001"
+          ],
+          [
+            "client_order_id",
+            null
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_order_status_report",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [
+          "TimeoutError"
+        ],
+        "raw_count": 1,
+        "receipt_counts": [],
+        "report_identities": [],
+        "report_order_ids": [],
+        "report_types": [],
+        "request_count": 1,
+        "returned_count": 0,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "6392a8a8-5d86-4f8d-aec0-e6268d27ccff",
+          "kind": "order",
+          "query": [
+            [
+              "venue_order_id",
+              "900001"
+            ],
+            [
+              "client_order_id",
+              null
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": false
+      },
+      "returned_reports": []
+    },
+    {
+      "adapter_return": "None",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "completion-unproved",
+        "state": "UNKNOWN"
+      },
+      "case": "order:error",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "0f0fb91a-13ab-46cb-86fb-4016e0f59fb6",
+        "kind": "order",
+        "query": [
+          [
+            "venue_order_id",
+            "900001"
+          ],
+          [
+            "client_order_id",
+            null
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_order_status_report",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [
+          "RuntimeError"
+        ],
+        "raw_count": 1,
+        "receipt_counts": [],
+        "report_identities": [],
+        "report_order_ids": [],
+        "report_types": [],
+        "request_count": 1,
+        "returned_count": 0,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "0f0fb91a-13ab-46cb-86fb-4016e0f59fb6",
+          "kind": "order",
+          "query": [
+            [
+              "venue_order_id",
+              "900001"
+            ],
+            [
+              "client_order_id",
+              null
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": false
+      },
+      "returned_reports": []
+    },
+    {
+      "adapter_return": "None",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "completion-unproved",
+        "state": "UNKNOWN"
+      },
+      "case": "order:cancelled",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "c846d9ef-c6d4-42bb-a16a-3a1242f6c7df",
+        "kind": "order",
+        "query": [
+          [
+            "venue_order_id",
+            "900001"
+          ],
+          [
+            "client_order_id",
+            null
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_order_status_report",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [
+          "CancelledError"
+        ],
+        "raw_count": 1,
+        "receipt_counts": [],
+        "report_identities": [],
+        "report_order_ids": [],
+        "report_types": [],
+        "request_count": 1,
+        "returned_count": 0,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "c846d9ef-c6d4-42bb-a16a-3a1242f6c7df",
+          "kind": "order",
+          "query": [
+            [
+              "venue_order_id",
+              "900001"
+            ],
+            [
+              "client_order_id",
+              null
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": false
+      },
+      "returned_reports": []
+    },
+    {
+      "adapter_return": "None",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "adapter-error",
+        "state": "UNKNOWN"
+      },
+      "case": "order:conversion_failure",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "5aa4eefc-382e-4221-91a7-e09b63d1366e",
+        "kind": "order",
+        "query": [
+          [
+            "venue_order_id",
+            "900001"
+          ],
+          [
+            "client_order_id",
+            null
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_order_status_report",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [
+          "AttributeError"
+        ],
+        "raw_count": 1,
+        "receipt_counts": [],
+        "report_identities": [],
+        "report_order_ids": [],
+        "report_types": [],
+        "request_count": 1,
+        "returned_count": 0,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "5aa4eefc-382e-4221-91a7-e09b63d1366e",
+          "kind": "order",
+          "query": [
+            [
+              "venue_order_id",
+              "900001"
+            ],
+            [
+              "client_order_id",
+              null
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": true
+      },
+      "returned_reports": []
+    },
+    {
+      "adapter_return": "None",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "completion-unproved",
+        "state": "UNKNOWN"
+      },
+      "case": "order:incomplete",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "d0ea7279-d89d-4f67-8ecc-ea922baeb5a2",
+        "kind": "order",
+        "query": [
+          [
+            "venue_order_id",
+            "900001"
+          ],
+          [
+            "client_order_id",
+            null
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_order_status_report",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": false,
+        "errors": [],
+        "raw_count": 0,
+        "receipt_counts": [],
+        "report_identities": [],
+        "report_order_ids": [],
+        "report_types": [],
+        "request_count": 1,
+        "returned_count": 0,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "d0ea7279-d89d-4f67-8ecc-ea922baeb5a2",
+          "kind": "order",
+          "query": [
+            [
+              "venue_order_id",
+              "900001"
+            ],
+            [
+              "client_order_id",
+              null
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": true
+      },
+      "returned_reports": []
+    },
+    {
+      "adapter_return": "report",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "returned-report-scope-mismatch",
+        "state": "UNKNOWN"
+      },
+      "case": "order:wrong_account",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "2beec2b7-9ae3-410e-8199-01be2f3aacee",
+        "kind": "order",
+        "query": [
+          [
+            "venue_order_id",
+            "900001"
+          ],
+          [
+            "client_order_id",
+            null
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_order_status_report",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [],
+        "raw_count": 1,
+        "receipt_counts": [],
+        "report_identities": [
+          [
+            "HYPERLIQUID-OTHER",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "report_order_ids": [
+          [
+            "900001",
+            "offline-fit-report-order-wrong_account"
+          ]
+        ],
+        "report_types": [
+          "OrderStatusReport"
+        ],
+        "request_count": 1,
+        "returned_count": 1,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "2beec2b7-9ae3-410e-8199-01be2f3aacee",
+          "kind": "order",
+          "query": [
+            [
+              "venue_order_id",
+              "900001"
+            ],
+            [
+              "client_order_id",
+              null
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": true
+      },
+      "returned_reports": [
+        {
+          "account_id": "HYPERLIQUID-OTHER",
+          "avg_px": null,
+          "cancel_reason": null,
+          "client_order_id": "offline-fit-report-order-wrong_account",
+          "contingency_type": 0,
+          "display_qty": null,
+          "expire_time": null,
+          "filled_qty": "0.00000",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "limit_offset": null,
+          "linked_order_ids": null,
+          "order_list_id": null,
+          "order_side": 1,
+          "order_status": 6,
+          "order_type": 2,
+          "parent_order_id": null,
+          "post_only": false,
+          "price": "100000",
+          "quantity": "0.10000",
+          "reduce_only": false,
+          "report_id": "00000000-0000-4000-8000-000000000000",
+          "time_in_force": 2,
+          "trailing_offset": null,
+          "trailing_offset_type": null,
+          "trigger_price": null,
+          "trigger_type": 0,
+          "ts_accepted": 1793347200000000000,
+          "ts_init": 1793347200000000000,
+          "ts_last": 1793347200000000000,
+          "ts_triggered": 0,
+          "type": "OrderStatusReport",
+          "venue_order_id": "900001",
+          "venue_position_id": null
+        }
+      ]
+    },
+    {
+      "adapter_return": "report",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "returned-report-scope-mismatch",
+        "state": "UNKNOWN"
+      },
+      "case": "order:wrong_instrument",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "3dc12a30-3f0a-424a-89c6-bff40be75f28",
+        "kind": "order",
+        "query": [
+          [
+            "venue_order_id",
+            "900001"
+          ],
+          [
+            "client_order_id",
+            null
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_order_status_report",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [],
+        "raw_count": 1,
+        "receipt_counts": [],
+        "report_identities": [
+          [
+            "HYPERLIQUID-OFFLINE",
+            "ETH-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "report_order_ids": [
+          [
+            "900001",
+            "offline-fit-report-order-wrong_instrument"
+          ]
+        ],
+        "report_types": [
+          "OrderStatusReport"
+        ],
+        "request_count": 1,
+        "returned_count": 1,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "3dc12a30-3f0a-424a-89c6-bff40be75f28",
+          "kind": "order",
+          "query": [
+            [
+              "venue_order_id",
+              "900001"
+            ],
+            [
+              "client_order_id",
+              null
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": true
+      },
+      "returned_reports": [
+        {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "avg_px": null,
+          "cancel_reason": null,
+          "client_order_id": "offline-fit-report-order-wrong_instrument",
+          "contingency_type": 0,
+          "display_qty": null,
+          "expire_time": null,
+          "filled_qty": "0.00000",
+          "instrument_id": "ETH-USD-PERP.HYPERLIQUID",
+          "limit_offset": null,
+          "linked_order_ids": null,
+          "order_list_id": null,
+          "order_side": 1,
+          "order_status": 6,
+          "order_type": 2,
+          "parent_order_id": null,
+          "post_only": false,
+          "price": "100000",
+          "quantity": "0.10000",
+          "reduce_only": false,
+          "report_id": "00000000-0000-4000-8000-000000000000",
+          "time_in_force": 2,
+          "trailing_offset": null,
+          "trailing_offset_type": null,
+          "trigger_price": null,
+          "trigger_type": 0,
+          "ts_accepted": 1793347200000000000,
+          "ts_init": 1793347200000000000,
+          "ts_last": 1793347200000000000,
+          "ts_triggered": 0,
+          "type": "OrderStatusReport",
+          "venue_order_id": "900001",
+          "venue_position_id": null
+        }
+      ]
+    },
+    {
+      "adapter_return": "list",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "consistent-bounded-observation",
+        "state": "BOUNDED_EMPTY"
+      },
+      "case": "orders:empty",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "bfd29a1b-6cb1-4b43-95b0-9359f65e4a8f",
+        "kind": "orders",
+        "query": [
+          [
+            "instrument_id",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_order_status_reports",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [],
+        "raw_count": 0,
+        "receipt_counts": [
+          0
+        ],
+        "report_identities": [],
+        "report_order_ids": [],
+        "report_types": [],
+        "request_count": 1,
+        "returned_count": 0,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "bfd29a1b-6cb1-4b43-95b0-9359f65e4a8f",
+          "kind": "orders",
+          "query": [
+            [
+              "instrument_id",
+              "BTC-USD-PERP.HYPERLIQUID"
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": true
+      },
+      "returned_reports": []
+    },
+    {
+      "adapter_return": "list",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "consistent-bounded-observation",
+        "state": "BOUNDED_NONEMPTY"
+      },
+      "case": "orders:nonempty",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "960b70b4-e44d-4a93-9528-18746a5ef13f",
+        "kind": "orders",
+        "query": [
+          [
+            "instrument_id",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_order_status_reports",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [],
+        "raw_count": 1,
+        "receipt_counts": [
+          1
+        ],
+        "report_identities": [
+          [
+            "HYPERLIQUID-OFFLINE",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "report_order_ids": [
+          [
+            "900001",
+            "offline-fit-report-orders-nonempty"
+          ]
+        ],
+        "report_types": [
+          "OrderStatusReport"
+        ],
+        "request_count": 1,
+        "returned_count": 1,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "960b70b4-e44d-4a93-9528-18746a5ef13f",
+          "kind": "orders",
+          "query": [
+            [
+              "instrument_id",
+              "BTC-USD-PERP.HYPERLIQUID"
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": true
+      },
+      "returned_reports": [
+        {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "avg_px": null,
+          "cancel_reason": null,
+          "client_order_id": "offline-fit-report-orders-nonempty",
+          "contingency_type": 0,
+          "display_qty": null,
+          "expire_time": null,
+          "filled_qty": "0.00000",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "limit_offset": null,
+          "linked_order_ids": null,
+          "order_list_id": null,
+          "order_side": 1,
+          "order_status": 6,
+          "order_type": 2,
+          "parent_order_id": null,
+          "post_only": false,
+          "price": "100000",
+          "quantity": "0.10000",
+          "reduce_only": false,
+          "report_id": "00000000-0000-4000-8000-000000000000",
+          "time_in_force": 2,
+          "trailing_offset": null,
+          "trailing_offset_type": null,
+          "trigger_price": null,
+          "trigger_type": 0,
+          "ts_accepted": 1793347200000000000,
+          "ts_init": 1793347200000000000,
+          "ts_last": 1793347200000000000,
+          "ts_triggered": 0,
+          "type": "OrderStatusReport",
+          "venue_order_id": "900001",
+          "venue_position_id": null
+        }
+      ]
+    },
+    {
+      "adapter_return": "list",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "completion-unproved",
+        "state": "UNKNOWN"
+      },
+      "case": "orders:timeout",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "a272fa51-e772-472d-90df-108633b613a9",
+        "kind": "orders",
+        "query": [
+          [
+            "instrument_id",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_order_status_reports",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [
+          "TimeoutError"
+        ],
+        "raw_count": 1,
+        "receipt_counts": [],
+        "report_identities": [],
+        "report_order_ids": [],
+        "report_types": [],
+        "request_count": 1,
+        "returned_count": 0,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "a272fa51-e772-472d-90df-108633b613a9",
+          "kind": "orders",
+          "query": [
+            [
+              "instrument_id",
+              "BTC-USD-PERP.HYPERLIQUID"
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": false
+      },
+      "returned_reports": []
+    },
+    {
+      "adapter_return": "list",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "completion-unproved",
+        "state": "UNKNOWN"
+      },
+      "case": "orders:error",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "9c3f4aff-d918-4ee1-84b1-4a29258f2b2c",
+        "kind": "orders",
+        "query": [
+          [
+            "instrument_id",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_order_status_reports",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [
+          "RuntimeError"
+        ],
+        "raw_count": 1,
+        "receipt_counts": [],
+        "report_identities": [],
+        "report_order_ids": [],
+        "report_types": [],
+        "request_count": 1,
+        "returned_count": 0,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "9c3f4aff-d918-4ee1-84b1-4a29258f2b2c",
+          "kind": "orders",
+          "query": [
+            [
+              "instrument_id",
+              "BTC-USD-PERP.HYPERLIQUID"
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": false
+      },
+      "returned_reports": []
+    },
+    {
+      "adapter_return": "list",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "completion-unproved",
+        "state": "UNKNOWN"
+      },
+      "case": "orders:cancelled",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "a34bb2fe-b8b6-40cd-ad8b-bc68130107e8",
+        "kind": "orders",
+        "query": [
+          [
+            "instrument_id",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_order_status_reports",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [
+          "CancelledError"
+        ],
+        "raw_count": 1,
+        "receipt_counts": [],
+        "report_identities": [],
+        "report_order_ids": [],
+        "report_types": [],
+        "request_count": 1,
+        "returned_count": 0,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "a34bb2fe-b8b6-40cd-ad8b-bc68130107e8",
+          "kind": "orders",
+          "query": [
+            [
+              "instrument_id",
+              "BTC-USD-PERP.HYPERLIQUID"
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": false
+      },
+      "returned_reports": []
+    },
+    {
+      "adapter_return": "list",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "adapter-error",
+        "state": "UNKNOWN"
+      },
+      "case": "orders:conversion_failure",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "d1d9a644-29b5-496a-9dcc-22b162652634",
+        "kind": "orders",
+        "query": [
+          [
+            "instrument_id",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_order_status_reports",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [
+          "AttributeError"
+        ],
+        "raw_count": 1,
+        "receipt_counts": [],
+        "report_identities": [],
+        "report_order_ids": [],
+        "report_types": [],
+        "request_count": 1,
+        "returned_count": 0,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "d1d9a644-29b5-496a-9dcc-22b162652634",
+          "kind": "orders",
+          "query": [
+            [
+              "instrument_id",
+              "BTC-USD-PERP.HYPERLIQUID"
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": true
+      },
+      "returned_reports": []
+    },
+    {
+      "adapter_return": "list",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "completion-unproved",
+        "state": "UNKNOWN"
+      },
+      "case": "orders:incomplete",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "87306950-47f7-48cb-90db-6c2ad9d552f4",
+        "kind": "orders",
+        "query": [
+          [
+            "instrument_id",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_order_status_reports",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": false,
+        "errors": [],
+        "raw_count": 0,
+        "receipt_counts": [
+          0
+        ],
+        "report_identities": [],
+        "report_order_ids": [],
+        "report_types": [],
+        "request_count": 1,
+        "returned_count": 0,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "87306950-47f7-48cb-90db-6c2ad9d552f4",
+          "kind": "orders",
+          "query": [
+            [
+              "instrument_id",
+              "BTC-USD-PERP.HYPERLIQUID"
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": true
+      },
+      "returned_reports": []
+    },
+    {
+      "adapter_return": "list",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "returned-report-scope-mismatch",
+        "state": "UNKNOWN"
+      },
+      "case": "orders:wrong_account",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "6cee9c1a-2d8b-4c5f-9934-0184abd3d933",
+        "kind": "orders",
+        "query": [
+          [
+            "instrument_id",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_order_status_reports",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [],
+        "raw_count": 1,
+        "receipt_counts": [
+          1
+        ],
+        "report_identities": [
+          [
+            "HYPERLIQUID-OTHER",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "report_order_ids": [
+          [
+            "900001",
+            "offline-fit-report-orders-wrong_account"
+          ]
+        ],
+        "report_types": [
+          "OrderStatusReport"
+        ],
+        "request_count": 1,
+        "returned_count": 1,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "6cee9c1a-2d8b-4c5f-9934-0184abd3d933",
+          "kind": "orders",
+          "query": [
+            [
+              "instrument_id",
+              "BTC-USD-PERP.HYPERLIQUID"
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": true
+      },
+      "returned_reports": [
+        {
+          "account_id": "HYPERLIQUID-OTHER",
+          "avg_px": null,
+          "cancel_reason": null,
+          "client_order_id": "offline-fit-report-orders-wrong_account",
+          "contingency_type": 0,
+          "display_qty": null,
+          "expire_time": null,
+          "filled_qty": "0.00000",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "limit_offset": null,
+          "linked_order_ids": null,
+          "order_list_id": null,
+          "order_side": 1,
+          "order_status": 6,
+          "order_type": 2,
+          "parent_order_id": null,
+          "post_only": false,
+          "price": "100000",
+          "quantity": "0.10000",
+          "reduce_only": false,
+          "report_id": "00000000-0000-4000-8000-000000000000",
+          "time_in_force": 2,
+          "trailing_offset": null,
+          "trailing_offset_type": null,
+          "trigger_price": null,
+          "trigger_type": 0,
+          "ts_accepted": 1793347200000000000,
+          "ts_init": 1793347200000000000,
+          "ts_last": 1793347200000000000,
+          "ts_triggered": 0,
+          "type": "OrderStatusReport",
+          "venue_order_id": "900001",
+          "venue_position_id": null
+        }
+      ]
+    },
+    {
+      "adapter_return": "list",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "returned-report-scope-mismatch",
+        "state": "UNKNOWN"
+      },
+      "case": "orders:wrong_instrument",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "95d7abed-1c2a-43c3-a0d1-97b15012c571",
+        "kind": "orders",
+        "query": [
+          [
+            "instrument_id",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_order_status_reports",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [],
+        "raw_count": 1,
+        "receipt_counts": [
+          1
+        ],
+        "report_identities": [
+          [
+            "HYPERLIQUID-OFFLINE",
+            "ETH-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "report_order_ids": [
+          [
+            "900001",
+            "offline-fit-report-orders-wrong_instrument"
+          ]
+        ],
+        "report_types": [
+          "OrderStatusReport"
+        ],
+        "request_count": 1,
+        "returned_count": 1,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "95d7abed-1c2a-43c3-a0d1-97b15012c571",
+          "kind": "orders",
+          "query": [
+            [
+              "instrument_id",
+              "BTC-USD-PERP.HYPERLIQUID"
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": true
+      },
+      "returned_reports": [
+        {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "avg_px": null,
+          "cancel_reason": null,
+          "client_order_id": "offline-fit-report-orders-wrong_instrument",
+          "contingency_type": 0,
+          "display_qty": null,
+          "expire_time": null,
+          "filled_qty": "0.00000",
+          "instrument_id": "ETH-USD-PERP.HYPERLIQUID",
+          "limit_offset": null,
+          "linked_order_ids": null,
+          "order_list_id": null,
+          "order_side": 1,
+          "order_status": 6,
+          "order_type": 2,
+          "parent_order_id": null,
+          "post_only": false,
+          "price": "100000",
+          "quantity": "0.10000",
+          "reduce_only": false,
+          "report_id": "00000000-0000-4000-8000-000000000000",
+          "time_in_force": 2,
+          "trailing_offset": null,
+          "trailing_offset_type": null,
+          "trigger_price": null,
+          "trigger_type": 0,
+          "ts_accepted": 1793347200000000000,
+          "ts_init": 1793347200000000000,
+          "ts_last": 1793347200000000000,
+          "ts_triggered": 0,
+          "type": "OrderStatusReport",
+          "venue_order_id": "900001",
+          "venue_position_id": null
+        }
+      ]
+    },
+    {
+      "adapter_return": "list",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "consistent-bounded-observation",
+        "state": "BOUNDED_EMPTY"
+      },
+      "case": "fills:empty",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "d7c74367-acb1-43c6-9ea4-2629382446b9",
+        "kind": "fills",
+        "query": [
+          [
+            "instrument_id",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_fill_reports",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [],
+        "raw_count": 0,
+        "receipt_counts": [
+          0
+        ],
+        "report_identities": [],
+        "report_order_ids": [],
+        "report_types": [],
+        "request_count": 1,
+        "returned_count": 0,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "d7c74367-acb1-43c6-9ea4-2629382446b9",
+          "kind": "fills",
+          "query": [
+            [
+              "instrument_id",
+              "BTC-USD-PERP.HYPERLIQUID"
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": true
+      },
+      "returned_reports": []
+    },
+    {
+      "adapter_return": "list",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "consistent-bounded-observation",
+        "state": "BOUNDED_NONEMPTY"
+      },
+      "case": "fills:nonempty",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "a137dcf7-ea16-4add-8e83-c5442f2dbf60",
+        "kind": "fills",
+        "query": [
+          [
+            "instrument_id",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_fill_reports",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [],
+        "raw_count": 1,
+        "receipt_counts": [
+          1
+        ],
+        "report_identities": [
+          [
+            "HYPERLIQUID-OFFLINE",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "report_order_ids": [
+          [
+            "900001",
+            "offline-fit-report-fills-nonempty"
+          ]
+        ],
+        "report_types": [
+          "FillReport"
+        ],
+        "request_count": 1,
+        "returned_count": 1,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "a137dcf7-ea16-4add-8e83-c5442f2dbf60",
+          "kind": "fills",
+          "query": [
+            [
+              "instrument_id",
+              "BTC-USD-PERP.HYPERLIQUID"
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": true
+      },
+      "returned_reports": [
+        {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "avg_px": null,
+          "client_order_id": "offline-fit-report-fills-nonempty",
+          "commission": "1.80000000 USDC",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "last_px": "100000",
+          "last_qty": "0.04000",
+          "liquidity_side": 2,
+          "order_side": 1,
+          "report_id": "00000000-0000-4000-8000-000000000000",
+          "trade_id": "700001",
+          "ts_event": 1793347200000000000,
+          "ts_init": 1793347200000000000,
+          "type": "FillReport",
+          "venue_order_id": "900001",
+          "venue_position_id": null
+        }
+      ]
+    },
+    {
+      "adapter_return": "list",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "completion-unproved",
+        "state": "UNKNOWN"
+      },
+      "case": "fills:timeout",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "27e00784-17f1-4c1f-9c5e-7494fa51e5a7",
+        "kind": "fills",
+        "query": [
+          [
+            "instrument_id",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_fill_reports",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [
+          "TimeoutError"
+        ],
+        "raw_count": 1,
+        "receipt_counts": [],
+        "report_identities": [],
+        "report_order_ids": [],
+        "report_types": [],
+        "request_count": 1,
+        "returned_count": 0,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "27e00784-17f1-4c1f-9c5e-7494fa51e5a7",
+          "kind": "fills",
+          "query": [
+            [
+              "instrument_id",
+              "BTC-USD-PERP.HYPERLIQUID"
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": false
+      },
+      "returned_reports": []
+    },
+    {
+      "adapter_return": "list",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "completion-unproved",
+        "state": "UNKNOWN"
+      },
+      "case": "fills:error",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "c9702409-42eb-4913-8224-5ddfb5f605c4",
+        "kind": "fills",
+        "query": [
+          [
+            "instrument_id",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_fill_reports",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [
+          "RuntimeError"
+        ],
+        "raw_count": 1,
+        "receipt_counts": [],
+        "report_identities": [],
+        "report_order_ids": [],
+        "report_types": [],
+        "request_count": 1,
+        "returned_count": 0,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "c9702409-42eb-4913-8224-5ddfb5f605c4",
+          "kind": "fills",
+          "query": [
+            [
+              "instrument_id",
+              "BTC-USD-PERP.HYPERLIQUID"
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": false
+      },
+      "returned_reports": []
+    },
+    {
+      "adapter_return": "list",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "completion-unproved",
+        "state": "UNKNOWN"
+      },
+      "case": "fills:cancelled",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "8b3eabc1-05be-430d-b87a-90c9575e13fd",
+        "kind": "fills",
+        "query": [
+          [
+            "instrument_id",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_fill_reports",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [
+          "CancelledError"
+        ],
+        "raw_count": 1,
+        "receipt_counts": [],
+        "report_identities": [],
+        "report_order_ids": [],
+        "report_types": [],
+        "request_count": 1,
+        "returned_count": 0,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "8b3eabc1-05be-430d-b87a-90c9575e13fd",
+          "kind": "fills",
+          "query": [
+            [
+              "instrument_id",
+              "BTC-USD-PERP.HYPERLIQUID"
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": false
+      },
+      "returned_reports": []
+    },
+    {
+      "adapter_return": "list",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "adapter-error",
+        "state": "UNKNOWN"
+      },
+      "case": "fills:conversion_failure",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "103be4c3-239d-44ba-bd75-c69e8596afeb",
+        "kind": "fills",
+        "query": [
+          [
+            "instrument_id",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_fill_reports",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [
+          "AttributeError"
+        ],
+        "raw_count": 1,
+        "receipt_counts": [],
+        "report_identities": [],
+        "report_order_ids": [],
+        "report_types": [],
+        "request_count": 1,
+        "returned_count": 0,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "103be4c3-239d-44ba-bd75-c69e8596afeb",
+          "kind": "fills",
+          "query": [
+            [
+              "instrument_id",
+              "BTC-USD-PERP.HYPERLIQUID"
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": true
+      },
+      "returned_reports": []
+    },
+    {
+      "adapter_return": "list",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "completion-unproved",
+        "state": "UNKNOWN"
+      },
+      "case": "fills:incomplete",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "f51cae50-19a9-4c53-8998-ed36cf675040",
+        "kind": "fills",
+        "query": [
+          [
+            "instrument_id",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_fill_reports",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": false,
+        "errors": [],
+        "raw_count": 0,
+        "receipt_counts": [
+          0
+        ],
+        "report_identities": [],
+        "report_order_ids": [],
+        "report_types": [],
+        "request_count": 1,
+        "returned_count": 0,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "f51cae50-19a9-4c53-8998-ed36cf675040",
+          "kind": "fills",
+          "query": [
+            [
+              "instrument_id",
+              "BTC-USD-PERP.HYPERLIQUID"
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": true
+      },
+      "returned_reports": []
+    },
+    {
+      "adapter_return": "list",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "returned-report-scope-mismatch",
+        "state": "UNKNOWN"
+      },
+      "case": "fills:wrong_account",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "c9ff4ed3-9896-4476-b7cc-7b6a51fe58fa",
+        "kind": "fills",
+        "query": [
+          [
+            "instrument_id",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_fill_reports",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [],
+        "raw_count": 1,
+        "receipt_counts": [
+          1
+        ],
+        "report_identities": [
+          [
+            "HYPERLIQUID-OTHER",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "report_order_ids": [
+          [
+            "900001",
+            "offline-fit-report-fills-wrong_account"
+          ]
+        ],
+        "report_types": [
+          "FillReport"
+        ],
+        "request_count": 1,
+        "returned_count": 1,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "c9ff4ed3-9896-4476-b7cc-7b6a51fe58fa",
+          "kind": "fills",
+          "query": [
+            [
+              "instrument_id",
+              "BTC-USD-PERP.HYPERLIQUID"
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": true
+      },
+      "returned_reports": [
+        {
+          "account_id": "HYPERLIQUID-OTHER",
+          "avg_px": null,
+          "client_order_id": "offline-fit-report-fills-wrong_account",
+          "commission": "1.80000000 USDC",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "last_px": "100000",
+          "last_qty": "0.04000",
+          "liquidity_side": 2,
+          "order_side": 1,
+          "report_id": "00000000-0000-4000-8000-000000000000",
+          "trade_id": "700001",
+          "ts_event": 1793347200000000000,
+          "ts_init": 1793347200000000000,
+          "type": "FillReport",
+          "venue_order_id": "900001",
+          "venue_position_id": null
+        }
+      ]
+    },
+    {
+      "adapter_return": "list",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "returned-report-scope-mismatch",
+        "state": "UNKNOWN"
+      },
+      "case": "fills:wrong_instrument",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "8cdd61c5-1f91-49f5-a8fb-c3b31ba2ac11",
+        "kind": "fills",
+        "query": [
+          [
+            "instrument_id",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_fill_reports",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [],
+        "raw_count": 1,
+        "receipt_counts": [
+          1
+        ],
+        "report_identities": [
+          [
+            "HYPERLIQUID-OFFLINE",
+            "ETH-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "report_order_ids": [
+          [
+            "900001",
+            "offline-fit-report-fills-wrong_instrument"
+          ]
+        ],
+        "report_types": [
+          "FillReport"
+        ],
+        "request_count": 1,
+        "returned_count": 1,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "8cdd61c5-1f91-49f5-a8fb-c3b31ba2ac11",
+          "kind": "fills",
+          "query": [
+            [
+              "instrument_id",
+              "BTC-USD-PERP.HYPERLIQUID"
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": true
+      },
+      "returned_reports": [
+        {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "avg_px": null,
+          "client_order_id": "offline-fit-report-fills-wrong_instrument",
+          "commission": "1.80000000 USDC",
+          "instrument_id": "ETH-USD-PERP.HYPERLIQUID",
+          "last_px": "100000",
+          "last_qty": "0.04000",
+          "liquidity_side": 2,
+          "order_side": 1,
+          "report_id": "00000000-0000-4000-8000-000000000000",
+          "trade_id": "700001",
+          "ts_event": 1793347200000000000,
+          "ts_init": 1793347200000000000,
+          "type": "FillReport",
+          "venue_order_id": "900001",
+          "venue_position_id": null
+        }
+      ]
+    },
+    {
+      "adapter_return": "list",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "consistent-bounded-observation",
+        "state": "BOUNDED_EMPTY"
+      },
+      "case": "positions:empty",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "f9a475c6-5c1b-44b4-a040-ce788abaec2a",
+        "kind": "positions",
+        "query": [
+          [
+            "instrument_id",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_position_status_reports",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [],
+        "raw_count": 0,
+        "receipt_counts": [
+          0
+        ],
+        "report_identities": [],
+        "report_order_ids": [],
+        "report_types": [],
+        "request_count": 1,
+        "returned_count": 0,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "f9a475c6-5c1b-44b4-a040-ce788abaec2a",
+          "kind": "positions",
+          "query": [
+            [
+              "instrument_id",
+              "BTC-USD-PERP.HYPERLIQUID"
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": true
+      },
+      "returned_reports": []
+    },
+    {
+      "adapter_return": "list",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "consistent-bounded-observation",
+        "state": "BOUNDED_NONEMPTY"
+      },
+      "case": "positions:nonempty",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "f5c3fbd1-149a-4054-9dd6-24771cd5e80d",
+        "kind": "positions",
+        "query": [
+          [
+            "instrument_id",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_position_status_reports",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [],
+        "raw_count": 1,
+        "receipt_counts": [
+          1
+        ],
+        "report_identities": [
+          [
+            "HYPERLIQUID-OFFLINE",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "report_order_ids": [
+          [
+            null,
+            null
+          ]
+        ],
+        "report_types": [
+          "PositionStatusReport"
+        ],
+        "request_count": 1,
+        "returned_count": 1,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "f5c3fbd1-149a-4054-9dd6-24771cd5e80d",
+          "kind": "positions",
+          "query": [
+            [
+              "instrument_id",
+              "BTC-USD-PERP.HYPERLIQUID"
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": true
+      },
+      "returned_reports": [
+        {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "avg_px_open": null,
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "position_side": 2,
+          "quantity": "0.10000",
+          "report_id": "00000000-0000-4000-8000-000000000000",
+          "ts_init": 1793347200000000000,
+          "ts_last": 1793347200000000000,
+          "type": "PositionStatusReport",
+          "venue_position_id": null
+        }
+      ]
+    },
+    {
+      "adapter_return": "list",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "completion-unproved",
+        "state": "UNKNOWN"
+      },
+      "case": "positions:timeout",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "85f1d863-5a65-43c7-abcc-e8afec71bc87",
+        "kind": "positions",
+        "query": [
+          [
+            "instrument_id",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_position_status_reports",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [
+          "TimeoutError"
+        ],
+        "raw_count": 1,
+        "receipt_counts": [],
+        "report_identities": [],
+        "report_order_ids": [],
+        "report_types": [],
+        "request_count": 1,
+        "returned_count": 0,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "85f1d863-5a65-43c7-abcc-e8afec71bc87",
+          "kind": "positions",
+          "query": [
+            [
+              "instrument_id",
+              "BTC-USD-PERP.HYPERLIQUID"
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": false
+      },
+      "returned_reports": []
+    },
+    {
+      "adapter_return": "list",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "completion-unproved",
+        "state": "UNKNOWN"
+      },
+      "case": "positions:error",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "eabf3092-4aef-4301-a16a-41c3ccd6e698",
+        "kind": "positions",
+        "query": [
+          [
+            "instrument_id",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_position_status_reports",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [
+          "RuntimeError"
+        ],
+        "raw_count": 1,
+        "receipt_counts": [],
+        "report_identities": [],
+        "report_order_ids": [],
+        "report_types": [],
+        "request_count": 1,
+        "returned_count": 0,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "eabf3092-4aef-4301-a16a-41c3ccd6e698",
+          "kind": "positions",
+          "query": [
+            [
+              "instrument_id",
+              "BTC-USD-PERP.HYPERLIQUID"
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": false
+      },
+      "returned_reports": []
+    },
+    {
+      "adapter_return": "list",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "completion-unproved",
+        "state": "UNKNOWN"
+      },
+      "case": "positions:cancelled",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "2cdda8ce-e260-479b-9a8c-40bc17e94782",
+        "kind": "positions",
+        "query": [
+          [
+            "instrument_id",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_position_status_reports",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [
+          "CancelledError"
+        ],
+        "raw_count": 1,
+        "receipt_counts": [],
+        "report_identities": [],
+        "report_order_ids": [],
+        "report_types": [],
+        "request_count": 1,
+        "returned_count": 0,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "2cdda8ce-e260-479b-9a8c-40bc17e94782",
+          "kind": "positions",
+          "query": [
+            [
+              "instrument_id",
+              "BTC-USD-PERP.HYPERLIQUID"
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": false
+      },
+      "returned_reports": []
+    },
+    {
+      "adapter_return": "list",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "adapter-error",
+        "state": "UNKNOWN"
+      },
+      "case": "positions:conversion_failure",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "0210c6e7-927d-4d89-803c-5d2654476682",
+        "kind": "positions",
+        "query": [
+          [
+            "instrument_id",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_position_status_reports",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [
+          "AttributeError"
+        ],
+        "raw_count": 1,
+        "receipt_counts": [],
+        "report_identities": [],
+        "report_order_ids": [],
+        "report_types": [],
+        "request_count": 1,
+        "returned_count": 0,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "0210c6e7-927d-4d89-803c-5d2654476682",
+          "kind": "positions",
+          "query": [
+            [
+              "instrument_id",
+              "BTC-USD-PERP.HYPERLIQUID"
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": true
+      },
+      "returned_reports": []
+    },
+    {
+      "adapter_return": "list",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "completion-unproved",
+        "state": "UNKNOWN"
+      },
+      "case": "positions:incomplete",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "7c7bcd0a-85e8-48cc-8a6e-f529c4a874e4",
+        "kind": "positions",
+        "query": [
+          [
+            "instrument_id",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_position_status_reports",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": false,
+        "errors": [],
+        "raw_count": 0,
+        "receipt_counts": [
+          0
+        ],
+        "report_identities": [],
+        "report_order_ids": [],
+        "report_types": [],
+        "request_count": 1,
+        "returned_count": 0,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "7c7bcd0a-85e8-48cc-8a6e-f529c4a874e4",
+          "kind": "positions",
+          "query": [
+            [
+              "instrument_id",
+              "BTC-USD-PERP.HYPERLIQUID"
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": true
+      },
+      "returned_reports": []
+    },
+    {
+      "adapter_return": "list",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "returned-report-scope-mismatch",
+        "state": "UNKNOWN"
+      },
+      "case": "positions:wrong_account",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "79aeabce-8a28-4ccf-bfa4-3f7b3aa6fb83",
+        "kind": "positions",
+        "query": [
+          [
+            "instrument_id",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_position_status_reports",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [],
+        "raw_count": 1,
+        "receipt_counts": [
+          1
+        ],
+        "report_identities": [
+          [
+            "HYPERLIQUID-OTHER",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "report_order_ids": [
+          [
+            null,
+            null
+          ]
+        ],
+        "report_types": [
+          "PositionStatusReport"
+        ],
+        "request_count": 1,
+        "returned_count": 1,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "79aeabce-8a28-4ccf-bfa4-3f7b3aa6fb83",
+          "kind": "positions",
+          "query": [
+            [
+              "instrument_id",
+              "BTC-USD-PERP.HYPERLIQUID"
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": true
+      },
+      "returned_reports": [
+        {
+          "account_id": "HYPERLIQUID-OTHER",
+          "avg_px_open": null,
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "position_side": 2,
+          "quantity": "0.10000",
+          "report_id": "00000000-0000-4000-8000-000000000000",
+          "ts_init": 1793347200000000000,
+          "ts_last": 1793347200000000000,
+          "type": "PositionStatusReport",
+          "venue_position_id": null
+        }
+      ]
+    },
+    {
+      "adapter_return": "list",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "returned-report-scope-mismatch",
+        "state": "UNKNOWN"
+      },
+      "case": "positions:wrong_instrument",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "4bbdf37e-0082-44d4-9db1-24f060d712b4",
+        "kind": "positions",
+        "query": [
+          [
+            "instrument_id",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_position_status_reports",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [],
+        "raw_count": 1,
+        "receipt_counts": [
+          1
+        ],
+        "report_identities": [
+          [
+            "HYPERLIQUID-OFFLINE",
+            "ETH-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "report_order_ids": [
+          [
+            null,
+            null
+          ]
+        ],
+        "report_types": [
+          "PositionStatusReport"
+        ],
+        "request_count": 1,
+        "returned_count": 1,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "4bbdf37e-0082-44d4-9db1-24f060d712b4",
+          "kind": "positions",
+          "query": [
+            [
+              "instrument_id",
+              "BTC-USD-PERP.HYPERLIQUID"
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": true
+      },
+      "returned_reports": [
+        {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "avg_px_open": null,
+          "instrument_id": "ETH-USD-PERP.HYPERLIQUID",
+          "position_side": 2,
+          "quantity": "0.10000",
+          "report_id": "00000000-0000-4000-8000-000000000000",
+          "ts_init": 1793347200000000000,
+          "ts_last": 1793347200000000000,
+          "type": "PositionStatusReport",
+          "venue_position_id": null
+        }
+      ]
+    },
+    {
+      "adapter_return": "list",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "adapter-error",
+        "state": "UNKNOWN"
+      },
+      "case": "orders:unavailable",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "ce400de2-83ec-4b63-90fa-a2dccf14af75",
+        "kind": "orders",
+        "query": [
+          [
+            "instrument_id",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_order_status_reports",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [
+          "TypeError"
+        ],
+        "raw_count": null,
+        "receipt_counts": [],
+        "report_identities": [],
+        "report_order_ids": [],
+        "report_types": [],
+        "request_count": 1,
+        "returned_count": 0,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "ce400de2-83ec-4b63-90fa-a2dccf14af75",
+          "kind": "orders",
+          "query": [
+            [
+              "instrument_id",
+              "BTC-USD-PERP.HYPERLIQUID"
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": true
+      },
+      "returned_reports": []
+    },
+    {
+      "adapter_return": "list",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "adapter-error",
+        "state": "UNKNOWN"
+      },
+      "case": "fills:unavailable",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "8e6f1f05-4ccd-40d2-a4c5-1bca56188813",
+        "kind": "fills",
+        "query": [
+          [
+            "instrument_id",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_fill_reports",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [
+          "TypeError"
+        ],
+        "raw_count": null,
+        "receipt_counts": [],
+        "report_identities": [],
+        "report_order_ids": [],
+        "report_types": [],
+        "request_count": 1,
+        "returned_count": 0,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "8e6f1f05-4ccd-40d2-a4c5-1bca56188813",
+          "kind": "fills",
+          "query": [
+            [
+              "instrument_id",
+              "BTC-USD-PERP.HYPERLIQUID"
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": true
+      },
+      "returned_reports": []
+    },
+    {
+      "adapter_return": "list",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "adapter-error",
+        "state": "UNKNOWN"
+      },
+      "case": "positions:unavailable",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "c658ff6d-937d-43a9-ace4-708a844eea0d",
+        "kind": "positions",
+        "query": [
+          [
+            "instrument_id",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_position_status_reports",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [
+          "TypeError"
+        ],
+        "raw_count": null,
+        "receipt_counts": [],
+        "report_identities": [],
+        "report_order_ids": [],
+        "report_types": [],
+        "request_count": 1,
+        "returned_count": 0,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "c658ff6d-937d-43a9-ace4-708a844eea0d",
+          "kind": "positions",
+          "query": [
+            [
+              "instrument_id",
+              "BTC-USD-PERP.HYPERLIQUID"
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": true
+      },
+      "returned_reports": []
+    },
+    {
+      "adapter_return": "list",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "adapter-error",
+        "state": "UNKNOWN"
+      },
+      "case": "orders:partial_conversion_failure",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "d1486f86-6307-400b-bdc9-ffbe1c817e03",
+        "kind": "orders",
+        "query": [
+          [
+            "instrument_id",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_order_status_reports",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [
+          "AttributeError"
+        ],
+        "raw_count": 2,
+        "receipt_counts": [],
+        "report_identities": [],
+        "report_order_ids": [],
+        "report_types": [],
+        "request_count": 1,
+        "returned_count": 0,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "d1486f86-6307-400b-bdc9-ffbe1c817e03",
+          "kind": "orders",
+          "query": [
+            [
+              "instrument_id",
+              "BTC-USD-PERP.HYPERLIQUID"
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": true
+      },
+      "returned_reports": []
+    },
+    {
+      "adapter_return": "list",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "adapter-error",
+        "state": "UNKNOWN"
+      },
+      "case": "fills:partial_conversion_failure",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "660920fe-6d3b-490f-82fe-a9d9d7fea802",
+        "kind": "fills",
+        "query": [
+          [
+            "instrument_id",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_fill_reports",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [
+          "AttributeError"
+        ],
+        "raw_count": 2,
+        "receipt_counts": [],
+        "report_identities": [],
+        "report_order_ids": [],
+        "report_types": [],
+        "request_count": 1,
+        "returned_count": 0,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "660920fe-6d3b-490f-82fe-a9d9d7fea802",
+          "kind": "fills",
+          "query": [
+            [
+              "instrument_id",
+              "BTC-USD-PERP.HYPERLIQUID"
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": true
+      },
+      "returned_reports": []
+    },
+    {
+      "adapter_return": "list",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "adapter-error",
+        "state": "UNKNOWN"
+      },
+      "case": "positions:partial_conversion_failure",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "6a16a654-0285-4ef4-b70f-80cdc97cfc03",
+        "kind": "positions",
+        "query": [
+          [
+            "instrument_id",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_position_status_reports",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [
+          "AttributeError"
+        ],
+        "raw_count": 2,
+        "receipt_counts": [],
+        "report_identities": [],
+        "report_order_ids": [],
+        "report_types": [],
+        "request_count": 1,
+        "returned_count": 0,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "6a16a654-0285-4ef4-b70f-80cdc97cfc03",
+          "kind": "positions",
+          "query": [
+            [
+              "instrument_id",
+              "BTC-USD-PERP.HYPERLIQUID"
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": true
+      },
+      "returned_reports": []
+    },
+    {
+      "adapter_return": "None",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "response-return-count-mismatch",
+        "state": "UNKNOWN"
+      },
+      "case": "order:suppressed",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "252eeb8f-6612-45a4-9812-656ef81af42b",
+        "kind": "order",
+        "query": [
+          [
+            "venue_order_id",
+            "900001"
+          ],
+          [
+            "client_order_id",
+            null
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_order_status_report",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [],
+        "raw_count": 1,
+        "receipt_counts": [],
+        "report_identities": [],
+        "report_order_ids": [],
+        "report_types": [],
+        "request_count": 1,
+        "returned_count": 0,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "252eeb8f-6612-45a4-9812-656ef81af42b",
+          "kind": "order",
+          "query": [
+            [
+              "venue_order_id",
+              "900001"
+            ],
+            [
+              "client_order_id",
+              null
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": true
+      },
+      "returned_reports": []
+    },
+    {
+      "adapter_return": "list",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "response-return-count-mismatch",
+        "state": "UNKNOWN"
+      },
+      "case": "orders:suppressed",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "b1553f73-c1bf-4597-9c23-7cf2fa4e0d3e",
+        "kind": "orders",
+        "query": [
+          [
+            "instrument_id",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_order_status_reports",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [],
+        "raw_count": 1,
+        "receipt_counts": [
+          0
+        ],
+        "report_identities": [],
+        "report_order_ids": [],
+        "report_types": [],
+        "request_count": 1,
+        "returned_count": 0,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "b1553f73-c1bf-4597-9c23-7cf2fa4e0d3e",
+          "kind": "orders",
+          "query": [
+            [
+              "instrument_id",
+              "BTC-USD-PERP.HYPERLIQUID"
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": true
+      },
+      "returned_reports": []
+    },
+    {
+      "adapter_return": "None",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "missing-or-invalid-observation",
+        "state": "UNKNOWN"
+      },
+      "case": "order:missing_lookup",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "fd2d4415-ffa0-48db-8beb-21def6705753",
+        "kind": "order",
+        "query": [
+          [
+            "venue_order_id",
+            null
+          ],
+          [
+            "client_order_id",
+            null
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_order_status_report",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [],
+        "raw_count": 1,
+        "receipt_counts": [],
+        "report_identities": [],
+        "report_order_ids": [],
+        "report_types": [],
+        "request_count": 0,
+        "returned_count": 0,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "fd2d4415-ffa0-48db-8beb-21def6705753",
+          "kind": "order",
+          "query": [],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": false
+      },
+      "returned_reports": []
+    },
+    {
+      "adapter_return": "report",
+      "assessment": {
+        "account_truth": "UNKNOWN",
+        "authoritative_flat": false,
+        "decision": "HOLD",
+        "history_coverage": "UNKNOWN",
+        "new_risk_allowed": false,
+        "reason": "returned-order-identity-mismatch",
+        "state": "UNKNOWN"
+      },
+      "case": "order:wrong_order",
+      "expected_scope": {
+        "account_id": "HYPERLIQUID-OFFLINE",
+        "environment": "PAPER",
+        "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+        "invocation_id": "6f04ee20-945a-4b49-a63f-45e04d862944",
+        "kind": "order",
+        "query": [
+          [
+            "venue_order_id",
+            "900001"
+          ],
+          [
+            "client_order_id",
+            null
+          ]
+        ],
+        "venue": "HYPERLIQUID"
+      },
+      "method": "generate_order_status_report",
+      "observation": {
+        "adapter_completed": true,
+        "bounded_response_complete": true,
+        "errors": [],
+        "raw_count": 1,
+        "receipt_counts": [],
+        "report_identities": [
+          [
+            "HYPERLIQUID-OFFLINE",
+            "BTC-USD-PERP.HYPERLIQUID"
+          ]
+        ],
+        "report_order_ids": [
+          [
+            "900002",
+            "offline-fit-report-order-wrong_order"
+          ]
+        ],
+        "report_types": [
+          "OrderStatusReport"
+        ],
+        "request_count": 1,
+        "returned_count": 1,
+        "scope": {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "environment": "PAPER",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "invocation_id": "6f04ee20-945a-4b49-a63f-45e04d862944",
+          "kind": "order",
+          "query": [
+            [
+              "venue_order_id",
+              "900001"
+            ],
+            [
+              "client_order_id",
+              null
+            ]
+          ],
+          "venue": "HYPERLIQUID"
+        },
+        "transport_completed": true
+      },
+      "returned_reports": [
+        {
+          "account_id": "HYPERLIQUID-OFFLINE",
+          "avg_px": null,
+          "cancel_reason": null,
+          "client_order_id": "offline-fit-report-order-wrong_order",
+          "contingency_type": 0,
+          "display_qty": null,
+          "expire_time": null,
+          "filled_qty": "0.00000",
+          "instrument_id": "BTC-USD-PERP.HYPERLIQUID",
+          "limit_offset": null,
+          "linked_order_ids": null,
+          "order_list_id": null,
+          "order_side": 1,
+          "order_status": 6,
+          "order_type": 2,
+          "parent_order_id": null,
+          "post_only": false,
+          "price": "100000",
+          "quantity": "0.10000",
+          "reduce_only": false,
+          "report_id": "00000000-0000-4000-8000-000000000000",
+          "time_in_force": 2,
+          "trailing_offset": null,
+          "trailing_offset_type": null,
+          "trigger_price": null,
+          "trigger_type": 0,
+          "ts_accepted": 1793347200000000000,
+          "ts_init": 1793347200000000000,
+          "ts_last": 1793347200000000000,
+          "ts_triggered": 0,
+          "type": "OrderStatusReport",
+          "venue_order_id": "900002",
+          "venue_position_id": null
+        }
+      ]
+    }
+  ],
+  "completion_scope": "one-injected-response-not-account-pagination-or-history-completion",
+  "decision": "HOLD",
+  "evidence_kind": "actual-unbound-python-report-methods-and-upstream-domain-conversions",
+  "executed_methods": [
+    "generate_order_status_report",
+    "generate_order_status_reports",
+    "generate_fill_reports",
+    "generate_position_status_reports",
+    "_is_cloid_format",
+    "_resolve_cloid",
+    "_is_external_order",
+    "_promote_replacement_if_inflight_modify",
+    "_is_inflight_modify_old_leg_cancel"
+  ],
+  "fixture_provenance": "nominal-synthetic-ids-and-injected-PyO3-reports-not-venue-wire-fixtures",
+  "installed_source_sha256": {
+    "__init__.py": "d5d5ff014167ba12813593e67fef6cc4e156f76a9967f3be07e2fa9e4529bbf6",
+    "config.py": "98ecb538b5e92015860d77a62604fefa566290d13f799d2d7446b6fee732fdff",
+    "execution.py": "64f94799a882f054b42b94f25cecc1ae9f16f578655c07dde72b79b5e7ea4c8b",
+    "factories.py": "d71755676ecfcf29940ba9041ac1a3c049a9edef8f3897a4173a566a5576b219"
+  },
+  "local_source_sha256": {
+    "lifecycle.py": "8c2f9e12aae0b8253ee56004b6ca1cd796fa0f40cc8b813ad5f088a8cb87a29c",
+    "probe.py": "36b3ed22d32a51e2be2dda06bafbcdebe3df1f389c6acc2068535d2bb3ac8778",
+    "report_fragments.py": "d8d9e1611528c3384cb54dd182a1625db43504e4bb14b09a6437110e0b810d4d",
+    "report_trust.py": "e58ffeb93382f764c439237dd6131e1f4e4a56630f3285097124e4dfc479c283"
+  },
+  "not_executed": [
+    "client-construction",
+    "factory-create",
+    "signer-construction",
+    "event-loop",
+    "native-transport",
+    "native-retries",
+    "wire-response-parser",
+    "venue-requests",
+    "event-bus",
+    "account-authentication",
+    "pagination",
+    "history-coverage",
+    "venue-reconciliation",
+    "risk-permission",
+    "runtime-deployment"
+  ],
+  "not_forwarded_by_actual_methods": {
+    "fills": [
+      "start",
+      "end",
+      "venue_order_id"
+    ],
+    "order": [
+      "instrument_id"
+    ],
+    "orders": [
+      "start",
+      "end",
+      "open_only"
+    ],
+    "positions": [
+      "start",
+      "end"
+    ]
+  },
+  "published_wheel_binding_verified": false,
+  "runtime": {
+    "libc": [
+      "glibc",
+      "2.43"
+    ],
+    "machine": "x86_64",
+    "python": "3.13.15"
+  },
+  "schema": "hyperliquid-offline-report-observations-v1",
+  "structured_observation_hooks": [
+    "_log_report_error",
+    "_log_report_receipt"
+  ]
+}

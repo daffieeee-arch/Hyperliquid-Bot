@@ -233,6 +233,17 @@ The holdout is read once, and only if validation selects a config.
 
 ## Seen before
 
+- **2026-10-31 preparation checkpoint:** the metadata-only full coverage
+  audit and failed first panel preparation are recorded in
+  [S4 readiness](exp_xs_usdm.readiness.md) and the
+  [source-gap evidence](exp_xs_usdm.coverage.json). All 323 missing
+  day/symbol pairs were seen before registration; 318 official daily
+  replacements are available and five ICPUSDT dates are unresolved.
+  No panel, strategy return or numerical signal was inspected, no shape
+  result was produced, and no partial recovery or strategy rerun followed.
+  The [data-recovery proposal](exp_xs_usdm.data-repair.md) remains stopped
+  at its all-source gate; the source/environment amendment is explicit.
+
 No cross-sectional return of any kind had been computed in this project, no
 panel of this universe had been built, and none of the work behind this
 document read a price or funding series of a contract other than BTCUSDT.

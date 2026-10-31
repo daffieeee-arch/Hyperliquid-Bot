@@ -1973,6 +1973,9 @@ class BinancePublicResearchCollector:
             session_id,
             {"event": "session_start", "transport_profile": "usdm_rest"},
         )
+        # The shared sink/append lock may yield while another lane requests stop.
+        if stop_event.is_set():
+            return
         try:
             captured = await self._fetch_payload(
                 self._usdm_open_interest_fetcher,

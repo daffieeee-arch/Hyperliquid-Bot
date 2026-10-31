@@ -3249,3 +3249,28 @@ async def test_open_interest_inflight_cancellation_never_fabricates_observation(
     assert not any(
         r.channel in {"usdm_open_interest", "normalized_usdm_context"} for r in sink.records
     )
+
+
+@pytest.mark.asyncio
+async def test_open_interest_stop_during_session_marker_prevents_fetch() -> None:
+    stop = asyncio.Event()
+    calls = 0
+
+    class StopOnMarker(MemorySink):
+        async def append(self, record: RawResearchRecord) -> None:
+            await super().append(record)
+            if record.channel == "session":
+                stop.set()
+
+    async def fetch() -> CapturedApplicationPayload:
+        nonlocal calls
+        calls += 1
+        return _captured("public_usdm_open_interest.json")
+
+    sink = StopOnMarker()
+    collector = BinancePublicResearchCollector(sink, usdm_open_interest_fetcher=fetch)
+    await collector._poll_open_interest(stop)
+    assert calls == 0
+    assert not any(
+        r.channel in {"usdm_open_interest", "normalized_usdm_context"} for r in sink.records
+    )

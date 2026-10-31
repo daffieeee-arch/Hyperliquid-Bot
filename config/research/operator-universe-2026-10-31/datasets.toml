@@ -1,0 +1,7 @@
+# Opt-in operator research selection; see policy.json and docs/research/operator-universe.md.
+# Existing source/archive files remain separate and unchanged.
+[[binance_universe]]
+id = "bn-um-usdt-1d-operator-2026-10-31"
+file = "universe/binance-um-usdt-1d-operator-2026-10-31.json"
+datasets = ["klines", "fundingRate"]
+enabled = false

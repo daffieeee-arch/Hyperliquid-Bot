@@ -19,6 +19,12 @@ mtimes. Its optional catalog smoke has another scope. `research.hist_etl
 verify` performs deeper checks but writes a gap report under the archive root.
 Neither command is automatically run by this read-only migration helper.
 
+For a copied catalog, use the [selected-view readiness CLI](selected-catalog-readiness.md)
+after copy completion and explicit mount verification. It accounts for generated
+list definitions, checks only selected files and emits a bounded local query plan.
+The legacy smoke's scalar regex is unchanged and cannot validate the whole copied
+list catalog; its old database probe is not a safe path-relocation procedure.
+
 `hyperliquid_bot.migration_verify` reuses DATA-1A..1F path contracts, run-ID
 validation, the raw writer's schema and raw schema version. It includes the
 OKX lane. It uses an in-memory DuckDB connection solely to inspect selected

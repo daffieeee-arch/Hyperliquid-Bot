@@ -216,10 +216,28 @@ def qualify_capture(
         require(
             all(
                 prov.get(name) == plan[name]
-                for name in ("campaign", "run_id", "lane", "source_commit", "image_digest")
+                for name in ("run_id", "lane", "source_commit", "image_digest")
             )
             and prov.get("chunk_seconds") == duration,
             "run/source/image planning consistency",
+        )
+        # The native producer records campaign in its verified network marker,
+        # not at the top level of campaign/run provenance.
+        network = prov.get("network_verification")
+        require(isinstance(network, dict), "native network provenance required")
+        network = cast(dict[str, object], network)
+        require(
+            network.get("schema") == "collector-container-network-v1"
+            and all(
+                network.get(name) == plan[name]
+                for name in ("campaign", "source_commit", "image_digest")
+            )
+            and type(network.get("container_netns_inode")) is int
+            and cast(int, network["container_netns_inode"]) > 0
+            and network.get("kernel_tc_verified") is True
+            and network.get("download_bits_per_second") == 100_000_000
+            and network.get("upload_bits_per_second") == 5_000_000,
+            "native network/campaign/source/image binding",
         )
         require(
             claim.get("schema") == claim_schema

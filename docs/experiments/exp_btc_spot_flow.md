@@ -82,6 +82,8 @@ by the publication destination, never by rewriting the claim. Binance's native
 container product is `BTCUSDT`, while economic Spot rows still independently
 require `BTCUSDT-SPOT` and BTC payload identity. Unknown/ambiguous context records
 metadata-only `capture_unqualified` before financial access, without an override.
+Campaign identity is bound through the original `network_verification` marker
+in native run provenance; the producer has no top-level campaign field there.
 
 The published prelaunch record uses the reviewed
 `public-collector-window-plan-v1` schema, sampled before child creation with a

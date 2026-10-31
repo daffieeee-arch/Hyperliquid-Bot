@@ -26,7 +26,7 @@ def read_bytes(path: Path, maximum: int) -> bytes:
                 name,
                 os.O_RDONLY
                 | os.O_NOFOLLOW
-                | (0 if index == len(path.parts) - 2 else os.O_DIRECTORY),
+                | (os.O_NONBLOCK if index == len(path.parts) - 2 else os.O_DIRECTORY),
                 dir_fd=fd,
             )
             os.close(fd)

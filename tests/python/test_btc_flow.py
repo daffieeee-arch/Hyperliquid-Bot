@@ -53,6 +53,19 @@ def approved_parts(*paths: Path) -> dict[str, str]:
     return {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in paths}
 
 
+def synthetic_network(campaign: str = "synthetic") -> dict[str, object]:
+    return {
+        "schema": "collector-container-network-v1",
+        "campaign": campaign,
+        "source_commit": "a" * 40,
+        "image_digest": "sha256:" + "b" * 64,
+        "container_netns_inode": Path("/proc/self/ns/net").stat().st_ino,
+        "kernel_tc_verified": True,
+        "download_bits_per_second": 100_000_000,
+        "upload_bits_per_second": 5_000_000,
+    }
+
+
 def synthetic_contexts(*paths: Path) -> dict[tuple[str, str], CaptureWindow]:
     return {
         (str(path), venue): CaptureWindow("s" * 64, venue, "synthetic-0000", 0, 0, 8 * DAY)
@@ -1210,7 +1223,7 @@ def native_publications(
         plan_sha = exclusive_json(source / "collector-plan.json", plan)
         provenance = {
             "schema": "public-collector-run-provenance-v1",
-            "campaign": "synthetic",
+            "network_verification": synthetic_network(),
             "run_id": run,
             "lane": lane,
             "source_commit": "a" * 40,
@@ -1297,6 +1310,10 @@ def test_native_capture_publications_qualify_exact_parts_without_reading_payload
         "bad_end",
         "raw_hash",
         "wrong_publication",
+        "network_campaign",
+        "network_source",
+        "network_image",
+        "network_schema",
     ],
 )
 def test_capture_context_rejects_invalid_bindings_before_financial_decode(
@@ -1343,6 +1360,20 @@ def test_capture_context_rejects_invalid_bindings_before_financial_decode(
         rebind_publication(refs, parts)
     elif failure == "raw_hash":
         parts[0]["sha256"] = "f" * 64
+    elif failure.startswith("network_"):
+        path = Path(refs[0]["path"])
+        publication = json.loads(path.read_bytes())
+        provenance = publication["provenance"]
+        key = {
+            "network_campaign": "campaign",
+            "network_source": "source_commit",
+            "network_image": "image_digest",
+            "network_schema": "schema",
+        }[failure]
+        provenance["network_verification"][key] = "wrong-native-identity"
+        path.write_text(json.dumps(publication))
+        (root / "collector-runtime.json").write_text(json.dumps(provenance))
+        rebind_publication(refs, parts)
     else:
         parts[0]["publication_sha256"] = refs[1]["sha256"]
     with pytest.raises((IntegrityError, OSError)):
@@ -1484,3 +1515,150 @@ def test_private_output_requires_leaf_mount_equal_verified_local_parent(
     with pytest.raises(IntegrityError, match="leaf mount"):
         io.PrivateOutput(tmp_path / "out")
     assert list((tmp_path / "out").iterdir()) == []
+
+
+def test_actual_collect_campaign_provenance_is_consumed_without_top_level_campaign(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+    import signal
+    import subprocess
+    import time
+    from types import SimpleNamespace
+    from typing import Any
+    from unittest.mock import patch
+
+    from hyperliquid_bot import collector_runtime as runtime
+    from hyperliquid_bot.collector_storage import exclusive_json
+    from hyperliquid_bot.hyperliquid_raw_research import data1a_capture_claim, data1a_capture_health
+    from hyperliquid_bot.reconstructable_paths import data1a_run_paths
+    from research.btc_flow_capture import qualify_capture
+    from research.btc_flow_cli import _json
+
+    roots = {name: tmp_path / name for name in ("spool", "capture", "archive", "control")}
+    for root in roots.values():
+        root.mkdir(mode=0o700)
+    network = roots["control"] / "network.json"
+    clock = roots["control"] / "clock.json"
+    exclusive_json(network, synthetic_network("controller"))
+    exclusive_json(
+        clock,
+        {
+            "schema": "collector-host-clock-v1",
+            "sampled_utc_ns": time.time_ns(),
+            "synchronized": True,
+            "system_offset_seconds": 0.001,
+            "root_delay_seconds": 0.01,
+            "root_dispersion_seconds": 0.002,
+        },
+    )
+    monkeypatch.setattr(
+        runtime,
+        "os",
+        SimpleNamespace(
+            **(
+                vars(os)
+                | {
+                    "getuid": lambda: 1000,
+                    "environ": {"TRADING_MODE": "PAPER", "COLLECTOR_SOURCE_COMMIT": "a" * 40},
+                }
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "signal",
+        SimpleNamespace(SIGINT=signal.SIGINT, SIGTERM=signal.SIGTERM, signal=lambda *_args: None),
+    )
+    monkeypatch.setattr(
+        runtime, "mounted_filesystem", lambda path: "ext4" if path == roots["spool"] else "nfs4"
+    )
+    monkeypatch.setattr(
+        runtime, "network_counters", lambda: {"received_bytes": 0, "transmitted_bytes": 0}
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_catalogue",
+        lambda _raw, database: database.write_bytes(b"synthetic-derived-catalog"),
+    )
+
+    def native(command: list[str], **_kwargs: Any) -> SimpleNamespace:
+        artifact = Path(command[command.index("--artifact-root") + 1])
+        run = command[command.index("--run-id") + 1]
+        paths = data1a_run_paths(artifact, run)
+        paths.run_dir.mkdir(mode=0o700, parents=True)
+        paths.raw_dir.mkdir(mode=0o700)
+        sealed_oos_fixture(paths.raw_dir / "part.parquet", 3 * DAY)
+        with patch(
+            "hyperliquid_bot.capture_live_status.process_code_version", return_value="a" * 40
+        ):
+            claim = data1a_capture_claim(run_id=run, duration_seconds=600, paths=paths)
+        health = data1a_capture_health(
+            run_id=run, duration_seconds=600, status="COMPLETED", report={"elapsed_seconds": 600}
+        )
+        exclusive_json(paths.capture_claim_path, claim)
+        exclusive_json(paths.capture_health_path, health)
+        return SimpleNamespace(poll=lambda: 0, returncode=0)
+
+    monkeypatch.setattr(
+        runtime, "subprocess", SimpleNamespace(**(vars(subprocess) | {"Popen": native}))
+    )
+    plan = runtime.RuntimePlan(
+        "controller", ("hyperliquid",), 600, 1, True, "a" * 40, "sha256:" + "b" * 64
+    )
+    assert (
+        runtime.collect_campaign(
+            plan,
+            spool=roots["spool"],
+            capture=roots["capture"],
+            archive=roots["archive"],
+            network_marker=network,
+            clock_path=clock,
+        )["phase"]
+        == "completed"
+    )
+    for destination in (roots["capture"], roots["archive"]):
+        publication = (
+            destination / "controller/hyperliquid/controller-0000/publication-manifest.json"
+        )
+        pub = json.loads(publication.read_bytes())
+        assert "campaign" not in pub["provenance"]
+        assert pub["provenance"]["network_verification"]["campaign"] == "controller"
+        digest = hashlib.sha256(publication.read_bytes()).hexdigest()
+        raw = publication.parent / "raw/part.parquet"
+        contexts, _ = qualify_capture(
+            [{"path": str(publication), "sha256": digest}],
+            [
+                {
+                    "path": str(raw),
+                    "sha256": hashlib.sha256(raw.read_bytes()).hexdigest(),
+                    "publication_sha256": digest,
+                }
+            ],
+            _json,
+        )
+        assert contexts[(str(raw), "hyperliquid")].run_id == "controller-0000"
+
+
+def test_fifo_source_is_rejected_promptly_without_waiting_for_writer(tmp_path: Path) -> None:
+    import os
+    import subprocess
+    import sys
+
+    fifo = tmp_path / "not-a-file"
+    os.mkfifo(fifo, 0o600)
+    code = (
+        "import sys\nfrom pathlib import Path\n"
+        "from research.btc_flow_io import read_bytes\n"
+        "from research.harness.errors import IntegrityError\n"
+        "try:\n read_bytes(Path(sys.argv[1]),1024)\n"
+        "except IntegrityError:\n raise SystemExit(0)\n"
+        "raise SystemExit(1)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", code, str(fifo)],
+        timeout=5,
+        capture_output=True,
+        env={"PYTHONPATH": str(SPEC.parents[2] / "src")},
+    )
+    assert result.returncode == 0 and result.stdout == b"" and result.stderr == b""

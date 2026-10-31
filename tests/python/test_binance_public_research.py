@@ -2451,17 +2451,31 @@ def _hanging_profile_frames(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("first_sample_valid", [False, True])
 async def test_open_interest_integrity_after_streams_is_not_completed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    first_sample_valid: bool,
 ) -> None:
     monkeypatch.setattr(
         "hyperliquid_bot.binance_public_research.emit_capture_operator_alert",
         lambda **_kwargs: None,
     )
     spot, market, public = _hanging_profile_frames()
+    polls = 0
+
+    async def advance_poll(delay: float, _stop: asyncio.Event) -> None:
+        assert delay == 60
+        await asyncio.sleep(0)
+
+    if first_sample_valid:
+        monkeypatch.setattr("hyperliquid_bot.binance_public_research._wait_or_stop", advance_poll)
 
     async def bad_open_interest() -> CapturedApplicationPayload:
+        nonlocal polls
+        polls += 1
+        if first_sample_valid and polls == 1:
+            return _captured("public_usdm_open_interest.json", utc_ns=200, monotonic_ns=201)
         await asyncio.sleep(0.15)
         return CapturedApplicationPayload(
             received_utc_ns=202,
@@ -2501,6 +2515,7 @@ async def test_open_interest_integrity_after_streams_is_not_completed(
     assert health["status"] == "FAILED"
     assert health["status"] != "COMPLETED"
     assert float(health["elapsed_seconds"]) < 5
+    assert polls == (2 if first_sample_valid else 1)
 
 
 @pytest.mark.asyncio
@@ -3120,3 +3135,142 @@ def test_publisher_live_documents_match_cockpit_contract(
         assert expected_path.is_file(), expected_path
         expected = cast(dict[str, object], json.loads(expected_path.read_text(encoding="utf-8")))
         assert actual == expected
+
+
+@pytest.mark.asyncio
+async def test_open_interest_polling_retains_each_observation_without_catchup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sink = MemorySink()
+    stop = asyncio.Event()
+    calls = 0
+    waits: list[float] = []
+
+    async def fetch() -> CapturedApplicationPayload:
+        nonlocal calls
+        calls += 1
+        assert len(waits) == calls - 1  # A completed delay separates every request.
+        return _captured(
+            "public_usdm_open_interest.json", utc_ns=100 + calls, monotonic_ns=200 + calls
+        )
+
+    async def wait(delay: float, event: asyncio.Event) -> None:
+        assert event is stop and delay == 60
+        waits.append(delay)
+        if len(waits) == 3:
+            stop.set()
+
+    monkeypatch.setattr("hyperliquid_bot.binance_public_research._wait_or_stop", wait)
+    collector = BinancePublicResearchCollector(
+        sink, usdm_open_interest_fetcher=fetch, session_id_factory=SessionIds()
+    )
+    await collector._poll_open_interest(stop)
+    raw = [r for r in sink.records if r.channel == "usdm_open_interest"]
+    normalized = _local_documents(sink.records, "normalized_usdm_context")
+    assert calls == len(raw) == len(normalized) == 3
+    assert len({r.session_id for r in raw}) == 3
+    assert [r.received_utc_ns for r in raw] == [101, 102, 103]
+    assert all(r.payload_bytes == _fixture_bytes("public_usdm_open_interest.json") for r in raw)
+    assert [n["raw_message_ordinal"] for n in normalized] == [r.message_ordinal for r in raw]
+    assert not _local_documents(sink.records, "data_quality")
+
+
+@pytest.mark.asyncio
+async def test_open_interest_stop_interrupts_wait_and_prevents_next_fetch() -> None:
+    stop = asyncio.Event()
+    first_sample = asyncio.Event()
+    calls = 0
+
+    async def fetch() -> CapturedApplicationPayload:
+        nonlocal calls
+        calls += 1
+        first_sample.set()
+        return _captured("public_usdm_open_interest.json")
+
+    collector = BinancePublicResearchCollector(MemorySink(), usdm_open_interest_fetcher=fetch)
+    task = asyncio.create_task(collector._poll_open_interest(stop))
+    await asyncio.wait_for(first_sample.wait(), timeout=1)
+    stop.set()
+    await asyncio.wait_for(task, timeout=1)
+    await collector._poll_open_interest(stop)  # Already stopped: no start request.
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_later_open_interest_transport_failure_is_a_gap_without_retry_or_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sink = MemorySink()
+    stop = asyncio.Event()
+    calls = 0
+    waits = 0
+
+    async def fetch() -> CapturedApplicationPayload:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("synthetic HTTP429 transport details must remain private")
+        return _captured("public_usdm_open_interest.json")
+
+    async def wait(delay: float, _event: asyncio.Event) -> None:
+        nonlocal waits
+        assert delay == 60
+        waits += 1
+
+    monkeypatch.setattr("hyperliquid_bot.binance_public_research._wait_or_stop", wait)
+    collector = BinancePublicResearchCollector(sink, usdm_open_interest_fetcher=fetch)
+    with pytest.raises(BinanceTransportError, match="request failed") as failure:
+        await collector._poll_open_interest(stop)
+    assert "HTTP429" not in str(failure.value)
+    assert calls == 2 and waits == 1
+    assert len([r for r in sink.records if r.channel == "usdm_open_interest"]) == 1
+    assert len(_local_documents(sink.records, "normalized_usdm_context")) == 1
+    assert _local_documents(sink.records, "data_quality") == [
+        {"event": "gap", "reason": "open_interest_poll_transport"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_open_interest_inflight_cancellation_never_fabricates_observation() -> None:
+    sink = MemorySink()
+    started = asyncio.Event()
+
+    async def fetch() -> CapturedApplicationPayload:
+        started.set()
+        await asyncio.Future[None]()
+        raise AssertionError("unreachable")
+
+    collector = BinancePublicResearchCollector(sink, usdm_open_interest_fetcher=fetch)
+    task = asyncio.create_task(collector._poll_open_interest(asyncio.Event()))
+    await asyncio.wait_for(started.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not any(
+        r.channel in {"usdm_open_interest", "normalized_usdm_context"} for r in sink.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_open_interest_stop_during_session_marker_prevents_fetch() -> None:
+    stop = asyncio.Event()
+    calls = 0
+
+    class StopOnMarker(MemorySink):
+        async def append(self, record: RawResearchRecord) -> None:
+            await super().append(record)
+            if record.channel == "session":
+                stop.set()
+
+    async def fetch() -> CapturedApplicationPayload:
+        nonlocal calls
+        calls += 1
+        return _captured("public_usdm_open_interest.json")
+
+    sink = StopOnMarker()
+    collector = BinancePublicResearchCollector(sink, usdm_open_interest_fetcher=fetch)
+    await collector._poll_open_interest(stop)
+    assert calls == 0
+    assert not any(
+        r.channel in {"usdm_open_interest", "normalized_usdm_context"} for r in sink.records
+    )

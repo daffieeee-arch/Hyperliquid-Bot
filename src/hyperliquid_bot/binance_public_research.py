@@ -90,6 +90,8 @@ DATA1F_HEALTH_SCHEMA: Final = "data-1f-retained-capture-health-v1"
 # per-profile liveness_gap + forced reconnect (not a whole-capture kill). Empty
 # required streams at stop / never-observed streams still fail closed.
 REQUIRED_STREAM_STARVATION_SECONDS: Final = 60.0
+# Fixed delay after each completed public REST sample: no catch-up bursts.
+OPEN_INTEREST_POLL_SECONDS: Final = 60.0
 # Disable websockets client keepalive Pings. The library default
 # (ping_interval=20, ping_timeout=20) closes with code 1011 when a client
 # Ping is not answered; that is not Binance's documented keepalive. The
@@ -649,7 +651,7 @@ class BinancePublicResearchCollector:
                 internal_stop,
             )
         )
-        oi_task = asyncio.create_task(self._capture_open_interest(internal_stop))
+        oi_task = asyncio.create_task(self._poll_open_interest(internal_stop))
         stream_tasks = (spot_task, market_task, public_task)
         tasks = (*stream_tasks, oi_task)
         timer = asyncio.create_task(asyncio.sleep(float(duration_seconds)))
@@ -1951,6 +1953,16 @@ class BinancePublicResearchCollector:
             quality_event="snapshot_error",
         )
 
+    async def _poll_open_interest(self, stop_event: asyncio.Event) -> None:
+        """One request in flight, at least 60s between completions and new starts.
+
+        Any fetch/validation failure escapes to the existing terminal-failure
+        path. In particular, HTTP429/418 never triggers a rapid polling retry.
+        """
+        while not stop_event.is_set():
+            await self._capture_open_interest(stop_event)
+            await _wait_or_stop(OPEN_INTEREST_POLL_SECONDS, stop_event)
+
     async def _capture_open_interest(self, stop_event: asyncio.Event) -> None:
         if stop_event.is_set():
             return
@@ -1961,6 +1973,9 @@ class BinancePublicResearchCollector:
             session_id,
             {"event": "session_start", "transport_profile": "usdm_rest"},
         )
+        # The shared sink/append lock may yield while another lane requests stop.
+        if stop_event.is_set():
+            return
         try:
             captured = await self._fetch_payload(
                 self._usdm_open_interest_fetcher,
@@ -1976,6 +1991,15 @@ class BinancePublicResearchCollector:
             )
             error.reported = True
             stop_event.set()
+            raise
+        except BinanceTransportError:
+            await self._quality(
+                BINANCE_USDM_PRODUCT,
+                session_id,
+                "gap",
+                "open_interest_poll_transport",
+                None,
+            )
             raise
         raw_ordinal = await self._raw(
             BINANCE_USDM_PRODUCT,
@@ -2901,6 +2925,7 @@ def data1f_capture_claim(
         },
         "required_stream_starvation_seconds": REQUIRED_STREAM_STARVATION_SECONDS,
         "credentialless": True,
+        "open_interest_poll_seconds": OPEN_INTEREST_POLL_SECONDS,
         "signing": False,
         "duration_seconds": duration,
         "smoke_duration_seconds": SMOKE_CAPTURE_SECONDS,
@@ -3004,6 +3029,7 @@ def data1f_capture_health(
             "retained": duration > SMOKE_CAPTURE_SECONDS,
             "twenty_four_seven": False,
             "credentialless": True,
+            "open_interest_poll_seconds": OPEN_INTEREST_POLL_SECONDS,
             "events": report.get("events"),
             "payload_bytes": report.get("payload_bytes"),
             "parquet_files": report.get("parquet_files"),
@@ -3023,7 +3049,9 @@ def data1f_capture_health(
                 "This is not 24/7 service evidence or a trading edge.",
                 "Spot depth@100ms is heavier than DATA-1A; disk growth can reach tens of "
                 "GB over 72h.",
-                "USD-M open interest is one REST observation at start, not a history.",
+                "USD-M open interest is sampled at start, then at least 60s after each "
+                "completed REST sample; request latency and capture stops create irregular "
+                "intervals. This does not backfill historical observations.",
                 "Public stream only; no API keys, signing, or extra venues.",
                 "Transport gaps include mid-run required-stream silence that force-"
                 "reconnects one transport profile (reason=required_stream_starved) "

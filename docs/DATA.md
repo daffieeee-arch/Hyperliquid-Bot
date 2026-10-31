@@ -1280,8 +1280,21 @@ starts all four lanes together after smoke + Chupa OK
 ([phase-a-72h-joint-retained-capture.md](runbooks/phase-a-72h-joint-retained-capture.md)).
 
 Spot `depth@100ms` is heavier than DATA-1A. A 60-second smoke wrote about 8 MB payload /
-1.6 MB Parquet; budget tens of GB for 72 hours. USDⓈ-M open interest remains one REST
-observation at start, not a history. Never resume the same `run_id`.
+1.6 MB Parquet; budget tens of GB for 72 hours. New USDⓈ-M open-interest captures
+sample the public REST endpoint at start and wait at least 60 seconds after each
+completed observation before requesting another. Requests are sequential; slow
+requests do not cause catch-up bursts. Raw responses retain receipt clocks and
+the venue's observation time, with a fresh REST session per request. Transport
+failure records a gap and fails the run through the existing terminal path;
+validation failure remains fail-closed. No failed or absent observation becomes
+zero, and no automatic retry follows HTTP 429/418. Actual intervals include request
+latency and may be cut short by capture stop. Existing one-sample archives are
+unchanged and do not become a time series. Never resume the same `run_id`.
+
+The [official Binance open-interest endpoint](https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/market-data#open-interest)
+is `GET /fapi/v1/openInterest`, with public request weight 1 (checked 2026-10-31).
+This low-rate polling is separate from the WebSocket reconnect budget and
+does not grant account, trading or signing access.
 
 The synthetic fixtures prove only deterministic offline parsing, byte/SHA round-trip, sequence
 handling, reconnect isolation, bounded failure, and query behavior. The selected endpoints are

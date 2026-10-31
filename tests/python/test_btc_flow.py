@@ -18,6 +18,7 @@ from research.btc_flow import (
     LATENCY,
     MINUTE,
     SECOND,
+    CaptureWindow,
     Flow,
     FlowSource,
     Quote,
@@ -50,6 +51,14 @@ CONFIG = ConfigSpec("test-h1", 0.2, 1)
 
 def approved_parts(*paths: Path) -> dict[str, str]:
     return {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in paths}
+
+
+def synthetic_contexts(*paths: Path) -> dict[tuple[str, str], CaptureWindow]:
+    return {
+        (str(path), venue): CaptureWindow("s" * 64, venue, "synthetic-0000", 0, 0, 8 * DAY)
+        for path in paths
+        for venue in ("hyperliquid", "binance")
+    }
 
 
 def spec() -> HypothesisSpec:
@@ -251,7 +260,7 @@ def test_existing_harness_calls_holdout_only_after_validation_selection() -> Non
 
 def manifest(start: int, end: int, phase: str = "exploratory") -> dict[str, object]:
     return {
-        "format": 2,
+        "format": 3,
         "phase": phase,
         "start_ns": start,
         "end_ns": end,
@@ -259,6 +268,7 @@ def manifest(start: int, end: int, phase: str = "exploratory") -> dict[str, obje
         "preregistration_merged_ns": None,
         "parts": [],
         "funding": None,
+        "capture": [],
     }
 
 
@@ -405,13 +415,13 @@ def test_original_raw_frame_parser_ignores_normalization_duplicates(
     connection.execute("COPY frames TO ? (FORMAT PARQUET)", [str(path)])
     connection.close()
     if other in ("ETH", "SOL"):
-        parsed = load_source(spec(), 0, 3 * MINUTE, approved_parts(path))
+        parsed = load_source(spec(), 0, 3 * MINUTE, approved_parts(path), synthetic_contexts(path))
         assert (
             len(parsed.quotes) == 3 and parsed.flow[0].trades == 1 and parsed.flow[0].imbalance == 1
         )
     else:
         with pytest.raises(IntegrityError, match="coin identity"):
-            load_source(spec(), 0, 3 * MINUTE, approved_parts(path))
+            load_source(spec(), 0, 3 * MINUTE, approved_parts(path), synthetic_contexts(path))
 
 
 def test_event_clock_freshness_is_not_a_strategy_availability_clock() -> None:
@@ -442,7 +452,7 @@ def test_complete_synthetic_economic_runner_is_not_a_noise_only_scaffold(tmp_pat
     for minute in range(4320):
         mid = D(1000) + D(minute) / 10
         for index in range(4):
-            when = minute * MINUTE + index * LATENCY
+            when = 3 * DAY + minute * MINUTE + index * LATENCY
             payload = json.dumps(
                 {
                     "channel": "bbo",
@@ -468,7 +478,7 @@ def test_complete_synthetic_economic_runner_is_not_a_noise_only_scaffold(tmp_pat
                     hashlib.sha256(payload).hexdigest(),
                 )
             )
-        when = minute * MINUTE + 30 * SECOND
+        when = 3 * DAY + minute * MINUTE + 30 * SECOND
         payload = json.dumps(
             {
                 "stream": "btcusdt@trade",
@@ -505,9 +515,9 @@ def test_complete_synthetic_economic_runner_is_not_a_noise_only_scaffold(tmp_pat
     connection.execute("COMMIT")
     connection.execute("COPY frames TO ? (FORMAT PARQUET)", [str(part)])
     connection.close()
-    inputs = manifest(0, 3 * DAY)
-    inputs["funding"] = funding_fixture(tmp_path)[0]
-    inputs["parts"] = [{"path": str(part), "sha256": hashlib.sha256(part.read_bytes()).hexdigest()}]
+    inputs = manifest(3 * DAY, 6 * DAY)
+    inputs["funding"] = funding_fixture(tmp_path, 3 * DAY)[0]
+    inputs["capture"], inputs["parts"] = native_publications(part, tmp_path / "published", 3 * DAY)
     raw = json.dumps(inputs).encode()
     path = tmp_path / "inputs.json"
     path.write_bytes(raw)
@@ -540,12 +550,16 @@ def test_closed_part_paths_never_expand_duckdb_globs(tmp_path: Path, name: str) 
         checked_paths(
             {
                 "parts": [
-                    {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+                    {
+                        "path": str(path),
+                        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                        "publication_sha256": "s" * 64,
+                    }
                 ]
             }
         )
     with pytest.raises(IntegrityError, match="globs refused"):
-        load_source(spec(), 0, 2 * MINUTE, approved_parts(path))
+        load_source(spec(), 0, 2 * MINUTE, approved_parts(path), synthetic_contexts(path))
 
 
 @pytest.mark.parametrize(
@@ -620,15 +634,15 @@ def test_quality_errors_are_never_silently_ignored(tmp_path: Path, event: object
     connection.close()
     if not isinstance(event, str) or event == "unreviewed_event":
         with pytest.raises(IntegrityError, match="quality marker"):
-            load_source(spec(), 0, 2 * MINUTE, approved_parts(part))
+            load_source(spec(), 0, 2 * MINUTE, approved_parts(part), synthetic_contexts(part))
     else:
-        parsed = load_source(spec(), 0, 2 * MINUTE, approved_parts(part))
+        parsed = load_source(spec(), 0, 2 * MINUTE, approved_parts(part), synthetic_contexts(part))
         assert parsed.hl_gaps == (10 * SECOND,)
         parsed.confirmed = False
         assert parsed.signal(MINUTE) is None  # Momentum benchmark respects the same HL gap.
 
 
-def sealed_oos_fixture(path: Path) -> None:
+def sealed_oos_fixture(path: Path, start: int = 0) -> None:
     """Valid validation quotes, opaque malformed OOS that must remain sealed."""
     connection = duckdb.connect()
     connection.execute(
@@ -636,10 +650,10 @@ def sealed_oos_fixture(path: Path) -> None:
         "channel VARCHAR,session_id VARCHAR,message_ordinal BIGINT,received_utc_ns BIGINT,"
         "received_monotonic_ns BIGINT,direction VARCHAR,payload_bytes BLOB,payload_sha256 VARCHAR)"
     )
-    for ordinal, when in enumerate((0, MINUTE, 2 * DAY)):
+    for ordinal, when in enumerate((start, start + MINUTE, start + 2 * DAY)):
         payload = (
             b"financial OOS must not be decoded"
-            if when == 2 * DAY
+            if when == start + 2 * DAY
             else json.dumps(
                 {
                     "channel": "bbo",
@@ -674,7 +688,7 @@ def test_actual_reader_never_decodes_oos_after_failed_validation_including_bench
         return original(raw)
 
     monkeypatch.setattr(cli, "_json", observed)
-    staged = StagedFlowSource(spec(), 0, 3 * DAY, approved_parts(part))
+    staged = StagedFlowSource(spec(), 0, 3 * DAY, approved_parts(part), synthetic_contexts(part))
     result = decide_source(staged)
     assert result.label == "not_enough_data" and result.selected_config_id is None
     for fold in result.folds:
@@ -692,7 +706,7 @@ def test_actual_reader_opens_oos_only_after_harness_validation_selection(
 ) -> None:
     part = tmp_path / "sealed.parquet"
     sealed_oos_fixture(part)
-    staged = StagedFlowSource(spec(), 0, 3 * DAY, approved_parts(part))
+    staged = StagedFlowSource(spec(), 0, 3 * DAY, approved_parts(part), synthetic_contexts(part))
     calls: list[tuple[int, int]] = []
 
     def passing_validation(config: ConfigSpec, start: int, end: int) -> TradeSeries:
@@ -708,17 +722,26 @@ def test_actual_reader_opens_oos_only_after_harness_validation_selection(
     assert len(calls) == 12 and staged.holdout_decoding_started
 
 
-def funding_fixture(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:
+def funding_fixture(tmp_path: Path, start: int = 0) -> tuple[dict[str, str], Path, Path]:
     from research.hist_etl.hyperliquid import FundingRow, FundingWindow, render_raw
 
     hour_ms = 3_600_000
-    window = FundingWindow("native-fixture", "BTC", "1970-01", -hour_ms, 73 * hour_ms, True)
+    window = FundingWindow(
+        "native-fixture",
+        "BTC",
+        "1970-01",
+        start // 1_000_000 - hour_ms,
+        start // 1_000_000 + 73 * hour_ms,
+        True,
+    )
     native = tmp_path / "BTC-funding-native.json"
     native.write_text(
         render_raw(
             window,
             tuple(
-                FundingRow(i * hour_ms, "opaque-unused-rate", "opaque-unused-premium")
+                FundingRow(
+                    start // 1_000_000 + i * hour_ms, "opaque-unused-rate", "opaque-unused-premium"
+                )
                 for i in range(-1, 73)
             ),
         )
@@ -731,8 +754,8 @@ def funding_fixture(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:
                 "model": FUNDING_MODEL,
                 "endpoint": "https://api.hyperliquid.xyz/info",
                 "coin": "BTC",
-                "snapshot_cutoff_ns": 3 * DAY + 61 * MINUTE,
-                "frozen_utc_ns": 3 * DAY + 62 * MINUTE,
+                "snapshot_cutoff_ns": start + 3 * DAY + 61 * MINUTE,
+                "frozen_utc_ns": start + 3 * DAY + 62 * MINUTE,
                 "known_holes": [],
                 "sources": [
                     {"path": str(native), "sha256": hashlib.sha256(native.read_bytes()).hexdigest()}
@@ -909,7 +932,10 @@ def test_fixed_engineering_part_admission_accepts_native_small_parts_without_tru
     digest = hashlib.sha256(data).hexdigest()
     monkeypatch.setattr(cli, "_read", lambda _path, _limit: data)
     inputs = manifest(0, 3 * DAY)
-    inputs["parts"] = [{"path": f"/fixture/{i}.parquet", "sha256": digest} for i in range(10_001)]
+    inputs["parts"] = [
+        {"path": f"/fixture/{i}.parquet", "sha256": digest, "publication_sha256": "s" * 64}
+        for i in range(10_001)
+    ]
     assert len(checked_paths(inputs)[0]) == 10_001
     inputs["parts"] = [{}] * 70_001
     with pytest.raises(IntegrityError, match="raw part count"):
@@ -930,12 +956,19 @@ def test_cli_address_space_cap_never_relaxes_stricter_inherited_limit(
     assert applied == [(resource.RLIMIT_AS, (expected, expected))]
 
 
-def test_full_runner_keeps_malformed_oos_sealed_after_failed_validation(tmp_path: Path) -> None:
+@pytest.mark.parametrize("phase", ["exploratory", "prospective"])
+def test_full_runner_keeps_malformed_oos_sealed_after_failed_validation(
+    tmp_path: Path, phase: str
+) -> None:
+    from research.harness.spec import spec_sha256, verify_lock
+
     part = tmp_path / "sealed.parquet"
-    sealed_oos_fixture(part)
-    inputs = manifest(0, 3 * DAY)
-    inputs["funding"] = funding_fixture(tmp_path)[0]
-    inputs["parts"] = [{"path": str(part), "sha256": hashlib.sha256(part.read_bytes()).hexdigest()}]
+    sealed_oos_fixture(part, 3 * DAY)
+    inputs = manifest(3 * DAY, 6 * DAY, phase)
+    if phase == "prospective":
+        inputs.update(preregistration_commit="a" * 40, preregistration_merged_ns=DAY + 1)
+    inputs["funding"] = funding_fixture(tmp_path, 3 * DAY)[0]
+    inputs["capture"], inputs["parts"] = native_publications(part, tmp_path / "published", 3 * DAY)
     raw = json.dumps(inputs).encode()
     path = tmp_path / "inputs.json"
     path.write_bytes(raw)
@@ -944,9 +977,16 @@ def test_full_runner_keeps_malformed_oos_sealed_after_failed_validation(tmp_path
     assert result["promotion_decision"] == "forbidden"
     decision = result["decision"]
     assert isinstance(decision, dict)
-    assert decision["label"] == "model_conditional_exploratory_not_enough_data"
+    assert decision["label"] == (
+        "model_conditional_"
+        + ("exploratory_" if phase == "exploratory" else "")
+        + "not_enough_data"
+    )
     assert decision["selected_config_id"] is None and decision["promotion_decision"] == "forbidden"
     assert "momentum_without_flow_holdout_benchmark" not in result
+    document, _ = study_spec(SPEC)
+    locked = verify_lock(tmp_path / "out/spec.yaml", document, spec_sha256(document))
+    assert locked["capture_source_sha256"] == result["capture_source_sha256"]
 
 
 def test_complete_native_timeline_with_late_event_still_invalidates_exposure(
@@ -1017,7 +1057,7 @@ def test_actual_reader_uses_approved_immutable_bytes_during_path_swap(
                     path.write_bytes(original_bytes)
 
     monkeypatch.setattr(cli, "sealed_parquet", swapped)
-    parsed = load_source(spec(), 0, 2 * MINUTE, hashes)
+    parsed = load_source(spec(), 0, 2 * MINUTE, hashes, synthetic_contexts(approved))
     assert parsed.quotes[0].mid == D(1000)
     assert approved_parts(approved) == hashes
 
@@ -1086,4 +1126,361 @@ def test_wrong_approved_parquet_digest_is_rejected_before_sql(tmp_path: Path) ->
     part = tmp_path / "part.parquet"
     sealed_oos_fixture(part)
     with pytest.raises(IntegrityError, match="approved Parquet bytes"):
-        load_source(spec(), 0, 2 * MINUTE, {str(part): "0" * 64})
+        load_source(spec(), 0, 2 * MINUTE, {str(part): "0" * 64}, synthetic_contexts(part))
+
+
+def native_publications(
+    part: Path, root: Path, start: int
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    """Synthetic records through actual native planning/claim/health/publication APIs."""
+    from unittest.mock import patch
+
+    from hyperliquid_bot.binance_public_research import data1f_capture_claim, data1f_capture_health
+    from hyperliquid_bot.collector_runtime import RuntimePlan, capture_window_plan
+    from hyperliquid_bot.collector_storage import exclusive_json, publish_closed_chunk
+    from hyperliquid_bot.hyperliquid_raw_research import data1a_capture_claim, data1a_capture_health
+    from hyperliquid_bot.reconstructable_paths import data1a_run_paths, data1f_run_paths
+
+    root.mkdir(mode=0o700)
+    connection = duckdb.connect()
+    connection.execute("CREATE TABLE original AS SELECT * FROM read_parquet(?)", [str(part)])
+    groups = connection.execute(
+        "SELECT DISTINCT venue,((received_utc_ns-?)//?) AS chunk "
+        "FROM original ORDER BY venue,chunk",
+        [start, 6 * 60 * MINUTE],
+    ).fetchall()
+    refs, parts = [], []
+    campaign = RuntimePlan(
+        "synthetic", ("hyperliquid", "binance"), 21600, 12, False, "a" * 40, "sha256:" + "b" * 64
+    )
+    for venue, chunk in groups:
+        lane = "hyperliquid" if venue == "hyperliquid" else "binance"
+        run = f"synthetic-{chunk:04d}"
+        before = start + chunk * 6 * 60 * MINUTE - SECOND
+        clock = {
+            "schema": "collector-host-clock-v1",
+            "sampled_utc_ns": before,
+            "synchronized": True,
+            "system_offset_seconds": 0.001,
+            "root_delay_seconds": 0.01,
+            "root_dispersion_seconds": 0.002,
+        }
+        plan = capture_window_plan(
+            campaign,
+            lane,
+            chunk,
+            clock,
+            utc_before_ns=before,
+            monotonic_ns=before,
+            utc_after_ns=before + 1000,
+        )
+        artifact_root = root / "original" / lane
+        with patch(
+            "hyperliquid_bot.capture_live_status.process_code_version", return_value="a" * 40
+        ):
+            if venue == "hyperliquid":
+                hl = data1a_run_paths(artifact_root, run)
+                source, raw = hl.run_dir, hl.raw_dir / "part.parquet"
+                claim = data1a_capture_claim(run_id=run, duration_seconds=21600, paths=hl)
+                health = data1a_capture_health(
+                    run_id=run,
+                    duration_seconds=21600,
+                    status="COMPLETED",
+                    report={"elapsed_seconds": 21600},
+                )
+            else:
+                bn = data1f_run_paths(artifact_root, run)
+                source, raw = bn.run_dir, bn.raw_dir / "part.parquet"
+                claim = data1f_capture_claim(run_id=run, duration_seconds=21600, paths=bn)
+                health = data1f_capture_health(
+                    run_id=run,
+                    duration_seconds=21600,
+                    status="COMPLETED",
+                    report={"elapsed_seconds": 21600},
+                )
+        source.mkdir(parents=True, mode=0o700)
+        raw.parent.mkdir(mode=0o700)
+        connection.execute(
+            "CREATE OR REPLACE TEMP TABLE selected AS SELECT * "
+            "REPLACE (session_id||? AS session_id) FROM original "
+            "WHERE venue=? AND ((received_utc_ns-?)//?)=?",
+            [f"-{chunk}", venue, start, 6 * 60 * MINUTE, chunk],
+        )
+        connection.execute("COPY selected TO ? (FORMAT PARQUET)", [str(raw)])
+        plan_sha = exclusive_json(source / "collector-plan.json", plan)
+        provenance = {
+            "schema": "public-collector-run-provenance-v1",
+            "campaign": "synthetic",
+            "run_id": run,
+            "lane": lane,
+            "source_commit": "a" * 40,
+            "image_digest": "sha256:" + "b" * 64,
+            "chunk_seconds": 21600,
+            "window_plan_sha256": plan_sha,
+        }
+        exclusive_json(source / "collector-runtime.json", provenance)
+        exclusive_json(source / "capture-claim.json", claim)
+        exclusive_json(source / "capture-health.json", health)
+        destination = root / f"{lane}-{chunk}"
+        receipt = publish_closed_chunk(source, destination, provenance=provenance, catalogue=None)
+        manifest_sha = str(receipt["manifest_sha256"])
+        published_raw = destination / "raw" / "part.parquet"
+        refs.append(
+            {"path": str(destination / "publication-manifest.json"), "sha256": manifest_sha}
+        )
+        parts.append(
+            {
+                "path": str(published_raw),
+                "sha256": hashlib.sha256(published_raw.read_bytes()).hexdigest(),
+                "publication_sha256": manifest_sha,
+            }
+        )
+    connection.close()
+    return refs, parts
+
+
+def capture_fixture(tmp_path: Path) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    part = tmp_path / "original.parquet"
+    sealed_oos_fixture(part, 3 * DAY)
+    return native_publications(part, tmp_path / "published", 3 * DAY)
+
+
+def rebind_publication(
+    refs: list[dict[str, str]], parts: list[dict[str, str]], index: int = 0
+) -> None:
+    path = Path(refs[index]["path"])
+    document = json.loads(path.read_bytes())
+    for name, record in document["files"].items():
+        if name in (
+            "collector-plan.json",
+            "capture-claim.json",
+            "collector-runtime.json",
+            "capture-health.json",
+        ):
+            content = (path.parent / name).read_bytes()
+            record.update(bytes=len(content), sha256=hashlib.sha256(content).hexdigest())
+    path.write_text(json.dumps(document))
+    previous = refs[index]["sha256"]
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    refs[index]["sha256"] = digest
+    for part in parts:
+        if part["publication_sha256"] == previous:
+            part["publication_sha256"] = digest
+    (path.parent / "COMPLETE.json").write_text(
+        json.dumps({"manifest_sha256": digest, "closed_chunk_verified": True})
+    )
+
+
+def test_native_capture_publications_qualify_exact_parts_without_reading_payloads(
+    tmp_path: Path,
+) -> None:
+    from research.btc_flow_capture import qualify_capture
+    from research.btc_flow_cli import _json
+
+    refs, parts = capture_fixture(tmp_path)
+    contexts, hashes = qualify_capture(refs, parts, _json)
+    assert set(contexts) == {(p["path"], "hyperliquid") for p in parts}
+    assert all(context.earliest_end_ns > context.prelaunch_utc_ns for context in contexts.values())
+    assert len(hashes) == 6 * len(refs)  # manifest, seal, plan, claim, runtime, health
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "missing_plan",
+        "rewritten_native_path",
+        "wrong_product",
+        "wrong_source",
+        "not_completed",
+        "wrong_seal",
+        "bad_bracket",
+        "bad_end",
+        "raw_hash",
+        "wrong_publication",
+    ],
+)
+def test_capture_context_rejects_invalid_bindings_before_financial_decode(
+    tmp_path: Path, failure: str
+) -> None:
+    from research.btc_flow_capture import qualify_capture
+    from research.btc_flow_cli import _json
+
+    refs, parts = capture_fixture(tmp_path)
+    root = Path(refs[0]["path"]).parent
+    if failure in ("rewritten_native_path", "wrong_product", "wrong_source"):
+        path = root / "capture-claim.json"
+        control = json.loads(path.read_bytes())
+        control[
+            {
+                "rewritten_native_path": "raw_dir",
+                "wrong_product": "product",
+                "wrong_source": "code_version",
+            }[failure]
+        ] = {
+            "rewritten_native_path": str(root / "raw"),
+            "wrong_product": "BTCUSDT-SPOT",
+            "wrong_source": "c" * 40,
+        }[failure]
+        path.write_text(json.dumps(control))
+        rebind_publication(refs, parts)
+    elif failure == "missing_plan":
+        (root / "collector-plan.json").unlink()
+    elif failure == "not_completed":
+        path = root / "capture-health.json"
+        control = json.loads(path.read_bytes())
+        control["status"] = "OPERATOR_STOP"
+        path.write_text(json.dumps(control))
+        rebind_publication(refs, parts)
+    elif failure == "wrong_seal":
+        (root / "COMPLETE.json").write_text("{}")
+    elif failure in ("bad_bracket", "bad_end"):
+        path = root / "collector-plan.json"
+        control = json.loads(path.read_bytes())
+        control[
+            "prelaunch_utc_after_ns" if failure == "bad_bracket" else "earliest_planned_end_utc_ns"
+        ] += 2 * SECOND
+        path.write_text(json.dumps(control))
+        rebind_publication(refs, parts)
+    elif failure == "raw_hash":
+        parts[0]["sha256"] = "f" * 64
+    else:
+        parts[0]["publication_sha256"] = refs[1]["sha256"]
+    with pytest.raises((IntegrityError, OSError)):
+        qualify_capture(refs, parts, _json)
+
+
+def test_capture_requires_every_published_raw_part(tmp_path: Path) -> None:
+    from research.btc_flow_capture import qualify_capture
+    from research.btc_flow_cli import _json
+
+    refs, parts = capture_fixture(tmp_path)
+    path = Path(refs[0]["path"])
+    pub = json.loads(path.read_bytes())
+    # Metadata-only census: every raw file is mandatory even before financial
+    # duplicate/event checks, so an omitted losing part cannot be hidden.
+    pub["files"]["raw/another.parquet"] = dict(pub["files"]["raw/part.parquet"])
+    path.write_text(json.dumps(pub))
+    rebind_publication(refs, parts)
+    with pytest.raises(IntegrityError, match="every published raw part"):
+        qualify_capture(refs, parts, _json)
+
+
+@pytest.mark.parametrize("confirmed", [False, True])
+def test_predeclared_drifting_capture_end_filters_entries_before_future_unknown_exit(
+    confirmed: bool,
+) -> None:
+    original = source()
+    known_end = 10 * MINUTE + 30 * SECOND  # Deliberately not HH:00.
+    context = CaptureWindow("s" * 64, "synthetic", "synthetic-0000", 0, 0, known_end)
+    selected = FlowSource(
+        original.spec,
+        original.start_ns,
+        original.end_ns,
+        original.quotes,
+        original.flow,
+        confirmed=confirmed,
+        hl_windows={"hl": context},
+        bn_windows={"bn": context},
+        bn_first_trade={"bn": 0},
+    )
+    for config in original.spec.configs:
+        fills = selected.fills(config, 0, 40)
+        assert fills
+        assert all(
+            f.decision_ns + ENTRY_DELAY + 2 * 5 * SECOND + LATENCY + config.horizon_bars * MINUTE
+            < known_end - MINUTE
+            for f in fills
+        )
+        assert all(f.exit.received_ns < known_end - MINUTE for f in fills)
+
+
+@pytest.mark.parametrize("confirmed", [False, True])
+def test_spot_warmup_requires_whole_previous_minute_after_first_actual_trade(
+    confirmed: bool,
+) -> None:
+    original = source()
+    selected = FlowSource(
+        original.spec,
+        original.start_ns,
+        original.end_ns,
+        original.quotes,
+        original.flow,
+        confirmed=confirmed,
+        bn_first_trade={"bn": 30 * SECOND},
+    )
+    assert selected.signal(MINUTE) is None
+    assert selected.signal(2 * MINUTE) is not None
+
+
+def test_capture_unqualified_stops_before_any_financial_part_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import research.btc_flow_cli as cli
+
+    inputs = manifest(0, 3 * DAY)
+    inputs["funding"] = funding_fixture(tmp_path)[0]
+    raw = json.dumps(inputs).encode()
+    path = tmp_path / "inputs.json"
+    path.write_bytes(raw)
+
+    def forbidden(*_args: object) -> None:
+        raise AssertionError("capture qualification precedes financial input access")
+
+    monkeypatch.setattr(cli, "checked_paths", forbidden)
+    monkeypatch.setattr(cli, "load_source", forbidden)
+    result = run(SPEC, path, hashlib.sha256(raw).hexdigest(), tmp_path / "out")
+    assert result["status"] == "capture_unqualified" and result["financial_frames_read"] is False
+    assert result["promotion_decision"] == "forbidden" and "decision" not in result
+
+
+@pytest.mark.parametrize("bad_clock", [False, True])
+def test_cross_part_clock_ranges_use_source_ordinals_not_path_order(
+    tmp_path: Path, bad_clock: bool
+) -> None:
+    original = tmp_path / "original.parquet"
+    sealed_oos_fixture(original)
+    connection = duckdb.connect()
+    connection.execute("CREATE TABLE source AS SELECT * FROM read_parquet(?)", [str(original)])
+    if bad_clock:
+        connection.execute(
+            "UPDATE source SET received_monotonic_ns=?-received_utc_ns WHERE received_utc_ns<=?",
+            [MINUTE, MINUTE],
+        )
+    first, last = tmp_path / "z-first.parquet", tmp_path / "a-last.parquet"
+    for path, when in ((first, 0), (last, MINUTE)):
+        connection.execute(
+            "CREATE OR REPLACE TEMP TABLE selected AS SELECT * FROM source WHERE received_utc_ns=?",
+            [when],
+        )
+        connection.execute("COPY selected TO ? (FORMAT PARQUET)", [str(path)])
+    connection.close()
+    if bad_clock:
+        with pytest.raises(IntegrityError, match="cross-part receipt clock"):
+            load_source(
+                spec(), 0, 2 * MINUTE, approved_parts(first, last), synthetic_contexts(first, last)
+            )
+    else:
+        parsed = load_source(
+            spec(), 0, 2 * MINUTE, approved_parts(first, last), synthetic_contexts(first, last)
+        )
+        assert parsed.quote_times == (0, MINUTE)
+
+
+def test_private_output_requires_leaf_mount_equal_verified_local_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import research.btc_flow_io as io
+
+    original = io._mount
+    calls = 0
+
+    def changed_mount(fd: int) -> str:
+        nonlocal calls
+        calls += 1
+        value = original(fd)
+        return value if calls == 1 else value + "-inserted"
+
+    monkeypatch.setattr(io, "_mount", changed_mount)
+    with pytest.raises(IntegrityError, match="leaf mount"):
+        io.PrivateOutput(tmp_path / "out")
+    assert list((tmp_path / "out").iterdir()) == []

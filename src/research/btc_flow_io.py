@@ -137,6 +137,9 @@ class PrivateOutput:
             self.fd = os.open(
                 path.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent
             )
+            require(
+                _mount(self.fd) == mount, "output leaf mount differs from verified local parent"
+            )
             value = os.fstat(self.fd)
             require(
                 value.st_uid == os.getuid() and stat.S_IMODE(value.st_mode) == 0o700,

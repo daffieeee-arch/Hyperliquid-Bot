@@ -23,7 +23,17 @@ import duckdb
 
 from hyperliquid_bot.binance_spot_trades import BinanceTimestampUnit, decode_binance_spot_trade
 from hyperliquid_bot.local_mode import require_local_paper_mode
-from research.btc_flow import MINUTE, SECOND, FlowSource, Quote, SpotTrade, aggregate_flow, require
+from research.btc_flow import (
+    MINUTE,
+    SECOND,
+    CaptureWindow,
+    FlowSource,
+    Quote,
+    SpotTrade,
+    aggregate_flow,
+    require,
+)
+from research.btc_flow_capture import qualify_capture
 from research.btc_flow_io import PrivateOutput, sealed_parquet
 from research.btc_flow_io import read_bytes as _read
 from research.harness.errors import HarnessError
@@ -78,12 +88,13 @@ def validate_manifest(document: dict[str, object]) -> tuple[int, int, str]:
             "preregistration_merged_ns",
             "parts",
             "funding",
+            "capture",
         },
         "input manifest keys",
     )
     require(
         type(document["format"]) is int
-        and document["format"] == 2
+        and document["format"] == 3
         and document["phase"] in ("exploratory", "prospective"),
         "input manifest version/phase",
     )
@@ -130,7 +141,7 @@ def checked_paths(document: dict[str, object]) -> tuple[list[str], dict[str, str
     hashes: dict[str, str] = {}
     total = 0
     for item in cast(list[dict[str, object]], parts):
-        require(set(item) == {"path", "sha256"}, "raw part fields")
+        require(set(item) == {"path", "sha256", "publication_sha256"}, "raw part fields")
         path, expected = item["path"], item["sha256"]
         require(
             isinstance(path, str) and path not in hashes and isinstance(expected, str),
@@ -289,6 +300,7 @@ def load_source(
     start: int,
     end: int,
     hashes: dict[str, str],
+    contexts: dict[tuple[str, str], CaptureWindow],
     *,
     funding_events_ms: tuple[int, ...] | None = None,
 ) -> FlowSource:
@@ -298,6 +310,8 @@ def load_source(
     quotes: list[Quote] = []
     hl_gaps: list[int] = []
     bn_gaps: list[int] = []
+    sessions: dict[tuple[str, str], CaptureWindow] = {}
+    bn_first_trade: dict[str, int] = {}
 
     def trades() -> Iterator[SpotTrade]:
         count = 0
@@ -323,6 +337,8 @@ def load_source(
                 "raw frame schema/bound",
             )
             require(hashlib.sha256(payload).hexdigest() == digest, "raw payload hash")
+            require((part, venue) in contexts, "raw frame has no qualified capture context")
+            context = contexts[(part, venue)]
             record = _json(payload)
             if direction == "inbound":
                 key = (part, venue, session, channel)
@@ -339,6 +355,17 @@ def load_source(
                     clocks[key] = [old[0], ordinal, old[2], when, old[4], monotonic]
                 else:
                     clocks[key] = [ordinal, ordinal, when, when, monotonic, monotonic]
+                require(
+                    when >= context.prelaunch_utc_ns
+                    and monotonic >= context.prelaunch_monotonic_ns,
+                    "raw clocks predate capture planning",
+                )
+                binding = (venue, session)
+                require(
+                    binding not in sessions or sessions[binding] == context,
+                    "ambiguous session capture binding",
+                )
+                sessions[binding] = context
             require(
                 type(when) is int and isinstance(session, str) and type(ordinal) is int,
                 "raw metadata",
@@ -414,6 +441,7 @@ def load_source(
                 )
                 require(decoded.symbol == "BTCUSDT", "Spot symbol")
                 receipt_freshness(when, decoded.trade_time * 1000)
+                bn_first_trade[session] = min(bn_first_trade.get(session, when), when)
                 count += 1
                 require(count <= MAX_TRADES, "Spot trade row limit")
                 yield SpotTrade(
@@ -447,6 +475,15 @@ def load_source(
         tuple(hl_gaps),
         tuple(bn_gaps),
         funding_events_ms=funding_events_ms,
+        hl_windows={
+            session: context
+            for (venue, session), context in sessions.items()
+            if venue == "hyperliquid"
+        },
+        bn_windows={
+            session: context for (venue, session), context in sessions.items() if venue == "binance"
+        },
+        bn_first_trade=bn_first_trade,
     )
 
 
@@ -465,6 +502,7 @@ class StagedFlowSource:
         start: int,
         end: int,
         hashes: dict[str, str],
+        contexts: dict[tuple[str, str], CaptureWindow],
         *,
         funding_events_ms: tuple[int, ...] | None = None,
     ) -> None:
@@ -473,11 +511,17 @@ class StagedFlowSource:
         self.boundary = end - spec.split.holdout_bars * MINUTE
         require(self.boundary == start + 2 * DAY, "fixed 48h decode boundary")
         self.hashes = dict(hashes)
+        self.contexts = dict(contexts)
         self.funding_events_ms = funding_events_ms
         self.holdout_decoding_started = False
         self._sources = {
             (False, True): load_source(
-                spec, start, self.boundary, self.hashes, funding_events_ms=funding_events_ms
+                spec,
+                start,
+                self.boundary,
+                self.hashes,
+                self.contexts,
+                funding_events_ms=funding_events_ms,
             )
         }
 
@@ -499,6 +543,7 @@ class StagedFlowSource:
                 self.boundary - MINUTE,
                 self.end,
                 self.hashes,
+                self.contexts,
                 funding_events_ms=self.funding_events_ms,
             )
         if (holdout, confirmed) not in self._sources:
@@ -513,6 +558,9 @@ class StagedFlowSource:
                 original.bn_gaps,
                 confirmed=confirmed,
                 funding_events_ms=self.funding_events_ms,
+                hl_windows=original.hl_windows,
+                bn_windows=original.bn_windows,
+                bn_first_trade=original.bn_first_trade,
             )
         source = self._sources[(holdout, confirmed)]
         offset = (source.start_ns - self.start) // MINUTE
@@ -533,6 +581,7 @@ def study_spec(path: Path) -> tuple[dict[str, Json], HypothesisSpec]:
         "fixed hypothesis",
     )
     require(FUNDING_MODEL in spec.dataset_version, "fixed conditional funding model")
+    require("public-collector-window-plan-v1" in spec.dataset_version, "fixed capture-window model")
     require(
         sorted((c.threshold, c.horizon_bars) for c in spec.configs)
         == [(0.2, 1), (0.2, 5), (0.4, 1), (0.4, 5)],
@@ -612,10 +661,27 @@ def _run(
         }
         _result(output, unqualified)
         return unqualified
+    try:
+        contexts, capture_hashes = qualify_capture(inputs["capture"], inputs["parts"], _json)
+    except (HarnessError, ValueError, TypeError, KeyError, OSError, ArithmeticError):
+        capture_unqualified: dict[str, object] = {
+            "status": "capture_unqualified",
+            "reason": "accepted complete native publication/prelaunch context required",
+            "promotion_decision": "forbidden",
+            "financial_frames_read": False,
+            "source_manifest_sha256": expected,
+            "source_commit": source_commit,
+            "spec_sha256": spec_sha256(document),
+            "phase": phase,
+        }
+        _result(output, capture_unqualified)
+        return capture_unqualified
     source: StagedFlowSource | None = None
     try:
         _, hashes = checked_paths(inputs)
-        source = StagedFlowSource(spec, start, end, hashes, funding_events_ms=funding_events)
+        source = StagedFlowSource(
+            spec, start, end, hashes, contexts, funding_events_ms=funding_events
+        )
         decision = decide_source(source)
         payload: dict[str, object] = {
             "status": "completed",
@@ -635,6 +701,7 @@ def _run(
             "onchain_cashflow_qualified": False,
             "funding_event_count_including_padding": len(funding_events),
             "funding_source_sha256": funding_hashes,
+            "capture_source_sha256": capture_hashes,
             "flat_benchmark_net": 0.0,
             "source_manifest_sha256": expected,
             "source_part_sha256": hashes,
@@ -660,6 +727,8 @@ def _run(
         require(
             checked_paths(inputs)[1] == hashes
             and funding_timeline(inputs["funding"], start, end) == (funding_events, funding_hashes)
+            and qualify_capture(inputs["capture"], inputs["parts"], _json)
+            == (contexts, capture_hashes)
             and _read(manifest_path, MAX_MANIFEST_BYTES) == manifest_bytes,
             "source mutation after study",
         )
@@ -681,6 +750,7 @@ def _run(
                     "source_manifest_sha256": expected,
                     "source_part_sha256": hashes,
                     "funding_source_sha256": funding_hashes,
+                    "capture_source_sha256": capture_hashes,
                 },
             },
         )

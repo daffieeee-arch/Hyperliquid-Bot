@@ -70,6 +70,53 @@ frame becomes strategy-available at receipt, not at its earlier venue time.
 Receipt UTC/monotonic regression is checked per inbound session/channel, not
 across parallel WebSocket profiles or local normalization markers.
 
+## Native capture context and planned boundaries
+
+Each part is bound to one original closed native publication. Before financial
+decoding the reader verifies its COMPLETE seal, publication-manifest hash,
+exact raw file hashes, native claim, prelaunch `collector-plan.json`, native
+terminal health and `collector-runtime.json`. Run/lane/container product,
+source/image and duration must agree. The original claim's `raw_dir` remains
+verbatim and must match the publication's **source** root; relocation is bound
+by the publication destination, never by rewriting the claim. Binance's native
+container product is `BTCUSDT`, while economic Spot rows still independently
+require `BTCUSDT-SPOT` and BTC payload identity. Unknown/ambiguous context records
+metadata-only `capture_unqualified` before financial access, without an override.
+
+The published prelaunch record uses the reviewed
+`public-collector-window-plan-v1` schema, sampled before child creation with a
+UTC/monotonic/UTC bracket of at most one second and accepted host-clock evidence.
+Its `earliest_planned_end_utc_ns` is a **lower bound on an uninterrupted native
+timer**, not proof of actual stop, seamless coverage or actual future availability.
+At the decision, latest possible exit (including all frozen entry scheduling,
+latency and both wait budgets) must be strictly before the minimum known HL/BN
+lower end minus 60 seconds. This filters entries before scheduled chunk closure
+even when publication delays move chunk boundaries away from HH:00. It uses no
+observed future gap, actual stop or next chunk's start. Unexpected earlier gaps,
+missing exits or session changes during exposure still invalidate the whole
+window; they are never outcome-dependent trade removal.
+
+The previous full UTC flow minute must also begin at or after the **first valid
+inbound Spot trade receipt in that same session**, ensuring at least 60 seconds
+of warm-up. A session-start control marker can precede slow network setup and
+is not proof of usable observation. If earlier history is outside the currently
+decoded stage, its first decoded valid trade is a conservative warm-up bound.
+The momentum benchmark uses identical Spot-input/session/warm-up/deadline
+eligibility; only imbalance confirmation is omitted.
+
+All `raw/*.parquet` files in every selected publication must appear in the
+approved manifest, with matching hashes. A subset cannot silently omit a losing
+part. Whole boundary runs may extend beyond the fixed 72 hours: extra parts are
+hashed opaquely, while financial decoding stays inside the fixed/staged window.
+The independently accepted input manifest must select the complete intended
+window before outcomes are read; hashes alone do not authenticate provenance.
+This within-publication census does not prove that all 72-hour publications
+exist. Independent acceptance must record campaign/run-index continuity and
+the absence of omitted publications for that window. Missing coverage remains
+unknown, never zero flow.
+Old archives/pilots without original prelaunch records cannot be retrofitted
+into this contract, including exploratory studies.
+
 Known predecision gaps, mixed Spot sessions, absent flow or stale decision quotes
 prevent entry. A gap/session change or missing/late quote affecting a possible
 entry/held exit invalidates the entire affected study; no losing position is
@@ -193,9 +240,10 @@ PYTHONPATH=src python -B -X pycache_prefix=/path/to/fresh-private-pycache -m res
   --source-commit <reviewed-main-sha> --output /path/to/new-private-study
 ```
 
-The input JSON has exactly `format:2`, `phase` (`exploratory`/`prospective`),
+The input JSON has exactly `format:3`, `phase` (`exploratory`/`prospective`),
 `start_ns`, `end_ns`, `preregistration_commit`, `preregistration_merged_ns`, and
-`parts:[{path:<absolute-part>,sha256:<opaque-file-hash>},...]`, plus
+`parts:[{path:<absolute-part>,sha256:<opaque-file-hash>,publication_sha256:<hash>},...]`, plus
+`capture:[{path:<absolute-publication-manifest.json>,sha256:<hash>},...]` and
 `funding:null` or `funding:{path:<absolute-proof-json>,sha256:<proof-hash>}`.
 Exploratory merge
 fields are null. Qualifying metadata/claims/session records must be accepted

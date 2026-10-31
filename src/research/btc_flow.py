@@ -63,6 +63,16 @@ class SpotTrade:
 
 
 @dataclass(frozen=True, slots=True)
+class CaptureWindow:
+    publication_sha256: str
+    venue: str
+    run_id: str
+    prelaunch_utc_ns: int
+    prelaunch_monotonic_ns: int
+    earliest_end_ns: int
+
+
+@dataclass(frozen=True, slots=True)
 class Flow:
     signed_notional: Decimal
     total_notional: Decimal
@@ -194,6 +204,9 @@ class FlowSource:
         *,
         confirmed: bool = True,
         funding_events_ms: tuple[int, ...] | None = None,
+        hl_windows: dict[str, CaptureWindow] | None = None,
+        bn_windows: dict[str, CaptureWindow] | None = None,
+        bn_first_trade: dict[str, int] | None = None,
     ) -> None:
         require(start_ns % MINUTE == end_ns % MINUTE == 0 and end_ns > start_ns, "minute axis")
         require((end_ns - start_ns) // MINUTE <= spec.data.max_rows, "decision row bound")
@@ -236,6 +249,11 @@ class FlowSource:
         self.hl_gaps, self.bn_gaps = tuple(sorted((*hl_gaps, *changes))), tuple(sorted(bn_gaps))
         self.confirmed = confirmed
         self.funding_events_ms = funding_events_ms
+        self.hl_windows, self.bn_windows, self.bn_first_trade = (
+            hl_windows,
+            bn_windows,
+            bn_first_trade,
+        )
 
     @property
     def length(self) -> int:
@@ -261,8 +279,6 @@ class FlowSource:
         if change == 0:
             return None
         side = 1 if change > 0 else -1
-        if not self.confirmed:
-            return side, Decimal(1), now
         minute = self.flow.get(when // MINUTE - 1)
         if (
             minute is None
@@ -270,6 +286,13 @@ class FlowSource:
             or self._gap(self.bn_gaps, when - MINUTE, when)
         ):
             return None
+        session = next(iter(minute.sessions))
+        if self.bn_first_trade is not None:
+            require(session in self.bn_first_trade, "unknown Spot session start")
+            if when - MINUTE < self.bn_first_trade[session]:
+                return None
+        if not self.confirmed:
+            return side, Decimal(1), now
         imbalance = minute.imbalance
         if imbalance * side <= 0:
             return None
@@ -301,6 +324,20 @@ class FlowSource:
             if signal is None or signal[1] < Decimal(str(config.threshold)):
                 continue
             side, _, decision_quote = signal
+            if self.hl_windows is not None:
+                minute = self.flow[when // MINUTE - 1]
+                session = next(iter(minute.sessions))
+                bn_windows = self.bn_windows or {}
+                require(
+                    decision_quote.session in self.hl_windows and session in bn_windows,
+                    "unknown capture window context",
+                )
+                known_end = min(
+                    self.hl_windows[decision_quote.session].earliest_end_ns,
+                    bn_windows[session].earliest_end_ns,
+                )
+                if last_possible_exit >= known_end - MINUTE:
+                    continue
             entry = self._after(when + ENTRY_DELAY)
             require(entry.session == decision_quote.session, "unknown entry across session")
             if self._gap(self.hl_gaps, when, entry.received_ns):

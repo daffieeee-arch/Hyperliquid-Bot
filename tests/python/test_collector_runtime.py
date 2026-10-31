@@ -684,3 +684,64 @@ def test_capture_plan_size_is_bounded_before_child_spawn() -> None:
             monotonic_ns=100,
             utc_after_ns=1001,
         )
+
+
+def test_clock_cli_accepts_96h_budget_with_isolated_time_and_one_sample(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from hyperliquid_bot import collector_clock as clock
+
+    root = private(tmp_path / "clock-control")
+    output = root / "clock.json"
+    monkeypatch.setattr(
+        "sys.argv", ["collector-clock", "--output", str(output), "--duration-seconds", "345600"]
+    )
+    now = 0.0
+    sleeps: list[float] = []
+    commands: list[list[str]] = []
+
+    def sleep(seconds: float) -> None:
+        nonlocal now
+        sleeps.append(seconds)
+        now = 345601.0
+
+    def run(arguments: list[str], **kwargs: Any) -> SimpleNamespace:
+        commands.append(arguments)
+        assert kwargs["timeout"] == 5
+        return SimpleNamespace(
+            stdout=(
+                "System time : 0.001 seconds slow of NTP time\n"
+                "Root delay : 0.01 seconds\nRoot dispersion : 0.002 seconds\nLeap status : Normal\n"
+            )
+        )
+
+    monkeypatch.setattr(
+        clock,
+        "time",
+        SimpleNamespace(monotonic=lambda: now, sleep=sleep, time_ns=lambda: 123_000_000_000),
+    )
+    monkeypatch.setattr(clock, "subprocess", SimpleNamespace(run=run))
+    assert clock.main() == 0
+    assert read_json(output)["sampled_utc_ns"] == 123_000_000_000
+    assert commands == [["chronyc", "-n", "tracking"]] and sleeps == [30]
+
+
+@pytest.mark.parametrize("duration", ["0", "345601"])
+def test_clock_cli_rejects_invalid_budget_before_storage_or_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, duration: str
+) -> None:
+    from hyperliquid_bot import collector_clock as clock
+
+    output = tmp_path / "never-created" / "clock.json"
+    monkeypatch.setattr(
+        "sys.argv", ["collector-clock", "--output", str(output), "--duration-seconds", duration]
+    )
+
+    def forbidden(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("Duration rejection must precede storage and subprocess access.")
+
+    monkeypatch.setattr(clock, "private_directory", forbidden)
+    monkeypatch.setattr(clock, "subprocess", SimpleNamespace(run=forbidden))
+    with pytest.raises(SystemExit) as failure:
+        clock.main()
+    assert failure.value.code == 2 and not output.parent.exists()

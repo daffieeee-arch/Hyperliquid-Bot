@@ -482,7 +482,9 @@ def test_empty_missing_and_incorrect_device_roots_are_not_valid_data(
     monkeypatch.setattr(
         verifier, "_read_mountinfo", lambda: _mount_line(identity.target, device="99:99")
     )
-    assert verifier.inventory(root, identity, copy_complete=True)["root"] == {"state": "invalid"}
+    invalid = verifier.inventory(root, identity, copy_complete=True)
+    assert invalid["mount"] == {"state": "invalid"}
+    assert invalid["root"] == {"state": "not_checked"}
 
 
 @pytest.mark.parametrize("contents", ["not mountinfo", "1 2 3 / /mnt rw", ""])
@@ -594,3 +596,186 @@ def test_premature_eof_cannot_accept_a_valid_json_prefix(
     state, document = verifier._json_file(scan, path)
     assert state == "in_progress"
     assert document is None
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("nfs_id,autofs_id", [("42", "900"), ("900", "42")])
+def test_visible_descriptor_selects_active_automount_independent_of_order_and_id_size(
+    mounted: tuple[Path, verifier.MountIdentity],
+    monkeypatch: pytest.MonkeyPatch,
+    reverse: bool,
+    nfs_id: str,
+    autofs_id: str,
+) -> None:
+    root, identity = mounted
+    rows = [
+        _mount_line(
+            identity.target, "systemd-1", device="0:38", mount_id=autofs_id, filesystem="autofs"
+        ),
+        _mount_line(identity.target, mount_id=nfs_id),
+    ]
+    monkeypatch.setattr(
+        verifier, "_read_mountinfo", lambda: "".join(reversed(rows) if reverse else rows)
+    )
+    monkeypatch.setattr(verifier, "_descriptor_mount_id", lambda _descriptor: nfs_id)
+    report = verifier.inventory(root, identity, copy_complete=True)
+    assert report["mount"] == {
+        "state": "present",
+        "target": str(identity.target),
+        "source": identity.source,
+        "filesystem": identity.filesystem,
+    }
+    assert report["root"] == {"state": "present"}
+    assert report["migration_complete"] is False
+
+
+@pytest.mark.parametrize(
+    "visible", ["autofs", "unknown", "source", "filesystem", "device", "duplicate"]
+)
+def test_hidden_expected_entry_cannot_authorize_another_visible_mount(
+    mounted: tuple[Path, verifier.MountIdentity],
+    monkeypatch: pytest.MonkeyPatch,
+    visible: str,
+) -> None:
+    root, identity = mounted
+    rows = _mount_line(identity.target)
+    mount_id = "43"
+    if visible == "autofs":
+        rows += _mount_line(identity.target, "systemd-1", mount_id=mount_id, filesystem="autofs")
+    elif visible == "source":
+        rows += _mount_line(identity.target, "other:/export", mount_id=mount_id)
+    elif visible == "filesystem":
+        rows += _mount_line(identity.target, mount_id=mount_id, filesystem="ext4")
+    elif visible == "device":
+        rows += _mount_line(identity.target, mount_id=mount_id, device="99:99")
+    elif visible == "duplicate":
+        mount_id = "42"
+        rows += _mount_line(identity.target)
+    monkeypatch.setattr(verifier, "_read_mountinfo", lambda: rows)
+    monkeypatch.setattr(verifier, "_descriptor_mount_id", lambda _descriptor: mount_id)
+
+    def forbidden(_self: object, _path: Path) -> os.stat_result:
+        pytest.fail("A hidden expected entry cannot authorize data-root inspection")
+
+    monkeypatch.setattr(verifier._Scan, "safe", forbidden)
+    report = verifier.inventory(root, identity, copy_complete=True)
+    assert report["mount"] == {"state": "invalid"}
+    assert report["root"] == {"state": "not_checked"}
+
+
+def test_deeper_covering_mount_rejected_before_mount_target_lookup(
+    mounted: tuple[Path, verifier.MountIdentity], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, identity = mounted
+    monkeypatch.setattr(
+        verifier,
+        "_read_mountinfo",
+        lambda: _mount_line(identity.target) + _mount_line(root, mount_id="43"),
+    )
+
+    def forbidden(_target: Path) -> tuple[str, str]:
+        pytest.fail("Deeper covering mount must be rejected using kernel metadata alone")
+
+    monkeypatch.setattr(verifier, "_mount_target_identity", forbidden)
+    report = verifier.inventory(root, identity, copy_complete=True)
+    assert report["mount"] == {"state": "invalid"}
+    assert report["root"] == {"state": "not_checked"}
+
+
+@pytest.mark.parametrize("component", ["anchor", "export"])
+def test_mount_target_ancestor_or_leaf_swap_cannot_follow_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    component: str,
+) -> None:
+    target = tmp_path / "anchor" / "export"
+    root = target / "copy"
+    root.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    (outside / "export" / "copy").mkdir(parents=True)
+    identity = verifier.MountIdentity(target, "test-nas:/project", "nfs4")
+    metadata = _mount_line(target)
+    monkeypatch.setattr(verifier, "_read_mountinfo", lambda: metadata)
+    monkeypatch.setattr(verifier, "_descriptor_mount_id", lambda _descriptor: "42")
+    original_open = os.open
+    swapped = False
+
+    def swap_open(path: str | Path, flags: int, *, dir_fd: int | None = None) -> int:
+        nonlocal swapped
+        if path == component and not swapped:
+            selected = target if component == "export" else target.parent
+            selected.rename(selected.with_name(f"{component}-moved"))
+            selected.symlink_to(outside, target_is_directory=True)
+            swapped = True
+        assert flags & os.O_NOFOLLOW
+        assert flags & os.O_DIRECTORY
+        assert flags & os.O_PATH
+        if path != "/":
+            assert dir_fd is not None
+        return original_open(path, flags, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "open", swap_open)
+    report = verifier.inventory(root, identity, copy_complete=True)
+    assert swapped
+    assert report["mount"] == {"state": "invalid"}
+    assert report["root"] == {"state": "not_checked"}
+
+
+@pytest.mark.parametrize("failure", ["open", "fstat", "fdinfo"])
+def test_mount_target_descriptors_close_on_lookup_and_metadata_failures(
+    mounted: tuple[Path, verifier.MountIdentity],
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    root, identity = mounted
+    opened: set[int] = set()
+    original_open, original_fstat = os.open, os.fstat
+
+    def track_open(path: str | Path, flags: int, *, dir_fd: int | None = None) -> int:
+        if path == identity.target.name and failure == "open":
+            raise PermissionError("synthetic target lookup failure")
+        descriptor = original_open(path, flags, dir_fd=dir_fd)
+        opened.add(descriptor)
+        return descriptor
+
+    def fail_fstat(_descriptor: int) -> os.stat_result:
+        raise OSError("synthetic descriptor metadata failure")
+
+    def fail_fdinfo(_descriptor: int) -> str:
+        raise verifier._Unsafe("descriptor_mount_identity_unavailable")
+
+    monkeypatch.setattr(os, "open", track_open)
+    if failure == "fstat":
+        monkeypatch.setattr(os, "fstat", fail_fstat)
+    elif failure == "fdinfo":
+        monkeypatch.setattr(verifier, "_descriptor_mount_id", fail_fdinfo)
+    report = verifier.inventory(root, identity, copy_complete=True)
+    assert report["mount"] == {"state": "invalid"}
+    assert opened
+    for descriptor in opened:
+        with pytest.raises(OSError):
+            original_fstat(descriptor)
+
+
+def test_same_source_automount_replacement_is_detected_at_final_check(
+    mounted: tuple[Path, verifier.MountIdentity], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, identity = mounted
+    generation = 41
+
+    def metadata() -> str:
+        nonlocal generation
+        generation += 1
+        return _mount_line(identity.target, mount_id=str(generation)) + _mount_line(
+            identity.target,
+            "systemd-1",
+            mount_id="36",
+            filesystem="autofs",
+        )
+
+    monkeypatch.setattr(verifier, "_read_mountinfo", metadata)
+    monkeypatch.setattr(verifier, "_descriptor_mount_id", lambda _descriptor: str(generation))
+    report = verifier.inventory(root, identity, copy_complete=True)
+    assert generation == 43
+    assert report["mount"] == report["root"] == {"state": "invalid"}
+    assert report["selection_complete"] is False

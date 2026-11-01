@@ -54,17 +54,21 @@ Complexity grows faster than the number of venues. A new live venue is admitted 
 A venue and instrument do not uniquely identify a feed product. Future normalized feed identity
 must separately identify the product and access tier so public, authenticated read-only,
 account-/tier-gated, institutional and node-provided feeds cannot be conflated. Bitvavo Standard
-and Market Data Pro are distinct products: Pro is a committed future authenticated read-only feed
-that must support simultaneous A/B collection with Standard and must never silently fall back to
-Standard while retaining Pro identity.
+and Market Data Pro are distinct price-level L2 products, not L3. A bounded authenticated
+read-only Pro research adapter is implemented; that does not establish access entitlement or
+deployment. It supports simultaneous A/B collection with Standard and must never silently fall
+back to Standard while retaining Pro identity.
 
 Read-only market-data credentials and execution credentials have different authority and lifecycle.
 Any future automated data credential is dedicated to data, never reused as an execution key,
-receives no Trade or Withdraw permission, and is IP-allowlisted where possible. This phase creates
-no Bitvavo key or authenticated integration. Potential future gated sources such as Kraken L3,
-Coinbase Exchange full/L3/direct, Deribit raw, OKX higher-tier 10-ms/SBE, Bybit institutional and
-Hyperliquid node/L4 require separate later approval and do not expand the currently implemented
-venues.
+receives no Trade or Withdraw permission, and is IP-allowlisted where possible. Source adapters
+do not create keys or prove that a feed is active. Kraken's optional authenticated L3 and
+Bitvavo Pro remain outside the credentialless native runtime profile. Coinbase Exchange public
+BTC-USD `level2_batch`/`matches`/`heartbeat` has a standalone bounded measurement adapter;
+it is not an admitted native lane or a deployed NAS collector. Separate gated products such as
+Coinbase Direct, OKX higher-tier 10-ms/SBE, Bybit institutional and Hyperliquid node/L4 still
+need their own access and deployment decisions. See [Market Data](DATA.md) for each implemented
+adapter's exact scope and limitations.
 
 Phase 1A-3B1A assigns exact catalogue identities to Hyperliquid production/mainnet public
 WebSocket market data and Binance production/mainnet Spot JSON market streams. Product identity

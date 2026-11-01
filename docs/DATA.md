@@ -1626,6 +1626,84 @@ Official sources checked for this slice:
 - https://polymarket.com/tos
 - https://institutional.polymarket.com/
 
+### Coinbase Exchange BTC-USD public measurement adapter
+
+`hyperliquid_bot.coinbase_public_research` implements a standalone **1–600 second**
+credentialless measurement capture. It is source capability, not an admitted native
+collector lane, a running NAS service, continuous collection, or input admitted to an
+existing pre-registered study. It adds no order submission or authenticated endpoint.
+Existing four-venue campaigns and pinned future research windows remain separate.
+
+The fixed endpoint is `wss://ws-feed.exchange.coinbase.com`; the fixed BTC-USD
+subscriptions are `level2_batch`, `matches`, and `heartbeat`. Coinbase documents
+`level2_batch` as public 50-ms batches with the L2 schema. This contract does not
+claim access to unbatched L2, full/L3, or Direct Market Data. Batches retain their
+source timestamp and ordered changes; intermediate timing is not invented. Sizes
+are **absolute price-level sizes**, with zero meaning removal, not signed deltas.
+
+Every inbound application payload, including malformed data, is timestamped and
+stored through `RawResearchRecord` and the shared atomic ZSTD-Parquet writer before
+decoding. Strict product, subscription, JSON-key, decimal-string and timestamp
+validation fails closed. A session requires one snapshot before L2 updates.
+Decimal lexemes, source trade IDs/sequence numbers and nanosecond timestamp text
+are preserved. Sizes are BTC and prices are USD per BTC; spot/base/quote identity
+is explicit in normalized records and the claim. `side` on a match is the maker side;
+the derived aggressor side is
+explicitly opposite. Initial `last_match` is a historical anchor and is excluded
+from `coinbase_spot_trades`.
+
+Match trade-ID jumps produce explicit missing-ID ranges. Heartbeats ahead of
+observed matches produce **uncertain coverage**, since channel delivery can
+interleave. Match/heartbeat exchange sequence numbers are preserved but their
+jumps do not prove loss on this subscribed subset. There is **no REST backfill**,
+reconnect, automatic gap repair, completeness claim, or backdated availability.
+Disconnects, invalid messages, missing heartbeats, oversized payloads and sink
+failures stop the measurement. The independent duration bound also cancels a
+connection attempt that does not complete. Graceful operator stop uses SIGINT or
+SIGTERM; hard-crash durability remains the shared writer's separate limitation.
+
+The create-only corpus contains `capture-claim.json`, `raw/*.parquet`,
+`catalog.duckdb` and `capture-report.json`. The claim records the exact feed product,
+endpoint and operator-declared source commit/image digest. Those declarations are
+**not runtime attestation**; deployment must independently verify the immutable
+image. Reports retain unqualified coverage, terminal failure class, actual Parquet
+bytes, source-record counts and monotonic observation span. Failed captures still
+attempt to close the writer and retain their report/catalog for inspection.
+
+DuckDB views `coinbase_public_events`, `coinbase_spot_trades` and
+`coinbase_spot_l2_events` join normalized records to the original raw ordinal,
+payload SHA-256 and receipt clocks. The original UTC/monotonic receipt time is
+availability time; the exchange timestamp is not an availability substitute.
+BTC-USD spot is a distinct instrument from HL BTC perpetual, Binance BTCUSDT,
+Kraken BTC/USD or Bitvavo BTC-EUR. Quote/fee/funding differences remain research
+inputs, not assumed equivalence.
+
+After review and separate runtime admission, an operator can invoke the module
+inside an image pinned to its verified digest, overriding the existing collector
+entrypoint. Supply a **new** approved output directory and the image's real source
+commit/digest; do not use an existing capture or protected study directory:
+
+```text
+python -m hyperliquid_bot.coinbase_public_research
+  --output-root <new-approved-corpus-path>
+  --duration-seconds 600
+  --source-commit <full-40-character-source-sha>
+  --image-digest sha256:<verified-64-character-image-digest>
+```
+
+This is a command shape, not a deployment or capture-start instruction. The
+collector image copies the source package; a separately reviewed image publication
+is needed before an operator can run the new module. No image is published or
+runtime changed by adding this adapter. Begin with a controlled measurement;
+storage/CPU growth for Coinbase remains **unmeasured**, and must not inherit the
+current four-feed capture rate or older multi-feed planning budgets. Synthetic
+fixtures prove protocol/storage behavior, not actual access or reliability.
+
+Official protocol references:
+
+- [Coinbase Exchange WebSocket overview](https://docs.cdp.coinbase.com/exchange/websocket-feed/overview)
+- [Coinbase Exchange WebSocket channels](https://docs.cdp.coinbase.com/exchange/websocket-feed/channels)
+
 ## Offline historical research warehouse (VPS)
 
 Free-data offline archives for long-horizon research live on the Netcup VPS
@@ -1647,7 +1725,7 @@ Current contents (operator-managed on disk; **not** committed to git):
 - a DuckDB catalog (`research.duckdb`) with `hist_*` views over those Parquets.
 
 This warehouse **does not replace** live WebSocket retain (DATA-1A/1B/1E/1F/1D).
-Bitvavo MD Pro / Standard L2–L3 and Kraken L3 remain **live-capture only** —
+Bitvavo MD Pro / Standard L2 and Kraken L3 remain **live-capture only** —
 Vision and OHLCVT do not provide those books. Never merge hist Parquet into live
 `run_id` trees; never stop Phase A collectors to “make room” for ETL.
 

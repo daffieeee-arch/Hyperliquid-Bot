@@ -1,5 +1,39 @@
 # Roadmap
 
+## Active priorities — checkpoint 2026-11-01
+
+The immediate goal is a reproducible **BTC strategy result after costs**, followed
+by PAPER only if the evidence supports it. No profitable strategy has been
+established. The phase history below records the broader platform; it is not
+the current task order. The [Program & Readiness board](https://github.com/users/daffieeee-arch/projects/2)
+tracks actual delivery evidence and remaining gates.
+
+| Order | Work | Current evidence and next gate |
+| --- | --- | --- |
+| 1 | Keep public data collection running | Hyperliquid, Binance, Kraken and Bitvavo Standard are active in the TrueNAS App. The continuous supervisor has independently accepted initial adoption; first automatic campaign rollover and actual reboot recovery remain unobserved at this checkpoint. Track [#205](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/205). |
+| 2 | Acquire and accept the fixed BTC study inputs | The separate HL/Binance 72-hour capture is scheduled for **Nov2 00:00–Nov5 00:00 UTC**. Funding acquisition is scheduled for **Nov6 00:15 UTC**. Both schedules are waiting, not completed research inputs. Verify full publication/run continuity, both copies, clocks and funding coverage before scoring. Track [#191](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/191) and [#192](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/192). |
+| 3 | Run the first fixed strategy study | The [BTC Spot-flow study](experiments/exp_btc_spot_flow.md) and cost-aware runner are implemented. Test whether Binance Spot aggressive flow confirms executable HL continuation. First 12h history, next 36h validation, final 24h untouched OOS; selection must precede OOS financial decoding. Earliest scheduled complete-input review is Nov6, conditional on successful collection and acceptance. No scoring has run. |
+| 4 | Decide from the result | Report net results, sample sufficiency, benchmarks, cost stress and limitations. A 72h pilot is not multi-regime profitability evidence. A failed or insufficient study retains its verdict; any further experiment requires a new preregistration and fresh OOS. A supported candidate still needs further robustness and separately admitted PAPER operation. |
+| 5 | Expand data where it supports a defined experiment | Coinbase's 600s public pilot and both stored copies passed independent acceptance; continuous Coinbase is still open. Bitvavo MD Pro access/entitlement remains unverified; Pro is L2, not L3. These additions do not block the existing HL/Binance hypothesis. |
+| 6 | Complete execution and platform gates as needed | PAPER strategy integration, venue-authoritative recovery/reconciliation [#178](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/178), trading observability and backup/recovery proof remain separate work. TESTNET/SHADOW/LIVE are not enabled by data collection or a research result. |
+
+In parallel, address the development-dependency security item
+[#187](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/187).
+The separate S4 multi-asset study remains blocked on its frozen funding-source
+contract ([#190](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/190),
+[#150](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/150)); it does not
+block this BTC study. ICP remains excluded from the operator's selected universe.
+
+The existing archives remain available for qualification and exploratory work;
+their volume alone does not establish usable clocks, complete coverage or a fresh
+holdout. Do not weaken the fixed BTC input requirements to obtain an earlier result.
+Market archives have no automatic deletion policy. The
+[continuous collector runbook](runbooks/continuous-native-collector.md) describes
+storage guards and verified temporary-spool cleanup separately.
+
+This checkpoint is not a deployment instruction or a promise that future timers,
+rollovers or research gates have passed. Consult current evidence on the board.
+
 ## Delivery model
 
 Development and runtime responsibilities remain isolated:
@@ -7,14 +41,20 @@ Development and runtime responsibilities remain isolated:
 - **Ubuntu VM on TrueNAS SCALE (ADR-025):** current source development;
   observed Ubuntu 26.04.1 LTS / KVM, repository under `$HOME/coding-projects/`;
 - **TerraPC/WSL2:** secondary operator environment;
-- **GitHub Actions:** existing independent CI; image release remains planned;
+- **GitHub Actions:** independent CI and explicit trusted-main collector image
+  publication; other service releases remain planned;
 - **Host-neutral Linux/amd64 OCI runtime:** target for approved continuous
-  PAPER operation. **ADR-024** is the historical Netcup profile; migration of
-  datasets, captures and runtime services to the VM is unverified.
+  PAPER operation. **ADR-024** is the historical Netcup profile. Accepted NAS
+  public-data operations do not certify continuous PAPER trading or every
+  historical dataset's research suitability.
 
 Fases overlap by workstream. A strategy may be in PAPER while another remains in RESEARCH, and production hardening can continue while live-market paper evidence accumulates.
 
-## Current migration and research checkpoint
+## Migration and research sequence — retained historical checkpoint
+
+This sequence records the earlier VM migration prerequisites. Use the active
+priorities above for the next work; migration and source CI alone never establish
+strategy performance or trading-runtime readiness.
 
 1. Restore and verify the pinned development toolchain and existing test baseline.
 2. Locate and verify durable captures and historical archives without mutating

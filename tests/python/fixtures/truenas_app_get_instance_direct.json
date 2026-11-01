@@ -1,0 +1,31 @@
+{
+  "id": "hyperliquid-collector",
+  "custom_app": true,
+  "config": {
+    "name": "ix-hyperliquid-collector",
+    "networks": {
+      "default": {
+        "name": "ix-hyperliquid-collector_default",
+        "ipam": {}
+      }
+    },
+    "services": {
+      "collector": {
+        "command": ["synthetic-collector-command"]
+      },
+      "status": {
+        "command": ["synthetic-status-command"]
+      }
+    },
+    "x-notes": "Synthetic configuration-shape fixture; no runtime admission.",
+    "x-portals": [
+      {
+        "name": "Web UI",
+        "host": "192.168.0.2",
+        "port": 18790,
+        "scheme": "http",
+        "path": "/"
+      }
+    ]
+  }
+}

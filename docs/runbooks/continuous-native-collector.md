@@ -57,7 +57,12 @@ For a running adoption also provide its existing `capacity_guard` with exact
 `unit`, project-scoped operator `records` path and `policy_sha256`. Admission
 requires active unit/PID, fresh same-boot state and the exact producer CID.
 Use the actual stored `app.get_instance` config with `retrieve_config`, not a
-local render or assumed template. Reserve new generations create-only; never
+local render or assumed template. On the supported TrueNAS27 getter, `config`
+is the direct Compose object (`name`, `networks`, `services`, `x-notes`,
+`x-portals`). Hash that complete raw object without wrapping or rewriting it.
+The `custom_compose_config` wrapper belongs only to the `app.update` input;
+wrapped, mixed or unknown getter shapes fail closed. Reserve new generations
+create-only; never
 reuse a failed or closed campaign ID. No instance addresses, dataset identities,
 credentials or historical container IDs belong in Git.
 

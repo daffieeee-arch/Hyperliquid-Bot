@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import stat
 from pathlib import Path
 
@@ -18,11 +19,20 @@ HOST_SUFFIXES = {
     "archive": ("hyperliquid-archive", "market-data"),
     "control": ("hyperliquid-runtime", "control"),
 }
+CAMPAIGN_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]{0,35}")
 
 
-def approved_host_root(role: str, path: Path) -> None:
+def approved_host_root(role: str, path: Path, *, campaign: str | None = None) -> None:
     """Limit operator-supplied binds to one dedicated project dataset per role."""
+    if campaign is not None and (
+        type(campaign) is not str or CAMPAIGN_PATTERN.fullmatch(campaign) is None
+    ):
+        raise ValueError("Native storage requires the controller's exact campaign syntax.")
     suffix = HOST_SUFFIXES[role]
+    if role in {"spool", "control"} and path.name != role:
+        if campaign is None:
+            raise ValueError("Campaign-specific native roots require an explicit campaign.")
+        suffix = ("hyperliquid-runtime", f"{role}-{campaign}")
     if (
         not path.is_absolute()
         or ".." in path.parts
@@ -31,6 +41,20 @@ def approved_host_root(role: str, path: Path) -> None:
         or path.parts[3:] != suffix
     ):
         raise ValueError("Native host root must be the explicit project dataset/role path.")
+
+
+def approved_host_roots(host_roots: dict[str, Path], *, campaign: str | None = None) -> None:
+    if set(host_roots) != set(CONTAINER_ROOTS):
+        raise ValueError("All four approved native host roots are required.")
+    for role, path in host_roots.items():
+        approved_host_root(role, path, campaign=campaign)
+    spool, control = host_roots["spool"], host_roots["control"]
+    if spool.parent != control.parent or spool.name.removeprefix(
+        "spool"
+    ) != control.name.removeprefix("control"):
+        raise ValueError(
+            "Native spool/control must be matching siblings in the same runtime dataset."
+        )
 
 
 def filesystem_identity(path: Path) -> dict[str, object]:
@@ -76,26 +100,30 @@ def filesystem_identity(path: Path) -> dict[str, object]:
 
 
 def require_native_storage(
-    verification: object, roots: dict[str, Path]
+    verification: object, roots: dict[str, Path], *, campaign: str | None = None
 ) -> dict[str, dict[str, object]]:
     if not isinstance(verification, dict) or set(verification) != set(CONTAINER_ROOTS):
         raise ValueError("Complete host-bound native storage verification required.")
+    host_roots = {}
+    for role in CONTAINER_ROOTS:
+        binding = verification[role]
+        if not isinstance(binding, dict) or not isinstance(host := binding.get("host_path"), str):
+            raise ValueError("Native host path binding missing.")
+        host_roots[role] = Path(host)
+    approved_host_roots(host_roots, campaign=campaign)
     result: dict[str, dict[str, object]] = {}
     directory_ids: set[tuple[object, object]] = set()
     for role, canonical in CONTAINER_ROOTS.items():
         binding = verification[role]
         if not isinstance(binding, dict) or roots[role] != Path(canonical):
             raise ValueError("Native canonical container paths must remain explicit.")
-        host = binding.get("host_path")
-        if not isinstance(host, str):
-            raise ValueError("Native host path binding missing.")
-        approved_host_root(role, Path(host))
+        host = host_roots[role]
         actual = filesystem_identity(roots[role])
         if (
             actual["filesystem"] != "zfs"
             or binding.get("container_path") != canonical
             or binding.get("identity") != actual
-            or actual["source"] != "/".join(Path(host).parts[2:4])
+            or actual["source"] != "/".join(host.parts[2:4])
         ):
             raise ValueError("Native ZFS dataset/directory does not match host admission.")
         directory_id = (actual["device"], actual["inode"])

@@ -309,9 +309,12 @@ def test_native_runtime_requires_profile_and_storage_before_any_adapter(
     roots["network_marker"].write_text(json.dumps(data))
     calls: list[object] = []
 
-    def reject(verification: object, paths: dict[str, Path]) -> dict[str, dict[str, object]]:
+    def reject(
+        verification: object, paths: dict[str, Path], *, campaign: str | None = None
+    ) -> dict[str, dict[str, object]]:
         calls.append(verification)
         assert paths["control"] == roots["clock_path"].parent
+        assert campaign == "fixture"
         raise ValueError("synthetic missing native proof")
 
     monkeypatch.setattr(runtime, "require_native_storage", reject)

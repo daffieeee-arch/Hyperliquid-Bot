@@ -660,7 +660,7 @@ def main() -> int:
         with PrivateOutput(args.output) as output:
             output.write("spec.yaml", spec_bytes)
             output.write("inputs.json", inputs_bytes)
-            output.json("operator-go.json", go)
+            output.write("operator-go.json", go_bytes)
             output.json(
                 "input-lock.json",
                 {

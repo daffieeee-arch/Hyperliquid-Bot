@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import hyperliquid_bot.calendar_research as module
 from hyperliquid_bot.calendar_research import (
     END,
     HOUR,
@@ -31,7 +32,7 @@ from hyperliquid_bot.local_mode import UnsafeTradingModeError
 from research.harness.data import BarTable
 from research.harness.errors import IntegrityError
 from research.harness.evaluate import Trade, TradeSeries
-from research.harness.spec import HypothesisSpec, validate_spec
+from research.harness.spec import HypothesisSpec, load_document, spec_sha256, validate_spec
 from research.harness.splits import walk_forward
 
 
@@ -342,3 +343,79 @@ def test_research_api_refuses_unapproved_mode_before_loading(
 
     with pytest.raises(UnsafeTradingModeError):
         evaluate(spec, reject_read)
+
+
+def test_cli_retains_noncanonical_go_bytes_matching_validation_hash(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import resource
+    import subprocess
+    from collections.abc import Callable
+
+    spec_path = Path(module.__file__).resolve().parents[2] / module.SPEC_PATH
+    spec_bytes = spec_path.read_bytes()
+    source = "1" * 40
+    inputs = tmp_path / "inputs.json"
+    inputs.write_bytes(b"{}\n")
+    output = tmp_path / "new-result"
+    go = {
+        "explicit_go": True,
+        "data_acceptance_sha256": "2" * 64,
+        "review_sha256": "3" * 64,
+        "output": str(output),
+        "spec_sha256": spec_sha256(load_document(spec_path)),
+        "inputs_sha256": digest(inputs.read_bytes()),
+        "source_commit": source,
+        "study": module.STUDY,
+    }
+    go_bytes = b" \n" + json.dumps(go, indent=1).encode() + b"\n\n"
+    go_path = tmp_path / "go.json"
+    go_path.write_bytes(go_bytes)
+
+    def git_read(argv: list[str], **kwargs: object) -> str | bytes:
+        if argv[-1] == "HEAD":
+            return source + "\n"
+        if "status" in argv:
+            return b""
+        assert "show" in argv
+        return spec_bytes
+
+    def fixture_evaluate(
+        spec: HypothesisSpec,
+        loader: Callable[[int, int], Stage],
+        *,
+        freeze_validation: Callable[[dict[str, object]], None] | None = None,
+    ) -> dict[str, object]:
+        assert freeze_validation is not None
+        freeze_validation({"admitted_test": False})
+        return {"status": "completed", "label": "historical_no_edge"}
+
+    monkeypatch.setenv("TRADING_MODE", "PAPER")
+    monkeypatch.setattr(subprocess, "check_output", git_read)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: subprocess.CompletedProcess([], 0))
+    monkeypatch.setattr(resource, "setrlimit", lambda *a: None)
+    monkeypatch.setattr(module, "load_inputs", lambda *a: module.Inputs((), (), ()))
+    monkeypatch.setattr(module, "clock_census", lambda *a: {"hours": ROWS})
+    monkeypatch.setattr(module, "evaluate", fixture_evaluate)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "calendar_research",
+            "--inputs",
+            str(inputs),
+            "--inputs-sha256",
+            digest(inputs.read_bytes()),
+            "--source-commit",
+            source,
+            "--review-go",
+            str(go_path),
+            "--review-go-sha256",
+            digest(go_bytes),
+            "--output",
+            str(output),
+        ],
+    )
+    assert module.main() == 0
+    assert (output / "operator-go.json").read_bytes() == go_bytes
+    frozen = json.loads((output / "validation.json").read_bytes())
+    assert digest((output / "operator-go.json").read_bytes()) == frozen["operator_go_sha256"]

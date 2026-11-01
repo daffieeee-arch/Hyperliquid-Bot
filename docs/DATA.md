@@ -276,6 +276,13 @@ per message. A hard process or host crash can lose the active in-memory segment 
 `.partial` file; previously published parts remain queryable and readers ignore partials. A
 lossless WAL and 24/7 durability belong to a later runtime-storage decision, not this local slice.
 
+Time-based part rotation uses the largest receipt-monotonic value already accepted by that
+writer, retained across segment boundaries. This prevents backlogged inbound receipts alternating
+with newer local markers from repeatedly starting segments in the past. It changes only the
+internal rotation reference: original row timestamps, ordinals, payloads and append order remain
+exact. Record/payload limits, backpressure and close semantics remain in force. Rotation is not
+a wall-clock flush deadline when no newer receipt clock is observed.
+
 ### Duration contract
 
 The command requires an explicit duration from **1 through 604800 seconds** (7 days).

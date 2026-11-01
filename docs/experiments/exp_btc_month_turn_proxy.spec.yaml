@@ -1,0 +1,58 @@
+# One new calendar mechanism. Markdown defines the required paired-calendar
+# validation gate in addition to this unchanged harness's net-return gate.
+# Historical periods are already exposed. Every promotion decision is forbidden.
+hypothesis_id: btc-month-turn-calendar-proxy-v1
+universe: Binance USD-M BTCUSDT perpetual; conditional historical proxy only
+dataset_version: bn-usdm-hourly-native-funding 2020-01-01..2026-09-01; original monthly sources; exact funding clocks
+h0: The fixed month-turn long has nonpositive modeled net mean return or no positive paired excess over its fixed midmonth calendar control.
+h1: Both modeled net mean and paired midmonth excess are positive under the declared costs and funding valuation model; this is exploratory and does not establish Hyperliquid profitability.
+alpha: 0.025
+selection_method: holm
+direction: long_only
+signal_feature: month_turn
+costs:
+  fee_bps: 5.0
+  slippage_bps: 1.0
+  spread_bps: 0.5
+  latency_bars: 1
+  funding_column: funding_rate
+split:
+  method: expanding
+  train_bars: 8784
+  test_bars: 8760
+  holdout_bars: 14592
+sample:
+  min_trades_validation: 36
+  min_trades_holdout: 18
+  min_folds: 4
+data:
+  backend: parquet
+  parquet_path: bars.parquet
+  timestamp_column: ts
+  price_column: close
+  max_gap: 3600000
+  max_rows: 58440
+  columns:
+    ts:
+      dtype: int64
+      role: timestamp
+    close:
+      dtype: float64
+      role: price
+    month_turn:
+      dtype: float64
+      role: feature
+    funding_rate:
+      dtype: float64
+      role: funding
+    available_ts:
+      dtype: int64
+      role: availability
+features:
+  - name: month_turn
+    column: month_turn
+    available_at_column: available_ts
+configs:
+  - id: calendar-long-96h
+    threshold: 0.5
+    horizon_bars: 96

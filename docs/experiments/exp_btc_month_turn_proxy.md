@@ -85,8 +85,10 @@ Each fill assumes 5bps fee, 1bp adverse slippage and 0.5bp half-spread. These ar
 frozen research assumptions, not a certification of historical account fees.
 The fee reference is Binance's regular USDT-margined futures taker schedule
 ([official table](https://www.binance.com/en-BH/fee/futureFee), checked 2026-11-01).
-The unchanged flat-cost model charges 13bps round trip at 1x, 19.5bps at1.5x and
-26bps at 2x. No discount, rebate, fee optimization or cost retuning is permitted.
+The unchanged flat-cost model charges 13bps of entry notional round trip at 1x,
+19.5bps at 1.5x and 26bps at 2x. These are flat entry-notional deductions;
+the model does not recompute fees on actual exit notional. No discount, rebate,
+fee optimization or cost retuning is permitted.
 
 Native funding is included for every held event. The unchanged harness values
 each funding payment using that hourly traded close relative to the entry
@@ -120,8 +122,10 @@ must stay behind the historical-test selection gate for that stage.
 
 A **mandatory matched control** distinguishes calendar timing from ordinary BTC
 beta. For each primary eligible target month, long the same 96h from that month's
-15th day at 00:59:59.999UTC through its19th day at the same clock. Same quantity,
-latency, stage boundaries, prices, costs, funding model and stresses. Determine
+15th day at 00:59:59.999UTC through its19th day at the same clock. Use the same
+unit entry-notional sizing: each trade's BTC quantity is `1 / its own entry
+close`, not the same BTC amount across dates. Latency, stage boundaries, price
+source, costs, funding model and stresses are the same. Determine
 the common eligible month set solely from planned clocks before reading prices.
 No control-window search, independent control selection or outcome-based pair
 removal. Missing required primary/control input invalidates the whole study.

@@ -26,8 +26,9 @@ sample:
   min_trades_holdout: 18
   min_folds: 4
 data:
-  backend: parquet
-  parquet_path: bars.parquet
+  # Logical custom-source relation, never an archived SQL catalog.
+  backend: duckdb
+  view: month_turn_btc_hourly
   timestamp_column: ts
   price_column: close
   max_gap: 3600000

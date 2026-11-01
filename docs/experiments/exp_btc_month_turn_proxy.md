@@ -53,6 +53,15 @@ Require actual-event membership in every modeled holding interval to agree with
 the bucketed membership. Any disagreement invalidates the study, not one trade.
 A hash certifies byte identity, not historical availability or source truth.
 
+The YAML `data.backend: duckdb` / `view: month_turn_btc_hourly` describes the
+custom source's logical schema, not an external catalog or user-supplied SQL.
+The runner reads only literal hash-bound raw parts in its reviewed source
+boundary and stages financial decoding: validation first, the exposed historical
+test only after both validation gates pass. It does not build or eagerly load
+a full-range `bars.parquet`. Source qualification may inspect all original
+values for equality/validity, without calculating strategy returns; that prior
+exposure is recorded and does not make the historical test untouched.
+
 ## Known calendar, decisions and fills
 
 `ts` is the original hourly candle close, `open_time + 3599999` milliseconds.

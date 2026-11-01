@@ -15,6 +15,27 @@ Source edits, Git credentials, signing keys, the Docker socket and host-network
 mode are absent from the collector and status containers. PAPER remains the
 only accepted trading mode and there is no authenticated exchange execution.
 
+## Web status and the TrueNAS portal
+
+The read-only page is available at `http://<NAS-LAN-IP>:18790/`. The template
+binds only the explicitly supplied NAS LAN address. Its published HTTP port is
+fixed at **18790**, matching the integer `x-portals.port` used by the TrueNAS
+Web UI button. `COLLECTOR_STATUS_PORT` is not an override. Verify that this port
+is available before App admission; do not silently select a different port.
+
+TrueNAS requires the portal port to be an integer. Interpolating an environment
+variable in that Compose extension can leave a string, even when the service
+port publishes correctly. On the observed TrueNAS 27.0.0-RC.1 this makes portal
+validation return an empty portal map. The App and direct URL can still work.
+
+For an already installed App with this metadata defect, a normal Custom App
+update also does not refresh portal metadata on that observed version and can
+force-recreate running containers. Do not update or restart an active capture
+merely to restore its Web UI button. After closure, use a separately reviewed,
+App-scoped metadata-only repair with exact before/after configuration evidence;
+preserve source/image, container identity, mounts, network admission and data.
+Keep the direct URL as the fallback until the actual portal readback is verified.
+
 Select `--storage-profile truenas-zfs` explicitly. The default remains `vm-nfs`;
 it still rejects direct ZFS roots. All native roots must be private mode0700,
 UID/GID 1000 directories without symlink ancestors. An existing named NAS account

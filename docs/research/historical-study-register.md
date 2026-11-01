@@ -20,7 +20,7 @@ study merely because its strategy returns were not printed.
 | H-XS-1 funding/carry and H-XS-2 momentum | `noise` / `noise`; no selected configuration | Warehouse `research/results/hist-first-20261006-xs/REPORT_D_FOR_COS.md` |
 | S4 multi-asset study | Existing draft remains blocked on its frozen funding-source contract; no new panel/scoring permission | [Operator universe](operator-universe.md), issues 150/190 and draft 146 |
 | Prospective BTC Spot-flow / HL continuation | Implemented, fixed Nov2–5 window; not scored at this checkpoint | [Frozen protocol](../experiments/exp_btc_spot_flow.md) |
-| BTC month-turn calendar proxy | New registration only; one fixed calendar config plus matched control; no returns computed | [Protocol](../experiments/exp_btc_month_turn_proxy.md) |
+| BTC month-turn calendar proxy | `historical_no_edge`; 44 validation pairs, negative net mean at all cost/funding stresses; historical test sealed; fixed family stopped | [Independently accepted result](../experiments/exp_btc_month_turn_proxy.results.md), [protocol](../experiments/exp_btc_month_turn_proxy.md) |
 
 Warehouse paths are relative to the verified operator archive root, not executable
 SQL or a machine path to be copied into code. Existing reports include historical

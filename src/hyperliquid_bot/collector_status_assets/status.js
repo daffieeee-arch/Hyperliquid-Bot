@@ -262,17 +262,29 @@ function render(data) {
     paused: "Gepauzeerd: controle nodig",
     stopped: "Gestopt",
   };
-  text("continuous-state", continuous?.fresh
-    ? phases[continuous.phase] || "Supervisorstatus onbekend"
-    : "Geen actuele continue supervisor bevestigd");
-  text("continuous-detail", continuous?.fresh
-    ? "Herpogingen: " + count(continuous.retry_count)
-      + ". Marktarchieven worden niet automatisch verwijderd. " + (continuous.reason || "")
-    : "Een bereikbare pagina bewijst geen actieve dataverzameling.");
-  text("continuous-gap", continuous?.last_gap
-    ? "Laatste overgang of onderbreking: " + (continuous.last_gap.detected_utc || "onbekend")
-      + ". Publicatie en nieuwe verbindingen geven echte gaten; geen verliesvrije dekking geclaimd."
-    : "Begrensde meetdelen hebben publicatie- en verbindingspauzes; geen naadloze dekking geclaimd.");
+  text(
+    "continuous-state",
+    continuous?.fresh
+      ? phases[continuous.phase] || "Supervisorstatus onbekend"
+      : "Geen actuele continue supervisor bevestigd",
+  );
+  text(
+    "continuous-detail",
+    continuous?.fresh
+      ? "Herpogingen: " +
+          count(continuous.retry_count) +
+          ". Marktarchieven worden niet automatisch verwijderd. " +
+          (continuous.reason || "")
+      : "Een bereikbare pagina bewijst geen actieve dataverzameling.",
+  );
+  text(
+    "continuous-gap",
+    continuous?.last_gap
+      ? "Laatste overgang of onderbreking: " +
+          (continuous.last_gap.detected_utc || "onbekend") +
+          ". Publicatie en nieuwe verbindingen geven echte gaten; geen verliesvrije dekking geclaimd."
+      : "Begrensde meetdelen hebben publicatie- en verbindingspauzes; geen naadloze dekking geclaimd.",
+  );
 }
 async function poll() {
   const abort = new AbortController();

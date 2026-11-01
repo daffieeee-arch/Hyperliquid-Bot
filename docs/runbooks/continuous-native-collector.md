@@ -41,10 +41,21 @@ host-specific Docker engine image ID, explicit observed ZFS version/ARC min/max,
 and the reviewed `adoption` generation. Do not copy a registry configuration ID
 onto a containerd engine that exposes the manifest as its image ID.
 
+Also supply `storage_sources`, `storage_guids` and `storage_inodes`, each keyed
+by `runtime`, `capture` and `archive`. Sources/GUIDs identify the three actual
+project datasets; inode pins identify the existing runtime parent and the exact
+work/archive root directories. Per-boot device numbers are read afresh and
+jointly bound by the existing network/storage gate. Dataset substitution,
+wrong filesystems or changed directories stop admission. Read-only checks recur
+during new captures. These are instance settings, never committed NAS values.
+
 The adoption record binds the **existing producer**, independently of the new
 supervisor image: its original finite RuntimePlan, four actual host roots,
 collector/status CIDs, engine image ID, canonical App config SHA256 and host boot
 ID. Preserve its source/image, lanes, counts, duration and prune flag verbatim.
+For a running adoption also provide its existing `capacity_guard` with exact
+`unit`, project-scoped operator `records` path and `policy_sha256`. Admission
+requires active unit/PID, fresh same-boot state and the exact producer CID.
 Use the actual stored `app.get_instance` config with `retrieve_config`, not a
 local render or assumed template. Reserve new generations create-only; never
 reuse a failed or closed campaign ID. No instance addresses, dataset identities,
@@ -74,6 +85,12 @@ there is no package installation, `/etc` unit persistence or unrelated service
 change. No automatic restart loop overrides a paused integrity/storage/clock
 boundary. Persisted `paused` state requires explicit operator revalidation.
 
+Normal SIGTERM/shutdown stores `stopped` while retaining continuous intent.
+It refuses an unattended same-boot restart, but the next actual host boot audits
+the interrupted producer and admits a fresh namespace. To pause permanently,
+stop the unit and invoke the host module with `--pause`; this explicit pause
+survives reboot, as do integrity/storage/clock pauses.
+
 ## Lifecycle and limits
 
 1. Adopt the exact existing managed campaign; do not update/restart its App
@@ -95,6 +112,18 @@ boundary. Persisted `paused` state requires explicit operator revalidation.
    transport exception metadata, zero integrity events, successful acceptance of
    all already published chunks, and bounded backoff (30/60/120/240/480 seconds
    by default). Unknown/writer/integrity failures remain paused, not retried.
+
+After an actual host boot change, rebind only the same canonical App config and
+fully checked managed source/image/mount identities. Stop the old interrupted
+session if TrueNAS recreated it, accept every already sealed copy, retain all
+partial data, journal the interruption and admit a fresh namespace. No old run
+is resumed. A changed App, OOM, incomplete publication or unknown identity stays
+paused for review. POSTINIT queues a nonblocking unit requiring the existing
+Docker/middlewared services. A bounded180-second read-only readiness wait handles
+cold service startup within a300-second startup budget. Incorrect source/image
+proof is not a transient failure. Actual reboot acceptance is separate.
+Known terminal integrity/writer/controller failures observed before reboot
+remain paused; a reboot cannot relabel them as a harmless connection gap.
 
 The market container keeps its native2CPU/2GiB/no-swap/UID1000/ROroot limits;
 the UI remains0.25CPU/256MiB/ROroot. The offline audit uses1CPU/1GiB only after

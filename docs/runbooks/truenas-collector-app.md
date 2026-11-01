@@ -98,6 +98,12 @@ installed by the Compose template. A TrueNAS App restart does not independently
 admit a new market capture: stale controls, namespace reuse or missing evidence
 fail closed.
 
+An explicitly installed trusted host supervisor can add rolling campaigns and
+supported POSTINIT startup without changing this finite container contract.
+It has its own [continuous native collector runbook](continuous-native-collector.md),
+independent review, immutable-image and deployment acceptance. The Compose
+template alone still installs no supervisor or boot task.
+
 Run the reviewed `scripts/collector_network_gate.py` as the assigned host
 operator with explicit `--profile truenas-zfs`, `--container` equal to the actual
 `ix-hyperliquid-collector-collector-1` managed collector, and all four

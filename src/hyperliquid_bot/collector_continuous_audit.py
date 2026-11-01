@@ -107,7 +107,9 @@ def sealed_copy(root: Path, plan: RuntimePlan, lane: str, run_id: str) -> dict[s
         native.get("status") == "COMPLETED"
         and native.get("credentialless") is True
         and native.get("run_id") == run_id
-        and native.get("duration_seconds") == plan.chunk_seconds,
+        and native.get("duration_seconds") == plan.chunk_seconds
+        and type(native.get("integrity_events")) is int
+        and native["integrity_events"] == 0,
         "Native terminal health is not accepted.",
     )
     window_sha, _ = file_hash(root / "collector-plan.json")

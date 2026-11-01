@@ -31,7 +31,7 @@ from typing import Any, cast
 from . import collector_capacity as capacity
 from .collector_clock import parse_tracking
 from .collector_native_storage import CONTAINER_ROOTS, approved_host_roots, filesystem_identity
-from .collector_runtime import LANES, RuntimePlan
+from .collector_runtime import LANES, RuntimePlan, public_environment
 from .local_mode import require_local_paper_mode
 
 APP = "hyperliquid-collector"
@@ -58,6 +58,10 @@ STATES = {
     "stopped",
 }
 require = capacity.require
+
+
+class HostUnavailableError(ValueError):
+    """A read-only host command could not reach its service."""
 
 
 def digest(value: object) -> str:
@@ -153,6 +157,9 @@ class Settings:
     image_id: str
     capacity: capacity.CapacityPolicy
     adoption: dict[str, Any]
+    storage_sources: dict[str, str]
+    storage_guids: dict[str, str]
+    storage_inodes: dict[str, int]
     chunk_seconds: int = 14_400
     chunks: int = 6
     max_retries: int = 5
@@ -182,6 +189,22 @@ class Settings:
         )
         self.plan("admission-check")
         approved_host_roots(self.roots("admission-check"), campaign="admission-check")
+        require(
+            set(self.storage_sources)
+            == set(self.storage_guids)
+            == set(self.storage_inodes)
+            == {"runtime", "capture", "archive"},
+            "Three explicit durable store pins required.",
+        )
+        for role in self.storage_sources:
+            require(
+                re.fullmatch(r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+", self.storage_sources[role])
+                is not None
+                and self.storage_guids[role].isdigit()
+                and type(self.storage_inodes[role]) is int
+                and self.storage_inodes[role] > 0,
+                "Exact project dataset source/GUID/inode pins required.",
+            )
 
     @property
     def image(self) -> str:
@@ -275,7 +298,8 @@ def command(
     response = subprocess.run(
         argv, input=stdin, text=True, capture_output=True, timeout=timeout, env=ENV | (extra or {})
     )
-    require(response.returncode in allowed, "Host command failed: " + argv[0])
+    if response.returncode not in allowed:
+        raise HostUnavailableError("Host command failed: " + argv[0])
     require(len(response.stdout) < 2 * 1024**2, "Host command output bound.")
     return response.stdout
 
@@ -286,10 +310,78 @@ def inspect(name: str) -> dict[str, Any]:
     return dict(value[0])
 
 
-def owned(doc: dict[str, Any], generation: dict[str, Any], role: str) -> None:
+def wait_host_ready(settings: Settings, *, seconds: int = 180) -> None:
+    """Cold boot may precede Docker/Apps readiness; no mutation or blind restart."""
+    deadline = time.monotonic() + seconds
+    while True:
+        try:
+            verify_release(settings)
+            command(["midclt", "call", "app.get_instance", json.dumps(APP)])
+            inspect(COLLECTOR)
+            status = inspect(STATUS)
+            if status["State"]["Running"]:
+                return
+        except (HostUnavailableError, subprocess.TimeoutExpired, ConnectionError):
+            pass
+        require(time.monotonic() < deadline, "Cold host/App readiness budget exhausted.")
+        notify("STATUS=Waiting for project App and Docker readiness")
+        time.sleep(2)
+
+
+def owned(
+    doc: dict[str, Any], generation: dict[str, Any], role: str, *, cleanup: bool = False
+) -> None:
     conf, host = doc["Config"], doc["HostConfig"]
     labels = conf["Labels"]
     memory = (2 * capacity.GIB) if role == "collector" else (256 * 1024**2)
+    if cleanup:
+        require(
+            generation.get(role + "_id") is not None,
+            "Cleanup needs a previously latched exact identity.",
+        )
+    value = dict(generation["plan"])
+    value["lanes"] = tuple(value["lanes"])
+    plan = RuntimePlan(**value)
+    entrypoint, argv = process_contract(plan, role)
+    environment = conf["Env"]
+    require(
+        isinstance(environment, list)
+        and all(type(item) is str and "=" in item for item in environment),
+        "Process environment schema.",
+    )
+    pairs = [item.split("=", 1) for item in environment]
+    env = dict(pairs)
+    require(
+        len(env) == len(pairs)
+        and set(env)
+        == {
+            "COLLECTOR_SOURCE_COMMIT",
+            "GPG_KEY",
+            "HOME",
+            "PATH",
+            "PYTHONDONTWRITEBYTECODE",
+            "PYTHONPATH",
+            "PYTHONUNBUFFERED",
+            "PYTHON_SHA256",
+            "PYTHON_VERSION",
+            "TRADING_MODE",
+            "TZ",
+        }
+        and env.get("TRADING_MODE") == "PAPER"
+        and env.get("COLLECTOR_SOURCE_COMMIT") == plan.source_commit
+        and env.get("PYTHONPATH") == "/app/src"
+        and env.get("PATH") == "/opt/venv/bin:/usr/local/bin:/usr/bin:/bin"
+        and env.get("HOME") == "/tmp"
+        and env.get("TZ") == "UTC"
+        and env.get("PYTHONDONTWRITEBYTECODE") == env.get("PYTHONUNBUFFERED") == "1"
+        and not set(env) & {"PYTHONHOME", "PYTHONSTARTUP", "LD_PRELOAD", "LD_LIBRARY_PATH"},
+        "Public process environment differs.",
+    )
+    public_environment(env)
+    require(
+        conf["Cmd"] == argv and conf["Entrypoint"] == entrypoint,
+        "Exact public collector/status process contract differs.",
+    )
     require(
         doc["Name"] == "/" + (COLLECTOR if role == "collector" else STATUS)
         and labels.get("com.docker.compose.project") == PROJECT
@@ -302,20 +394,23 @@ def owned(doc: dict[str, Any], generation: dict[str, Any], role: str) -> None:
         "Managed container identity differs.",
     )
     require(
-        conf["User"] == "1000:1000"
-        and host["ReadonlyRootfs"] is True
-        and not host["Privileged"]
-        and not host["CapAdd"]
-        and host["CapDrop"] == ["ALL"]
-        and host["SecurityOpt"] == ["no-new-privileges:true"]
-        and host["Memory"] == host["MemorySwap"] == memory
-        and host["NanoCpus"] == (2_000_000_000 if role == "collector" else 250_000_000)
-        and host["PidsLimit"] == (128 if role == "collector" else 64)
-        and host["NetworkMode"] not in {"host", "none"}
-        and not host["NetworkMode"].startswith("container:")
-        and host["RestartPolicy"]["Name"] == ("no" if role == "collector" else "unless-stopped")
-        and not doc["State"]["OOMKilled"]
-        and doc["RestartCount"] == 0,
+        cleanup
+        or (
+            conf["User"] == "1000:1000"
+            and host["ReadonlyRootfs"] is True
+            and not host["Privileged"]
+            and not host["CapAdd"]
+            and host["CapDrop"] == ["ALL"]
+            and host["SecurityOpt"] == ["no-new-privileges:true"]
+            and host["Memory"] == host["MemorySwap"] == memory
+            and host["NanoCpus"] == (2_000_000_000 if role == "collector" else 250_000_000)
+            and host["PidsLimit"] == (128 if role == "collector" else 64)
+            and host["NetworkMode"] not in {"host", "none"}
+            and not host["NetworkMode"].startswith("container:")
+            and host["RestartPolicy"]["Name"] == ("no" if role == "collector" else "unless-stopped")
+            and not doc["State"]["OOMKilled"]
+            and doc["RestartCount"] == 0
+        ),
         "Managed container isolation, OOM or restart differs.",
     )
     mounts = [item for item in doc["Mounts"] if item["Type"] == "bind"]
@@ -339,8 +434,53 @@ def owned(doc: dict[str, Any], generation: dict[str, Any], role: str) -> None:
         ),
         "Unexpected mount.",
     )
-    if role == "collector":
+    if role == "collector" and not cleanup:
         require(not host["PortBindings"], "Collector must not publish a port.")
+
+
+def process_contract(plan: RuntimePlan, role: str) -> tuple[list[str], list[str]]:
+    require(role in {"collector", "status"}, "Only fixed managed process roles permitted.")
+    if role == "status":
+        return ["python", "-B", "-m", "hyperliquid_bot.collector_status"], [
+            "--spool",
+            CONTAINER_ROOTS["spool"],
+            "--capture",
+            CONTAINER_ROOTS["capture"],
+            "--archive",
+            CONTAINER_ROOTS["archive"],
+            "--control",
+            "/control",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "8080",
+        ]
+    args = [
+        "--storage-profile",
+        "truenas-zfs",
+        "--expected-source",
+        plan.source_commit,
+        "--expected-image",
+        plan.image_digest,
+        "--campaign",
+        plan.campaign,
+    ]
+    for lane in plan.lanes:
+        args += ["--lane", lane]
+    args += ["--chunk-seconds", str(plan.chunk_seconds), "--chunks", str(plan.chunks)]
+    if plan.pilot:
+        args.append("--pilot")
+    args += [
+        "--spool",
+        CONTAINER_ROOTS["spool"],
+        "--capture",
+        CONTAINER_ROOTS["capture"],
+        "--archive",
+        CONTAINER_ROOTS["archive"],
+    ]
+    if plan.prune_spool:
+        args.append("--prune-spool")
+    return ["python", "-B", "-m", "hyperliquid_bot.collector_runtime"], args
 
 
 def normalize_compose(
@@ -425,12 +565,14 @@ def transport_failure(health: list[dict[str, Any]]) -> bool:
                 "ConnectionAbortedError",
                 "ConnectionClosedError",
             }
+            and type(value.get("integrity_events")) is int
             and value.get("integrity_events") == 0
             and value.get("credentialless") is True
             for value in failed
         )
         and all(
             value.get("status") in {"COMPLETED", "OPERATOR_STOP", "FAILED"}
+            and type(value.get("integrity_events")) is int
             and value.get("integrity_events") == 0
             for value in health
         )
@@ -459,7 +601,30 @@ class Supervisor:
         self.previous: dict[str, Any] | None = None
         self.streaks: dict[str, int] = {}
         self.last_clock = 0.0
+        self.last_store_check = 0.0
         self.owned_child: subprocess.Popen[str] | None = None
+
+    def verify_store(self, role: str, path: Path) -> None:
+        identity = filesystem_identity(path)
+        key = "runtime" if role in {"spool", "control"} else role
+        require(
+            identity["filesystem"] == "zfs"
+            and identity["source"] == self.settings.storage_sources[key],
+            "Project storage source or filesystem differs.",
+        )
+        guid = command(["zfs", "get", "-H", "-o", "value", "guid", str(identity["source"])]).strip()
+        require(guid == self.settings.storage_guids[key], "Project dataset GUID changed.")
+        if key == "runtime":
+            directory(self.settings.runtime_root)
+            require(
+                self.settings.runtime_root.stat().st_ino == self.settings.storage_inodes[key],
+                "Project runtime parent inode changed.",
+            )
+        else:
+            require(
+                identity["inode"] == self.settings.storage_inodes[key],
+                "Project destination inode changed.",
+            )
 
     def save(self, phase: str | None = None, reason: str | None = None) -> None:
         if phase is not None:
@@ -483,6 +648,8 @@ class Supervisor:
                 "market_archives_automatically_deleted": False,
                 "seamless_coverage_claimed": False,
                 "research_ready": False,
+                "supervisor_source_commit": self.settings.source_commit,
+                "producer_source_commit": generation["plan"]["source_commit"],
             }
             publish(
                 Path(generation["roots"]["control"]) / "continuous-status.json", view, owner=1000
@@ -500,8 +667,17 @@ class Supervisor:
         self.state["last_gap"] = value
         # One small immutable event per generation, never raw payload retention.
         path = self.settings.state_root / (self.state["current"]["plan"]["campaign"] + "-gap.json")
-        require(not path.exists(), "Gap event already exists; refusing a repeated transition.")
-        publish(path, value)
+        if path.exists():
+            previous = document(path, trusted=True)
+            require(
+                previous.get("schema") == value["schema"]
+                and previous.get("reason") == reason
+                and previous.get("previous_campaign") == value["previous_campaign"],
+                "Existing gap record differs from this completed transition.",
+            )
+            self.state["last_gap"] = previous
+        else:
+            publish(path, value)
 
     def tick(self, seconds: float = 1) -> None:
         time.sleep(seconds)
@@ -523,7 +699,7 @@ class Supervisor:
                     space.f_bavail * space.f_frsize >= 2 * capacity.GIB,
                     "Storage reserve reached; no archive deletion is permitted.",
                 )
-            if generation.get("collector_id"):
+            if generation.get("collector_id") and generation["boot_id"] == self.boot:
                 doc = inspect(COLLECTOR)
                 owned(doc, generation, "collector")
                 if doc["State"]["Running"]:
@@ -550,6 +726,10 @@ class Supervisor:
                         int(events["oom"]) == int(events["oom_kill"]) == 0,
                         "Owned collector cgroup OOM.",
                     )
+            if time.monotonic() - self.last_store_check >= 30:
+                for role in ("spool", "capture", "archive"):
+                    self.verify_store(role, Path(generation["roots"][role]))
+                self.last_store_check = time.monotonic()
 
     def admission(self) -> None:
         samples = []
@@ -578,8 +758,9 @@ class Supervisor:
 
     def verify_current(self) -> dict[str, Any]:
         generation = self.state["current"]
+        app = self.app()
         require(
-            digest(self.app()["config"]) == generation["app_config_sha256"],
+            digest(app["config"]) == generation["app_config_sha256"],
             "App configuration changed outside the continuous operator.",
         )
         ids = set(
@@ -601,8 +782,140 @@ class Supervisor:
         collector, status = inspect(COLLECTOR), inspect(STATUS)
         owned(collector, generation, "collector")
         owned(status, generation, "status")
+        services = app["config"]["custom_compose_config"]["services"]
+        require(
+            collector["Config"]["Cmd"] == services["collector"]["command"]
+            and status["Config"]["Cmd"] == services["status"]["command"],
+            "Managed container command differs from actual admitted App config.",
+        )
         require(status["State"]["Running"], "Read-only App status service unavailable.")
         return collector
+
+    def recover_boot(self) -> None:
+        """Rebind only exact managed identities after a changed host boot.
+
+        Old raw namespaces are terminal. A TrueNAS recreate can change CIDs,
+        but never grants permission to reuse their data or stale TC controls.
+        """
+        generation = self.state["current"]
+        require(generation["boot_id"] != self.boot, "Boot recovery requires an actual new boot.")
+        for role, path in generation["roots"].items():
+            self.verify_store(role, Path(path))
+        self.check_interrupted_metadata(generation)
+        require(
+            digest(self.app()["config"]) == generation["app_config_sha256"],
+            "App changed across reboot; independent revalidation required.",
+        )
+        rebound = dict(generation) | {"collector_id": None, "status_id": None}
+        collector, status = inspect(COLLECTOR), inspect(STATUS)
+        owned(collector, rebound, "collector")
+        owned(status, rebound, "status")
+        generation["collector_id"], generation["status_id"] = collector["Id"], status["Id"]
+        self.verify_current()
+        self.save("auditing", "Host reboot interrupted old sessions; fresh admission required.")
+        if collector["State"]["Running"]:
+            command(["docker", "stop", "--time", "90", collector["Id"]], timeout=100)
+        self.audit(complete=False)
+        path = self.settings.state_root / (generation["plan"]["campaign"] + "-gap.json")
+        if not path.exists():
+            self.gap("host-reboot-interruption")
+        else:
+            previous_gap = document(path, trusted=True)
+            require(
+                previous_gap.get("previous_campaign") == generation["plan"]["campaign"],
+                "Retained boot gap identity differs.",
+            )
+            self.state["last_gap"] = previous_gap
+        publish(
+            self.settings.state_root
+            / (generation["plan"]["campaign"] + "-boot-" + self.boot[:8] + ".json"),
+            {
+                "previous_boot_id": generation["boot_id"],
+                "current_boot_id": self.boot,
+                "old_collector_id": generation["collector_id"],
+                "fresh_namespace_required": True,
+            },
+        )
+        self.save("between-campaigns")
+
+    def check_interrupted_metadata(self, generation: dict[str, Any]) -> None:
+        root = Path(generation["roots"]["spool"])
+        path = root / "runtime-health.json"
+        if not path.exists():
+            return  # Real abrupt boot can leave no native/terminal document.
+        runtime = document(path)
+        require(
+            runtime["campaign"] == generation["plan"]["campaign"],
+            "Interrupted runtime metadata identity differs.",
+        )
+        graceful = (
+            self.state.get("last_graceful_stop_boot_id") == generation["boot_id"]
+            and self.state.get("last_graceful_stop_campaign") == generation["plan"]["campaign"]
+        )
+        require(
+            runtime["phase"] != "failed" or graceful,
+            "Known failed controller before reboot requires independent revalidation.",
+        )
+        chunk = runtime.get("chunk")
+        if chunk is None:
+            return
+        require(
+            type(chunk) is int and 0 <= chunk < generation["plan"]["chunks"],
+            "Interrupted chunk identity differs.",
+        )
+        run_id = f"{generation['plan']['campaign']}-{chunk:04d}"
+        terminal = []
+        for lane in generation["plan"]["lanes"]:
+            health_path = (
+                root
+                / generation["plan"]["campaign"]
+                / f"chunk-{chunk:04d}"
+                / lane
+                / LANES[lane][1]
+                / run_id
+                / "capture-health.json"
+            )
+            if health_path.exists():
+                health = document(health_path, limit=1024**2)
+                require(
+                    health.get("run_id") == run_id
+                    and health.get("credentialless") is True
+                    and type(health.get("integrity_events")) is int
+                    and health["integrity_events"] == 0
+                    and health.get("status") in {"COMPLETED", "OPERATOR_STOP", "FAILED"},
+                    "Known native integrity or metadata failure before reboot.",
+                )
+                terminal.append(health)
+        if any(value["status"] == "FAILED" for value in terminal):
+            require(transport_failure(terminal), "Known unsafe native failure before reboot.")
+
+    def verify_adopted_guard(self, generation: dict[str, Any]) -> None:
+        value = inspect(COLLECTOR)
+        if not value["State"]["Running"]:
+            return
+        guard = generation["capacity_guard"]
+        campaign = generation["plan"]["campaign"]
+        require(guard["unit"] == campaign + "-capacity.service", "Adopted guard unit differs.")
+        records = Path(guard["records"])
+        require(
+            records == self.settings.runtime_root / ("operator-record-" + campaign),
+            "Adopted guard record scope differs.",
+        )
+        state = document(records / "capacity-state.json", trusted=True)
+        active = command(
+            ["systemctl", "show", guard["unit"], "--property=ActiveState", "--value"]
+        ).strip()
+        pid = command(["systemctl", "show", guard["unit"], "--property=MainPID", "--value"]).strip()
+        require(
+            active == "active"
+            and pid == str(state["PID"])
+            and state["state"] == "READY"
+            and state["boot_id"] == self.boot
+            and state["container_id"] == generation["collector_id"]
+            and state["policy_sha256"] == guard["policy_sha256"]
+            and 0 <= time.monotonic_ns() - state["monotonic_ns"] <= 2_500_000_000,
+            "Existing finite capacity supervisor is stale or differs.",
+        )
 
     def adopt(self, *, read_only: bool = False) -> None:
         require(self.state["current"] is None, "Cannot re-adopt after state admission.")
@@ -623,8 +936,11 @@ class Supervisor:
         )
         for path in roots.values():
             directory(path, owner=1000)
+        for role, path in roots.items():
+            self.verify_store(role, path)
         self.state["current"] = generation
         self.verify_current()
+        self.verify_adopted_guard(generation)
         # Do not mutate/restart the adopted collector or its finite clock/guard.
         generation["adopted"] = True
         require(generation["boot_id"] == self.boot, "Adoption must pin the actual current boot.")
@@ -693,6 +1009,16 @@ class Supervisor:
     def audit(self, *, complete: bool) -> None:
         generation = self.state["current"]
         self.save("auditing")
+        if not self.state.get("audit_id"):
+            # A crash can happen after Docker create but before persisting CID.
+            # The deterministic name plus immutable audit identity allows
+            # cleanup of only this own networkless readonly verifier.
+            try:
+                previous = inspect(generation["plan"]["campaign"] + "-closure-audit")
+                self.state["audit_id"] = previous["Id"]
+            except HostUnavailableError:
+                pass
+        self.stop_audit()
         argv = [
             "docker",
             "create",
@@ -790,6 +1116,8 @@ class Supervisor:
         previous = self.verify_current()
         require(not previous["State"]["Running"], "Never replace an active admitted campaign.")
         self.admission()
+        for role, path in self.state["current"]["roots"].items():
+            self.verify_store(role, Path(path))
         campaign = (
             "hl-cont-" + time.strftime("%Y%m%d%H%M%S", time.gmtime()) + "-" + uuid.uuid4().hex[:8]
         )
@@ -798,7 +1126,7 @@ class Supervisor:
         approved_host_roots(roots, campaign=campaign)
         for role in ("capture", "archive"):
             directory(roots[role], owner=1000)
-            filesystem_identity(roots[role])
+            self.verify_store(role, roots[role])
             require(
                 not (roots[role] / campaign).exists(), "Fresh publication reservation required."
             )
@@ -811,7 +1139,7 @@ class Supervisor:
         for role in ("spool", "control"):
             roots[role].mkdir(mode=0o700)
             os.chown(roots[role], 1000, 1000)
-            filesystem_identity(roots[role])
+            self.verify_store(role, roots[role])
         extra = {
             "COLLECTOR_IMAGE": self.settings.image,
             "COLLECTOR_SOURCE_COMMIT": plan.source_commit,
@@ -880,6 +1208,9 @@ class Supervisor:
                     generation["collector_id"] = doc["Id"]
                     break
         require(generation["collector_id"] is not None, "Fresh managed collector did not start.")
+        # Persist the exact identity before a separate privileged gate can mint
+        # network permission. ExecStopPost must survive an immediate SIGKILL.
+        self.save()
         gate = [
             sys.executable,
             "-B",
@@ -907,6 +1238,7 @@ class Supervisor:
                     generation["status_id"] = status["Id"]
                     break
         require(generation["status_id"] is not None, "Managed status container did not start.")
+        self.save()
         app = self.app()
         require(
             app["config"]["custom_compose_config"] == rendered,
@@ -981,33 +1313,73 @@ class Supervisor:
         return True
 
     def stop_owned(self) -> None:
-        self.stop_audit()
+        try:
+            self.stop_collector()
+        finally:
+            self.stop_audit()
+
+    def stop_collector(self) -> None:
         generation = self.state.get("current")
-        if not generation or generation.get("adopted") or not generation.get("collector_id"):
+        if not generation or generation.get("adopted"):
             return
-        doc = inspect(COLLECTOR)
-        owned(doc, generation, "collector")
+        if not generation.get("collector_id"):
+            # app.update may have created the exact new waiting container just
+            # before the parent died. Recover only its full admitted identity;
+            # the old adopted campaign will fail the campaign/mount/image pins.
+            try:
+                doc = inspect(COLLECTOR)
+                owned(doc, generation, "collector")
+            except (ValueError, KeyError, OSError, subprocess.SubprocessError):
+                return
+            generation["collector_id"] = doc["Id"]
+            # A full quota must never prevent stopping an independently
+            # verified own process merely because its receipt cannot be saved.
+            with contextlib.suppress(OSError):
+                self.save()
+        else:
+            doc = inspect(COLLECTOR)
+            owned(doc, generation, "collector", cleanup=True)
         if doc["State"]["Running"]:
             command(["docker", "stop", "--time", "90", generation["collector_id"]], timeout=100)
 
+    def shutdown_phase(self) -> str:
+        """A shutdown signal cannot erase a failure already written by runtime."""
+        generation = self.state["current"]
+        if generation:
+            path = Path(generation["roots"]["spool"]) / "runtime-health.json"
+            try:
+                if path.exists():
+                    phase = document(path).get("phase")
+                    if phase not in {"starting", "capturing", "publishing", "completed"}:
+                        return "paused"
+            except (OSError, ValueError):
+                return "paused"
+            self.state["last_graceful_stop_campaign"] = generation["plan"]["campaign"]
+        self.state["last_graceful_stop_boot_id"] = self.boot
+        return "stopped"
+
     def run(self) -> int:
-        self.admission()
-        if self.state["phase"] in {"paused", "stopped"}:
-            return 2
-        if self.state["current"] is None:
-            self.adopt()
-        notify("READY=1\nWATCHDOG=1")
         try:
+            if self.state["phase"] == "paused":
+                return 2
+            if self.state["phase"] == "stopped":
+                current = self.state["current"]
+                if current is None or current["boot_id"] == self.boot:
+                    return 2
+                # Graceful OS shutdown sends the same SIGTERM as systemctl stop.
+                # Continuous intent survives to the next boot; an explicit
+                # operator/integrity pause is a different persistent state.
+                self.state["phase"] = "auditing"
+            if self.state["current"] and self.state["current"]["boot_id"] != self.boot:
+                self.state["phase"] = "auditing"
+            self.admission()
+            if self.state["current"] is None:
+                self.adopt()
+            notify("READY=1\nWATCHDOG=1")
             while not self.stopping:
                 generation = self.state["current"]
                 if generation["boot_id"] != self.boot:
-                    # Docker restart is disabled. If an external actor restarted
-                    # it anyway, preserve the failed identity and stop for review.
-                    doc = self.verify_current()
-                    require(not doc["State"]["Running"], "Rebooted campaign unexpectedly running.")
-                    self.audit(complete=False)
-                    self.gap("host-reboot-interruption")
-                    self.save("between-campaigns")
+                    self.recover_boot()
                 if self.state["phase"] == "retry-wait":
                     if time.time_ns() < self.state["retry_after_utc_ns"]:
                         self.tick()
@@ -1018,13 +1390,24 @@ class Supervisor:
                         continue
                     self.launch()
                 self.tick()
-        except (ValueError, OSError, KeyError, subprocess.SubprocessError):
-            self.save(
-                "paused",
-                "Admission, clock, capacity, closure or operator boundary; inspect retained evidence.",
+        except (ValueError, OSError, KeyError, subprocess.SubprocessError) as error:
+            phase = (
+                self.shutdown_phase()
+                if self.stopping and str(error) == "Operator stopped continuous supervision."
+                else "paused"
             )
-            self.stop_owned()
-            return 2
+            try:
+                self.save(phase, str(error)[:240])
+            finally:
+                self.stop_owned()
+            return 0 if phase == "stopped" else 2
+        if self.stopping:
+            phase = self.shutdown_phase()
+            try:
+                self.save(phase, "Supervisor stopped; continuous intent retained for next boot.")
+            finally:
+                self.stop_owned()
+            return 0 if phase == "stopped" else 2
         return 0
 
 
@@ -1032,12 +1415,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     require_local_paper_mode(os.environ.get("TRADING_MODE"))
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--settings", type=Path, required=True)
-    parser.add_argument("--stop-owned", action="store_true")
-    parser.add_argument("--inspect-only", action="store_true")
+    operation = parser.add_mutually_exclusive_group()
+    operation.add_argument("--stop-owned", action="store_true")
+    operation.add_argument("--inspect-only", action="store_true")
+    operation.add_argument("--pause", action="store_true")
     args = parser.parse_args(argv)
     require(os.getuid() == 0, "Trusted root host operator required.")
     settings = load_settings(args.settings)
-    verify_release(settings)
+    if not args.stop_owned:
+        wait_host_ready(settings)
     if args.inspect_only:
         supervisor = Supervisor(settings)
         if supervisor.state["current"] is None:
@@ -1057,8 +1443,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     with singleton(settings.state_root):
         supervisor = Supervisor(settings)
+        if args.pause:
+            try:
+                supervisor.save(
+                    "paused", "Explicit persistent operator pause; revalidation required."
+                )
+            finally:
+                supervisor.stop_owned()
+            return 0
         if args.stop_owned:
-            supervisor.stop_owned()
+            try:
+                if supervisor.state["phase"] not in {"paused", "stopped"}:
+                    supervisor.save("paused", "Host supervisor stopped; admission needs review.")
+            finally:
+                supervisor.stop_owned()
             return 0
 
         def stop(_signum: int, _frame: object) -> None:

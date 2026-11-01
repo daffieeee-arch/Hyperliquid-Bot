@@ -55,11 +55,14 @@ def start_argv(release: Path, settings: Path, state_root: Path) -> list[str]:
     ]
     return [
         "systemd-run",
+        "--no-block",
         "--unit=" + UNIT,
         "--property=Type=notify",
         "--property=NotifyAccess=main",
+        "--property=After=docker.service middlewared.service",
+        "--property=Requires=docker.service middlewared.service",
         "--property=WatchdogSec=5s",
-        "--property=TimeoutStartSec=45s",
+        "--property=TimeoutStartSec=300s",
         "--property=TimeoutStopSec=100s",
         "--property=TimeoutAbortSec=5s",
         "--property=Restart=no",

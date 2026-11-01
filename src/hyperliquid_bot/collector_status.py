@@ -446,6 +446,9 @@ def snapshot(roots: StatusRoots, *, now_ns: int | None = None) -> dict[str, Any]
                 }
                 or continuous.get("market_archives_automatically_deleted") is not False
                 or continuous.get("seamless_coverage_claimed") is not False
+                or type(continuous.get("supervisor_source_commit")) is not str
+                or SOURCE.fullmatch(continuous["supervisor_source_commit"]) is None
+                or continuous.get("producer_source_commit") != controller["source_commit"]
             ):
                 raise ValueError("Continuous supervision metadata differs.")
             stamp, age = _utc_ns(continuous.get("updated_utc_ns"), current)
@@ -479,6 +482,8 @@ def snapshot(roots: StatusRoots, *, now_ns: int | None = None) -> dict[str, Any]
                 "last_gap": safe_gap,
                 "archive_deletion": False,
                 "seamless": False,
+                "supervisor_source_commit": continuous["supervisor_source_commit"],
+                "producer_source_commit": controller["source_commit"],
             }
         except (OSError, ValueError, TypeError, OverflowError):
             pass

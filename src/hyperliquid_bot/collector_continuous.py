@@ -70,6 +70,32 @@ def digest(value: object) -> str:
     ).hexdigest()
 
 
+def native_app_config(app: dict[str, Any]) -> dict[str, Any]:
+    """TrueNAS27 returns Compose directly; the update-input wrapper is not a getter shape."""
+    value = app.get("config")
+    if not isinstance(value, dict) or set(value) != {
+        "name",
+        "networks",
+        "services",
+        "x-notes",
+        "x-portals",
+    }:
+        raise ValueError("Native App getter requires the supported direct Compose shape.")
+    services = value["services"]
+    require(
+        isinstance(services, dict) and set(services) == {"collector", "status"},
+        "Native App getter requires exactly the managed Compose services.",
+    )
+    for role in ("collector", "status"):
+        require(
+            isinstance(services[role], dict)
+            and isinstance(services[role].get("command"), list)
+            and all(type(arg) is str for arg in services[role]["command"]),
+            "Native App getter requires explicit service command lists.",
+        )
+    return value
+
+
 def directory(path: Path, *, owner: int | None = None) -> None:
     require(path.is_absolute() and ".." not in path.parts, "Absolute directory required.")
     descriptor = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
@@ -756,6 +782,7 @@ class Supervisor:
             )
         )
         require(value["id"] == APP and value["custom_app"] is True, "Managed Custom App required.")
+        native_app_config(value)
         return dict(value)
 
     def verify_current(self) -> dict[str, Any]:
@@ -784,7 +811,7 @@ class Supervisor:
         collector, status = inspect(COLLECTOR), inspect(STATUS)
         owned(collector, generation, "collector")
         owned(status, generation, "status")
-        services = app["config"]["custom_compose_config"]["services"]
+        services = app["config"]["services"]
         require(
             collector["Config"]["Cmd"] == services["collector"]["command"]
             and status["Config"]["Cmd"] == services["status"]["command"],
@@ -1245,7 +1272,7 @@ class Supervisor:
         self.save()
         app = self.app()
         require(
-            app["config"]["custom_compose_config"] == rendered,
+            app["config"] == rendered,
             "Actual stored TrueNAS Compose differs from admitted render.",
         )
         generation["app_config_sha256"] = digest(app["config"])

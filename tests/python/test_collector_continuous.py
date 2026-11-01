@@ -390,6 +390,9 @@ def test_metadata_parser_refuses_symlink_duplicates_nonfinite(tmp_path: Path) ->
 
 def compose_fixture(config: host.Settings, plan: RuntimePlan) -> dict[str, Any]:
     return {
+        "name": host.PROJECT,
+        "networks": {"default": {"name": host.PROJECT + "_default", "ipam": {}}},
+        "x-notes": "Synthetic Compose renderer fixture.",
         "services": {
             role: {
                 "image": config.image,
@@ -449,9 +452,11 @@ def test_known_renderer_omission_is_restored_for_all_eight_binds() -> None:
     )
 
 
+@pytest.mark.parametrize("getter_shape", ["direct", "wrapped", "mixed"])
 def test_full_launch_executes_managed_app_then_gate_then_persists_new_identity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    getter_shape: str,
 ) -> None:
     item = supervisor(monkeypatch)
     config = item.settings
@@ -489,8 +494,16 @@ def test_full_launch_executes_managed_app_then_gate_then_persists_new_identity(
             )
         if "app.update" in argv:
             effects.append("app.update")
-            rendered.update(json.loads(kwargs["stdin"])["custom_compose_config"])
+            request = json.loads(kwargs["stdin"])
+            assert set(request) == {"custom_compose_config"}
+            rendered.update(request["custom_compose_config"])
             return "123"
+        if "app.get_instance" in argv:
+            effects.append("app.get_instance")
+            value = rendered if getter_shape == "direct" else {"custom_compose_config": rendered}
+            if getter_shape == "mixed":
+                value = rendered | value
+            return json.dumps({"id": host.APP, "custom_app": True, "config": value})
         raise AssertionError(argv)
 
     monkeypatch.setattr(host, "command", fake_command)
@@ -509,15 +522,20 @@ def test_full_launch_executes_managed_app_then_gate_then_persists_new_identity(
         return ""
 
     monkeypatch.setattr(item, "poll_child", gate)
-    monkeypatch.setattr(item, "app", lambda: {"config": {"custom_compose_config": rendered}})
+    if getter_shape != "direct":
+        with pytest.raises(ValueError, match="direct Compose shape"):
+            item.launch()
+        assert item.state["current"]["app_config_sha256"] is None
+        assert effects[-3:] == ["app.update", "TC-gate", "app.get_instance"]
+        return
     item.launch()
     current = item.state["current"]
     assert current["plan"]["campaign"] != old_campaign
     assert current["plan"]["source_commit"] == config.source_commit
     assert current["collector_id"] == "1" * 64
     assert current["status_id"] == "2" * 64
-    assert current["app_config_sha256"] == host.digest({"custom_compose_config": rendered})
-    assert effects == ["admit", "fresh-clock", "app.update", "TC-gate"]
+    assert current["app_config_sha256"] == host.digest(rendered)
+    assert effects == ["admit", "fresh-clock", "app.update", "TC-gate", "app.get_instance"]
     assert current["roots"]["spool"] != current["roots"]["control"]
     assert item.state["phase"] == "capturing"
 
@@ -1121,14 +1139,11 @@ def test_real_run_adoption_without_authority_flag_never_mutates_existing_produce
     plan_values = dict(original["plan"])
     plan_values["lanes"] = tuple(plan_values["lanes"])
     plan = RuntimePlan(**plan_values)
-    config = {
-        "custom_compose_config": {
-            "services": {
-                role: {"command": host.process_contract(plan, role)[1]}
-                for role in ("collector", "status")
-            }
-        }
-    }
+    config = json.loads(
+        (Path(__file__).parent / "fixtures/truenas_app_get_instance_direct.json").read_text()
+    )["config"]
+    for role in ("collector", "status"):
+        config["services"][role]["command"] = host.process_contract(plan, role)[1]
     original["app_config_sha256"] = host.digest(config)
     item.settings.adoption["app_config_sha256"] = original["app_config_sha256"]
     commands: list[list[str]] = []
@@ -1186,3 +1201,79 @@ def test_real_run_adoption_without_authority_flag_never_mutates_existing_produce
         or any(arg in {"stop", "restart", "tc", "nsenter"} for arg in argv)
         for argv in commands
     )
+
+
+def test_real_app_getter_and_current_identity_keep_full_raw_config_hash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    item = supervisor(monkeypatch)
+    gen = item.state["current"]
+    response = json.loads(
+        (Path(__file__).parent / "fixtures/truenas_app_get_instance_direct.json").read_text()
+    )
+    values = dict(gen["plan"])
+    values["lanes"] = tuple(values["lanes"])
+    for role in ("collector", "status"):
+        response["config"]["services"][role]["command"] = host.process_contract(
+            RuntimePlan(**values), role
+        )[1]
+    gen["app_config_sha256"] = host.digest(response["config"])
+    raw_before = copy.deepcopy(response["config"])
+
+    def command(argv: list[str], **kwargs: Any) -> str:
+        if argv[:3] == ["midclt", "call", "app.get_instance"]:
+            assert json.loads(argv[-1]) == {"extra": {"retrieve_config": True}}
+            return json.dumps(response)
+        if argv[:2] == ["docker", "ps"]:
+            return str(gen["collector_id"]) + "\n" + str(gen["status_id"])
+        if argv[:2] == ["docker", "inspect"]:
+            return json.dumps(
+                [managed_fixture(gen, "collector" if argv[2] == host.COLLECTOR else "status")]
+            )
+        raise AssertionError("Unexpected host mutation: " + argv[0])
+
+    monkeypatch.setattr(host, "command", command)
+    assert item.verify_current()["Id"] == gen["collector_id"]
+    assert response["config"] == raw_before
+    assert host.native_app_config(response) is response["config"]
+    assert gen["app_config_sha256"] == host.digest(raw_before)
+    response["config"]["x-notes"] += " synthetic drift"
+    with pytest.raises(ValueError, match="configuration changed"):
+        item.verify_current()
+
+
+@pytest.mark.parametrize(
+    "shape", ["wrapped", "mixed", "unknown", "services-list", "wrong-services", "command-string"]
+)
+def test_real_app_getter_refuses_unsupported_or_ambiguous_config_shapes(
+    monkeypatch: pytest.MonkeyPatch,
+    shape: str,
+) -> None:
+    item = supervisor(monkeypatch)
+    response = json.loads(
+        (Path(__file__).parent / "fixtures/truenas_app_get_instance_direct.json").read_text()
+    )
+    config = response["config"]
+    if shape == "wrapped":
+        response["config"] = {"custom_compose_config": config}
+    elif shape == "mixed":
+        response["config"] = config | {"custom_compose_config": copy.deepcopy(config)}
+    elif shape == "unknown":
+        response["config"] = {"different": config}
+    elif shape == "services-list":
+        config["services"] = []
+    elif shape == "wrong-services":
+        config["services"]["unrelated"] = {"command": []}
+    else:
+        config["services"]["collector"]["command"] = "synthetic-string"
+    calls = []
+
+    def command(argv: list[str], **kwargs: Any) -> str:
+        calls.append(argv)
+        assert argv[:3] == ["midclt", "call", "app.get_instance"]
+        return json.dumps(response)
+
+    monkeypatch.setattr(host, "command", command)
+    with pytest.raises(ValueError, match="Native App getter"):
+        item.app()
+    assert len(calls) == 1

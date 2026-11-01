@@ -126,7 +126,7 @@ class CoinbaseSessionState:
         if message_type == "error":
             raise CoinbaseDataIntegrityError("Coinbase rejected the public subscription.")
         if message_type == "subscriptions":
-            return self._acknowledge(document)
+            return self._acknowledge(document, raw_ordinal)
         if not self.acknowledged or document.get("product_id") != COINBASE_RESEARCH_PRODUCT:
             raise CoinbaseDataIntegrityError("Coinbase product or subscription identity failed.")
         normalized: dict[str, object] = {
@@ -213,19 +213,31 @@ class CoinbaseSessionState:
             raise CoinbaseDataIntegrityError("Coinbase sent an unsupported public message type.")
         return CoinbaseNormalizedFrame(normalized, tuple(quality))
 
-    def _acknowledge(self, document: dict[str, object]) -> CoinbaseNormalizedFrame:
+    def _acknowledge(
+        self, document: dict[str, object], raw_ordinal: int
+    ) -> CoinbaseNormalizedFrame:
         channels = document.get("channels")
         if self.acknowledged or type(channels) is not list or len(channels) != len(_CHANNELS):
             raise CoinbaseDataIntegrityError("Coinbase subscription response failed validation.")
         names: list[str] = []
+        canonical_names: list[str] = []
         for item in channels:
-            if type(item) is not dict or item.get("product_ids") != [COINBASE_RESEARCH_PRODUCT]:
+            if (
+                type(item) is not dict
+                or item.get("product_ids") != [COINBASE_RESEARCH_PRODUCT]
+                or item.get("account_ids") is not None
+            ):
                 raise CoinbaseDataIntegrityError("Coinbase subscription scope failed validation.")
             name = item.get("name")
-            if type(name) is not str or name not in _CHANNELS:
+            if type(name) is not str:
+                raise CoinbaseDataIntegrityError("Coinbase acknowledged an unexpected channel.")
+            # Coinbase renamed the public 50-ms channel but can ACK its legacy alias.
+            canonical_name = "level2_batch" if name == "level2_50" else name
+            if canonical_name not in _CHANNELS:
                 raise CoinbaseDataIntegrityError("Coinbase acknowledged an unexpected channel.")
             names.append(name)
-        if set(names) != set(_CHANNELS):
+            canonical_names.append(canonical_name)
+        if set(canonical_names) != set(_CHANNELS):
             raise CoinbaseDataIntegrityError("Coinbase did not acknowledge all requested channels.")
         self.acknowledged = True
         return CoinbaseNormalizedFrame(
@@ -234,6 +246,8 @@ class CoinbaseSessionState:
                 "feed_product": COINBASE_FEED_PRODUCT,
                 "authenticated": False,
                 "channels": list(_CHANNELS),
+                "acknowledged_channel_names": names,
+                "raw_message_ordinal": raw_ordinal,
             }
         )
 

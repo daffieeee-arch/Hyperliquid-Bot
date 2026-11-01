@@ -131,6 +131,68 @@ def test_fixed_public_product_and_non_auth_subscription() -> None:
     assert _state().acknowledged
 
 
+@pytest.mark.parametrize("ack_fixture", ["subscriptions", "subscriptions_level2_50"])
+def test_public_batch_ack_alias_maps_to_one_canonical_feed(ack_fixture: str) -> None:
+    document = _document(ack_fixture)
+    state = CoinbaseSessionState()
+    payload = state.normalize(document, 7).payload
+    assert state.acknowledged
+    assert payload["channels"] == ["level2_batch", "matches", "heartbeat"]
+    assert payload["feed_product"] == COINBASE_FEED_PRODUCT
+    assert payload["raw_message_ordinal"] == 7
+    assert payload["acknowledged_channel_names"] == [
+        item["name"] for item in cast(list[dict[str, object]], document["channels"])
+    ]
+    assert state.normalize(_document("snapshot"), 8).payload["action"] == "snapshot"
+
+
+@pytest.mark.parametrize(
+    "names",
+    [
+        ["level2", "matches", "heartbeat"],
+        ["level2_1000", "matches", "heartbeat"],
+        ["LEVEL2_50", "matches", "heartbeat"],
+        ["level2_batch", "level2_50", "heartbeat"],
+        ["level2_batch", "level2_50", "matches", "heartbeat"],
+        ["level2_50", "matches", "matches"],
+        ["level2_50", "level2_50", "heartbeat"],
+    ],
+)
+def test_ack_rejects_unrequested_channels_and_duplicate_alias_categories(names: list[str]) -> None:
+    state = CoinbaseSessionState()
+    document: dict[str, object] = {
+        "type": "subscriptions",
+        "channels": [{"name": name, "product_ids": ["BTC-USD"]} for name in names],
+    }
+    with pytest.raises(CoinbaseDataIntegrityError):
+        state.normalize(document, 1)
+    assert not state.acknowledged
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("product_ids", ["ETH-USD"]),
+        ("product_ids", ["BTC-USD", "ETH-USD"]),
+        ("product_ids", "BTC-USD"),
+        ("account_ids", ["synthetic-account"]),
+    ],
+)
+def test_legacy_ack_rejects_unrequested_product_or_account_scope(field: str, value: object) -> None:
+    document = _document("subscriptions_level2_50")
+    cast(list[dict[str, object]], document["channels"])[0][field] = value
+    with pytest.raises(CoinbaseDataIntegrityError, match="scope"):
+        CoinbaseSessionState().normalize(document, 1)
+
+
+def test_real_legacy_ack_fixture_has_exact_public_bytes() -> None:
+    payload = _fixture("subscriptions_level2_50")
+    assert len(payload) == 233
+    assert hashlib.sha256(payload).hexdigest() == (
+        "6399849e8ba86a9d28c3311ba5eeeb8640892ed5a59239aeffb59fb661ff2be1"
+    )
+
+
 def test_l2_snapshot_and_absolute_zero_size_preserve_decimal_lexemes() -> None:
     state = _state()
     snapshot = state.normalize(_document("snapshot"), 2).payload
@@ -267,9 +329,11 @@ def test_missing_duplicate_snapshot_and_wrong_acknowledgement_fail_closed() -> N
 
 
 @pytest.mark.asyncio
-async def test_exact_payloads_source_clocks_and_single_session_lifecycle() -> None:
+@pytest.mark.parametrize("ack_fixture", ["subscriptions", "subscriptions_level2_50"])
+async def test_exact_payloads_source_clocks_and_single_session_lifecycle(ack_fixture: str) -> None:
     stop = asyncio.Event()
     frames = _all_frames()
+    frames[0] = _fixture(ack_fixture)
     connection = FakeConnection(frames, stop=stop)
     sink = MemorySink()
     collector = CoinbasePublicResearchCollector(
@@ -292,6 +356,8 @@ async def test_exact_payloads_source_clocks_and_single_session_lifecycle() -> No
     assert {r.channel for r in inbound} == {COINBASE_FEED_PRODUCT}
     assert all(r.received_utc_ns >= 1000 and r.received_monotonic_ns >= 2000 for r in inbound)
     assert all(r.session_id == "fixture-session" for r in sink.records)
+    acknowledgement = _markers(sink, "normalized")[0]
+    assert acknowledgement["raw_message_ordinal"] == inbound[0].message_ordinal
     assert [r.message_ordinal for r in sink.records] == list(range(1, len(sink.records) + 1))
     assert _markers(sink, "session")[-1] == {
         "event": "session_stopped",
@@ -409,10 +475,14 @@ async def test_duration_bounds_a_hung_connection_and_closes_it() -> None:
 
 
 @pytest.mark.asyncio
-async def test_create_only_corpus_manifest_parquet_hashes_and_query_views(tmp_path: Path) -> None:
+@pytest.mark.parametrize("ack_fixture", ["subscriptions", "subscriptions_level2_50"])
+async def test_create_only_corpus_manifest_parquet_hashes_and_query_views(
+    tmp_path: Path, ack_fixture: str
+) -> None:
     root = tmp_path / "coinbase-measurement"
     stop = asyncio.Event()
     frames = _all_frames()
+    frames[0] = _fixture(ack_fixture)
     connection = FakeConnection(frames, stop=stop)
     report = await run_bounded_capture(
         output_root=root,
@@ -437,6 +507,16 @@ async def test_create_only_corpus_manifest_parquet_hashes_and_query_views(tmp_pa
         """).fetchall()
         assert [bytes(row[0]) for row in raw] == frames
         assert [row[1] for row in raw] == [hashlib.sha256(frame).hexdigest() for frame in frames]
+        acknowledgement = database.execute("""
+            SELECT payload_sha256, normalized->>'$.acknowledged_channel_names',
+                raw_message_ordinal FROM coinbase_public_events
+            WHERE normalized->>'$.event' = 'subscriptions_active'
+        """).fetchone()
+        assert acknowledgement is not None
+        assert acknowledgement[0] == hashlib.sha256(frames[0]).hexdigest()
+        assert json.loads(acknowledgement[1]) == [
+            item["name"] for item in cast(list[dict[str, object]], _decode(frames[0])["channels"])
+        ]
         trade = database.execute("""
             SELECT trade_id, price, size, maker_side, aggressor_side, event_time,
                 received_utc_ns, raw_message_ordinal FROM coinbase_spot_trades

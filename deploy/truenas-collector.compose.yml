@@ -113,7 +113,7 @@ services:
       - --port
       - "8080"
     ports:
-      - "${COLLECTOR_STATUS_BIND_IP:?Explicit NAS LAN address required}:${COLLECTOR_STATUS_PORT:-18790}:8080"
+      - "${COLLECTOR_STATUS_BIND_IP:?Explicit NAS LAN address required}:18790:8080"
     volumes:
       - type: bind
         source: ${COLLECTOR_NATIVE_SPOOL:?Existing dedicated private spool required}
@@ -153,7 +153,8 @@ services:
 x-portals:
   - name: Web UI
     host: ${COLLECTOR_STATUS_BIND_IP:?Explicit NAS LAN address required}
-    port: ${COLLECTOR_STATUS_PORT:-18790}
+    # TrueNAS validates this extension as an integer after Compose rendering.
+    port: 18790
     scheme: http
     path: /
 x-notes: |

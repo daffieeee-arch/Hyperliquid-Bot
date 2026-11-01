@@ -154,6 +154,7 @@ class ParquetResearchWriter:
         self._buffer: list[RawResearchRecord] = []
         self._buffer_payload_bytes = 0
         self._segment_started_monotonic_ns: int | None = None
+        self._rotation_high_watermark_ns = 0
         self._part_number = 0
         self._writer_tag = uuid.uuid4().hex[:12]
         self._phase = _WriterPhase.OPEN
@@ -204,11 +205,16 @@ class ParquetResearchWriter:
                 raise self._writer_error
             if self._phase is not _WriterPhase.OPEN:
                 raise RuntimeError("Cannot append to a closed Parquet research writer.")
+            # Backlogged inbound receipts can alternate with newer local markers.
+            # Keep rotation progress across parts without rewriting either clock.
+            self._rotation_high_watermark_ns = max(
+                self._rotation_high_watermark_ns, record.received_monotonic_ns
+            )
             if self._segment_started_monotonic_ns is None:
-                self._segment_started_monotonic_ns = record.received_monotonic_ns
+                self._segment_started_monotonic_ns = self._rotation_high_watermark_ns
             self._buffer.append(record)
             self._buffer_payload_bytes += len(record.payload_bytes)
-            if self._should_rotate(record.received_monotonic_ns):
+            if self._should_rotate(self._rotation_high_watermark_ns):
                 self._enqueue_segment_locked()
 
     async def flush(self) -> None:

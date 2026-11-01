@@ -922,6 +922,9 @@ class Supervisor:
     def adopt(self, *, read_only: bool = False) -> None:
         require(self.state["current"] is None, "Cannot re-adopt after state admission.")
         generation = dict(self.settings.adoption)
+        # Observation never grants authority to mutate/stop the existing
+        # producer, including when later identity or guard validation fails.
+        generation["adopted"] = True
         plan = dict(generation["plan"])
         plan["lanes"] = tuple(plan["lanes"])
         RuntimePlan(**plan)
@@ -944,7 +947,6 @@ class Supervisor:
         self.verify_current()
         self.verify_adopted_guard(generation)
         # Do not mutate/restart the adopted collector or its finite clock/guard.
-        generation["adopted"] = True
         require(generation["boot_id"] == self.boot, "Adoption must pin the actual current boot.")
         if not read_only:
             self.save("adopting", "Existing campaign observed; waiting for native closure.")

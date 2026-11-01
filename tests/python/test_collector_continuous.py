@@ -10,6 +10,7 @@ import os
 import time
 from dataclasses import asdict
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import duckdb
@@ -1055,3 +1056,133 @@ def test_persistent_operator_pause_survives_docker_unavailability(
     assert item.state["phase"] == "paused"
     value = json.loads(capsys.readouterr().out)
     assert value == {"persistent_pause": True, "owned_cleanup": "unconfirmed"}
+
+
+@pytest.mark.parametrize("guard_ready", [False, True])
+def test_real_run_adoption_without_authority_flag_never_mutates_existing_producer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    guard_ready: bool,
+) -> None:
+    item = supervisor(monkeypatch)
+    original = generation()
+    original.pop("adopted")
+    original["capacity_guard"] = {
+        "unit": original["plan"]["campaign"] + "-capacity.service",
+        "records": str(
+            item.settings.runtime_root / ("operator-record-" + original["plan"]["campaign"])
+        ),
+        "policy_sha256": "f" * 64,
+    }
+    object.__setattr__(item.settings, "adoption", copy.deepcopy(original))
+    item.state.update(current=None, phase="adopting")
+    item.path = tmp_path / "root-supervisor-state.json"
+    # Exercise real run/admission/adopt/save/owned/guard/cleanup methods; fake
+    # only kernel, filesystem, Docker/middleware and systemd boundaries.
+    monkeypatch.setattr(item, "save", host.Supervisor.save.__get__(item, host.Supervisor))
+    values = iter(sample(index) for index in range(10))
+    monkeypatch.setattr(cap, "snapshot", lambda: next(values))
+    sleeps = 0
+
+    def sleep(_seconds: float) -> None:
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps >= 3:
+            item.stopping = True
+
+    monkeypatch.setattr(time, "sleep", sleep)
+    monkeypatch.setattr(time, "monotonic_ns", lambda: 5_000_000_000)
+    monkeypatch.setattr(host, "notify", lambda message: None)
+    monkeypatch.setattr(host, "directory", lambda *args, **kwargs: None)
+    monkeypatch.setattr(Path, "exists", lambda path: False)
+    actual_stat = Path.stat
+
+    def stat_path(path: Path, **kwargs: Any) -> Any:
+        if path == item.settings.runtime_root:
+            return SimpleNamespace(st_ino=42)
+        return actual_stat(path, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", stat_path)
+
+    def filesystem(path: Path) -> dict[str, object]:
+        role = (
+            "capture"
+            if path == item.settings.capture
+            else ("archive" if path == item.settings.archive else "runtime")
+        )
+        return {
+            "filesystem": "zfs",
+            "source": item.settings.storage_sources[role],
+            "device": 1,
+            "inode": 42,
+        }
+
+    monkeypatch.setattr(host, "filesystem_identity", filesystem)
+    plan_values = dict(original["plan"])
+    plan_values["lanes"] = tuple(plan_values["lanes"])
+    plan = RuntimePlan(**plan_values)
+    config = {
+        "custom_compose_config": {
+            "services": {
+                role: {"command": host.process_contract(plan, role)[1]}
+                for role in ("collector", "status")
+            }
+        }
+    }
+    original["app_config_sha256"] = host.digest(config)
+    item.settings.adoption["app_config_sha256"] = original["app_config_sha256"]
+    commands: list[list[str]] = []
+
+    def command(argv: list[str], **kwargs: Any) -> str:
+        commands.append(argv)
+        if argv[0] == "zfs":
+            return "12345\n"
+        if argv[:3] == ["midclt", "call", "app.get_instance"]:
+            return json.dumps({"id": host.APP, "custom_app": True, "config": config})
+        if argv[:2] == ["docker", "ps"]:
+            return str(original["collector_id"]) + "\n" + str(original["status_id"])
+        if argv[:2] == ["docker", "inspect"]:
+            role = "collector" if argv[2] == host.COLLECTOR else "status"
+            return json.dumps([managed_fixture(original, role)])
+        if argv[:2] == ["systemctl", "show"]:
+            return (
+                ("active" if guard_ready else "inactive")
+                if "--property=ActiveState" in argv
+                else "123"
+            )
+        if argv[:2] == ["docker", "stop"]:
+            return argv[-1]  # Record a regression's mutation without executing it.
+        raise AssertionError("Unexpected administrative command: " + argv[0])
+
+    monkeypatch.setattr(host, "command", command)
+
+    def metadata(path: Path, **kwargs: Any) -> dict[str, Any]:
+        assert path == Path(original["capacity_guard"]["records"]) / "capacity-state.json"
+        return {
+            "PID": 123,
+            "state": "READY",
+            "boot_id": item.boot,
+            "container_id": original["collector_id"],
+            "policy_sha256": "f" * 64,
+            "monotonic_ns": 5_000_000_000,
+        }
+
+    monkeypatch.setattr(host, "document", metadata)
+    writes: list[tuple[Path, dict[str, Any]]] = []
+
+    def publish(path: Path, value: dict[str, Any], **kwargs: Any) -> None:
+        writes.append((path, copy.deepcopy(value)))
+
+    monkeypatch.setattr(host, "publish", publish)
+    assert item.run() == (0 if guard_ready else 2)
+    assert item.state["phase"] == ("stopped" if guard_ready else "paused")
+    assert item.state["current"]["adopted"] is True
+    assert "adopted" not in item.settings.adoption
+    assert writes and all(path == item.path for path, _value in writes)
+    assert all(argv[0] in {"zfs", "docker", "midclt", "systemctl"} for argv in commands)
+    assert not any(
+        argv[:2] == ["docker", "stop"]
+        or "app.update" in argv
+        or any(arg in {"stop", "restart", "tc", "nsenter"} for arg in argv)
+        for argv in commands
+    )

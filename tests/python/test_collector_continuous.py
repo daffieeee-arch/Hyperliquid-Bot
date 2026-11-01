@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import hashlib
 import json
@@ -1030,3 +1031,27 @@ def test_store_guid_and_inode_pins_fail_closed_without_changing_any_dataset(
     monkeypatch.setattr(host, "command", lambda argv, **kwargs: "54321\n")
     with pytest.raises(ValueError, match="GUID changed"):
         item.verify_store("capture", item.settings.capture)
+
+
+def test_persistent_operator_pause_survives_docker_unavailability(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    item = supervisor(monkeypatch)
+    monkeypatch.setattr(os, "getuid", lambda: 0)
+    monkeypatch.setattr(host, "load_settings", lambda path: item.settings)
+    monkeypatch.setattr(host, "verify_release", lambda cfg, **kwargs: None)
+    monkeypatch.setattr(
+        host, "wait_host_ready", lambda *args: pytest.fail("Pause waited for Docker")
+    )
+    monkeypatch.setattr(host, "singleton", lambda root: contextlib.nullcontext())
+    monkeypatch.setattr(host, "Supervisor", lambda config: item)
+
+    def unavailable() -> None:
+        raise host.HostUnavailableError("Docker is unavailable")
+
+    monkeypatch.setattr(item, "stop_owned", unavailable)
+    assert host.main(["--settings", "/tmp/synthetic-settings.json", "--pause"]) == 2
+    assert item.state["phase"] == "paused"
+    value = json.loads(capsys.readouterr().out)
+    assert value == {"persistent_pause": True, "owned_cleanup": "unconfirmed"}

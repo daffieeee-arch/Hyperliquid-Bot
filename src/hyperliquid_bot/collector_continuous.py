@@ -241,7 +241,7 @@ def load_settings(path: Path) -> Settings:
     return Settings(**value)
 
 
-def verify_release(settings: Settings) -> None:
+def verify_release(settings: Settings, *, check_image: bool = True) -> None:
     """A root daemon never imports mutable development or container-written code."""
     directory(settings.release)
     for base, directories, files in os.walk(settings.release, followlinks=False):
@@ -255,6 +255,8 @@ def verify_release(settings: Settings) -> None:
             )
     root = settings.release.stat()
     require(root.st_uid == 0 and root.st_mode & 0o022 == 0, "Untrusted release root.")
+    if not check_image:
+        return
     image = json.loads(command(["docker", "image", "inspect", settings.image]))[0]
     require(
         image["Id"] == settings.image_id
@@ -1422,7 +1424,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     require(os.getuid() == 0, "Trusted root host operator required.")
     settings = load_settings(args.settings)
-    if not args.stop_owned:
+    if args.pause:
+        verify_release(settings, check_image=False)
+    elif not args.stop_owned:
         wait_host_ready(settings)
     if args.inspect_only:
         supervisor = Supervisor(settings)
@@ -1444,13 +1448,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     with singleton(settings.state_root):
         supervisor = Supervisor(settings)
         if args.pause:
+            cleanup_verified = True
             try:
                 supervisor.save(
                     "paused", "Explicit persistent operator pause; revalidation required."
                 )
             finally:
-                supervisor.stop_owned()
-            return 0
+                try:
+                    supervisor.stop_owned()
+                except (ValueError, OSError, subprocess.SubprocessError):
+                    cleanup_verified = False
+            print(
+                json.dumps(
+                    {
+                        "persistent_pause": True,
+                        "owned_cleanup": "verified" if cleanup_verified else "unconfirmed",
+                    }
+                )
+            )
+            return 0 if cleanup_verified else 2
         if args.stop_owned:
             try:
                 if supervisor.state["phase"] not in {"paused", "stopped"}:

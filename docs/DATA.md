@@ -1640,6 +1640,12 @@ subscriptions are `level2_batch`, `matches`, and `heartbeat`. Coinbase documents
 claim access to unbatched L2, full/L3, or Direct Market Data. Batches retain their
 source timestamp and ordered changes; intermediate timing is not invented. Sizes
 are **absolute price-level sizes**, with zero meaning removal, not signed deltas.
+Coinbase also documents `level2_50` as the former name of this same batch channel;
+a public ACK may return that alias even when the request uses `level2_batch`.
+ACK validation canonicalizes only these two names, still requires exactly the
+three distinct requested categories and BTC-USD scope, and rejects plain `level2`
+or account-scoped ACKs. Raw bytes remain unchanged; the normalized ACK preserves
+actual names in `acknowledged_channel_names` with its source raw ordinal.
 
 Every inbound application payload, including malformed data, is timestamped and
 stored through `RawResearchRecord` and the shared atomic ZSTD-Parquet writer before

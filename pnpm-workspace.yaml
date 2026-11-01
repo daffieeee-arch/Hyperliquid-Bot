@@ -7,3 +7,10 @@ blockExoticSubdeps: true
 strictDepBuilds: true
 allowBuilds:
   sharp: false
+
+# GHSA-g3hv-75wg-m249: remove once these consumers support minimatch >=11.0.1.
+# Keep overrides scoped to the reviewed consumers; do not change unrelated pins.
+overrides:
+  "eslint@10.10.0>minimatch": "11.0.3"
+  "@eslint/config-array@0.23.5>minimatch": "11.0.3"
+  "@typescript-eslint/typescript-estree@8.69.0>minimatch": "11.0.3"

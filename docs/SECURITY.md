@@ -95,6 +95,25 @@ image digest and record the source commit.
 
 No successful CI run automatically promotes a strategy into live capital.
 
+### Temporary development dependency override
+
+`pnpm-workspace.yaml` pins the three existing ESLint/config-array/TypeScript-ESTree
+consumers of `minimatch` to `11.0.3` for
+[GHSA-g3hv-75wg-m249](https://github.com/advisories/GHSA-g3hv-75wg-m249)
+([tracking issue #187](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/187)).
+As checked on 2026-11-01, even their latest upstream versions still require
+the affected major version; updating those parents alone does not fix the alert.
+The version-scoped overrides leave direct package and Node/pnpm pins unchanged.
+
+This is a tested major-version compatibility exception, not a general override:
+v11 removes APIs including `makeRe` and changes some glob semantics. These three
+consumers use retained matching APIs. Acceptance includes comparing actual
+ESLint file discovery, ignore/configuration decisions and diagnostics with the
+previous dependency graph, plus the existing TypeScript/cockpit checks. Remove
+the overrides when compatible upstream dependencies declare a patched version;
+recheck compatibility when changing any scoped parent version. Python research,
+collector images and deployed runtime dependencies are unaffected.
+
 ## Image security
 
 Release images should:

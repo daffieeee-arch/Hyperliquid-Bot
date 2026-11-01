@@ -356,6 +356,7 @@ def collect_campaign(
                         "archive": archive,
                         "control": clock_path.parent,
                     },
+                    campaign=plan.campaign,
                 )
             break
         except FileNotFoundError:

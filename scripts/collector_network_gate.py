@@ -18,7 +18,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from hyperliquid_bot.collector_native_storage import (
     CONTAINER_ROOTS,
-    approved_host_root,
+    approved_host_roots,
     filesystem_identity,
 )
 
@@ -50,6 +50,7 @@ def validate_container(
     profile: str = "vm-nfs",
     host_roots: dict[str, Path] | None = None,
     container: str = CONTAINER,
+    campaign: str | None = None,
 ) -> int:
     if profile not in {"vm-nfs", "truenas-zfs"}:
         raise ValueError("Unknown collector gate profile.")
@@ -68,8 +69,7 @@ def validate_container(
             raise ValueError("Native tmpfs must match the reviewed size and isolation flags.")
         if host_roots is None or set(host_roots) != set(CONTAINER_ROOTS):
             raise ValueError("All four approved native host roots are required.")
-        for role, path in host_roots.items():
-            approved_host_root(role, path)
+        approved_host_roots(host_roots, campaign=campaign)
         labels = document["Config"]["Labels"]
         if (
             re.fullmatch(r"ix-hyperliquid-collector-collector-[1-9][0-9]*", container) is None
@@ -132,12 +132,12 @@ def validate_container(
 
 
 def native_storage_verification(
-    host_roots: dict[str, Path], container: str
+    host_roots: dict[str, Path], container: str, *, campaign: str | None = None
 ) -> dict[str, dict[str, object]]:
     """Bind each host directory to the effective mount seen by this exact image."""
+    approved_host_roots(host_roots, campaign=campaign)
     identities: dict[str, dict[str, object]] = {}
     for role, path in host_roots.items():
-        approved_host_root(role, path)
         identity = filesystem_identity(path)
         if identity["filesystem"] != "zfs" or identity["source"] != "/".join(path.parts[2:4]):
             raise ValueError("Native storage is not the explicitly approved ZFS dataset.")
@@ -215,8 +215,7 @@ def main() -> int:
         if any(path is None for path in supplied.values()):
             parser.error("Native profile needs all four explicit project host roots.")
         host_roots = {role: Path(path) for role, path in supplied.items()}
-        for role, path in host_roots.items():
-            approved_host_root(role, path)
+        approved_host_roots(host_roots, campaign=args.campaign)
     elif any(path is not None for path in supplied.values()) or args.container != CONTAINER:
         parser.error("VM profile does not accept alternative host roots or containers.")
     marker = (
@@ -241,6 +240,7 @@ def main() -> int:
             profile=args.profile,
             host_roots=host_roots,
             container=args.container,
+            campaign=args.campaign,
         )
         inode = Path(f"/proc/{pid}/ns/net").stat().st_ino
         if inode == Path("/proc/self/ns/net").stat().st_ino:
@@ -248,7 +248,11 @@ def main() -> int:
         return pid, inode
 
     pid, inode = inspect()
-    storage = native_storage_verification(host_roots, args.container) if host_roots else None
+    storage = (
+        native_storage_verification(host_roots, args.container, campaign=args.campaign)
+        if host_roots
+        else None
+    )
     prefix = ["nsenter", "--target", str(pid), "--net"]
     link = json.loads(command([*prefix, "ip", "-d", "-j", "link", "show", "dev", "eth0"]))[0]
     peer = owned_veth(json.loads(command(["ip", "-d", "-j", "link", "show"])), link)

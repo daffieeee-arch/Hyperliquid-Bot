@@ -43,6 +43,21 @@ for UID 1000 is not a prerequisite for a numeric container UID; verify actual
 write access in an isolated operator probe before starting a capture. Do not
 change existing dataset ownership or recursively edit ACLs.
 
+Later campaigns may retain the old closed controls and spool by selecting new
+direct siblings `spool-<campaign>` and `control-<campaign>` under the **same**
+`/mnt/<verified-pool>/hyperliquid-runtime` directory. Both suffixes must equal the
+explicit controller/host-gate campaign, using its existing 1–36 character
+lowercase-letter/digit/hyphen syntax. A fixed/scoped pair, mismatched campaigns,
+different runtime parents or nested alternatives are refused. The original
+fixed `spool`/`control` pair remains supported. Work/archive host roots and all
+canonical container destinations stay fixed.
+
+This path admission does not create or resume a directory: the assigned operator
+still reserves fresh private paths and records their actual ZFS/source/device/
+inode identities. Host gate and in-image checks must use the same reviewed
+source; updating only a host script cannot enable a campaign-specific path in
+an older image. Network-marker campaign identity must match the runtime plan.
+
 The scoped host roots are below `/mnt/<verified-pool>/`:
 
 | Role | Native host suffix | Canonical container destination |

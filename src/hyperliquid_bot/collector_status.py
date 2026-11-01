@@ -392,6 +392,7 @@ def snapshot(roots: StatusRoots, *, now_ns: int | None = None) -> dict[str, Any]
         "read_only": True,
         "overall": "unknown",
         "controller": None,
+        "continuous": None,
         "lanes": [],
         "inactive_lanes": [],
         "clock": _clock(roots, current),
@@ -424,6 +425,63 @@ def snapshot(roots: StatusRoots, *, now_ns: int | None = None) -> dict[str, Any]
             overall=overall,
             inactive_lanes=[lane for lane in LANES if lane not in controller["lanes"]],
         )
+        try:
+            continuous = metadata(roots.control, "continuous-status.json")
+            phase = continuous.get("phase")
+            if (
+                continuous.get("schema") != "collector-continuous-status-v1"
+                or continuous.get("intent") != "continuous-public-data"
+                or continuous.get("campaign") != controller["campaign"]
+                or phase
+                not in {
+                    "adopting",
+                    "admitting",
+                    "capturing",
+                    "publishing",
+                    "auditing",
+                    "between-campaigns",
+                    "retry-wait",
+                    "paused",
+                    "stopped",
+                }
+                or continuous.get("market_archives_automatically_deleted") is not False
+                or continuous.get("seamless_coverage_claimed") is not False
+            ):
+                raise ValueError("Continuous supervision metadata differs.")
+            stamp, age = _utc_ns(continuous.get("updated_utc_ns"), current)
+            retries = _count(continuous.get("retry_count"))
+            reason = continuous.get("reason")
+            if reason is not None and (type(reason) is not str or len(reason) > 240):
+                raise ValueError("Continuous reason bound.")
+            gap = continuous.get("last_gap")
+            safe_gap = None
+            if isinstance(gap, dict):
+                detected, _ = _utc_ns(gap.get("detected_utc_ns"), current)
+                ended, _ = _utc_ns(gap.get("end_utc_ns"), current)
+                if gap.get("reason") in {
+                    "scheduled-publication-and-new-sessions",
+                    "classified-transport-interruption",
+                    "host-reboot-interruption",
+                }:
+                    safe_gap = {
+                        "reason": gap["reason"],
+                        "detected_utc": detected,
+                        "end_utc": ended,
+                        "missing_events_known": False,
+                    }
+            result["continuous"] = {
+                "phase": phase,
+                "fresh": age is not None and age <= 10,
+                "updated_utc": stamp,
+                "age_seconds": age,
+                "reason": reason,
+                "retry_count": retries,
+                "last_gap": safe_gap,
+                "archive_deletion": False,
+                "seamless": False,
+            }
+        except (OSError, ValueError, TypeError, OverflowError):
+            pass
     except (OSError, ValueError, TypeError, OverflowError):
         pass
     return result

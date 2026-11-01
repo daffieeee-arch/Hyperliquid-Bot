@@ -250,6 +250,29 @@ function render(data) {
   );
   text("source", controller?.source_commit || "Onbekend");
   text("image", controller?.image_digest || "Onbekend");
+  const continuous = data.continuous;
+  const phases = {
+    adopting: "Bestaande meetperiode wordt gevolgd",
+    admitting: "Nieuwe meetperiode wordt gecontroleerd",
+    capturing: "Continu verzamelen ingeschakeld",
+    publishing: "Meetdeel wordt veilig opgeslagen",
+    auditing: "Beide opgeslagen kopieën worden gecontroleerd",
+    "between-campaigns": "Nieuwe meetperiode wordt voorbereid",
+    "retry-wait": "Tijdelijk wachten voor nieuwe verbindingen",
+    paused: "Gepauzeerd: controle nodig",
+    stopped: "Gestopt",
+  };
+  text("continuous-state", continuous?.fresh
+    ? phases[continuous.phase] || "Supervisorstatus onbekend"
+    : "Geen actuele continue supervisor bevestigd");
+  text("continuous-detail", continuous?.fresh
+    ? "Herpogingen: " + count(continuous.retry_count)
+      + ". Marktarchieven worden niet automatisch verwijderd. " + (continuous.reason || "")
+    : "Een bereikbare pagina bewijst geen actieve dataverzameling.");
+  text("continuous-gap", continuous?.last_gap
+    ? "Laatste overgang of onderbreking: " + (continuous.last_gap.detected_utc || "onbekend")
+      + ". Publicatie en nieuwe verbindingen geven echte gaten; geen verliesvrije dekking geclaimd."
+    : "Begrensde meetdelen hebben publicatie- en verbindingspauzes; geen naadloze dekking geclaimd.");
 }
 async function poll() {
   const abort = new AbortController();
@@ -274,6 +297,7 @@ async function poll() {
     text("heartbeat", "Geen actuele verbinding met de statusservice");
     text("clock-state", "Onbekend");
     text("clock-detail", "Geen actuele klokmeting bevestigd");
+    text("continuous-state", "Geen actuele continue supervisor bevestigd");
     byId("venues").classList.add("disconnected");
     for (const item of byId("venues").querySelectorAll(".pill")) {
       item.className = "pill unknown";

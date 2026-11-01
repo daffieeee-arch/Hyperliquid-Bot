@@ -289,6 +289,7 @@ async def test_exact_payloads_source_clocks_and_single_session_lifecycle() -> No
     }
     inbound = [r for r in sink.records if r.direction is MessageDirection.INBOUND]
     assert [r.payload_bytes for r in inbound] == frames
+    assert {r.channel for r in inbound} == {COINBASE_FEED_PRODUCT}
     assert all(r.received_utc_ns >= 1000 and r.received_monotonic_ns >= 2000 for r in inbound)
     assert all(r.session_id == "fixture-session" for r in sink.records)
     assert [r.message_ordinal for r in sink.records] == list(range(1, len(sink.records) + 1))

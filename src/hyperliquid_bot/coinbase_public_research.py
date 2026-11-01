@@ -430,7 +430,9 @@ class CoinbasePublicResearchCollector:
                     frame = await asyncio.wait_for(connection.recv(), timeout=remaining)
                     captured = self._capture(frame)
                     received_at = self._monotonic()
-                    ordinal = await self._append(captured, "public", MessageDirection.INBOUND)
+                    ordinal = await self._append(
+                        captured, COINBASE_FEED_PRODUCT, MessageDirection.INBOUND
+                    )
                     self._last_inbound_ordinal = ordinal
                     if len(captured.payload_bytes) > self._config.max_application_payload_bytes:
                         raise CoinbaseDataIntegrityError("Coinbase payload exceeded its bound.")
@@ -559,8 +561,11 @@ def create_coinbase_catalog(parquet_dir: Path, database_path: Path) -> None:
                  decode(derived.payload_bytes), '$.raw_message_ordinal') AS BIGINT)
             WHERE source.venue = 'coinbase' AND source.product = 'BTC-USD'
               AND source.direction = 'inbound' AND derived.channel = 'normalized'
+              AND source.channel = 'exchange_public_level2_batch_matches_heartbeat'
               AND derived.venue = 'coinbase' AND derived.product = 'BTC-USD'
               AND derived.direction = 'local'
+              AND json_extract_string(decode(derived.payload_bytes), '$.feed_product')
+                    = 'exchange_public_level2_batch_matches_heartbeat'
         """)
         connection.execute("""
             CREATE VIEW coinbase_spot_trades AS

@@ -110,6 +110,40 @@ def client(roots: status.StatusRoots) -> TestClient:
     )
 
 
+def test_continuous_status_is_separate_from_feed_freshness_and_goes_stale(
+    roots: status.StatusRoots,
+) -> None:
+    value = {
+        "schema": "collector-continuous-status-v1",
+        "intent": "continuous-public-data",
+        "campaign": "pilot",
+        "phase": "retry-wait",
+        "updated_utc_ns": NOW_NS,
+        "retry_count": 2,
+        "reason": "Classified transport retry",
+        "market_archives_automatically_deleted": False,
+        "seamless_coverage_claimed": False,
+        "supervisor_source_commit": "c" * 40,
+        "producer_source_commit": SOURCE,
+        "unrelated_private_value": "must-not-leak",
+        "last_gap": {
+            "reason": "classified-transport-interruption",
+            "detected_utc_ns": NOW_NS,
+            "end_utc_ns": None,
+        },
+    }
+    write(roots.control / "continuous-status.json", value)
+    data = client(roots).get("/api/status").json()
+    assert data["overall"] == "capturing"
+    assert data["continuous"]["phase"] == "retry-wait"
+    assert data["continuous"]["fresh"] is True
+    assert "must-not-leak" not in json.dumps(data)
+    write(roots.control / "continuous-status.json", value | {"updated_utc_ns": NOW_NS - 11 * 10**9})
+    assert client(roots).get("/api/status").json()["continuous"]["fresh"] is False
+    write(roots.control / "continuous-status.json", value | {"campaign": "different"})
+    assert client(roots).get("/api/status").json()["continuous"] is None
+
+
 def change_health(roots: status.StatusRoots, **changes: object) -> None:
     path = roots.spool / "runtime-health.json"
     write(path, json.loads(path.read_text()) | changes)

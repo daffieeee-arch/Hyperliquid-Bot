@@ -1,4 +1,4 @@
-# Historical study register — checkpoint 2026-11-01
+# Historical study register — checkpoint 2026-11-09
 
 This register preserves previous outcomes while a genuinely new historical
 mechanism is prepared. It does not re-score, repair or re-register a stopped
@@ -22,6 +22,10 @@ study merely because its strategy returns were not printed.
 | Prospective BTC Spot-flow / HL continuation | Implemented, fixed Nov2–5 window; not scored at this checkpoint | [Frozen protocol](../experiments/exp_btc_spot_flow.md) |
 | BTC month-turn calendar proxy | `historical_no_edge`; 44 validation pairs, negative net mean at all cost/funding stresses; historical test sealed; fixed family stopped | [Independently accepted result](../experiments/exp_btc_month_turn_proxy.results.md), [protocol](../experiments/exp_btc_month_turn_proxy.md) |
 | HL BTC best-level liquidity information | Feasibility / preregistration pending; one proposed native BBO size-imbalance feature; no labels, fitted model, returns or reserved OOS | [Observation and research design](hl-btc-liquidity-feasibility.md) |
+| Claude Nov2 XS momentum ensemble | Reported negative holdout; original result artifacts unavailable for independent revalidation. Binance 2025-01 through 2026-09 is exposed for this family. Existing stopped-family records retain their dispositions. | [Recovery and correction record](november-session-repair.md) |
+| Claude Nov7 leaderboard / whale copy / retail positioning | Reported insufficient results; shared accounting results require revalidation. Historical account selection/reconstruction has quality and survivorship limits; exact Nov7 snapshots unavailable. HL 2026-04-15 through 2026-11-06 was inspected, including its reported Sep–Nov holdout. | [Recovery and correction record](november-session-repair.md) |
+| Claude Nov7 unhedged funding / hedged carry | Reported rejected/insufficient; exact return, drawdown and safe cash-parking claims superseded pending revalidation. Binance Jan2020–Aug2026 and Sep1–Nov6,2026 were exposed; HL unhedged funding also inspected 2024–Nov2026. Actual leg prices, funding coverage and collateral/liquidation admission required. | [Recovery and correction record](november-session-repair.md) |
+| Claude Nov7 multi-coin hourly volume spikes | Reported negative continuation; trade-period, marked-risk and scale calculations require revalidation. Exploration2020–2024, validation2025–Aug2026 and finalSep1–Nov6,2026 are exposed. The 54-variant exploration remains recorded. | [Recovery and correction record](november-session-repair.md) |
 
 Warehouse paths are relative to the verified operator archive root, not executable
 SQL or a machine path to be copied into code. Existing reports include historical

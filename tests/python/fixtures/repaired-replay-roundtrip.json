@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "purpose": "retrospective_repair",
+  "study_id": "fixture-positions",
+  "study_kind": "positions",
+  "data_status": "synthetic",
+  "source_commit": "0000000000000000000000000000000000000000",
+  "sources": [],
+  "minimum_latency_ms": 1,
+  "spec": {
+    "start_ms": 0,
+    "end_ms": 300,
+    "step_ms": 100,
+    "initial_equity": 1000.0,
+    "instruments": [
+      {
+        "symbol": "X",
+        "kind": "perp",
+        "price_kind": "perp_mark",
+        "fee_bps": 0,
+        "slippage_bps": 0
+      }
+    ]
+  },
+  "frames": [
+    {
+      "timestamp_ms": 0,
+      "marks": {
+        "X": 100.0
+      },
+      "funding_rates": {
+        "X": 0.0
+      }
+    },
+    {
+      "timestamp_ms": 100,
+      "marks": {
+        "X": 100.0
+      },
+      "funding_rates": {
+        "X": 0.0
+      }
+    },
+    {
+      "timestamp_ms": 200,
+      "marks": {
+        "X": 110.0
+      },
+      "funding_rates": {
+        "X": 0.0
+      }
+    },
+    {
+      "timestamp_ms": 300,
+      "marks": {
+        "X": 100.0
+      },
+      "funding_rates": {
+        "X": 0.0
+      }
+    }
+  ],
+  "targets": [
+    {
+      "decision_ms": 0,
+      "execution_ms": 100,
+      "weights": {
+        "X": 1.0
+      }
+    }
+  ]
+}

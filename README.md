@@ -197,6 +197,11 @@ These are planning ranges, not promises of profitability.
 
 ## Documentation
 
+The [November research repair](docs/research/november-session-repair.md) records
+recovered Claude experiments, exposed periods and superseded risk claims. It
+provides a tested offline accounting replay with fixed quantities, marked
+equity, explicit funding coverage and actual two-leg carry inputs.
+
 - [Product Vision](docs/PRODUCT_VISION.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Development Workflow](docs/DEVELOPMENT.md)

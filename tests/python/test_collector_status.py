@@ -110,16 +110,26 @@ def client(roots: status.StatusRoots) -> TestClient:
     )
 
 
+@pytest.mark.parametrize(
+    ("phase", "gap"),
+    [
+        ("retry-wait", "classified-transport-interruption"),
+        ("pressure-wait", "classified-host-pressure-interruption"),
+    ],
+)
 def test_continuous_status_is_separate_from_feed_freshness_and_goes_stale(
     roots: status.StatusRoots,
+    phase: str,
+    gap: str,
 ) -> None:
     value = {
         "schema": "collector-continuous-status-v1",
         "intent": "continuous-public-data",
         "campaign": "pilot",
-        "phase": "retry-wait",
+        "phase": phase,
         "updated_utc_ns": NOW_NS,
         "retry_count": 2,
+        "pressure_retry_count": 1,
         "reason": "Classified transport retry",
         "market_archives_automatically_deleted": False,
         "seamless_coverage_claimed": False,
@@ -127,15 +137,19 @@ def test_continuous_status_is_separate_from_feed_freshness_and_goes_stale(
         "producer_source_commit": SOURCE,
         "unrelated_private_value": "must-not-leak",
         "last_gap": {
-            "reason": "classified-transport-interruption",
+            "reason": gap,
             "detected_utc_ns": NOW_NS,
             "end_utc_ns": None,
         },
     }
+    if phase == "pressure-wait":
+        change_health(roots, phase="failed")
     write(roots.control / "continuous-status.json", value)
     data = client(roots).get("/api/status").json()
-    assert data["overall"] == "capturing"
-    assert data["continuous"]["phase"] == "retry-wait"
+    assert data["overall"] == ("failed" if phase == "pressure-wait" else "capturing")
+    assert data["continuous"]["phase"] == phase
+    assert data["continuous"]["pressure_retry_count"] == 1
+    assert data["continuous"]["last_gap"]["reason"] == gap
     assert data["continuous"]["fresh"] is True
     assert "must-not-leak" not in json.dumps(data)
     write(roots.control / "continuous-status.json", value | {"updated_utc_ns": NOW_NS - 11 * 10**9})

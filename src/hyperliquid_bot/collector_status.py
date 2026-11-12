@@ -441,6 +441,7 @@ def snapshot(roots: StatusRoots, *, now_ns: int | None = None) -> dict[str, Any]
                     "auditing",
                     "between-campaigns",
                     "retry-wait",
+                    "pressure-wait",
                     "paused",
                     "stopped",
                 }
@@ -453,6 +454,7 @@ def snapshot(roots: StatusRoots, *, now_ns: int | None = None) -> dict[str, Any]
                 raise ValueError("Continuous supervision metadata differs.")
             stamp, age = _utc_ns(continuous.get("updated_utc_ns"), current)
             retries = _count(continuous.get("retry_count"))
+            pressure_retries = _count(continuous.get("pressure_retry_count", 0))
             reason = continuous.get("reason")
             if reason is not None and (type(reason) is not str or len(reason) > 240):
                 raise ValueError("Continuous reason bound.")
@@ -465,6 +467,7 @@ def snapshot(roots: StatusRoots, *, now_ns: int | None = None) -> dict[str, Any]
                     "scheduled-publication-and-new-sessions",
                     "classified-transport-interruption",
                     "host-reboot-interruption",
+                    "classified-host-pressure-interruption",
                 }:
                     safe_gap = {
                         "reason": gap["reason"],
@@ -479,6 +482,7 @@ def snapshot(roots: StatusRoots, *, now_ns: int | None = None) -> dict[str, Any]
                 "age_seconds": age,
                 "reason": reason,
                 "retry_count": retries,
+                "pressure_retry_count": pressure_retries,
                 "last_gap": safe_gap,
                 "archive_deletion": False,
                 "seamless": False,

@@ -39,7 +39,9 @@ def call(argv: list[str]) -> str:
     return result.stdout
 
 
-def start_argv(release: Path, settings: Path, state_root: Path) -> list[str]:
+def start_argv(
+    release: Path, settings: Path, state_root: Path, recovery: tuple[str, ...] = ()
+) -> list[str]:
     entry = [
         "/usr/bin/env",
         "PATH=/usr/sbin:/usr/bin:/sbin:/bin",
@@ -74,9 +76,10 @@ def start_argv(release: Path, settings: Path, state_root: Path) -> list[str]:
         "--property=StandardOutput=null",
         "--property=StandardError=journal",
         "--property=LogRateLimitIntervalSec=60s",
-        "--property=LogRateLimitBurst=5",
+        "--property=LogRateLimitBurst=100",
         "--property=ExecStopPost=" + shlex.join([*entry, "--stop-owned"]),
         *entry,
+        *recovery,
     ]
 
 
@@ -84,7 +87,18 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--settings", type=Path, required=True)
     parser.add_argument("--register-postinit", action="store_true")
+    parser.add_argument("--recover-pressure", action="store_true")
+    parser.add_argument("--expected-state-sha256")
+    parser.add_argument("--abandon-unsealed-pressure", action="store_true")
     args = parser.parse_args()
+    if (
+        bool(args.recover_pressure) != bool(args.expected_state_sha256)
+        or (args.abandon_unsealed_pressure and not args.recover_pressure)
+        or (args.register_postinit and args.recover_pressure)
+    ):
+        parser.error(
+            "Pressure recovery requires a state pin and cannot be registered for POSTINIT."
+        )
     if os.getuid() != 0:
         parser.error("Trusted root host operation required.")
     script = Path(__file__).absolute()
@@ -127,7 +141,12 @@ def main() -> int:
     loaded = call(["systemctl", "show", UNIT, "--property=LoadState", "--value"]).strip()
     if loaded != "not-found":
         raise ValueError("Existing supervisor unit needs operator revalidation.")
-    call(start_argv(release, args.settings, state_root))
+    recovery: tuple[str, ...] = ()
+    if args.recover_pressure:
+        recovery = ("--recover-pressure", "--expected-state-sha256", args.expected_state_sha256)
+        if args.abandon_unsealed_pressure:
+            recovery += ("--abandon-unsealed-pressure",)
+    call(start_argv(release, args.settings, state_root, recovery))
     print(json.dumps({"unit": UNIT, "start_requested": True}))
     return 0
 

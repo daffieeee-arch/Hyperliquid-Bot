@@ -21,6 +21,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from collections.abc import Iterator, Sequence
@@ -54,6 +55,7 @@ STATES = {
     "auditing",
     "between-campaigns",
     "retry-wait",
+    "pressure-wait",
     "paused",
     "stopped",
 }
@@ -62,6 +64,56 @@ require = capacity.require
 
 class HostUnavailableError(ValueError):
     """A read-only host command could not reach its service."""
+
+
+class CapacityStop(ValueError):
+    """A measured host capacity boundary with immutable numeric incident evidence."""
+
+    def __init__(
+        self,
+        previous: dict[str, Any],
+        current: dict[str, Any],
+        streaks: dict[str, int],
+        reasons: list[str],
+    ) -> None:
+        super().__init__("Capacity stop: " + ",".join(reasons))
+        self.previous = previous
+        self.current = current
+        self.streaks = dict(streaks)
+        self.reasons = tuple(reasons)
+
+
+@contextlib.contextmanager
+def watchdog_command(timeout: int) -> Iterator[None]:
+    """Keep a bounded host command alive without masking an unbounded stalled loop.
+
+    Only watchdog liveness is extended. An active producer still fails its next
+    capacity check if this command created a telemetry gap longer than five seconds.
+    """
+
+    def pulse() -> None:
+        # A closing systemd socket must not prevent exact owned-process cleanup.
+        with contextlib.suppress(OSError):
+            notify("WATCHDOG=1")
+
+    pulse()
+    stopped = threading.Event()
+    deadline = time.monotonic() + timeout + 2
+
+    def heartbeat() -> None:
+        while not stopped.wait(1):
+            if time.monotonic() >= deadline:
+                return
+            pulse()
+
+    worker = threading.Thread(target=heartbeat, daemon=True)
+    worker.start()
+    try:
+        yield
+    finally:
+        stopped.set()
+        worker.join(timeout=2)
+        pulse()
 
 
 def digest(value: object) -> str:
@@ -323,9 +375,15 @@ def command(
     allowed: tuple[int, ...] = (0,),
     extra: dict[str, str] | None = None,
 ) -> str:
-    response = subprocess.run(
-        argv, input=stdin, text=True, capture_output=True, timeout=timeout, env=ENV | (extra or {})
-    )
+    with watchdog_command(timeout):
+        response = subprocess.run(
+            argv,
+            input=stdin,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            env=ENV | (extra or {}),
+        )
     if response.returncode not in allowed:
         raise HostUnavailableError("Host command failed: " + argv[0])
     require(len(response.stdout) < 2 * 1024**2, "Host command output bound.")
@@ -671,6 +729,12 @@ class Supervisor:
                 "updated_utc_ns": self.state["updated_utc_ns"],
                 "campaign": generation["plan"]["campaign"],
                 "retry_count": self.state["retry_count"],
+                "pressure_retry_count": self.state.get("pressure_retry_count", 0),
+                "pressure_retry_after_utc_ns": (
+                    self.state.get("pressure_recovery", {}).get("retry_after_utc_ns")
+                    if self.state.get("pressure_recovery", {}).get("pending")
+                    else None
+                ),
                 "reason": self.state.get("reason"),
                 "last_gap": self.state["last_gap"],
                 "market_archives_automatically_deleted": False,
@@ -716,7 +780,8 @@ class Supervisor:
             self.streaks, reasons = capacity.evaluate(
                 self.previous, current, self.streaks, self.settings.capacity
             )
-            require(not reasons, "Capacity stop: " + ",".join(reasons))
+            if reasons:
+                raise CapacityStop(self.previous, current, self.streaks, reasons)
         self.previous = current
         self.save()
         generation = self.state.get("current")
@@ -758,6 +823,487 @@ class Supervisor:
                 for role in ("spool", "capture", "archive"):
                     self.verify_store(role, Path(generation["roots"][role]))
                 self.last_store_check = time.monotonic()
+
+    def record_capacity(self, error: CapacityStop) -> None:
+        generation = self.state.get("current")
+        campaign = generation["plan"]["campaign"] if generation else "pre-admission"
+        name = campaign + "-capacity-" + uuid.uuid4().hex + ".json"
+        publish(
+            self.settings.state_root / name,
+            {
+                "schema": "collector-capacity-incident-v1",
+                "campaign": campaign,
+                "capacity_policy": asdict(self.settings.capacity),
+                "supervisor_source_commit": self.settings.source_commit,
+                "created_utc_ns": time.time_ns(),
+                "boot_id": self.boot,
+                "before": error.previous,
+                "current": error.current,
+                "streaks": error.streaks,
+                "reasons": list(error.reasons),
+            },
+        )
+        self.state["last_capacity_incident"] = name
+
+    def capacity_events(self, doc: dict[str, Any]) -> dict[str, int]:
+        """Read the exact owned producer cgroup before accepting a soft host stop."""
+        require(not doc["State"]["OOMKilled"], "Owned collector was OOM killed.")
+        if not doc["State"]["Running"]:
+            return {"oom": 0, "oom_kill": 0}
+        pid = int(doc["State"]["Pid"])
+        records = Path(f"/proc/{pid}/cgroup").read_text().splitlines()
+        groups = [line.removeprefix("0::") for line in records if line.startswith("0::")]
+        require(
+            len(groups) == 1 and groups[0].startswith("/") and ".." not in Path(groups[0]).parts,
+            "Owned cgroup v2 identity missing.",
+        )
+        values = dict(
+            line.split()
+            for line in (Path("/sys/fs/cgroup") / groups[0].lstrip("/") / "memory.events")
+            .read_text()
+            .splitlines()
+        )
+        events = {key: capacity.count(int(values[key])) for key in ("oom", "oom_kill")}
+        require(not any(events.values()), "Owned collector cgroup OOM.")
+        return events
+
+    def pressure_rebind(self) -> dict[str, Any]:
+        """Explicit recovery may rebind recreated CIDs only under the old full contract."""
+        generation = self.state["current"]
+        require(
+            generation and not generation.get("adopted"), "Pressure recovery needs owned capture."
+        )
+        for role, path in generation["roots"].items():
+            self.verify_store(role, Path(path))
+        require(
+            digest(self.app()["config"]) == generation["app_config_sha256"],
+            "Pressure recovery App configuration differs.",
+        )
+        rebound = dict(generation)
+        if generation["boot_id"] != self.boot:
+            rebound.update(collector_id=None, status_id=None)
+        collector, status = inspect(COLLECTOR), inspect(STATUS)
+        owned(collector, rebound, "collector")
+        owned(status, rebound, "status")
+        require(
+            status["State"]["Running"], "Read-only status unavailable during pressure recovery."
+        )
+        generation["collector_id"], generation["status_id"] = collector["Id"], status["Id"]
+        generation["boot_id"] = self.boot
+        self.verify_current()
+        self.pressure_verified_boot = self.boot
+        return collector
+
+    def pressure_capture(self, producer: dict[str, Any]) -> dict[str, Any]:
+        """Only a live capturing controller can causally become our pressure stop."""
+        require(producer["State"]["Running"], "Stopped producer is not a measured pressure stop.")
+        generation = self.state["current"]
+        runtime = document(Path(generation["roots"]["spool"]) / "runtime-health.json")
+        chunk = runtime.get("chunk")
+        require(
+            runtime.get("campaign") == generation["plan"]["campaign"]
+            and runtime.get("phase") == "capturing"
+            and type(chunk) is int
+            and 0 <= chunk < generation["plan"]["chunks"]
+            and runtime.get("run_id") == f"{generation['plan']['campaign']}-{chunk:04d}",
+            "Pressure cannot reclassify a failed or publishing controller.",
+        )
+        # Metadata reads must not grant restart permission after the producer exited.
+        require(self.verify_current()["State"]["Running"], "Producer exited before pressure stop.")
+        return runtime
+
+    def pressure_health(self) -> None:
+        """A capacity stop cannot hide a native writer, integrity or unknown failure."""
+        generation = self.state["current"]
+        root = Path(generation["roots"]["spool"])
+        runtime = document(root / "runtime-health.json")
+        require(runtime["campaign"] == generation["plan"]["campaign"], "Pressure runtime identity.")
+        chunk = runtime["chunk"]
+        require(type(chunk) is int and 0 <= chunk < generation["plan"]["chunks"], "Pressure chunk.")
+        run_id = f"{generation['plan']['campaign']}-{chunk:04d}"
+        health = []
+        for lane in generation["plan"]["lanes"]:
+            value = document(
+                root
+                / generation["plan"]["campaign"]
+                / f"chunk-{chunk:04d}"
+                / lane
+                / LANES[lane][1]
+                / run_id
+                / "capture-health.json",
+                limit=1024**2,
+            )
+            require(
+                value.get("run_id") == run_id
+                and value.get("credentialless") is True
+                and type(value.get("integrity_events")) is int
+                and value["integrity_events"] == 0
+                and value.get("status") in {"COMPLETED", "OPERATOR_STOP", "FAILED"},
+                "Pressure interruption has unsafe or missing native terminal health.",
+            )
+            health.append(value)
+        require(
+            not any(value["status"] == "FAILED" for value in health) or transport_failure(health),
+            "Pressure interruption has an unknown native failure.",
+        )
+        receipt = self.pressure_receipt()
+        if receipt["operator_revalidated"] is False:
+            before = receipt["pre_stop_runtime"]
+            require(
+                before["phase"] == "capturing"
+                and before["chunk"] == runtime["chunk"]
+                and before["run_id"] == runtime.get("run_id")
+                and runtime["phase"] == "failed"
+                and all(value["status"] in {"COMPLETED", "OPERATOR_STOP"} for value in health)
+                and any(value["status"] == "OPERATOR_STOP" for value in health),
+                "Pressure stop has no causal operator-stop terminal proof.",
+            )
+
+    def begin_pressure_wait(
+        self,
+        error: CapacityStop | None = None,
+        *,
+        expected_state_sha256: str | None = None,
+        abandon_unsealed: bool = False,
+        read_only: bool = False,
+    ) -> dict[str, Any]:
+        """Persist typed evidence before stopping; legacy migration requires an explicit pin."""
+        operator = expected_state_sha256 is not None
+        require(
+            not abandon_unsealed or operator,
+            "Unsealed abandonment requires explicit operator recovery.",
+        )
+        if operator:
+            require(
+                self.state["phase"] == "paused"
+                and self.state.get("reason") == "Capacity stop: memory-pressure"
+                and digest(self.state) == expected_state_sha256,
+                "Explicit legacy pressure state pin differs.",
+            )
+        else:
+            require(
+                error is not None and error.reasons == ("memory-pressure",),
+                "Only measured host PSI pressure is recoverable.",
+            )
+        previous_state = json.loads(json.dumps(self.state))
+        count = capacity.count(self.state.get("pressure_retry_count", 0)) + 1
+        delay = retry_delay(count, self.settings.max_retries)
+        require(delay is not None, "Host pressure retry budget exhausted.")
+        assert delay is not None
+        producer = self.pressure_rebind() if operator else self.verify_current()
+        require(not self.state["current"].get("adopted"), "Cannot stop adopted pressure producer.")
+        pre_stop_runtime = None if operator else self.pressure_capture(producer)
+        events = self.capacity_events(producer)
+        operator_baseline = capacity.snapshot() if operator else None
+        if operator_baseline is not None:
+            capacity.metric(operator_baseline, self.settings.capacity)
+        campaign = self.state["current"]["plan"]["campaign"]
+        name = campaign + "-pressure-" + uuid.uuid4().hex + ".json"
+        receipt = {
+            "schema": "collector-pressure-operator-v1"
+            if operator
+            else "collector-pressure-incident-v1",
+            "campaign": campaign,
+            "capacity_policy": asdict(self.settings.capacity),
+            "supervisor_source_commit": self.settings.source_commit,
+            "producer_source_commit": self.state["current"]["plan"]["source_commit"],
+            "created_utc_ns": time.time_ns(),
+            "wait_deadline_utc_ns": time.time_ns() + 1800 * 1_000_000_000,
+            "boot_id": self.boot,
+            "reasons": ["memory-pressure"],
+            "cgroup_events": events,
+            "pre_stop_runtime": pre_stop_runtime,
+            "operator_revalidated": operator,
+            "prior_state": previous_state if operator else None,
+            "prior_state_sha256": expected_state_sha256,
+            "before": error.previous if error else None,
+            "current": error.current if error else None,
+            "operator_capacity_baseline": operator_baseline,
+            "streaks": error.streaks if error else None,
+            "abandon_unsealed": abandon_unsealed,
+            "partial_metadata": self.pressure_metadata() if abandon_unsealed else None,
+            "old_partial_research_qualified": False,
+        }
+        if read_only:
+            require(operator, "Read-only pressure preflight requires an operator state pin.")
+            self.state = previous_state
+            return receipt
+        publish(self.settings.state_root / name, receipt)
+        self.pressure_transition_started = True
+        self.state["pressure_retry_count"] = count
+        self.state["pressure_recovery"] = {
+            "schema": "collector-pressure-recovery-v1",
+            "campaign": campaign,
+            "receipt": name,
+            "receipt_sha256": digest(receipt),
+            "pending": True,
+            "retry_after_utc_ns": time.time_ns() + delay * 1_000_000_000,
+        }
+        self.save("pressure-wait", "Host pressure stopped capture; waiting for stable admission.")
+        self.stop_owned()
+        # No telemetry interval across a slow stop is represented as continuous.
+        self.previous = None
+        self.streaks = {}
+        self.pressure_samples: list[dict[str, Any]] = []
+        self.pressure_stable_since: int | None = None
+        return receipt
+
+    def stopped_capacity_baseline(self) -> None:
+        """A verified stopped producer has no continuous capture interval to certify."""
+        producer = self.verify_current()
+        require(not producer["State"]["Running"], "Capacity reset requires a stopped producer.")
+        require(not producer["State"]["OOMKilled"], "Stopped producer was OOM killed.")
+        current = capacity.snapshot()
+        proof = capacity.metric(current, self.settings.capacity)
+        if self.state.get("pressure_recovery", {}).get("pending") is True:
+            self.pressure_counters(current)
+        if self.previous is not None:
+            require(
+                current["global_oom_kill"] == self.previous["global_oom_kill"]
+                and all(
+                    current["arc"][key] == self.previous["arc"][key]
+                    for key in ("memory_throttle_count", "evict_not_enough")
+                ),
+                "Hard capacity counter changed during stopped preparation.",
+            )
+        require(
+            proof["direct_bytes"] >= capacity.GIB, "Hard low memory during stopped preparation."
+        )
+        self.previous = current
+        self.streaks = {}
+
+    def pressure_metadata(self) -> list[dict[str, Any]]:
+        """Retain missing terminals under explicit operator authority as unqualified evidence."""
+        generation = self.state["current"]
+        root = Path(generation["roots"]["spool"])
+        runtime = document(root / "runtime-health.json")
+        require(
+            runtime["campaign"] == generation["plan"]["campaign"], "Quarantine runtime identity."
+        )
+        chunk = runtime["chunk"]
+        require(
+            type(chunk) is int and 0 <= chunk < generation["plan"]["chunks"], "Quarantine chunk."
+        )
+        run_id = f"{generation['plan']['campaign']}-{chunk:04d}"
+        records = []
+        for lane in generation["plan"]["lanes"]:
+            base = (
+                root
+                / generation["plan"]["campaign"]
+                / f"chunk-{chunk:04d}"
+                / lane
+                / LANES[lane][1]
+                / run_id
+            )
+            for name in ("capture-claim.json", "capture-live.json", "capture-health.json"):
+                path = base / name
+                record: dict[str, Any] = {"lane": lane, "name": name, "present": path.exists()}
+                if path.exists():
+                    value = document(path, limit=1024**2)
+                    record["document_sha256"] = digest(value)
+                    identity = path.lstat()
+                    record.update(
+                        device=identity.st_dev, inode=identity.st_ino, bytes=identity.st_size
+                    )
+                    if name == "capture-health.json":
+                        require(
+                            value.get("run_id") == run_id
+                            and value.get("credentialless") is True
+                            and type(value.get("integrity_events")) is int
+                            and value["integrity_events"] == 0
+                            and value.get("status") in {"COMPLETED", "OPERATOR_STOP"},
+                            "Operator quarantine cannot erase a known native failure.",
+                        )
+                records.append(record)
+        return records
+
+    def pressure_receipt(self) -> dict[str, Any]:
+        value = self.state["pressure_recovery"]
+        campaign = self.state["current"]["plan"]["campaign"]
+        require(
+            value["schema"] == "collector-pressure-recovery-v1"
+            and value["campaign"] == campaign
+            and value["pending"] is True
+            and re.fullmatch(
+                re.escape(campaign) + r"-pressure-[0-9a-f]{32}\.json", value["receipt"]
+            )
+            is not None,
+            "Pressure recovery identity differs.",
+        )
+        receipt = document(self.settings.state_root / value["receipt"], trusted=True)
+        require(
+            digest(receipt) == value["receipt_sha256"]
+            and receipt["campaign"] == campaign
+            and receipt["reasons"] == ["memory-pressure"]
+            and receipt["capacity_policy"] == asdict(self.settings.capacity)
+            and receipt["producer_source_commit"] == self.state["current"]["plan"]["source_commit"]
+            and re.fullmatch(r"[0-9a-f]{40}", receipt["supervisor_source_commit"]) is not None
+            and receipt["schema"]
+            in {"collector-pressure-incident-v1", "collector-pressure-operator-v1"}
+            and receipt["cgroup_events"] == {"oom": 0, "oom_kill": 0},
+            "Pressure recovery receipt differs.",
+        )
+        return receipt
+
+    def pressure_counters(self, current: dict[str, Any]) -> None:
+        """Stopping resets time/PSI sampling, never same-boot hard counters."""
+        receipt = self.pressure_receipt()
+        original = receipt["current"]
+        if original is None:
+            require(receipt["operator_revalidated"] is True, "Missing measured capacity evidence.")
+            original = receipt["operator_capacity_baseline"]
+        capacity.metric(original, self.settings.capacity)
+        previous_boot = receipt["boot_id"]
+        previous = original
+        if previous_boot != self.boot:
+            epoch = self.state["pressure_recovery"].get("counter_epoch")
+            if epoch is not None:
+                previous_boot, previous = epoch["boot_id"], epoch["sample"]
+                capacity.metric(previous, self.settings.capacity)
+            if previous_boot != self.boot:
+                require(
+                    getattr(self, "pressure_verified_boot", None) == self.boot
+                    and self.state["current"]["boot_id"] == self.boot,
+                    "Pressure counter rebase requires a verified actual host boot change.",
+                )
+                epoch = {
+                    "schema": "collector-pressure-counter-epoch-v1",
+                    "previous_boot_id": previous_boot,
+                    "boot_id": self.boot,
+                    "sample": json.loads(json.dumps(current)),
+                    "reason": "verified-host-boot-change",
+                    "created_utc_ns": time.time_ns(),
+                }
+                self.state["pressure_recovery"]["counter_epoch"] = epoch
+                self.save()
+                return
+        require(
+            current["global_oom_kill"] == previous["global_oom_kill"]
+            and all(
+                current["arc"][key] == previous["arc"][key]
+                for key in ("memory_throttle_count", "evict_not_enough")
+            ),
+            "Hard capacity counter changed across pressure stop or same-boot restart.",
+        )
+
+    def wait_pressure(self) -> bool:
+        receipt = self.pressure_receipt()
+        require(
+            time.time_ns() < receipt["wait_deadline_utc_ns"],
+            "Host pressure stable admission deadline expired; operator revalidation required.",
+        )
+        if not hasattr(self, "pressure_samples"):
+            producer = self.pressure_rebind()
+            self.capacity_events(producer)
+            before_stop = capacity.snapshot()
+            capacity.metric(before_stop, self.settings.capacity)
+            self.pressure_counters(before_stop)
+            self.stop_owned()
+            self.previous = None
+            self.pressure_samples = []
+            self.pressure_stable_since = None
+        if time.monotonic() - getattr(self, "last_pressure_check", 0.0) >= 25:
+            self.pressure_wait_guards()
+            self.last_pressure_check = time.monotonic()
+            after_checks = capacity.snapshot()
+            capacity.metric(after_checks, self.settings.capacity)
+            self.pressure_counters(after_checks)
+            if (
+                self.previous is not None
+                and after_checks["monotonic_ns"] - self.previous["monotonic_ns"] > 5_000_000_000
+            ):
+                self.stopped_capacity_baseline()
+                self.pressure_samples = []
+                self.pressure_stable_since = None
+        require(not self.stopping, "Operator stopped continuous supervision.")
+        time.sleep(1)
+        notify("WATCHDOG=1")
+        current = capacity.snapshot()
+        proof = capacity.metric(current, self.settings.capacity)
+        self.pressure_counters(current)
+        reasons: list[str] = []
+        if self.previous is not None:
+            self.streaks, reasons = capacity.evaluate(
+                self.previous, current, self.streaks, self.settings.capacity
+            )
+            require(not set(reasons) - {"memory-pressure"}, "Hard capacity failure while waiting.")
+        self.previous = current
+        self.pressure_samples = [*self.pressure_samples[-2:], current]
+        healthy = (
+            not reasons
+            and proof["direct_bytes"] >= 2 * capacity.GIB
+            and proof["effective_bytes"] >= 5 * capacity.GIB
+            and all(
+                current["psi"][kind][key] < bound
+                for kind, bound in (("full", 1), ("some", 5))
+                for key in ("avg10", "avg60", "avg300")
+            )
+        )
+        if healthy and len(self.pressure_samples) == 3:
+            try:
+                capacity.admit(self.pressure_samples, self.settings.capacity)
+            except ValueError as error:
+                require(
+                    str(error)
+                    in {
+                        "Insufficient native memory admission headroom.",
+                        "Startup PSI average limit.",
+                        "Startup PSI interval.",
+                    },
+                    "Invalid capacity evidence while waiting.",
+                )
+                healthy = False
+        else:
+            healthy = False
+        if healthy:
+            if self.pressure_stable_since is None:
+                self.pressure_stable_since = current["monotonic_ns"]
+        else:
+            self.pressure_stable_since = None
+        self.save("pressure-wait")
+        if (
+            self.pressure_stable_since is None
+            or current["monotonic_ns"] - self.pressure_stable_since < 60_000_000_000
+            or time.time_ns() < self.state["pressure_recovery"]["retry_after_utc_ns"]
+        ):
+            return False
+        self.verify_current()
+        receipt = self.pressure_receipt()
+        if receipt.get("abandon_unsealed") is True:
+            require(
+                receipt["schema"] == "collector-pressure-operator-v1"
+                and receipt["operator_revalidated"] is True
+                and self.pressure_metadata() == receipt["partial_metadata"],
+                "Operator quarantine metadata changed.",
+            )
+        else:
+            self.pressure_health()
+        self.audit(complete=False)
+        self.gap("classified-host-pressure-interruption")
+        self.save("between-campaigns", "Stable host capacity and retained copies accepted.")
+        return True
+
+    def pressure_wait_guards(self) -> None:
+        """Read-only periodic admission checks never renew old producer controls."""
+        verify_release(self.settings)
+        producer = self.verify_current()
+        require(not producer["State"]["Running"], "Pressure wait producer unexpectedly running.")
+        self.capacity_events(producer)
+        for role, path in self.state["current"]["roots"].items():
+            self.verify_store(role, Path(path))
+        report = cast(
+            dict[str, Any],
+            parse_tracking(
+                command(["chronyc", "-n", "tracking"], timeout=3), now_ns=time.time_ns()
+            ),
+        )
+        require(
+            report["synchronized"] is True
+            and abs(float(report["system_offset_seconds"])) <= 0.050
+            and 0 <= float(report["root_dispersion_seconds"]) <= 0.250
+            and 0 <= float(report["root_delay_seconds"]) <= 0.500,
+            "Host clock out of bounds while pressure waiting.",
+        )
 
     def admission(self) -> None:
         samples = []
@@ -1109,6 +1655,7 @@ class Supervisor:
         )
         self.state["audit_id"] = cid
         self.save()
+        self.stopped_capacity_baseline()
         result = json.loads(
             self.poll_child(
                 ["docker", "start", "-ai", cid], stdin=json.dumps(request), timeout=1800
@@ -1127,7 +1674,17 @@ class Supervisor:
         cid = self.state.get("audit_id")
         if not cid:
             return
-        value = inspect(cid)
+        require(re.fullmatch(r"[0-9a-f]{64}", cid) is not None, "Exact audit CID required.")
+        try:
+            value = inspect(cid)
+        except HostUnavailableError:
+            # Docker rm can finish before a crash prevents saving audit_id=None.
+            # A successful exact-ID query proves absence without trusting a failed inspect.
+            present = command(["docker", "ps", "-aq", "--no-trunc", "--filter", "id=" + cid])
+            require(not present.strip(), "Registered audit identity could not be inspected.")
+            self.state["audit_id"] = None
+            self.save()
+            return
         generation = self.state["current"]
         require(
             value["Id"] == cid
@@ -1146,7 +1703,6 @@ class Supervisor:
     def launch(self) -> None:
         previous = self.verify_current()
         require(not previous["State"]["Running"], "Never replace an active admitted campaign.")
-        self.admission()
         for role, path in self.state["current"]["roots"].items():
             self.verify_store(role, Path(path))
         campaign = (
@@ -1212,6 +1768,10 @@ class Supervisor:
             "started_utc_ns": time.time_ns(),
             "wall_budget_seconds": 96 * 3600,
         }
+        self.last_clock = 0
+        self.clock(generation)
+        self.stopped_capacity_baseline()
+        self.admission()
         self.state["current"] = generation
         self.state["generations"] += 1
         self.save("admitting")
@@ -1219,12 +1779,11 @@ class Supervisor:
             self.settings.state_root / (campaign + "-intent.json"),
             {"generation": generation, "rendered_compose_sha256": digest(rendered)},
         )
-        self.last_clock = 0
-        self.clock(generation)
         job = json.loads(
-            command(
+            self.poll_child(
                 ["midclt", "call", "app.update", json.dumps(APP), "-"],
                 stdin=json.dumps({"custom_compose_config": rendered}),
+                timeout=60,
             )
         )
         require(type(job) is int and job > 0, "TrueNAS App update job identity required.")
@@ -1277,6 +1836,8 @@ class Supervisor:
         )
         generation["app_config_sha256"] = digest(app["config"])
         self.save("capturing")
+        if self.state.get("pressure_recovery"):
+            self.state["pressure_recovery"]["pending"] = False
         if self.state["last_gap"]:
             self.state["last_gap"]["end_utc_ns"] = time.time_ns()
         self.save()
@@ -1309,6 +1870,7 @@ class Supervisor:
         if complete:
             self.audit(complete=True)
             self.state["retry_count"] = 0
+            self.state["pressure_retry_count"] = 0
             self.gap("scheduled-publication-and-new-sessions")
             self.save("between-campaigns")
         else:
@@ -1403,24 +1965,45 @@ class Supervisor:
                 self.state["phase"] = "auditing"
             if self.state["current"] and self.state["current"]["boot_id"] != self.boot:
                 self.state["phase"] = "auditing"
-            self.admission()
+            pressure = self.state.get("pressure_recovery")
+            recovering = (
+                self.state["phase"] in {"pressure-wait", "auditing", "between-campaigns"}
+                and pressure
+                and pressure.get("pending") is True
+                and pressure.get("campaign") == self.state["current"]["plan"]["campaign"]
+            )
+            if recovering:
+                self.pressure_receipt()
+                self.state["phase"] = "pressure-wait"
+            else:
+                self.admission()
             if self.state["current"] is None:
                 self.adopt()
             notify("READY=1\nWATCHDOG=1")
             while not self.stopping:
-                generation = self.state["current"]
-                if generation["boot_id"] != self.boot:
-                    self.recover_boot()
-                if self.state["phase"] == "retry-wait":
-                    if time.time_ns() < self.state["retry_after_utc_ns"]:
-                        self.tick()
+                try:
+                    if self.state["phase"] == "pressure-wait":
+                        if self.wait_pressure():
+                            self.launch()
                         continue
-                    self.launch()
-                elif self.state["phase"] == "between-campaigns" or self.observe():
+                    generation = self.state["current"]
+                    if generation["boot_id"] != self.boot:
+                        self.recover_boot()
                     if self.state["phase"] == "retry-wait":
-                        continue
-                    self.launch()
-                self.tick()
+                        if time.time_ns() < self.state["retry_after_utc_ns"]:
+                            self.tick()
+                            continue
+                        self.launch()
+                    elif self.state["phase"] == "between-campaigns" or self.observe():
+                        if self.state["phase"] == "retry-wait":
+                            continue
+                        self.launch()
+                    self.tick()
+                except CapacityStop as error:
+                    self.record_capacity(error)
+                    if error.reasons != ("memory-pressure",):
+                        raise
+                    self.begin_pressure_wait(error)
         except (ValueError, OSError, KeyError, subprocess.SubprocessError) as error:
             phase = (
                 self.shutdown_phase()
@@ -1450,16 +2033,37 @@ def main(argv: Sequence[str] | None = None) -> int:
     operation.add_argument("--stop-owned", action="store_true")
     operation.add_argument("--inspect-only", action="store_true")
     operation.add_argument("--pause", action="store_true")
+    operation.add_argument("--recover-pressure", action="store_true")
+    operation.add_argument("--inspect-pressure-recovery", action="store_true")
+    parser.add_argument("--expected-state-sha256")
+    parser.add_argument("--abandon-unsealed-pressure", action="store_true")
     args = parser.parse_args(argv)
+    require(
+        bool(args.recover_pressure or args.inspect_pressure_recovery)
+        == bool(args.expected_state_sha256),
+        "Pressure recovery requires the explicit expected state SHA256.",
+    )
+    require(
+        not args.abandon_unsealed_pressure
+        or args.recover_pressure
+        or args.inspect_pressure_recovery,
+        "Unsealed abandonment requires explicit pressure recovery.",
+    )
     require(os.getuid() == 0, "Trusted root host operator required.")
     settings = load_settings(args.settings)
     if args.pause:
         verify_release(settings, check_image=False)
     elif not args.stop_owned:
         wait_host_ready(settings)
-    if args.inspect_only:
+    if args.inspect_only or args.inspect_pressure_recovery:
         supervisor = Supervisor(settings)
-        if supervisor.state["current"] is None:
+        if args.inspect_pressure_recovery:
+            supervisor.begin_pressure_wait(
+                expected_state_sha256=args.expected_state_sha256,
+                abandon_unsealed=args.abandon_unsealed_pressure,
+                read_only=True,
+            )
+        elif supervisor.state["current"] is None:
             supervisor.adopt(read_only=True)
         else:
             supervisor.verify_current()
@@ -1476,6 +2080,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     with singleton(settings.state_root):
         supervisor = Supervisor(settings)
+        if args.recover_pressure:
+            try:
+                supervisor.begin_pressure_wait(
+                    expected_state_sha256=args.expected_state_sha256,
+                    abandon_unsealed=args.abandon_unsealed_pressure,
+                )
+            except (ValueError, OSError, KeyError, subprocess.SubprocessError):
+                if getattr(supervisor, "pressure_transition_started", False):
+                    supervisor.save("paused", "Explicit pressure recovery admission failed.")
+                    supervisor.stop_owned()
+                raise
         if args.pause:
             cleanup_verified = True
             try:

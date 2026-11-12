@@ -40,8 +40,10 @@ The new bundle manifest SHA-256 is
 `I = 2 * taker_buy_quote_volume / quote_volume - 1`. Select `V >= 5` and
 `abs(I) >= 0.2`; buy for positive imbalance and sell for negative imbalance.
 No threshold, horizon, direction or leverage sweep is allowed.
-Inclusive thresholds are compared algebraically before division, so an exact
-60% taker-buy fraction is not lost to a rounded `0.199999...` imbalance.
+Native quote/taker decimal strings and the previous-volume median remain exact
+rational numbers. Inclusive thresholds use integer/rational cross-products,
+without floating-point conversion, tolerance or Decimal-context rounding. An
+exact 60% taker-buy fraction therefore retains the inclusive imbalance boundary.
 
 Hold each admitted position for four hours. Keep the original per-symbol busy
 rule: a new signal's decision must be strictly after the previous candidate's

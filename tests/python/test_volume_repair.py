@@ -7,6 +7,8 @@ import io
 import json
 import zipfile
 from dataclasses import replace
+from decimal import localcontext
+from fractions import Fraction
 from pathlib import Path
 
 import pytest
@@ -24,6 +26,7 @@ from research.volume_repair import (
     targets,
 )
 from research.volume_repair_io import (
+    DECEMBER,
     HOUR,
     MINUTE,
     ROLES,
@@ -85,7 +88,10 @@ def test_native_kline_schema_grid_and_official_checksum(tmp_path: Path) -> None:
         tmp_path, "BTCUSDT-1h-2025-01.zip", [kline(START), kline(START + HOUR)]
     )
     result = klines(native, checksum, START, HOUR, 2)
-    assert result == [Hour(START, 100, 100, 60), Hour(START + HOUR, 100, 100, 60)]
+    assert result == [
+        Hour(START, 100, Fraction(100), Fraction(60)),
+        Hour(START + HOUR, 100, Fraction(100), Fraction(60)),
+    ]
     checksum.path.write_text("0" * 64 + " " + native.path.name)
     wrong = replace(
         checksum, sha256=sha256(checksum.path.read_bytes()), size=checksum.path.stat().st_size
@@ -202,12 +208,15 @@ def test_duplicate_json_and_nonfinite_decimal_are_refused() -> None:
 
 
 def feature_hours() -> list[Hour]:
-    return [Hour(START + (index - 720) * HOUR, 100.0, 100.0, 50.0) for index in range(740)]
+    return [
+        Hour(START + (index - 720) * HOUR, 100.0, Fraction(100), Fraction(50))
+        for index in range(740)
+    ]
 
 
 def test_current_spike_is_excluded_from_median_and_positive_latency_is_fixed() -> None:
     hours = feature_hours()
-    hours[720] = replace(hours[720], quote_volume=500.0, taker_quote=400.0)
+    hours[720] = replace(hours[720], quote_volume=Fraction(500), taker_quote=Fraction(400))
     windows, counts = candidates("X", hours, START, START + 10 * HOUR)
     assert windows == [Window(START + 2 * HOUR, START + 6 * HOUR, "X", 1)]
     assert counts == {"spikes": 1, "busy": 0, "boundary": 0}
@@ -222,16 +231,61 @@ def test_exact_inclusive_imbalance_boundary_is_not_lost_to_float_division(
     taker: float, direction: int
 ) -> None:
     hours = feature_hours()
-    hours[720] = replace(hours[720], quote_volume=500, taker_quote=taker)
+    hours[720] = replace(hours[720], quote_volume=Fraction(500), taker_quote=Fraction(taker))
     windows, _ = candidates("X", hours, START, START + 10 * HOUR)
     assert len(windows) == 1
     assert windows[0].direction == direction
 
 
+@pytest.mark.parametrize(
+    "prior_low,prior_high,quote,taker,direction",
+    [
+        ("100.02", "100.02", "500.1", "300.06", 1),
+        ("100.02", "100.02", "500.1", "200.04", -1),
+        ("24.69", "24.69", "123.45", "74.070", 1),
+        ("24.69", "24.69", "123.45", "49.380", -1),
+        ("100.01", "100.03", "500.1", "300.06", 1),
+        ("100.0199999999999999999999", "100.0200000000000000000001", "500.1", "300.06", 1),
+        ("100.02", "100.02", "500.1", "300.059999999999999999999999999999", 0),
+        ("100.02", "100.02", "500.1", "200.040000000000000000000000000001", 0),
+        ("100.02", "100.02", "500.099999999999999999999999999999", "400", 0),
+    ],
+)
+def test_native_decimal_volume_thresholds_preserve_exact_median_and_boundaries(
+    tmp_path: Path,
+    prior_low: str,
+    prior_high: str,
+    quote: str,
+    taker: str,
+    direction: int,
+) -> None:
+    december = [kline(DECEMBER + index * HOUR) for index in range(744)]
+    for index, row in enumerate(december):
+        row[7], row[10] = (prior_low if index % 2 == 0 else prior_high), "0"
+    january = [kline(START + index * HOUR) for index in range(8)]
+    for row in january:
+        row[7], row[10] = prior_low, "0"
+    january[0][7], january[0][10] = quote, taker
+    dec_zip, dec_check = archive(tmp_path, "BTCUSDT-1h-2024-12.zip", december, "hourly_dec")
+    jan_zip, jan_check = archive(tmp_path, "BTCUSDT-1h-2025-01.zip", january)
+    # Exact selection must not depend on the caller's Decimal arithmetic context.
+    with localcontext() as context:
+        context.prec = 6
+        parsed = klines(dec_zip, dec_check, DECEMBER, HOUR, 744)
+        parsed += klines(jan_zip, jan_check, START, HOUR, 8)
+        windows, counts = candidates("BTCUSDT", parsed, START, START + 8 * HOUR)
+    assert parsed[744].quote_volume == Fraction(quote)
+    assert parsed[744].taker_quote == Fraction(taker)
+    assert counts["spikes"] == (1 if direction else 0)
+    assert windows == (
+        [Window(START + 2 * HOUR, START + 6 * HOUR, "BTCUSDT", direction)] if direction else []
+    )
+
+
 def test_busy_and_boundary_filters_do_not_use_future_returns() -> None:
     hours = feature_hours()
     for index in (720, 721, 725, 726, 738):
-        hours[index] = replace(hours[index], quote_volume=500.0, taker_quote=100.0)
+        hours[index] = replace(hours[index], quote_volume=Fraction(500), taker_quote=Fraction(100))
     windows, counts = candidates("X", hours, START, START + 20 * HOUR)
     assert windows == [
         Window(START + 2 * HOUR, START + 6 * HOUR, "X", -1),
@@ -270,8 +324,14 @@ def test_terminal_full_holding_window_has_a_charged_close() -> None:
 
 def test_asynchronous_funding_uses_actual_settlement_and_causal_other_marks() -> None:
     end = START + 2 * MINUTE
-    hours = {s: [Hour(START - HOUR, 100, 0, 0)] for s in ("X", "Y")}
-    marks = {s: [Hour(START, 100, 0, 0), Hour(START + MINUTE, 900, 0, 0)] for s in ("X", "Y")}
+    hours = {s: [Hour(START - HOUR, 100, Fraction(0), Fraction(0))] for s in ("X", "Y")}
+    marks = {
+        s: [
+            Hour(START, 100, Fraction(0), Fraction(0)),
+            Hour(START + MINUTE, 900, Fraction(0), Fraction(0)),
+        ]
+        for s in ("X", "Y")
+    }
     payments = {"X": [Funding(START + MINUTE + 15, 0.01, 120)], "Y": []}
     output = frames(hours, marks, payments, START, end)
     event = next(frame for frame in output if frame.timestamp_ms == START + MINUTE + 15)
@@ -405,9 +465,12 @@ def test_offline_cli_keeps_a_create_only_complete_fixture_ledger(
     index = tmp_path / "index.json"
     index.write_text(json.dumps({"schema_version": 1, "study_id": STUDY_ID, "sources": bindings}))
     hours = {symbol: feature_hours() for symbol in SYMBOLS}
-    hours["BTCUSDT"][720] = replace(hours["BTCUSDT"][720], quote_volume=500, taker_quote=400)
+    hours["BTCUSDT"][720] = replace(
+        hours["BTCUSDT"][720], quote_volume=Fraction(500), taker_quote=Fraction(400)
+    )
     marks = {
-        symbol: [Hour(START + i * MINUTE, 100, 0, 0) for i in range(8 * 60)] for symbol in SYMBOLS
+        symbol: [Hour(START + i * MINUTE, 100, Fraction(0), Fraction(0)) for i in range(8 * 60)]
+        for symbol in SYMBOLS
     }
     payments: dict[str, list[Funding]] = {symbol: [] for symbol in SYMBOLS}
     monkeypatch.setattr(repair, "END", START + 8 * HOUR)

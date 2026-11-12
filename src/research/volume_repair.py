@@ -9,6 +9,7 @@ import math
 import re
 import zipfile
 from dataclasses import asdict, dataclass, replace
+from fractions import Fraction
 from itertools import pairwise
 from pathlib import Path
 
@@ -60,18 +61,21 @@ def candidates(
         all(b.open_ms - a.open_ms == HOUR for a, b in pairwise(hours)),
         "contiguous feature history",
     )
-    median_window: list[float] = []
+    median_window: list[Fraction] = []
     out: list[Window] = []
     busy_until = -1
     for index, bar in enumerate(hours):
         if index >= 720 and start <= bar.open_ms < end:
             require(len(median_window) == 720, "previous 720 hours required")
-            median = median_window[359] / 2 + median_window[360] / 2
-            if median > 0 and bar.quote_volume > 0:
+            twice_median = median_window[359] + median_window[360]
+            if twice_median > 0 and bar.quote_volume > 0:
                 signed_volume = 2 * bar.taker_quote - bar.quote_volume
-                # Compare the frozen fractions before division: 60% taker buy
-                # is exactly the inclusive |I|=0.2 boundary, not 0.19999... .
-                if bar.quote_volume >= 5 * median and abs(signed_volume) >= bar.quote_volume / 5:
+                # Exact native rational cross-products preserve both inclusive
+                # boundaries, without float cancellation or Decimal rounding.
+                if (
+                    2 * bar.quote_volume >= 5 * twice_median
+                    and 5 * abs(signed_volume) >= bar.quote_volume
+                ):
                     counts["spikes"] += 1
                     decision = bar.open_ms + HOUR
                     entry, exit_ms = decision + HOUR, decision + 5 * HOUR

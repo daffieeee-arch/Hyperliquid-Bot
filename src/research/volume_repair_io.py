@@ -16,6 +16,7 @@ import zipfile
 from collections.abc import Iterator
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from fractions import Fraction
 from pathlib import Path
 
 from research.btc_flow_io import read_bytes
@@ -258,7 +259,10 @@ def integer(value: str) -> int:
 
 def finite_float(value: Decimal) -> float:
     result = float(value)
-    require(math.isfinite(result), "finite representable native number")
+    require(
+        math.isfinite(result) and (value == 0 or result != 0),
+        "finite representable native number",
+    )
     return result
 
 
@@ -266,8 +270,8 @@ def finite_float(value: Decimal) -> float:
 class Hour:
     open_ms: int
     close: float
-    quote_volume: float
-    taker_quote: float
+    quote_volume: Fraction
+    taker_quote: Fraction
 
 
 def klines(source: Source, checksum: Source, start: int, step: int, count: int) -> list[Hour]:
@@ -298,7 +302,11 @@ def klines(source: Source, checksum: Source, start: int, step: int, count: int) 
         decimal(row[11])
         close = finite_float(prices[3])
         require(close > 0, "representable positive close")
-        out.append(Hour(instant, close, finite_float(quote), finite_float(taker)))
+        # Reject pathological exponents before constructing bounded rationals,
+        # but never round the native quote/taker strings used by thresholds.
+        finite_float(quote)
+        finite_float(taker)
+        out.append(Hour(instant, close, Fraction(quote), Fraction(taker)))
     require(len(out) == count, "complete native candle count")
     return out
 

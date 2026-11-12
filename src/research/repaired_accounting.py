@@ -28,6 +28,7 @@ class Frame:
     timestamp_ms: int
     marks: dict[str, float]
     funding_rates: dict[str, float | None]
+    execution_prices: dict[str, float] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +46,7 @@ class ReplaySpec:
     step_ms: int
     initial_equity: float
     instruments: tuple[Instrument, ...]
+    event_times_ms: tuple[int, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +67,7 @@ class LedgerTrade:
     fill_price: float
     fee: float
     slippage_cost: float
+    reference_price: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,17 +137,35 @@ def _validate(
             _require(0 <= value < 10_000, f"Invalid {name} basis points.")
         instruments[instrument.symbol] = instrument
     _require(bool(instruments), "At least one instrument is required.")
-    _require(len(frames) == span // spec.step_ms + 1, "Incomplete replay clock grid.")
+    _require(len(frames) >= span // spec.step_ms + 1, "Incomplete replay clock grid.")
+    regular = tuple(range(spec.start_ms, spec.end_ms + 1, spec.step_ms))
+    clock = regular if spec.event_times_ms is None else spec.event_times_ms
+    clock_set = set(clock)
+    for instant in clock:
+        _clock(instant, "event clock")
+    _require(
+        clock == tuple(sorted(clock_set))
+        and set(regular) <= clock_set
+        and clock[0] == spec.start_ms
+        and clock[-1] == spec.end_ms,
+        "The event clock must retain every regular valuation and both boundaries.",
+    )
+    _require(len(frames) == len(clock), "Incomplete replay clock grid.")
     for index, frame in enumerate(frames):
         _clock(frame.timestamp_ms, "frame clock")
         _require(
-            frame.timestamp_ms == spec.start_ms + index * spec.step_ms,
+            frame.timestamp_ms == clock[index],
             "Frames must follow the complete ordered replay clock grid.",
         )
         for symbol, price in frame.marks.items():
             _require(symbol in instruments, "Unknown mark instrument.")
             _number(price, "mark price")
             _require(price > 0, "Mark prices must be positive.")
+        if frame.execution_prices is not None:
+            for symbol, price in frame.execution_prices.items():
+                _require(symbol in instruments, "Unknown execution instrument.")
+                _number(price, "execution reference price")
+                _require(price > 0, "Execution reference prices must be positive.")
         for symbol, rate in frame.funding_rates.items():
             _require(
                 symbol in instruments and instruments[symbol].kind == "perp",
@@ -162,8 +183,7 @@ def _validate(
             "A decision and execution must lie inside the replay window in causal order.",
         )
         _require(
-            target.execution_ms > previous_execution
-            and (target.execution_ms - spec.start_ms) % spec.step_ms == 0,
+            target.execution_ms > previous_execution and target.execution_ms in clock_set,
             "Executions must be unique, ordered and on the frame grid.",
         )
         previous_execution = target.execution_ms
@@ -197,13 +217,15 @@ def _rebalance(
 ) -> tuple[float, dict[str, float], list[LedgerTrade]]:
     """Size all target units from the same equity before executing any trade."""
     equity = _equity(cash, positions, frame.marks)
+    references = frame.marks if frame.execution_prices is None else frame.execution_prices
     desired: dict[str, float] = {} if replace_all else dict(positions)
     for symbol, weight in weights.items():
         if weight == 0 or scale == 0:
             desired.pop(symbol, None)
             continue
         _require(symbol in frame.marks, "Missing mark at target execution.")
-        quantity = equity * scale * weight / frame.marks[symbol]
+        _require(symbol in references, "Missing execution reference price.")
+        quantity = equity * scale * weight / references[symbol]
         _number(quantity, "target quantity")
         desired[symbol] = quantity
     trades: list[LedgerTrade] = []
@@ -213,15 +235,19 @@ def _rebalance(
             continue
         instrument = instruments[symbol]
         mark = frame.marks[symbol]
+        _require(symbol in references, "Missing execution reference price.")
+        reference = references[symbol]
         direction = 1 if delta > 0 else -1
-        fill = mark * (1 + direction * instrument.slippage_bps / 10_000)
+        fill = reference * (1 + direction * instrument.slippage_bps / 10_000)
         fee = abs(delta * fill) * instrument.fee_bps / 10_000
-        slippage = abs(delta) * abs(fill - mark)
+        slippage = abs(delta) * abs(fill - reference)
         _number(fill, "fill price")
         _number(fee, "trade fee")
         cash -= delta * fill + fee
         _number(cash, "cash balance")
-        trades.append(LedgerTrade(frame.timestamp_ms, symbol, delta, mark, fill, fee, slippage))
+        trades.append(
+            LedgerTrade(frame.timestamp_ms, symbol, delta, mark, fill, fee, slippage, reference)
+        )
     return cash, desired, trades
 
 

@@ -90,6 +90,108 @@ there is no package installation, `/etc` unit persistence or unrelated service
 change. No automatic restart loop overrides a paused integrity/storage/clock
 boundary. Persisted `paused` state requires explicit operator revalidation.
 
+## Host-pressure recovery
+
+The supervisor records every measured capacity stop with its preceding/current
+kernel samples, material-pressure streaks, policy identity and host boot. Only a
+typed stop whose sole reason is host PSI `memory-pressure` may enter
+`pressure-wait`. Automatic recovery requires the exact producer still running,
+its controller still `capturing`, and zero cgroup OOM counters. The receipt
+retains that pre-stop controller evidence before stopping the owned producer.
+Its process/configuration/storage identities must match, and the old partial
+namespace remains retained. Already stopped, failed or publishing controllers
+cannot be reclassified as transient pressure.
+
+The pressure retry counter is independent of the transport counter. The existing
+bounded `max_retries` setting limits each counter, using the same 30/60/120/240/
+480-second backoff. The pressure counter resets only after a fully completed and
+accepted campaign. Repeated pressure during unfinished campaigns eventually
+requires operator revalidation.
+
+While waiting, the supervisor samples fresh capacity every second. All three
+startup headroom/PSI checks must pass continuously for at least 60 seconds and
+the backoff must have elapsed. A process restart or host boot resets this stable
+interval. OOM, low available memory, ZFS throttle/eviction faults, malformed
+telemetry, storage, clock, source or identity failures enter the persistent
+`paused` state. Missing or unsafe native terminal evidence also pauses automatic
+recovery. The receipt sets a fixed 30-minute stable-admission deadline; a restart
+cannot extend it. Source/image/storage/clock guards are checked periodically
+without renewing the interrupted producer's controls. Automatic terminal proof
+must retain the same interrupted chunk and include a native `OPERATOR_STOP`;
+completed writers or unknown failures cannot acquire pressure permission.
+
+Before a new capture, the supervisor accepts every already sealed WORK/HDD copy,
+records `classified-host-pressure-interruption`, and performs the normal fresh
+source/image/storage/clock/network admission. A new campaign receives new raw
+and control roots. Recovery never continues an interrupted raw namespace. The
+portal's `pressure-wait` state and pressure retry count describe recovery in
+progress while the producer is stopped.
+
+Host commands retain bounded watchdog heartbeats for their explicit command
+timeout. Cleanup may therefore finish its existing 90-second stop grace. This
+changes process liveness only. Active capture still refuses a capacity sample
+gap longer than five seconds. The baseline is reset only after the old producer
+has been independently verified stopped; OOM/throttle/eviction counter changes
+are retained across stopped setup. Slow stopped audit/setup therefore does not
+pretend to be a continuous capture interval. The final fresh admission runs
+after setup, and App creation is polled with ongoing capacity checks. Bootstrap journal allowance is
+100 messages/minute so a Python traceback's final cause remains visible.
+
+### One-time migration of an old pressure pause
+
+Legacy releases saved only a reason string. They cannot automatically create a
+measured pressure receipt. The assigned runtime operator first preserves the old
+root-owned settings/state and inspects the stopped App, original source/image,
+containers, native partial metadata and both publication stores. Compute the
+expected state pin with `collector_continuous.digest` on the parsed original
+state. This is the canonical object digest, distinct from a raw-file checksum.
+
+After independent review, the following first-start flags explicitly revalidate
+that exact legacy state under the new frozen release.
+
+```bash
+python3 -B /mnt/<pool>/hyperliquid-runtime/<release>/scripts/truenas_collector_bootstrap.py \
+  --settings /mnt/<pool>/hyperliquid-runtime/continuous-control/settings.json \
+  --recover-pressure --expected-state-sha256 <canonical-state-sha256>
+```
+
+The operation requires the old phase/reason, an exact pinned state, full App
+configuration and immutable producer contract. New CIDs may be rebound only
+after an actual host boot change and those checks. Same-boot CIDs remain pinned.
+The receipt retains the original state
+and records explicit operator authority. The new supervisor image/source remains
+independent of the old interrupted producer.
+
+If the watchdog interrupted an unsealed writer before its terminal health was
+written, the operator may additionally use `--abandon-unsealed-pressure`.
+This is a separate explicit abandonment decision. It retains the old namespace
+as unqualified, records each lane's claim/live/terminal metadata identity and
+document hash, and records missing terminals. Known native failure or integrity
+evidence still refuses migration. Every already sealed copy must pass the
+existing complete inventory/hash audit. Changed quarantine metadata fails the
+recovery. The old partial data earns no research-ready or completeness claim.
+
+Before applying the one-time operation, run this read-only preflight with the
+same frozen settings and exact original state pin. It verifies identities on an
+in-memory copy, without saving state, taking the supervisor lock, stopping
+containers or updating the App. Add `--abandon-unsealed-pressure` here as well
+when reviewing that explicit quarantine decision. Stable capacity and sealed
+copy acceptance remain mandatory during the subsequent actual recovery.
+
+```bash
+env TRADING_MODE=PAPER PYTHONPATH=/mnt/<pool>/hyperliquid-runtime/<release>/src \
+  python3 -B -m hyperliquid_bot.collector_continuous \
+  --settings /mnt/<pool>/hyperliquid-runtime/continuous-control/settings.json \
+  --inspect-pressure-recovery --expected-state-sha256 <canonical-state-sha256>
+```
+
+A wrong expected state pin fails before any state/control write or owned cleanup.
+
+These flags apply only to the first start. They are excluded from ExecStopPost
+cleanup and from the registered POSTINIT command. Subsequent restarts need a
+valid pending receipt and fresh stable capacity evidence. Ordinary paused
+states continue to require explicit operator review.
+
 Normal SIGTERM/shutdown stores `stopped` while retaining continuous intent.
 It refuses an unattended same-boot restart, but the next actual host boot audits
 the interrupted producer and admits a fresh namespace. To pause permanently,

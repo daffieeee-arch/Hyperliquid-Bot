@@ -1,6 +1,6 @@
 # Roadmap
 
-## Active priorities — checkpoint 2026-11-01
+## Active priorities — checkpoint 2026-11-12
 
 The immediate goal is a reproducible **BTC strategy result after costs**, followed
 by PAPER only if the evidence supports it. No profitable strategy has been
@@ -10,15 +10,16 @@ tracks actual delivery evidence and remaining gates.
 
 | Order | Work | Current evidence and next gate |
 | --- | --- | --- |
-| 1 | Keep public data collection running | Hyperliquid, Binance, Kraken and Bitvavo Standard are active in the TrueNAS App. The continuous supervisor has independently accepted initial adoption; first automatic campaign rollover and actual reboot recovery remain unobserved at this checkpoint. Track [#205](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/205). |
-| 2 | Acquire and accept the fixed BTC study inputs | The separate HL/Binance 72-hour capture is scheduled for **Nov2 00:00–Nov5 00:00 UTC**. Funding acquisition is scheduled for **Nov6 00:15 UTC**. Both schedules are waiting, not completed research inputs. Verify full publication/run continuity, both copies, clocks and funding coverage before scoring. Track [#191](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/191) and [#192](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/192). |
-| 3 | Run the first fixed strategy study | The [BTC Spot-flow study](experiments/exp_btc_spot_flow.md) and cost-aware runner are implemented. Test whether Binance Spot aggressive flow confirms executable HL continuation. First 12h history, next 36h validation, final 24h untouched OOS; selection must precede OOS financial decoding. Earliest scheduled complete-input review is Nov6, conditional on successful collection and acceptance. No scoring has run. |
+| 1 | Restore and prove continuous collection | Nov12 inspection found the TrueNAS App CRASHED, all four feeds stale since Nov1 and persistent memory-pressure pause. The supervisor also hit its five-second watchdog during stopping. [#223](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/223) tracks reviewed recovery, immutable release, explicit operator revalidation and actual fresh two-store publication. Broader continuity remains [#205](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/205). |
+| 2 | Account for the fixed BTC study's incomplete inputs | Metadata inspection found three six-hour native chunks per venue in each controlled WORK/HDD namespace for the Nov2–5 capture, ending Nov2 around18:14UTC. The registered72h window is incomplete. Nov6 funding acquisition and both seals exist, with metadata recording120 native/74 padded slots. Independent source/copy/clock admission remains required. Track [#192](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/192). |
+| 3 | Use the corrected accounting on admitted historical exports | [PR221](https://github.com/daffieeee-arch/Hyperliquid-Bot/pull/221) delivered fixed-quantity marked accounting and quarantined source recovery. [#222](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/222) admits actual prices and funding before one retrospective correction. The [Spot-flow protocol](experiments/exp_btc_spot_flow.md) retains its original12h/36h/24h split; its missing window cannot be replaced or widened silently. |
 | 4 | Decide from the result | Report net results, sample sufficiency, benchmarks, cost stress and limitations. A 72h pilot is not multi-regime profitability evidence. A failed or insufficient study retains its verdict; any further experiment requires a new preregistration and fresh OOS. A supported candidate still needs further robustness and separately admitted PAPER operation. |
 | 5 | Expand data where it supports a defined experiment | Coinbase's 600s public pilot and both stored copies passed independent acceptance; continuous Coinbase is still open. Bitvavo MD Pro access/entitlement remains unverified; Pro is L2, not L3. These additions do not block the existing HL/Binance hypothesis. |
 | 6 | Complete execution and platform gates as needed | PAPER strategy integration, venue-authoritative recovery/reconciliation [#178](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/178), trading observability and backup/recovery proof remain separate work. TESTNET/SHADOW/LIVE are not enabled by data collection or a research result. |
 
-In parallel, address the development-dependency security item
-[#187](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/187).
+The development-dependency security item
+[#187](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/187) was addressed
+with the scoped minimatch override recorded in [Security](SECURITY.md).
 The separate S4 multi-asset study remains blocked on its frozen funding-source
 contract ([#190](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/190),
 [#150](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/150)); it does not

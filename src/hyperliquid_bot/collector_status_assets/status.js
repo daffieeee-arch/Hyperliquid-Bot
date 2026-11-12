@@ -259,6 +259,7 @@ function render(data) {
     auditing: "Beide opgeslagen kopieën worden gecontroleerd",
     "between-campaigns": "Nieuwe meetperiode wordt voorbereid",
     "retry-wait": "Tijdelijk wachten voor nieuwe verbindingen",
+    "pressure-wait": "Wachten tot de geheugenbelasting is hersteld",
     paused: "Gepauzeerd: controle nodig",
     stopped: "Gestopt",
   };
@@ -271,8 +272,10 @@ function render(data) {
   text(
     "continuous-detail",
     continuous?.fresh
-      ? "Herpogingen: " +
+      ? "Netwerkherpogingen: " +
           count(continuous.retry_count) +
+          ". Herstelpogingen bij geheugenbelasting: " +
+          count(continuous.pressure_retry_count) +
           ". Marktarchieven worden niet automatisch verwijderd. " +
           (continuous.reason || "")
       : "Een bereikbare pagina bewijst geen actieve dataverzameling.",

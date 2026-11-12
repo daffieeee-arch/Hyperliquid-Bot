@@ -453,10 +453,12 @@ def test_known_renderer_omission_is_restored_for_all_eight_binds() -> None:
 
 
 @pytest.mark.parametrize("getter_shape", ["direct", "wrapped", "mixed"])
+@pytest.mark.parametrize("slow_stopped_setup", [False, True])
 def test_full_launch_executes_managed_app_then_gate_then_persists_new_identity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     getter_shape: str,
+    slow_stopped_setup: bool,
 ) -> None:
     item = supervisor(monkeypatch)
     config = item.settings
@@ -475,7 +477,10 @@ def test_full_launch_executes_managed_app_then_gate_then_persists_new_identity(
 
     monkeypatch.setattr(item, "save", persist)
     rendered: dict[str, Any] = {}
-    monkeypatch.setattr(item, "verify_current", lambda: {"State": {"Running": False}})
+    monkeypatch.setattr(
+        item, "verify_current", lambda: {"State": {"Running": False, "OOMKilled": False}}
+    )
+    monkeypatch.setattr(cap, "snapshot", lambda: sample())
     monkeypatch.setattr(item, "admission", lambda: effects.append("admit"))
     monkeypatch.setattr(host, "approved_host_roots", lambda *args, **kwargs: None)
     monkeypatch.setattr(host, "directory", lambda *args, **kwargs: None)
@@ -486,6 +491,35 @@ def test_full_launch_executes_managed_app_then_gate_then_persists_new_identity(
     monkeypatch.setattr(host, "owned", lambda *args: None)
     monkeypatch.setattr(item, "tick", lambda *args: None)
     monkeypatch.setattr(item, "clock", lambda generation: effects.append("fresh-clock"))
+    if slow_stopped_setup:
+        elapsed = [0]
+        monkeypatch.setattr(
+            time, "sleep", lambda seconds: elapsed.__setitem__(0, elapsed[0] + int(seconds))
+        )
+        monkeypatch.setattr(host, "notify", lambda message: None)
+        monkeypatch.setattr(cap, "snapshot", lambda: sample(elapsed[0]))
+
+        def delayed_verify() -> dict[str, Any]:
+            elapsed[0] += 6
+            return {"State": {"Running": False, "OOMKilled": False}}
+
+        def real_capacity_tick(*args: Any) -> None:
+            current = item.state["current"]
+            adopted = current["adopted"]
+            current["adopted"] = True  # Isolate kernel/store I/O, retain the real gap guard.
+            try:
+                host.Supervisor.tick(item)
+            finally:
+                current["adopted"] = adopted
+
+        def fresh_admission() -> None:
+            effects.append("admit")
+            host.Supervisor.admission(item)
+
+        item.previous = sample()
+        monkeypatch.setattr(item, "verify_current", delayed_verify)
+        monkeypatch.setattr(item, "tick", real_capacity_tick)
+        monkeypatch.setattr(item, "admission", fresh_admission)
 
     def fake_command(argv: list[str], **kwargs: Any) -> str:
         if argv[:2] == ["docker", "compose"]:
@@ -517,6 +551,10 @@ def test_full_launch_executes_managed_app_then_gate_then_persists_new_identity(
     )
 
     def gate(argv: list[str], **kwargs: Any) -> str:
+        if "app.update" in argv:
+            if slow_stopped_setup:
+                item.tick()
+            return fake_command(argv, **kwargs)
         assert durable[-1]["current"]["collector_id"] == "1" * 64
         effects.append("TC-gate")
         return ""
@@ -535,7 +573,7 @@ def test_full_launch_executes_managed_app_then_gate_then_persists_new_identity(
     assert current["collector_id"] == "1" * 64
     assert current["status_id"] == "2" * 64
     assert current["app_config_sha256"] == host.digest(rendered)
-    assert effects == ["admit", "fresh-clock", "app.update", "TC-gate", "app.get_instance"]
+    assert effects == ["fresh-clock", "admit", "app.update", "TC-gate", "app.get_instance"]
     assert current["roots"]["spool"] != current["roots"]["control"]
     assert item.state["phase"] == "capturing"
 
@@ -1277,3 +1315,629 @@ def test_real_app_getter_refuses_unsupported_or_ambiguous_config_shapes(
     with pytest.raises(ValueError, match="Native App getter"):
         item.app()
     assert len(calls) == 1
+
+
+def pressure_error() -> host.CapacityStop:
+    previous, current = sample(), sample(1)
+    current["psi"]["full"]["total"] += 20_000
+    return host.CapacityStop(previous, current, {"psi": 2, "low": 0}, ["memory-pressure"])
+
+
+def pressure_fixture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[host.Supervisor, dict[str, dict[str, Any]], list[str]]:
+    item = supervisor(monkeypatch)
+    item.state["current"]["adopted"] = False
+    saved: dict[str, dict[str, Any]] = {}
+    effects: list[str] = []
+    monkeypatch.setattr(
+        host,
+        "publish",
+        lambda path, value, **kw: saved.__setitem__(path.name, copy.deepcopy(value)),
+    )
+    monkeypatch.setattr(host, "document", lambda path, **kw: copy.deepcopy(saved[path.name]))
+    monkeypatch.setattr(
+        item, "verify_current", lambda: {"State": {"Running": False, "OOMKilled": False}}
+    )
+    monkeypatch.setattr(item, "stop_owned", lambda: effects.append("stop-owned"))
+    monkeypatch.setattr(item, "pressure_health", lambda: effects.append("native-health"))
+    monkeypatch.setattr(item, "pressure_capture", lambda producer: {"phase": "capturing"})
+    monkeypatch.setattr(item, "pressure_wait_guards", lambda: None)
+    monkeypatch.setattr(item, "audit", lambda **kwargs: effects.append("audit"))
+    monkeypatch.setattr(item, "gap", lambda reason: effects.append(reason))
+    monkeypatch.setattr(host, "notify", lambda message: None)
+    monkeypatch.setattr(time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(time, "time_ns", lambda: 100_000_000_000)
+    return item, saved, effects
+
+
+def test_tick_raises_structured_capacity_incident_before_other_effects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    item = supervisor(monkeypatch)
+    item.previous = sample()
+    item.streaks = {"psi": 1}
+    current = sample(1)
+    current["psi"]["full"]["total"] += 20_000
+    monkeypatch.setattr(time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(host, "notify", lambda message: None)
+    monkeypatch.setattr(cap, "snapshot", lambda: current)
+    with pytest.raises(host.CapacityStop) as caught:
+        item.tick()
+    assert caught.value.reasons == ("memory-pressure",)
+    assert caught.value.previous == sample()
+    assert caught.value.current == current
+    assert caught.value.streaks["psi"] == 2
+
+
+def test_pressure_records_proof_and_waits_a_full_stable_minute_before_audit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    item, saved, effects = pressure_fixture(monkeypatch)
+    item.begin_pressure_wait(pressure_error())
+    assert item.state["phase"] == "pressure-wait" and item.state["pressure_retry_count"] == 1
+    receipt = item.pressure_receipt()
+    assert receipt["before"] == sample() and receipt["streaks"]["psi"] == 2
+    assert receipt["cgroup_events"] == {"oom": 0, "oom_kill": 0}
+    assert item.previous is None and effects == ["stop-owned"]
+    monkeypatch.setattr(time, "time_ns", lambda: 1_000_000_000_000)
+    samples = iter(sample(index) for index in range(64))
+    monkeypatch.setattr(cap, "snapshot", lambda: next(samples))
+    for _ in range(62):
+        assert item.wait_pressure() is False
+    assert item.wait_pressure() is True
+    assert effects == [
+        "stop-owned",
+        "native-health",
+        "audit",
+        "classified-host-pressure-interruption",
+    ]
+    assert item.state["phase"] == "between-campaigns"
+    assert len(saved) == 1
+
+
+def test_pressure_run_uses_fresh_launch_after_waiting_and_retains_gap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    item, _saved, effects = pressure_fixture(monkeypatch)
+    monkeypatch.setattr(item, "admission", lambda: None)
+    monkeypatch.setattr(item, "observe", lambda: (_ for _ in ()).throw(pressure_error()))
+
+    def wait() -> bool:
+        effects.append("stable-and-audited")
+        return True
+
+    def launch() -> None:
+        effects.append("fresh-launch")
+        item.state["current"]["plan"]["campaign"] = "fresh-fixture"
+        item.stopping = True
+
+    monkeypatch.setattr(item, "wait_pressure", wait)
+    monkeypatch.setattr(item, "launch", launch)
+    monkeypatch.setattr(item, "shutdown_phase", lambda: "stopped")
+    assert item.run() == 0
+    assert effects[:3] == ["stop-owned", "stable-and-audited", "fresh-launch"]
+    assert item.state["current"]["plan"]["campaign"] == "fresh-fixture"
+
+
+@pytest.mark.parametrize("reason", ["global-oom", "low-memory", "zfs-throttle"])
+def test_hard_capacity_conditions_never_enter_pressure_recovery(
+    monkeypatch: pytest.MonkeyPatch, reason: str
+) -> None:
+    item, saved, effects = pressure_fixture(monkeypatch)
+    monkeypatch.setattr(item, "admission", lambda: None)
+    error = host.CapacityStop(sample(), sample(1), {}, ["memory-pressure", reason])
+    monkeypatch.setattr(item, "observe", lambda: (_ for _ in ()).throw(error))
+    assert item.run() == 2
+    assert item.state["phase"] == "paused" and effects == ["stop-owned"]
+    assert len(saved) == 1 and "pressure_recovery" not in item.state
+    incident = next(iter(saved.values()))
+    assert incident["schema"] == "collector-capacity-incident-v1"
+    assert incident["reasons"] == ["memory-pressure", reason]
+
+
+def test_pressure_receipt_tampering_retry_exhaustion_and_adopted_capture_are_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    item, saved, _effects = pressure_fixture(monkeypatch)
+    item.state["current"]["adopted"] = True
+    with pytest.raises(ValueError, match="adopted"):
+        item.begin_pressure_wait(pressure_error())
+    assert not saved
+    item.state["current"]["adopted"] = False
+    item.state["pressure_retry_count"] = 5
+    with pytest.raises(ValueError, match="budget"):
+        item.begin_pressure_wait(pressure_error())
+    item.state["pressure_retry_count"] = 0
+    item.begin_pressure_wait(pressure_error())
+    receipt = saved[item.state["pressure_recovery"]["receipt"]]
+    receipt["reasons"] = ["global-oom"]
+    with pytest.raises(ValueError, match="receipt differs"):
+        item.pressure_receipt()
+
+
+def test_unknown_partial_native_health_and_failed_sealed_copy_hard_pause_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    item, _saved, effects = pressure_fixture(monkeypatch)
+    item.begin_pressure_wait(pressure_error())
+    item.pressure_stable_since = 1
+    item.pressure_samples = [sample(61), sample(62)]
+    item.previous = sample(62)
+    monkeypatch.setattr(cap, "snapshot", lambda: sample(63))
+    monkeypatch.setattr(time, "time_ns", lambda: 1_000_000_000_000)
+    monkeypatch.setattr(
+        item, "pressure_health", lambda: (_ for _ in ()).throw(ValueError("Unknown native failure"))
+    )
+    with pytest.raises(ValueError, match="Unknown native"):
+        item.wait_pressure()
+    assert "audit" not in effects
+    monkeypatch.setattr(item, "pressure_health", lambda: None)
+    monkeypatch.setattr(cap, "snapshot", lambda: sample(64))
+    monkeypatch.setattr(
+        item, "audit", lambda **kw: (_ for _ in ()).throw(ValueError("Bad sealed copy"))
+    )
+    with pytest.raises(ValueError, match="Bad sealed"):
+        item.wait_pressure()
+    assert "classified-host-pressure-interruption" not in effects
+
+
+def test_pressure_wait_resets_after_restart_and_rebinds_before_sampling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    item, _saved, effects = pressure_fixture(monkeypatch)
+    item.begin_pressure_wait(pressure_error())
+    del item.pressure_samples
+    item.previous = sample(0)  # Old timestamp must not span a long stopped interval.
+    monkeypatch.setattr(
+        item, "pressure_rebind", lambda: {"State": {"Running": False, "OOMKilled": False}}
+    )
+    monkeypatch.setattr(cap, "snapshot", lambda: sample(1000))
+    assert item.wait_pressure() is False
+    assert item.previous == sample(1000) and effects == ["stop-owned", "stop-owned"]
+
+
+def test_legacy_operator_recovery_requires_exact_state_pin_and_explicit_quarantine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    item, saved, effects = pressure_fixture(monkeypatch)
+    item.state.update(phase="paused", reason="Capacity stop: memory-pressure")
+    monkeypatch.setattr(
+        item, "pressure_rebind", lambda: {"State": {"Running": False, "OOMKilled": False}}
+    )
+    monkeypatch.setattr(
+        item,
+        "pressure_metadata",
+        lambda: [{"lane": "binance", "name": "capture-health.json", "present": False}],
+    )
+    with pytest.raises(ValueError, match="pin differs"):
+        item.begin_pressure_wait(expected_state_sha256="0" * 64, abandon_unsealed=True)
+    before = copy.deepcopy(item.state)
+    item.begin_pressure_wait(expected_state_sha256=host.digest(before), abandon_unsealed=True)
+    receipt = item.pressure_receipt()
+    assert receipt["schema"] == "collector-pressure-operator-v1"
+    assert host.digest(receipt["prior_state"]) == host.digest(before)
+    assert receipt["operator_revalidated"] is True
+    assert (
+        receipt["abandon_unsealed"] is True and receipt["old_partial_research_qualified"] is False
+    )
+    assert receipt["partial_metadata"][0]["present"] is False
+    assert effects == ["stop-owned"] and len(saved) == 1
+
+
+def test_bootstrap_recovery_flags_do_not_recur_in_cleanup_or_postinit_entry() -> None:
+    cfg = settings()
+    flags = (
+        "--recover-pressure",
+        "--expected-state-sha256",
+        "a" * 64,
+        "--abandon-unsealed-pressure",
+    )
+    argv = start_argv(cfg.release, cfg.state_root / "settings.json", cfg.state_root, flags)
+    assert argv[-len(flags) :] == list(flags)
+    cleanup = next(arg for arg in argv if arg.startswith("--property=ExecStopPost="))
+    assert "--recover-pressure" not in cleanup and "--stop-owned" in cleanup
+    assert "--property=LogRateLimitBurst=100" in argv
+
+
+def test_watchdog_command_keeps_heartbeat_only_for_bounded_subprocess(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import threading
+
+    notices = []
+    called = threading.Event()
+
+    def notify(message: str) -> None:
+        notices.append(message)
+        if len(notices) >= 2:
+            called.set()
+
+    monkeypatch.setattr(host, "notify", notify)
+    with host.watchdog_command(5):
+        assert called.wait(5)
+        assert len(notices) >= 2
+    count = len(notices)
+    time.sleep(0.1)
+    assert len(notices) == count
+
+
+def test_closing_notify_socket_never_prevents_bounded_command_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(host, "notify", lambda message: (_ for _ in ()).throw(OSError("closing")))
+    import sys
+
+    assert host.command([sys.executable, "-c", "print('cleanup-ready')"]).strip() == "cleanup-ready"
+
+
+def test_operator_quarantine_records_absent_terminal_and_refuses_known_native_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    item = supervisor(monkeypatch)
+    campaign = item.state["current"]["plan"]["campaign"]
+    run_id = campaign + "-0000"
+
+    def read(path: Path, **kwargs: Any) -> dict[str, Any]:
+        if path.name == "runtime-health.json":
+            return {"campaign": campaign, "chunk": 0}
+        if path.name == "capture-health.json":
+            return {
+                "run_id": run_id,
+                "credentialless": True,
+                "integrity_events": 0,
+                "status": "OPERATOR_STOP",
+            }
+        return {"fixture": True}
+
+    monkeypatch.setattr(host, "document", read)
+    monkeypatch.setattr(
+        Path,
+        "exists",
+        lambda path: not ("binance" in path.parts and path.name == "capture-health.json"),
+    )
+    monkeypatch.setattr(Path, "lstat", lambda path: SimpleNamespace(st_dev=1, st_ino=2, st_size=3))
+    records = item.pressure_metadata()
+    assert len(records) == 12
+    assert [r for r in records if r["present"] is False] == [
+        {"lane": "binance", "name": "capture-health.json", "present": False}
+    ]
+    assert all("document_sha256" in r for r in records if r["present"])
+
+    def unsafe(path: Path, **kwargs: Any) -> dict[str, Any]:
+        value = read(path, **kwargs)
+        return value | {"status": "FAILED"} if path.name == "capture-health.json" else value
+
+    monkeypatch.setattr(host, "document", unsafe)
+    with pytest.raises(ValueError, match="cannot erase"):
+        item.pressure_metadata()
+
+
+def test_hard_counter_change_during_pressure_wait_never_advances(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    item, _saved, effects = pressure_fixture(monkeypatch)
+    item.begin_pressure_wait(pressure_error())
+    item.previous = sample()
+    current = sample(1)
+    current["global_oom_kill"] = 1
+    monkeypatch.setattr(cap, "snapshot", lambda: current)
+    with pytest.raises(ValueError, match="Hard capacity"):
+        item.wait_pressure()
+    assert effects == ["stop-owned"]
+
+
+def test_restart_from_valid_pressure_receipt_does_not_reenter_old_boot_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    item, _saved, effects = pressure_fixture(monkeypatch)
+    item.begin_pressure_wait(pressure_error())
+    item.state["current"]["boot_id"] = "previous-boot"
+    monkeypatch.setattr(
+        item, "admission", lambda: pytest.fail("stale admission before pressure wait")
+    )
+    monkeypatch.setattr(item, "recover_boot", lambda: pytest.fail("unknown old boot recovery"))
+    monkeypatch.setattr(item, "shutdown_phase", lambda: "stopped")
+
+    def wait() -> bool:
+        effects.append("receipt-revalidated-pressure-wait")
+        item.stopping = True
+        return False
+
+    monkeypatch.setattr(item, "wait_pressure", wait)
+    assert item.run() == 0
+    assert "receipt-revalidated-pressure-wait" in effects
+
+
+def test_completed_audit_cleanup_is_idempotent_only_after_proven_exact_absence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    item = supervisor(monkeypatch)
+    cid = "8" * 64
+    item.state["audit_id"] = cid
+    monkeypatch.setattr(
+        host,
+        "inspect",
+        lambda value: (_ for _ in ()).throw(host.HostUnavailableError("inspect failed")),
+    )
+    calls = []
+
+    def query(argv: list[str], **kwargs: Any) -> str:
+        calls.append(argv)
+        return ""
+
+    monkeypatch.setattr(host, "command", query)
+    item.stop_audit()
+    assert item.state["audit_id"] is None
+    assert calls == [["docker", "ps", "-aq", "--no-trunc", "--filter", "id=" + cid]]
+    item.state["audit_id"] = cid
+    monkeypatch.setattr(host, "command", lambda *args, **kw: cid)
+    with pytest.raises(ValueError, match="could not be inspected"):
+        item.stop_audit()
+    assert item.state["audit_id"] == cid
+    monkeypatch.setattr(
+        host,
+        "command",
+        lambda *args, **kw: (_ for _ in ()).throw(host.HostUnavailableError("docker unavailable")),
+    )
+    with pytest.raises(host.HostUnavailableError):
+        item.stop_audit()
+    assert item.state["audit_id"] == cid
+
+
+def test_watchdog_worker_datagrams_keep_main_process_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import socket
+    import struct
+
+    address = str(tmp_path / "notify.sock")
+    monkeypatch.setenv("NOTIFY_SOCKET", address)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as server:
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+        server.bind(address)
+        server.settimeout(5)
+        with host.watchdog_command(5):
+            # Receive immediate main-thread pulse and then the background pulse.
+            for _ in range(2):
+                message, ancillary, _flags, _address = server.recvmsg(
+                    128, socket.CMSG_SPACE(struct.calcsize("3i"))
+                )
+                pid = next(
+                    struct.unpack("3i", data)[0]
+                    for level, kind, data in ancillary
+                    if level == socket.SOL_SOCKET and kind == socket.SCM_CREDENTIALS
+                )
+                assert pid == os.getpid() and message == b"WATCHDOG=1"
+
+
+@pytest.mark.parametrize(
+    "phase,running", [("capturing", False), ("failed", True), ("publishing", True)]
+)
+def test_pressure_never_reclassifies_already_stopped_or_failed_controller(
+    monkeypatch: pytest.MonkeyPatch, phase: str, running: bool
+) -> None:
+    item, saved, effects = pressure_fixture(monkeypatch)
+    monkeypatch.setattr(item, "pressure_capture", host.Supervisor.pressure_capture.__get__(item))
+    monkeypatch.setattr(item, "verify_current", lambda: {"State": {"Running": running}})
+    campaign = item.state["current"]["plan"]["campaign"]
+    monkeypatch.setattr(
+        host,
+        "document",
+        lambda *args, **kw: {
+            "campaign": campaign,
+            "phase": phase,
+            "chunk": 0,
+            "run_id": campaign + "-0000",
+        },
+    )
+    with pytest.raises(ValueError, match=r"Stopped producer|failed or publishing"):
+        item.begin_pressure_wait(pressure_error())
+    assert not saved and not effects and "pressure_recovery" not in item.state
+
+
+def test_pressure_wait_deadline_survives_restart(monkeypatch: pytest.MonkeyPatch) -> None:
+    item, _saved, effects = pressure_fixture(monkeypatch)
+    item.begin_pressure_wait(pressure_error())
+    deadline = item.pressure_receipt()["wait_deadline_utc_ns"]
+    del item.pressure_samples
+    monkeypatch.setattr(time, "time_ns", lambda: deadline)
+    with pytest.raises(ValueError, match="deadline expired"):
+        item.wait_pressure()
+    assert effects == ["stop-owned"]
+
+
+def test_wrong_operator_state_pin_cli_never_changes_state_or_stops_owned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    item, saved, effects = pressure_fixture(monkeypatch)
+    item.state.update(phase="paused", reason="Capacity stop: memory-pressure")
+    before = copy.deepcopy(item.state)
+    monkeypatch.setattr(os, "getuid", lambda: 0)
+    monkeypatch.setattr(host, "load_settings", lambda path: item.settings)
+    monkeypatch.setattr(host, "wait_host_ready", lambda *args: None)
+    monkeypatch.setattr(host, "singleton", lambda root: contextlib.nullcontext())
+    monkeypatch.setattr(host, "Supervisor", lambda cfg: item)
+    with pytest.raises(ValueError, match="pin differs"):
+        host.main(
+            [
+                "--settings",
+                "/tmp/fixture.json",
+                "--recover-pressure",
+                "--expected-state-sha256",
+                "0" * 64,
+            ]
+        )
+    assert item.state == before and not saved and not effects
+
+
+def test_read_only_pressure_preflight_restores_old_boot_identity_without_writes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    item, saved, effects = pressure_fixture(monkeypatch)
+    item.state.update(phase="paused", reason="Capacity stop: memory-pressure")
+    item.state["current"]["boot_id"] = "old-boot"
+    before = copy.deepcopy(item.state)
+
+    def rebind() -> dict[str, Any]:
+        item.state["current"].update(boot_id=item.boot, collector_id="9" * 64)
+        return {"State": {"Running": False, "OOMKilled": False}}
+
+    monkeypatch.setattr(item, "pressure_rebind", rebind)
+    receipt = item.begin_pressure_wait(expected_state_sha256=host.digest(before), read_only=True)
+    assert receipt["operator_revalidated"] is True
+    assert host.digest(item.state) == host.digest(before) and not saved and not effects
+
+
+def test_stopped_baseline_refuses_active_producer_and_hard_counter_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    item, _saved, _effects = pressure_fixture(monkeypatch)
+    item.previous = sample()
+    monkeypatch.setattr(item, "verify_current", lambda: {"State": {"Running": True}})
+    with pytest.raises(ValueError, match="stopped producer"):
+        item.stopped_capacity_baseline()
+    monkeypatch.setattr(
+        item, "verify_current", lambda: {"State": {"Running": False, "OOMKilled": False}}
+    )
+    current = sample(10)
+    current["global_oom_kill"] = 1
+    monkeypatch.setattr(cap, "snapshot", lambda: current)
+    with pytest.raises(ValueError, match="Hard capacity counter"):
+        item.stopped_capacity_baseline()
+
+
+def test_real_pressure_wait_and_audit_admit_after_slow_stopped_docker_setup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    item, _saved, _effects = pressure_fixture(monkeypatch)
+    item.begin_pressure_wait(pressure_error())
+    elapsed = [0]
+    monkeypatch.setattr(
+        time, "sleep", lambda seconds: elapsed.__setitem__(0, elapsed[0] + int(seconds))
+    )
+    monkeypatch.setattr(time, "time_ns", lambda: 1_000_000_000_000 + elapsed[0] * 1_000_000_000)
+    monkeypatch.setattr(cap, "snapshot", lambda: sample(elapsed[0]))
+    monkeypatch.setattr(item, "audit", host.Supervisor.audit.__get__(item))
+    monkeypatch.setattr(item, "stop_audit", lambda: None)
+    monkeypatch.setattr(
+        host, "inspect", lambda name: (_ for _ in ()).throw(host.HostUnavailableError("absent"))
+    )
+
+    def verify() -> dict[str, Any]:
+        elapsed[0] += 6
+        return {"State": {"Running": False, "OOMKilled": False}}
+
+    monkeypatch.setattr(item, "verify_current", verify)
+
+    def create(argv: list[str], **kwargs: Any) -> str:
+        assert argv[:2] == ["docker", "create"]
+        elapsed[0] += 6
+        return "8" * 64
+
+    monkeypatch.setattr(host, "command", create)
+
+    def audited(argv: list[str], **kwargs: Any) -> str:
+        # Execute the exact first sampling step of poll_child with the real guard.
+        item.state["current"]["adopted"] = True
+        try:
+            host.Supervisor.tick(item)
+        finally:
+            item.state["current"]["adopted"] = False
+        request = json.loads(kwargs["stdin"])
+        return json.dumps({"campaign": request["plan"]["campaign"], "complete": False})
+
+    monkeypatch.setattr(item, "poll_child", audited)
+    for _ in range(70):
+        if item.wait_pressure():
+            break
+    else:
+        pytest.fail("Stable pressure wait never reached the real stopped-copy audit")
+    assert item.state["phase"] == "between-campaigns"
+    item.stopped_capacity_baseline()
+    item.state["current"]["adopted"] = True
+    host.Supervisor.admission(item)
+    assert item.previous == sample(elapsed[0])
+
+
+def test_watchdog_stops_notifying_after_deadline_while_command_body_is_still_blocked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import threading
+
+    elapsed = [0.0]
+    notices: list[str] = []
+    reached_deadline = threading.Event()
+    monkeypatch.setattr(time, "monotonic", lambda: elapsed[0])
+
+    def notify(message: str) -> None:
+        notices.append(message)
+        if len(notices) == 2:
+            elapsed[0] = 100.0
+            reached_deadline.set()
+
+    monkeypatch.setattr(host, "notify", notify)
+    with host.watchdog_command(1):
+        assert reached_deadline.wait(4)
+        count = len(notices)
+        time.sleep(1.1)
+        assert len(notices) == count
+
+
+def test_pressure_rebind_preserves_same_boot_container_pins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    item = supervisor(monkeypatch)
+    item.state["current"]["adopted"] = False
+    item.state["current"]["app_config_sha256"] = host.digest({})
+    monkeypatch.setattr(item, "verify_store", lambda *args: None)
+    monkeypatch.setattr(item, "app", lambda: {"config": {}})
+    monkeypatch.setattr(item, "verify_current", lambda: {})
+    monkeypatch.setattr(
+        host,
+        "inspect",
+        lambda name: {
+            "Id": "9" * 64 if name == host.COLLECTOR else "8" * 64,
+            "State": {"Running": True},
+        },
+    )
+
+    def owned(doc: dict[str, Any], generation: dict[str, Any], role: str) -> None:
+        pinned = generation[role + "_id"]
+        if pinned is not None and pinned != doc["Id"]:
+            raise ValueError("Exact pinned CID differs")
+
+    monkeypatch.setattr(host, "owned", owned)
+    with pytest.raises(ValueError, match="pinned CID"):
+        item.pressure_rebind()
+    assert item.state["current"]["collector_id"] == "d" * 64
+    item.state["current"]["boot_id"] = "previous-boot"
+    item.pressure_rebind()
+    assert item.state["current"]["collector_id"] == "9" * 64
+    assert item.state["current"]["boot_id"] == item.boot
+
+
+def test_pressure_wait_rechecks_release_store_and_clock_without_renewing_old_controls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    item, saved, _effects = pressure_fixture(monkeypatch)
+    checks = []
+    monkeypatch.setattr(host, "verify_release", lambda config: checks.append("source-image"))
+    monkeypatch.setattr(item, "verify_store", lambda role, path: checks.append(role))
+    monkeypatch.setattr(host, "command", lambda *args, **kw: "tracking")
+    monkeypatch.setattr(
+        host,
+        "parse_tracking",
+        lambda *args, **kw: {
+            "synchronized": True,
+            "system_offset_seconds": 0.0,
+            "root_dispersion_seconds": 0.01,
+            "root_delay_seconds": 0.01,
+        },
+    )
+    host.Supervisor.pressure_wait_guards(item)
+    assert checks == ["source-image", *item.state["current"]["roots"]]
+    assert not saved
+    monkeypatch.setattr(host, "parse_tracking", lambda *args, **kw: {"synchronized": False})
+    with pytest.raises(ValueError, match="clock out of bounds"):
+        host.Supervisor.pressure_wait_guards(item)

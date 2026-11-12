@@ -51,3 +51,66 @@ def test_insert_rows_refuses_ambiguous_or_binary_cells() -> None:
     with pytest.raises(TypeError, match="BLOB"):
         insert_rows(connection, "blobs", [(b"\x00",)])
     connection.close()
+
+
+def test_opt_in_binary_rows_match_all_frame_columns_types_and_insertion_order() -> None:
+    columns = (
+        "(schema_version INTEGER,venue VARCHAR,product VARCHAR,channel VARCHAR,"
+        "session_id VARCHAR,message_ordinal BIGINT,received_utc_ns BIGINT,"
+        "received_monotonic_ns BIGINT,direction VARCHAR,payload_bytes BLOB,"
+        "payload_sha256 VARCHAR)"
+    )
+    payloads = [
+        bytes(range(256)),
+        b"",
+        b"\\N",
+        b'\\x41\x00\xff\r\n"\\',
+        bytearray("binary \u20ac".encode()),
+        None,
+    ]
+    rows: list[tuple[object, ...]] = [
+        (
+            1,
+            "venue,\u20ac",
+            "BTC-PERP",
+            'channel"\r\nline',
+            "session\\literal",
+            len(payloads) - index,
+            1_799_999_999_123_456_789 + index,
+            9_007_199_254_740_993 + index,
+            "",
+            payload,
+            "a" * 64,
+        )
+        for index, payload in enumerate(payloads)
+    ]
+    connection = duckdb.connect()
+    connection.execute("CREATE TABLE ordinary " + columns)
+    connection.execute("CREATE TABLE bulk " + columns)
+    connection.executemany("INSERT INTO ordinary VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows)
+    insert_rows(connection, "bulk", iter(rows), allow_blobs=True)
+    expected = connection.execute("SELECT rowid,* FROM ordinary ORDER BY rowid").fetchall()
+    actual = connection.execute("SELECT rowid,* FROM bulk ORDER BY rowid").fetchall()
+    assert actual == expected
+    assert (
+        connection.execute("DESCRIBE ordinary").fetchall()
+        == connection.execute("DESCRIBE bulk").fetchall()
+    )
+    connection.close()
+
+
+def test_opt_in_binary_rows_keep_null_marker_refusal_before_loading_any_rows() -> None:
+    connection = duckdb.connect()
+    connection.execute("CREATE TABLE blobs (payload BLOB,label VARCHAR)")
+    with pytest.raises(ValueError, match="NULL marker"):
+        insert_rows(connection, "blobs", [(b"valid", "ok"), (b"\\N", "\\N")], allow_blobs=True)
+    assert connection.execute("SELECT COUNT(*) FROM blobs").fetchone() == (0,)
+    connection.close()
+
+
+def test_opt_in_binary_rows_accept_no_rows() -> None:
+    connection = duckdb.connect()
+    connection.execute("CREATE TABLE blobs (payload BLOB)")
+    insert_rows(connection, "blobs", [], allow_blobs=True)
+    assert connection.execute("SELECT COUNT(*) FROM blobs").fetchone() == (0,)
+    connection.close()

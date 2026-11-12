@@ -141,7 +141,11 @@ Test fixtures that build DuckDB tables of more than a few rows use
 `tests/python/duckdb_rows.py` (`insert_rows`): it loads rows through one CSV
 `COPY`, the same table as `executemany` in milliseconds instead of seconds,
 when each value's type matches its column. Small fixtures, and tables with
-BLOB columns, may keep `executemany`.
+BLOB columns, may keep `executemany`. Large typed BLOB fixtures can explicitly
+opt into `insert_rows(..., allow_blobs=True)`: binary cells are encoded with
+DuckDB hex escapes and must correspond to BLOB columns. The full BTC-flow
+economic fixture uses this bulk path while retaining its original raw rows and
+economic assertions.
 
 ## Cockpit lint
 

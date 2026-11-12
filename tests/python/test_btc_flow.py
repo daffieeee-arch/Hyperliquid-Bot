@@ -13,6 +13,7 @@ from pathlib import Path
 import duckdb
 import pytest
 
+from duckdb_rows import insert_rows
 from research.btc_flow import (
     ENTRY_DELAY,
     LATENCY,
@@ -523,9 +524,7 @@ def test_complete_synthetic_economic_runner_is_not_a_noise_only_scaffold(tmp_pat
                 hashlib.sha256(payload).hexdigest(),
             )
         )
-    connection.execute("BEGIN")
-    connection.executemany("INSERT INTO frames VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows)
-    connection.execute("COMMIT")
+    insert_rows(connection, "frames", rows, allow_blobs=True)
     connection.execute("COPY frames TO ? (FORMAT PARQUET)", [str(part)])
     connection.close()
     inputs = manifest(3 * DAY, 6 * DAY)

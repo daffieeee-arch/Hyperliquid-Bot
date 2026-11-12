@@ -1328,6 +1328,7 @@ def pressure_fixture(
 ) -> tuple[host.Supervisor, dict[str, dict[str, Any]], list[str]]:
     item = supervisor(monkeypatch)
     item.state["current"]["adopted"] = False
+    monkeypatch.setattr(cap, "snapshot", lambda: sample())
     saved: dict[str, dict[str, Any]] = {}
     effects: list[str] = []
     monkeypatch.setattr(
@@ -1941,3 +1942,99 @@ def test_pressure_wait_rechecks_release_store_and_clock_without_renewing_old_con
     monkeypatch.setattr(host, "parse_tracking", lambda *args, **kw: {"synchronized": False})
     with pytest.raises(ValueError, match="clock out of bounds"):
         host.Supervisor.pressure_wait_guards(item)
+
+
+@pytest.mark.parametrize(
+    "counter", ["global_oom_kill", "memory_throttle_count", "evict_not_enough"]
+)
+@pytest.mark.parametrize("same_boot_restart", [False, True])
+def test_pressure_stop_never_discards_cumulative_hard_counters(
+    monkeypatch: pytest.MonkeyPatch, counter: str, same_boot_restart: bool
+) -> None:
+    item, _saved, effects = pressure_fixture(monkeypatch)
+    item.begin_pressure_wait(pressure_error())
+    if same_boot_restart:
+        del item.pressure_samples
+        monkeypatch.setattr(
+            item, "pressure_rebind", lambda: {"State": {"Running": False, "OOMKilled": False}}
+        )
+    current = sample(1000)
+    if counter == "global_oom_kill":
+        current[counter] += 1
+    else:
+        current["arc"][counter] += 1
+    monkeypatch.setattr(cap, "snapshot", lambda: current)
+    with pytest.raises(ValueError, match="Hard capacity counter changed across pressure stop"):
+        item.wait_pressure()
+    assert item.state["phase"] == "pressure-wait"
+    assert "audit" not in effects and "classified-host-pressure-interruption" not in effects
+
+
+def test_pressure_counter_epoch_rebases_only_after_verified_changed_host_boot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    item, _saved, _effects = pressure_fixture(monkeypatch)
+    item.begin_pressure_wait(pressure_error())
+    current = sample(100)
+    current["global_oom_kill"] = 10
+    current["arc"].update(memory_throttle_count=20, evict_not_enough=30)
+    item.boot = "new-actual-boot"
+    with pytest.raises(ValueError, match="verified actual host boot change"):
+        item.pressure_counters(current)
+    item.state["current"]["boot_id"] = item.boot
+    with pytest.raises(ValueError, match="verified actual host boot change"):
+        item.pressure_counters(current)
+    item.pressure_verified_boot = item.boot  # Set only by successful full pressure_rebind.
+    item.pressure_counters(current)
+    epoch = copy.deepcopy(item.state["pressure_recovery"]["counter_epoch"])
+    assert epoch["previous_boot_id"] == "fixture-boot"
+    assert epoch["reason"] == "verified-host-boot-change" and epoch["sample"] == current
+    del item.pressure_verified_boot  # A same-boot process restart must keep this epoch.
+    item.pressure_counters(copy.deepcopy(current))
+    current["arc"]["evict_not_enough"] += 1
+    with pytest.raises(ValueError, match="Hard capacity counter changed across pressure stop"):
+        item.pressure_counters(current)
+    assert item.state["pressure_recovery"]["counter_epoch"] == epoch
+
+
+def test_legacy_operator_retains_fresh_pre_stop_counter_baseline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    item, _saved, _effects = pressure_fixture(monkeypatch)
+    item.state.update(phase="paused", reason="Capacity stop: memory-pressure")
+    monkeypatch.setattr(
+        item, "pressure_rebind", lambda: {"State": {"Running": False, "OOMKilled": False}}
+    )
+    item.begin_pressure_wait(expected_state_sha256=host.digest(item.state))
+    assert item.pressure_receipt()["current"] is None
+    assert item.pressure_receipt()["operator_capacity_baseline"] == sample()
+    current = sample(100)
+    current["global_oom_kill"] = 1
+    with pytest.raises(ValueError, match="Hard capacity counter changed across pressure stop"):
+        item.pressure_counters(current)
+
+
+def test_changed_boot_counter_epoch_is_retained_before_owned_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    item, _saved, _effects = pressure_fixture(monkeypatch)
+    item.begin_pressure_wait(pressure_error())
+    del item.pressure_samples
+    item.boot = "new-actual-boot"
+    current = sample(100)
+    current["global_oom_kill"] = 10
+    monkeypatch.setattr(cap, "snapshot", lambda: copy.deepcopy(current))
+
+    def rebind() -> dict[str, Any]:
+        item.state["current"]["boot_id"] = item.boot
+        item.pressure_verified_boot = item.boot
+        return {"State": {"Running": False, "OOMKilled": False}}
+
+    def stop() -> None:
+        assert item.state["pressure_recovery"]["counter_epoch"]["sample"]["global_oom_kill"] == 10
+        current["global_oom_kill"] = 11
+
+    monkeypatch.setattr(item, "pressure_rebind", rebind)
+    monkeypatch.setattr(item, "stop_owned", stop)
+    with pytest.raises(ValueError, match="Hard capacity counter changed across pressure stop"):
+        item.wait_pressure()

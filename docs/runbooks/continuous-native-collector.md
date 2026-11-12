@@ -132,7 +132,11 @@ timeout. Cleanup may therefore finish its existing 90-second stop grace. This
 changes process liveness only. Active capture still refuses a capacity sample
 gap longer than five seconds. The baseline is reset only after the old producer
 has been independently verified stopped; OOM/throttle/eviction counter changes
-are retained across stopped setup. Slow stopped audit/setup therefore does not
+are compared with the immutable incident sample across stopped setup and
+same-boot supervisor restarts. Explicit legacy recovery records a fresh
+pre-stop counter baseline. Only a fully verified actual host boot change may
+persist a new boot-scoped counter epoch; restarting the supervisor cannot
+rebase counters. Slow stopped audit/setup therefore does not
 pretend to be a continuous capture interval. The final fresh admission runs
 after setup, and App creation is polled with ongoing capacity checks. Bootstrap journal allowance is
 100 messages/minute so a Python traceback's final cause remains visible.

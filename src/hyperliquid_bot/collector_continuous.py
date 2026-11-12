@@ -891,6 +891,7 @@ class Supervisor:
         generation["collector_id"], generation["status_id"] = collector["Id"], status["Id"]
         generation["boot_id"] = self.boot
         self.verify_current()
+        self.pressure_verified_boot = self.boot
         return collector
 
     def pressure_capture(self, producer: dict[str, Any]) -> dict[str, Any]:
@@ -993,6 +994,9 @@ class Supervisor:
         require(not self.state["current"].get("adopted"), "Cannot stop adopted pressure producer.")
         pre_stop_runtime = None if operator else self.pressure_capture(producer)
         events = self.capacity_events(producer)
+        operator_baseline = capacity.snapshot() if operator else None
+        if operator_baseline is not None:
+            capacity.metric(operator_baseline, self.settings.capacity)
         campaign = self.state["current"]["plan"]["campaign"]
         name = campaign + "-pressure-" + uuid.uuid4().hex + ".json"
         receipt = {
@@ -1014,6 +1018,7 @@ class Supervisor:
             "prior_state_sha256": expected_state_sha256,
             "before": error.previous if error else None,
             "current": error.current if error else None,
+            "operator_capacity_baseline": operator_baseline,
             "streaks": error.streaks if error else None,
             "abandon_unsealed": abandon_unsealed,
             "partial_metadata": self.pressure_metadata() if abandon_unsealed else None,
@@ -1050,6 +1055,8 @@ class Supervisor:
         require(not producer["State"]["OOMKilled"], "Stopped producer was OOM killed.")
         current = capacity.snapshot()
         proof = capacity.metric(current, self.settings.capacity)
+        if self.state.get("pressure_recovery", {}).get("pending") is True:
+            self.pressure_counters(current)
         if self.previous is not None:
             require(
                 current["global_oom_kill"] == self.previous["global_oom_kill"]
@@ -1138,6 +1145,47 @@ class Supervisor:
         )
         return receipt
 
+    def pressure_counters(self, current: dict[str, Any]) -> None:
+        """Stopping resets time/PSI sampling, never same-boot hard counters."""
+        receipt = self.pressure_receipt()
+        original = receipt["current"]
+        if original is None:
+            require(receipt["operator_revalidated"] is True, "Missing measured capacity evidence.")
+            original = receipt["operator_capacity_baseline"]
+        capacity.metric(original, self.settings.capacity)
+        previous_boot = receipt["boot_id"]
+        previous = original
+        if previous_boot != self.boot:
+            epoch = self.state["pressure_recovery"].get("counter_epoch")
+            if epoch is not None:
+                previous_boot, previous = epoch["boot_id"], epoch["sample"]
+                capacity.metric(previous, self.settings.capacity)
+            if previous_boot != self.boot:
+                require(
+                    getattr(self, "pressure_verified_boot", None) == self.boot
+                    and self.state["current"]["boot_id"] == self.boot,
+                    "Pressure counter rebase requires a verified actual host boot change.",
+                )
+                epoch = {
+                    "schema": "collector-pressure-counter-epoch-v1",
+                    "previous_boot_id": previous_boot,
+                    "boot_id": self.boot,
+                    "sample": json.loads(json.dumps(current)),
+                    "reason": "verified-host-boot-change",
+                    "created_utc_ns": time.time_ns(),
+                }
+                self.state["pressure_recovery"]["counter_epoch"] = epoch
+                self.save()
+                return
+        require(
+            current["global_oom_kill"] == previous["global_oom_kill"]
+            and all(
+                current["arc"][key] == previous["arc"][key]
+                for key in ("memory_throttle_count", "evict_not_enough")
+            ),
+            "Hard capacity counter changed across pressure stop or same-boot restart.",
+        )
+
     def wait_pressure(self) -> bool:
         receipt = self.pressure_receipt()
         require(
@@ -1147,6 +1195,9 @@ class Supervisor:
         if not hasattr(self, "pressure_samples"):
             producer = self.pressure_rebind()
             self.capacity_events(producer)
+            before_stop = capacity.snapshot()
+            capacity.metric(before_stop, self.settings.capacity)
+            self.pressure_counters(before_stop)
             self.stop_owned()
             self.previous = None
             self.pressure_samples = []
@@ -1156,6 +1207,7 @@ class Supervisor:
             self.last_pressure_check = time.monotonic()
             after_checks = capacity.snapshot()
             capacity.metric(after_checks, self.settings.capacity)
+            self.pressure_counters(after_checks)
             if (
                 self.previous is not None
                 and after_checks["monotonic_ns"] - self.previous["monotonic_ns"] > 5_000_000_000
@@ -1168,6 +1220,7 @@ class Supervisor:
         notify("WATCHDOG=1")
         current = capacity.snapshot()
         proof = capacity.metric(current, self.settings.capacity)
+        self.pressure_counters(current)
         reasons: list[str] = []
         if self.previous is not None:
             self.streaks, reasons = capacity.evaluate(

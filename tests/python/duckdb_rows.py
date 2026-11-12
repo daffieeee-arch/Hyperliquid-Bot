@@ -9,7 +9,8 @@ VARCHAR, bool for BOOLEAN): floats round-trip through their shortest
 ``repr`` (NaN, infinities and -0.0 included), ``None`` is NULL and an empty
 string stays an empty string. Values are cast from text, so a mismatched
 type (a bool or a float in an integer column) can fail or differ where
-``executemany`` would coerce it; BLOB values are refused.
+``executemany`` would coerce it. BLOB values are refused unless explicitly
+enabled for a fixture whose binary cells correspond to BLOB columns.
 """
 
 from __future__ import annotations
@@ -26,7 +27,11 @@ _NULL = "\\N"
 
 
 def insert_rows(
-    connection: duckdb.DuckDBPyConnection, table: str, rows: Iterable[Sequence[object]]
+    connection: duckdb.DuckDBPyConnection,
+    table: str,
+    rows: Iterable[Sequence[object]],
+    *,
+    allow_blobs: bool = False,
 ) -> None:
     """Append ``rows`` to the existing ``table``, cast to its declared column types."""
 
@@ -35,7 +40,7 @@ def insert_rows(
         with path.open("w", newline="", encoding="utf-8") as stream:
             writer = csv.writer(stream, lineterminator="\n")
             for row in rows:
-                writer.writerow([_cell(value) for value in row])
+                writer.writerow([_cell(value, allow_blobs=allow_blobs) for value in row])
         source = str(path).replace("'", "''")
         connection.execute(
             f"COPY {table} FROM '{source}' (FORMAT csv, HEADER false, DELIM ',', "
@@ -46,11 +51,14 @@ def insert_rows(
         )
 
 
-def _cell(value: object) -> object:
+def _cell(value: object, *, allow_blobs: bool = False) -> object:
     if value is None:
         return _NULL
     if isinstance(value, bytes | bytearray):
-        raise TypeError("insert_rows does not load BLOB values; use executemany for those.")
+        if not allow_blobs:
+            raise TypeError("insert_rows does not load BLOB values unless explicitly enabled.")
+        # COPY casts these escapes to the original bytes, including NUL/non-UTF8.
+        return "\\x" + value.hex(" ").replace(" ", "\\x") if value else ""
     if value == _NULL:
         raise ValueError(f"A string cell equal to the NULL marker {_NULL!r} is ambiguous.")
     return value

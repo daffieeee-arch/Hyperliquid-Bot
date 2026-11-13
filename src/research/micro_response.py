@@ -68,9 +68,11 @@ class Window:
         capture: str,
         group: str,
         funding: tuple[int, ...],
+        funding_ranges: tuple[tuple[int, int], ...],
         emit: Callable[[dict[str, Any]], None],
     ) -> None:
         self.meta, self.capture, self.group, self.funding = metadata, capture, group, funding
+        self.funding_ranges = funding_ranges
         self.emit = emit
         self.pressure = {span: Pressure(span) for span in (30, 120)}
         self.book: Book | None = None
@@ -209,6 +211,10 @@ class Window:
             assert quote.event is not None
             opening, closing = _book(entry.event), _book(quote.event)
             lower, upper = entry.event.venue_ms - 60_000, quote.event.venue_ms + 60_000
+            require(
+                any(start <= lower <= upper <= end for start, end in self.funding_ranges),
+                "actual observation interval must fit one qualified native funding request range",
+            )
             require(
                 self.funding[0] <= lower and self.funding[-1] >= upper,
                 "native funding census brackets actual observation interval",

@@ -42,6 +42,9 @@ BBO order-flow sign. No microprice double confirmation, new indicator or fit.
 The known native-hour entry calendar remains minute 02 through before 52.
 There is no position/busy gate, 100-USDC quantity allocation or bracket exit
 here: overlapping forecasts diagnose entry information and are not actual trades.
+The old cost-above-stop entry rejection is also omitted: it belongs to the full
+order policy, whereas this diagnostic measures entry features and their cost
+hurdle without selecting different base/stress signal cohorts from that gate.
 
 Keep these THREE different inherited guards explicit:
 
@@ -112,7 +115,10 @@ No 10x margin return is emitted; earlier targets remain requests for different
 strategy work. Constant-direction controls use the same expression and quotes.
 
 Qualify the original complete native HL funding-event time/rate census and its
-boundary pads. Record whether the actual entry-to-label native-time interval,
+boundary pads. Each padded observation interval must fit wholly inside ONE
+individually qualified request range. September and November requests are
+disjoint; the union's first/last events cannot certify the unqueried gap.
+Record whether the actual entry-to-label native-time interval,
 with 60-second clock padding, intersects any settlement. Funding cash remains
 NULL, even when no intersection is observed: this study does not own a position
 or settle funding. No oracle, mark or book-mid surrogate cash is invented.

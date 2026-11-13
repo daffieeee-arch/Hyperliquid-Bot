@@ -55,7 +55,9 @@ def runner(end: int = 500) -> tuple[model.Window, list[dict[str, Any]]]:
     rows: list[dict[str, Any]] = []
     metadata = {"id": 1, "start_mono_ns": 0, "end_mono_ns": end * S, "start_utc_ns": UTC}
     funding = (UTC // 1_000_000 - 3_600_000, UTC // 1_000_000 + 3_600_000)
-    return model.Window(metadata, "synthetic", "development", funding, rows.append), rows
+    return model.Window(
+        metadata, "synthetic", "development", funding, ((funding[0], funding[-1]),), rows.append
+    ), rows
 
 
 def armed(
@@ -219,6 +221,20 @@ def test_funding_intersection_is_only_flagged_and_cash_stays_unknown(
     assert row["funding_cash"] is None and row["capacity_certified"] is False
     assert row["price_opportunity_only"] is True
     assert not any("margin" in key or "profit" in key for key in row)
+
+
+def test_disjoint_funding_requests_do_not_certify_the_union_gap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    window, _ = armed(monkeypatch)
+    middle = UTC // 1_000_000
+    window.funding_ranges = (
+        (middle - 3_600_000, middle - 100_000),
+        (middle + 1_000_000, middle + 3_600_000),
+    )
+    window.receive(book(130.5))
+    with pytest.raises(Exception, match="one qualified native funding request range"):
+        window.receive(book(131.5))
 
 
 @pytest.mark.parametrize(

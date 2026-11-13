@@ -139,6 +139,7 @@ def test_synthetic_end_to_end_keeps_every_clock_and_emits_no_strategy_admission(
     )
     metadata = {"id": 1, "start_mono_ns": 0, "end_mono_ns": 60 * second, "start_utc_ns": utc}
     monkeypatch.setattr(cli, "funding_times", lambda body: (0, 10**15))
+    monkeypatch.setattr(cli, "funding_ranges", lambda body: ((0, 10**15),))
     monkeypatch.setattr(
         cli,
         "qualify",

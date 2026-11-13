@@ -22,6 +22,7 @@ from research.micro_response_io import (
     PLAN,
     ROOT,
     STUDY_ID,
+    funding_ranges,
     funding_times,
     load,
     observations,
@@ -114,6 +115,7 @@ class Records:
 
 def run(body: dict[str, Any], output: PrivateOutput) -> dict[str, Any]:
     funding = funding_times(body)
+    ranges = funding_ranges(body)
     coverage = []
     for capture in body["captures"]:
         metadata = qualify(capture)
@@ -141,6 +143,7 @@ def run(body: dict[str, Any], output: PrivateOutput) -> dict[str, Any]:
                         capture["name"],
                         capture["group"],
                         funding,
+                        ranges,
                         records.emit,
                     )
                 require(item.window == current.meta["id"], "complete chronological source windows")
@@ -171,6 +174,7 @@ def run(body: dict[str, Any], output: PrivateOutput) -> dict[str, Any]:
         "promotion_decision": "forbidden",
         "interpretation": "conditional_price_response_not_fills_trade_profit_or_account_return",
         "funding_cash_certified": False,
+        "qualified_funding_request_ranges_ms": ranges,
         "capacity_certified": False,
         "coverage_sha256": coverage_sha,
         "conditional_observation_ns": sum(c["observation_ns"] for c in coverage),

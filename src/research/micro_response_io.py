@@ -321,3 +321,12 @@ def funding_times(body: dict[str, Any]) -> tuple[int, ...]:
         )
     require(bool(events), "native funding census required")
     return tuple(sorted(events))
+
+
+def funding_ranges(body: dict[str, Any]) -> tuple[tuple[int, int], ...]:
+    """Keep qualified requests separate; the caller validates funding_times first."""
+    return tuple(
+        (row["request"]["startTime"], row["request"]["endTime"])
+        for row in body["funding_sources"]
+        if row["venue"] == "HYPERLIQUID"
+    )

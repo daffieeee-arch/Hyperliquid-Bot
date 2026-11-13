@@ -31,7 +31,7 @@ All are exposed retrospective history, not fresh OOS or a test of the current
 November decline. December 2023 supplies the complete warm-up.
 
 At completed hour T, use 721 hourly closes. Entry requires absolute normalized
-momentum score >=1; keep the same-side quantity while sign agrees and score
+momentum score >=1; keep the same-side quantity while sign agrees and absolute score
 >=0.5. Confirmed policies also require the price/SMA720 direction for both
 entry and holding. Entry weight is min(0.5,0.10/sigma720), with annualized
 720-hour RMS volatility. Units stay fixed; no same-side resizing or averaging.
@@ -118,7 +118,7 @@ daily-return differences, not cumulative compounded profit. Dependent exposed
 history and the prior search prevent a post-search significance claim.
 
 The old daily `regime-h720-plain` baseline reproduces all six case financial
-ledgers and both aggregate results **before new hourly schedules are built**:
+results and both aggregate results **before new hourly schedules are built**:
 +16.4718% base / +15.7015% stress, 20 completed episodes. Added hourly,
 execution and funding samples make its newly sampled DD 10.7804% / 10.9494%,
 versus the original sparser 10.7451% / 10.9142%. This is a denser observation

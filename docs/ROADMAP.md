@@ -2,11 +2,22 @@
 
 ## Active priorities — checkpoint 2026-11-13
 
-The immediate goal is **real comparative strategy discovery on existing data**,
-followed by fresh validation and PAPER only if the evidence supports it. A positive
-retrospective candidate now exists; profitable native Hyperliquid operation has
-not been established. The phase history below records the broader platform; it is not
-the current task order. The [Program & Readiness board](https://github.com/users/daffieeee-arch/projects/2)
+The operator's current research objective is **20% NET per UTC day on total
+account equity, with many trades**. This is a target, not a guaranteed daily
+floor or position-margin return. Next is one bounded
+[CLAIRVOYANT_NONTRADABLE minute-grid diagnostic](experiments/exp_clairvoyant_minute_opportunity_20261113.md)
+in [#268](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/268), using
+existing data before further strategy/infra expansion. Its future-informed
+price/cost results cannot establish a tradable strategy or native profitability.
+The old h720 positive retrospective result is preserved below but operator-
+deprioritized; it is no longer the primary promotion or native-recorder path.
+Programme usage stays 36/40 and the hourly-family stop stays in force. Native
+[#249](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/249) recorder and
+residual-intake [#267](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/267)
+preparations are local, focused-check WIPs, independently unreviewed and not
+deployed/downloaded; their priority depends on fit with the faster target.
+The phase history below is not the current task order. The
+[Program & Readiness board](https://github.com/users/daffieeee-arch/projects/2)
 tracks actual delivery evidence and remaining gates.
 
 The bounded memory-policy fix passed independent review and runtime acceptance
@@ -27,8 +38,9 @@ DEV rule selects `regime-h720-plain`: +16.4718% base / +15.7015% stressed accoun
 return over 974 exposed days, with 20 trades. Its stressed 2025 return is only
 +0.003035%; uncertainty includes zero and matched-short collateral is invalid.
 This is a positive retrospective candidate, not statistical alpha, fresh OOS or
-native Hyperliquid trading admission. Next [#249](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/249)
-qualifies native execution/funding and a frozen future validation protocol.
+native Hyperliquid trading admission. Its separate
+[#249](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/249) native
+execution/funding preparation remains lower priority under the current objective.
 The same locked candidate's [recent exposed diagnostic](research/locked-regime-recent-result.md)
 has also run on 73 completed September–November days: +2.3317% base / +2.2199%
 stress, three trades and zero 20%-margin hits. Its November short contributes
@@ -68,11 +80,11 @@ orders remain unapproved.
 
 | Order | Work | Current evidence and next gate |
 | --- | --- | --- |
-| 1 | Continue outcome-driven discovery on existing history | [Regime result](research/cost-aware-regime-result.md) retains one positive retrospective candidate; its [recent diagnostic](research/locked-regime-recent-result.md) has only three trades and does not beat persistent short. Qualify [#249](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/249) without retuning; native/fresh OOS and fragile 2025 stress keep admission closed. [Micro price response](research/micro-response-cost-result.md) is below costs. [Broader OI recovery](research/oi-recovery-broader-result.md) and [hourly trend](research/hourly-persistent-trend-result.md) have no cost-robust winner; preserve every outcome, the current 36/40 budget and the hourly-family stop. Prioritize a distinct economic mechanism and causal native inputs rather than tuning rejected signals. Source #246 and bug #258 are complete. FAST #252 is recording continuously on this boot after independent 600s acceptance; first full 2h publication/rollover and restart/POSTINIT remain pending. |
+| 1 | Test the daily-account target on existing data first | [#268](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/268) registers one [clairvoyant minute-grid opportunity diagnostic](experiments/exp_clairvoyant_minute_opportunity_20261113.md), all fixed grids/costs/notionals reported. It is nontradable price-only hindsight, not a new alpha/selector or guarantee. Preserve every earlier result, current 36/40 usage and hourly-family stop. The old h720 result is operator-deprioritized. Native #249 and residual #267 WIPs remain local/unreviewed, without deployment or downloads. Existing collection and FAST acceptance gates below remain unchanged. |
 | 2 | Maintain collection after the first verified full campaign | Reviewed source `df0bf41` completed one real 7200-second campaign: all four lanes reported COMPLETED with zero integrity events, and an independent full-file audit accepted all eight WORK/HDD publications. Automatic handoff produced a fresh campaign with all four feeds fresh and growing. Publication/replacement caused several minutes of downtime; Kraken recorded one transport gap and `research_ready` remains false. See the [bounded runtime acceptance](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/223#issuecomment-6842833281). Broader continuity and untested physical reboot recovery remain [#205](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/205). |
 | 3 | Preserve the original BTC study's insufficient-input disposition | Independent full-file/hash and metadata admission found only three of twelve six-hour chunks per venue on both stores. The original Nov2–5 input attempt is closed as **INSUFFICIENT_DATA / NOT_TESTED**, with no OOS publication or financial scoring. A local partial remains retained and unqualified. Nov6 funding separately passes timing metadata admission for 120 native records / 74 padded slots; this cannot repair missing market data. See the [input disposition](research/btc-spot-flow-input-disposition.md) and [#192](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/192#issuecomment-6839899958). |
 | 4 | Use the corrected accounting as bounded research evidence | [PR225](https://github.com/daffieeee-arch/Hyperliquid-Bot/pull/225) delivered one fixed retrospective January 2025 reconstruction. Independent native-data/Decimal verification accepted +0.1898547% at base assumed costs and +0.1056243% at doubled costs, from **six trades** on 39 surviving symbols excluding ICP. Both NAS result packages passed independent copy admission. This does not restore the original primary rule or establish a Hyperliquid edge. See the [result and limits](research/january-volume-repair-result.md) and [#222](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/222). |
-| 5 | Admit a candidate through its own research gates | The frozen 30-day regime is a positive retrospective candidate, not an admitted trading strategy. [#249](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/249) must establish a qualified native cost/funding/precision contract, genuine future validation and robustness before separately admitted PAPER. Its 2025 stress result is fragile; no retuning or silent OOS reuse. The incomplete BTC attempt and six-trade January result retain their old limits. |
+| 5 | Admit a suitable future candidate through separate gates | No strategy is admitted for the operator’s 20%-net-account/day objective. First assess the narrow #268 price/cost diagnostic; any subsequent causal hypothesis needs its own frozen protocol, execution/risk evidence and genuine future validation before PAPER. The old h720 result remains historical evidence, not the primary promotion path. Lower-priority #249 preparation and all previous source/OOS limitations remain preserved; no TESTNET/SHADOW/LIVE admission follows. |
 | 6 | Expand data where it supports a defined experiment | Coinbase's 600s public pilot and both stored copies passed independent acceptance; continuous Coinbase is still open. Bitvavo MD Pro access/entitlement remains unverified; Pro is L2, not L3. These additions do not block the existing HL/Binance hypothesis. |
 | 7 | Complete execution and platform gates as needed | PAPER strategy integration, venue-authoritative recovery/reconciliation [#178](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/178), trading observability and backup/recovery proof remain separate work. TESTNET/SHADOW/LIVE are not enabled by data collection or a research result. |
 

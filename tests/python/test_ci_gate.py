@@ -108,6 +108,17 @@ def test_actual_draft_classifier_output_cannot_pass_after_pr_is_marked_ready() -
         },
     }
     assert gate_errors(needs, event_name="pull_request", event_pr=READY, live_pr=READY)
+    # Draft jobs now avoid allocating runners. Their skipped results cannot
+    # become merge-ready evidence if the PR becomes ready during this run.
+    for name in ("python-foundation", "d01-publication", "typescript-foundation", "regress"):
+        needs[name] = {"result": "skipped", "outputs": {}}
+    assert gate_errors(needs, event_name="pull_request", event_pr=READY, live_pr=READY)
+    # Even a misreported ready/docs classification cannot authorize skipped work.
+    needs["changes"] = {
+        "result": "success",
+        "outputs": {"python": "false", "typescript": "false", "reason": "docs-only change set"},
+    }
+    assert gate_errors(needs, event_name="pull_request", event_pr=READY, live_pr=READY)
 
 
 @pytest.mark.parametrize(

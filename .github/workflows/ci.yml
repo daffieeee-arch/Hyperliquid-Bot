@@ -44,9 +44,14 @@ jobs:
 
   python-foundation:
     needs: changes
-    # Run even if the changes job failed: its outputs are then empty, so every
-    # step below runs (fail closed) instead of reporting a skipped success.
-    if: ${{ !cancelled() }}
+    # Only a successful, live-confirmed draft avoids allocating a runner.
+    # Missing or inconsistent classification still schedules the job.
+    if: >-
+      ${{ !cancelled() && !(github.event_name == 'pull_request' &&
+          needs.changes.result == 'success' &&
+          needs.changes.outputs.python == 'false' &&
+          needs.changes.outputs.typescript == 'false' &&
+          needs.changes.outputs.reason == 'draft pull request; heavy jobs run when it is marked ready for review') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -134,9 +139,14 @@ jobs:
 
   d01-publication:
     needs: changes
-    # Run even if the changes job failed: its outputs are then empty, so every
-    # step below runs (fail closed) instead of reporting a skipped success.
-    if: ${{ !cancelled() }}
+    # Only a successful, live-confirmed draft avoids allocating a runner.
+    # Missing or inconsistent classification still schedules the job.
+    if: >-
+      ${{ !cancelled() && !(github.event_name == 'pull_request' &&
+          needs.changes.result == 'success' &&
+          needs.changes.outputs.python == 'false' &&
+          needs.changes.outputs.typescript == 'false' &&
+          needs.changes.outputs.reason == 'draft pull request; heavy jobs run when it is marked ready for review') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -307,9 +317,14 @@ jobs:
 
   typescript-foundation:
     needs: changes
-    # Run even if the changes job failed: its outputs are then empty, so every
-    # step below runs (fail closed) instead of reporting a skipped success.
-    if: ${{ !cancelled() }}
+    # Only a successful, live-confirmed draft avoids allocating a runner.
+    # Missing or inconsistent classification still schedules the job.
+    if: >-
+      ${{ !cancelled() && !(github.event_name == 'pull_request' &&
+          needs.changes.result == 'success' &&
+          needs.changes.outputs.python == 'false' &&
+          needs.changes.outputs.typescript == 'false' &&
+          needs.changes.outputs.reason == 'draft pull request; heavy jobs run when it is marked ready for review') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -350,9 +365,14 @@ jobs:
 
   regress:
     needs: changes
-    # Run even if the changes job failed: its outputs are then empty, so every
-    # step below runs (fail closed) instead of reporting a skipped success.
-    if: ${{ !cancelled() }}
+    # Only a successful, live-confirmed draft avoids allocating a runner.
+    # Missing or inconsistent classification still schedules the job.
+    if: >-
+      ${{ !cancelled() && !(github.event_name == 'pull_request' &&
+          needs.changes.result == 'success' &&
+          needs.changes.outputs.python == 'false' &&
+          needs.changes.outputs.typescript == 'false' &&
+          needs.changes.outputs.reason == 'draft pull request; heavy jobs run when it is marked ready for review') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:

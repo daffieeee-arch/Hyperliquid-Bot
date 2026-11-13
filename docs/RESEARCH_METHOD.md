@@ -245,8 +245,11 @@ This makes every result reproducible and prevents accidental cherry-picking.
 The outcome-driven [discovery batch one](experiments/exp_discovery_batch_one.md)
 registers twelve explicit numerical trials on existing exposed history. It may
 identify exploratory candidates; fresh OOS, Hyperliquid execution evidence and
-trading admission remain separate. It uses the corrected cash ledger rather
-than the always-noise engineering scaffolds. No existing study is rewritten.
+trading admission remain separate. Its first attempt failed native OI admission
+before scoring; [batch two](experiments/exp_discovery_batch_two.md) records the
+explicit zero-as-unavailable amendment with the same twelve configurations.
+It uses the corrected cash ledger rather than the always-noise engineering
+scaffolds. No existing study is rewritten.
 
 H1 (`exp_h1_leadlag`) ships a blank registry template at
 [experiments/exp_h1_leadlag.registry.template.json](experiments/exp_h1_leadlag.registry.template.json).

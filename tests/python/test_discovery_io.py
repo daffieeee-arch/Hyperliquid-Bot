@@ -78,10 +78,9 @@ def test_native_oi_preserves_complete_grid_and_base_units(tmp_path: Path) -> Non
         (0, "2025-01-01 00:00:00", "contiguous UTC"),
         (0, "2025-01-01 00:11:00", "contiguous UTC"),
         (1, "ETHUSDT", "contiguous UTC"),
-        (2, "NaN", "positive native"),
-        (2, "inf", "positive native"),
-        (2, "0", "positive native"),
-        (2, "-1", "positive native"),
+        (2, "NaN", "nonnegative native"),
+        (2, "inf", "nonnegative native"),
+        (2, "-1", "nonnegative native"),
     ],
 )
 def test_native_oi_rejects_bad_snapshot(
@@ -146,3 +145,14 @@ def test_native_oi_rejects_changed_pinned_source(tmp_path: Path, which: str) -> 
         checksum = replace(checksum, size=checksum.size + 1)
     with pytest.raises(IntegrityError, match="source identity"):
         oi_values(source, checksum, START)
+
+
+def test_native_zero_oi_is_explicitly_unavailable_not_a_collapse(tmp_path: Path) -> None:
+    rows = native_rows()
+    rows[11][2] = "0E-16"
+    source, checksum = archive_sources(tmp_path, rows)
+    values = oi_values(source, checksum, START)
+    assert len(values) == 288
+    assert values[START + 55 * MINUTE] is None
+    assert values[START + 50 * MINUTE] == 1010.0
+    assert values[START + 60 * MINUTE] == 1012.0

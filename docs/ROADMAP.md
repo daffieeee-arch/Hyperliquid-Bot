@@ -15,7 +15,10 @@ operator-approved [discovery pilot #237](https://github.com/daffieeee-arch/Hyper
 The [first registered batch](experiments/exp_discovery_batch_one.md) compares
 twelve residual-dispersion/OI-recovery configurations on exposed January history
 for BTC/ETH/SOL, with costs, funding and paired stress. This specification records
-the planned run, not a completed result. Nautilus/testnet preparation supports
+the planned run, not a completed result. Batch one failed source qualification
+before scoring; [batch two](experiments/exp_discovery_batch_two.md) explicitly
+treats five native zero-OI records as unavailable, preserving the same rules.
+Nautilus/testnet preparation supports
 the research and must not delay it; TESTNET orders remain unapproved.
 
 | Order | Work | Current evidence and next gate |

@@ -86,8 +86,9 @@ be added to infer independent samples. Their intervals are unavailable under
 the registered minimum of five contributing days. All their charged-price
 cell means are negative as well.
 
-Every scheduled clock is retained: 56,348 decision records, 32,332 observed
-entry records and 157,430 label records, 246,110 records total. For example,
+Every scheduled clock is retained: 56,348 decision records, 32,332 entry-outcome
+records (31,486 with an observed entry) and 157,430 label records, 246,110 records
+total. For example,
 the base 120s/0.2 policy has 8,590 signals: 20 entry boundary purges, 165
 unavailable entry quotes and 8,405 observed entries. At 300 seconds those
 entries yield 1,659 label boundary purges and 6,746 observed labels. Short

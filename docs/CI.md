@@ -127,6 +127,35 @@ authorization boundary against someone allowed to change workflow code.
 Make `ci-gate` required only after its first successful ready-PR run establishes
 the check name and source, preserving every existing required check.
 
+## Measured efficiency checkpoint — 2026-11-13
+
+The Oct29–Nov12 audit snapshot, retrieved Nov12 23:26 UTC, counted 508 workflow
+runs, but only 77 executed the full Python test step. None duplicated the same
+event/head SHA. Of 91 failed CI runs, 88 failed only the intentional draft gate
+while heavy suites took their early skip path. Current source/main and
+trusted-image publisher gates remain required.
+
+[PR227](https://github.com/daffieeee-arch/Hyperliquid-Bot/pull/227) changed only
+the large BTC fixture's loading method and its tested binary opt-in. The existing
+integration test measured 33.35s before and 2.79s after on the same VM; all
+21,600 rows, eleven column types/order and the full Parquet bytes matched.
+One subsequent main-CI observation measured the Python test step at 224s versus
+183s; this is not a controlled whole-CI speedup guarantee.
+
+[PR232](https://github.com/daffieeee-arch/Hyperliquid-Bot/pull/232) delivered the
+draft-runner follow-up. Actual draft runs showed all five heavy jobs skipped
+with no runner allocation and zero steps; the draft `ci-gate` still failed as
+expected. Verified ready runs and the merged-main run executed their applicable
+heavy work successfully. The earlier audit measured 352 empty CI jobs / 21.7
+observed job minutes; Cockpit runner savings are additional. The implemented
+behavior is described once in [Change-set areas](#change-set-areas) above.
+
+Remaining scoped candidates are removing duplicate cockpit build/lint work and
+giving native collector portal assets explicit checks before narrowing their
+cockpit classification. Each needs its own coverage/gate review. Finish review
+rounds in draft before marking a stable head ready. The fixture optimization
+itself changed no workflow, required check, dependency or runtime setting.
+
 ## Python tests in parallel
 
 `python-foundation` runs the suite with pytest-xdist over the runner's cores:

@@ -1,6 +1,6 @@
 # Roadmap
 
-## Active priorities — checkpoint 2026-11-12
+## Active priorities — checkpoint 2026-11-13
 
 The immediate goal is a reproducible **BTC strategy result after costs**, followed
 by PAPER only if the evidence supports it. No profitable strategy has been
@@ -10,10 +10,10 @@ tracks actual delivery evidence and remaining gates.
 
 | Order | Work | Current evidence and next gate |
 | --- | --- | --- |
-| 1 | Restore and prove continuous collection | Nov12 inspection found the TrueNAS App CRASHED, all four feeds stale since Nov1 and persistent memory-pressure pause. The supervisor also hit its five-second watchdog during stopping. [#223](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/223) tracks reviewed recovery, immutable release, explicit operator revalidation and actual fresh two-store publication. Broader continuity remains [#205](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/205). |
-| 2 | Account for the fixed BTC study's incomplete inputs | Metadata inspection found three six-hour native chunks per venue in each controlled WORK/HDD namespace for the Nov2–5 capture, ending Nov2 around18:14UTC. The registered72h window is incomplete. Nov6 funding acquisition and both seals exist, with metadata recording120 native/74 padded slots. Independent source/copy/clock admission remains required. Track [#192](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/192). |
-| 3 | Use the corrected accounting on admitted historical exports | [PR221](https://github.com/daffieeee-arch/Hyperliquid-Bot/pull/221) delivered fixed-quantity marked accounting and quarantined source recovery. [#222](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/222) admits actual prices and funding before one retrospective correction. The [Spot-flow protocol](experiments/exp_btc_spot_flow.md) retains its original12h/36h/24h split; its missing window cannot be replaced or widened silently. |
-| 4 | Decide from the result | Report net results, sample sufficiency, benchmarks, cost stress and limitations. A 72h pilot is not multi-regime profitability evidence. A failed or insufficient study retains its verdict; any further experiment requires a new preregistration and fresh OOS. A supported candidate still needs further robustness and separately admitted PAPER operation. |
+| 1 | Maintain collection after the first verified full campaign | Reviewed source `df0bf41` completed one real 7200-second campaign: all four lanes reported COMPLETED with zero integrity events, and an independent full-file audit accepted all eight WORK/HDD publications. Automatic handoff produced a fresh campaign with all four feeds fresh and growing. Publication/replacement caused several minutes of downtime; Kraken recorded one transport gap and `research_ready` remains false. See the [bounded runtime acceptance](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/223#issuecomment-6842833281). Broader continuity and untested physical reboot recovery remain [#205](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/205). |
+| 2 | Preserve the original BTC study's insufficient-input disposition | Independent full-file/hash and metadata admission found only three of twelve six-hour chunks per venue on both stores. The original Nov2–5 input attempt is closed as **INSUFFICIENT_DATA / NOT_TESTED**, with no OOS publication or financial scoring. A local partial remains retained and unqualified. Nov6 funding separately passes timing metadata admission for 120 native records / 74 padded slots; this cannot repair missing market data. See the [input disposition](research/btc-spot-flow-input-disposition.md) and [#192](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/192#issuecomment-6839899958). |
+| 3 | Use the corrected accounting as bounded research evidence | [PR225](https://github.com/daffieeee-arch/Hyperliquid-Bot/pull/225) delivered one fixed retrospective January 2025 reconstruction. Independent native-data/Decimal verification accepted +0.1898547% at base assumed costs and +0.1056243% at doubled costs, from **six trades** on 39 surviving symbols excluding ICP. Both NAS result packages passed independent copy admission. This does not restore the original primary rule or establish a Hyperliquid edge. See the [result and limits](research/january-volume-repair-result.md) and [#222](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/222). |
+| 4 | Admit a candidate through its own research gates | No supported trading candidate follows from the incomplete BTC attempt or six exposed retrospective trades. Preserve all recorded outcomes and frozen windows. Any further confirmatory experiment requires its own preregistration, qualified point-in-time inputs, sufficient samples, costs/benchmarks/stress and fresh OOS. A supported candidate still needs robustness and separately admitted PAPER operation. |
 | 5 | Expand data where it supports a defined experiment | Coinbase's 600s public pilot and both stored copies passed independent acceptance; continuous Coinbase is still open. Bitvavo MD Pro access/entitlement remains unverified; Pro is L2, not L3. These additions do not block the existing HL/Binance hypothesis. |
 | 6 | Complete execution and platform gates as needed | PAPER strategy integration, venue-authoritative recovery/reconciliation [#178](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/178), trading observability and backup/recovery proof remain separate work. TESTNET/SHADOW/LIVE are not enabled by data collection or a research result. |
 
@@ -23,7 +23,63 @@ with the scoped minimatch override recorded in [Security](SECURITY.md).
 The separate S4 multi-asset study remains blocked on its frozen funding-source
 contract ([#190](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/190),
 [#150](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/150)); it does not
-block this BTC study. ICP remains excluded from the operator's selected universe.
+block other admitted research. ICP remains excluded from the operator's selected universe.
+
+The earlier `e3990b9` campaign stopped after about 66 minutes at a measured host
+PSI boundary. Its last observed cgroup peak was about 251 MiB of 2 GiB with no
+recorded OOM; the last full-stall interval was 1.164% against the configured 1% bound,
+while direct host available memory was about 3.22 GiB. Binance's missing
+terminal document made automatic recovery pause. That incomplete campaign did
+not earn publication/handoff proof. Reviewed explicit revalidation preserved
+its incident, hard counters and partials before the new replacement started.
+
+The replacement runs immutable image
+`sha256:55b3aff180e0726bc786e9421e2e1d8d280f127972860ab715cabeb7cbbbd14c`.
+Its first producer started Nov13 01:11:59 UTC. The full eight-copy audit checked
+10,512 file hashes / 3,101,457,312 bytes, complete inventories, linked seals,
+source/native provenance and regenerated WORK catalog row counts. No validator
+was weakened and no financial/OOS data were decoded. The audit receipt SHA-256
+is `f7f3a97eee8d4bcd03d52328bf430e34dfd9286edc35b08119702fc548d4356e`.
+
+The completed 7200-second producer exited normally at 03:16:19 UTC. The automatic
+replacement's four feeds were fresh at 03:16:43, with independent growth readbacks at
+03:18:10–03:19:34 confirming the same source/image, unit, storage, clock and
+network admission. No OOM, restart or quarantine mutation was observed. The
+short final handoff journal interval does not measure the full wire-data gap;
+publication and replacement interrupted capture for several minutes. The completed
+campaign's highest observed kernel cgroup peak was 407.43 MiB of 2 GiB; all
+observed memory/PID events were zero, with no recorded OOM or container restart.
+
+The closed publications contain 1,551,274,120 unique regular-file bytes on WORK
+and 1,550,175,824 on HDD, counting linked seal names once. Physical ZFS allocation
+was not measured. The 1,098,296-byte difference comprises four regenerated WORK
+catalogs totaling 1,097,728 bytes plus 568 bytes of additional manifest entries.
+Extrapolating this one two-hour window gives about 17.34 GiB/day on WORK and
+17.32 GiB/day on HDD, 34.7 GiB/day combined, above the earlier 8 GiB/copy/day budget. This is a
+single-window estimate rather than a long-term traffic forecast; review storage
+headroom as more windows accumulate, without automatic market-archive deletion.
+
+Native gap counts were HL 0 / Binance 0 / Kraken 1 / Bitvavo 0. Kraken logged a
+transport disconnect at 02:14:11 UTC and recovered. A separate 02:38:58 poll
+reported Kraken UNKNOWN; its precise cause remains unproven. Full-copy integrity
+and one successful handoff do not admit the data for research or establish
+lossless coverage or physical reboot recovery. No memory threshold, global ARC
+setting, archive retention rule or trading mode changed.
+
+The measured CI audit produced [PR227](https://github.com/daffieeee-arch/Hyperliquid-Bot/pull/227):
+the unchanged BTC integration fixture runs locally in 2.79s instead of 33.35s,
+with all 21,600 rows and the complete Parquet file identical. Required checks
+remain in place. [PR228](https://github.com/daffieeee-arch/Hyperliquid-Bot/pull/228)
+is merged as `7f781e1` after independent correctness/security reviews and 4,107
+Python tests. Its complete 5,000-record synthetic write measured 6.88s before
+and 0.0947s after, with byte-identical output. Four concurrent writers peaked at
+489 MiB inside a 2 GiB DEV cgroup with no memory/PID events. The writer was
+subsequently published and deployed within source `df0bf41` together with
+[PR233](https://github.com/daffieeee-arch/Hyperliquid-Bot/pull/233)'s reviewed
+pressure revalidation. The first full campaign and handoff are now accepted
+within the bounds above. [PR232](https://github.com/daffieeee-arch/Hyperliquid-Bot/pull/232)
+also removes five empty heavy runners from each verified draft event, while
+ready/main behavior and mandatory checks remain verified; see [CI](CI.md).
 
 The existing archives remain available for qualification and exploratory work;
 their volume alone does not establish usable clocks, complete coverage or a fresh

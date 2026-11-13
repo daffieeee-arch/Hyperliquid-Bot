@@ -38,6 +38,7 @@ FOLDS = {
     "diagnostic_2025": (midnight("2025-01-01"), midnight("2026-01-01")),
     "diagnostic_2026": (midnight("2026-01-01"), END),
 }
+ACCOUNT_AGGREGATES = ("funding", "points", "episodes", "trades", "risks")
 FINANCIAL_KEYS = (
     "initial_equity",
     "final_equity",
@@ -191,6 +192,19 @@ def schedules(
     return result
 
 
+def checkpoint(account: Account) -> tuple[float, tuple[int, ...]]:
+    return account.equity, tuple(len(getattr(account, name)) for name in ACCOUNT_AGGREGATES)
+
+
+def rollback(account: Account, saved: tuple[float, tuple[int, ...]]) -> None:
+    equity, lengths = saved
+    for name, length in zip(ACCOUNT_AGGREGATES, lengths, strict=True):
+        aggregate = getattr(account, name)
+        require(len(aggregate) >= length, "account add must not shrink completed evidence")
+        del aggregate[length:]
+    account.equity = equity
+
+
 def summarize(account: Account) -> dict[str, Any]:
     result = account.summary()
     # This inherited field includes the newly retained execution/funding frames.
@@ -290,6 +304,7 @@ def run(
                     )
                     attempts += 1
                     case: dict[str, Any] | None = None
+                    saved = checkpoint(account)
                     try:
                         case = original.evaluate_case(
                             request, segment.frames, targets[index], segment.minute_extremes
@@ -304,6 +319,9 @@ def run(
                             )
                         account.add(case, segment.frames)
                     except (HarnessError, ArithmeticError, ValueError, MemoryError) as error:
+                        # Account.add mutates five lists before its final equity assignment.
+                        # Allocation/validation failure cannot certify a partially added segment.
+                        rollback(account, saved)
                         if name == BASELINE:
                             raise
                         account.fail(error)

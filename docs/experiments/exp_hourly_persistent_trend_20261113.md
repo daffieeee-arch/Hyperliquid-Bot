@@ -107,7 +107,12 @@ completion just before a subsequent funding millisecond.
 Unexpected required missing/conflicting source frames fail admission, rather
 than remove losing clocks. Any ledger exception retains attempted spec/targets,
 source/error and earlier completed ledgers. Partial failed exposure is UNKNOWN;
-final equity/return stay null, later segments blocked. Never fabricate flat
+final equity/return stay null, later segments blocked. The new CLI checkpoints
+all five account aggregate lengths (funding, points, episodes, trades, risks)
+and equity before each case; a caught failure rolls every aggregate/equity back
+to its last complete segment, including partially completed `Account.add` extends.
+No failed-segment points/episodes/funding may leak into completed-only summaries.
+Never fabricate flat
 unprocessed days or restore initial equity. Baseline financial mismatch is a
 study integrity failure, not a competing alpha's ordinary negative outcome.
 

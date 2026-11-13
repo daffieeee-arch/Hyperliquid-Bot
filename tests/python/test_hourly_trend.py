@@ -259,6 +259,9 @@ def test_adapter_rejects_conflicting_shared_month_boundary(
 
 def chains(
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    funding: bool = False,
+    risk: bool = False,
 ) -> tuple[Sources, dict[tuple[int, str], dict[str, Any]], dict[str, Any]]:
     whole = fixture(days=5)
     hourly = whole.hourly
@@ -278,6 +281,23 @@ def chains(
         )
         for d in (0, 2, 4)
     )
+    if funding or risk:
+        segments = tuple(
+            replace(
+                segment,
+                frames=tuple(
+                    replace(frame, funding_rates={BTC: 0.001})
+                    if funding and frame.timestamp_ms == segment.start_ms + 8 * HOUR
+                    else frame
+                    for frame in segment.frames
+                ),
+                minute_extremes={
+                    t: (1.0, 100.0) if risk and t == segment.start_ms + 10 * MINUTE else bounds
+                    for t, bounds in segment.minute_extremes.items()
+                },
+            )
+            for segment in segments
+        )
     sources = Sources(segments, hourly, {})
     folds = {
         "development": (START, START + 2 * DAY),
@@ -547,3 +567,108 @@ def test_failed_account_add_releases_returned_case_before_next_chain(
         result = cli.run(sources, output, expected, old)
     assert result["accounts"]["cash"]["base"]["failed"]
     assert result["case_attempts"] == 94
+
+
+@pytest.mark.parametrize("aggregate", ["funding", "points", "episodes", "trades", "risks"])
+@pytest.mark.parametrize("failed_segment", [0, 1])
+def test_partial_account_extends_rollback_all_five_aggregates_and_prior_capital(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, aggregate: str, failed_segment: int
+) -> None:
+    sources, expected, old = chains(monkeypatch, funding=True, risk=True)
+    created = 0
+    observed: list[dict[str, Any]] = []
+
+    class PartialAllocationFailure(list[Any]):
+        calls = 0
+
+        def extend(self, items: Any) -> None:
+            self.calls += 1
+            if self.calls == failed_segment + 1:
+                # Mutate this aggregate too, rather than fail before its first write.
+                first = next(iter(items))
+                self.append(first)
+                raise MemoryError("synthetic partially completed extend")
+            super().extend(items)
+
+    class Tracked(Account):
+        selected: bool
+        before: dict[str, Any]
+
+        def __init__(self, **kwargs: Any) -> None:
+            nonlocal created
+            super().__init__(**kwargs)
+            self.selected = created == 8  # First new-alpha/base chain, after benchmark/controls.
+            created += 1
+            if self.selected:
+                setattr(self, aggregate, PartialAllocationFailure())
+
+        def add(self, case: dict[str, Any], frames: tuple[Frame, ...]) -> None:
+            if self.selected:
+                self.before = {name: list(getattr(self, name)) for name in cli.ACCOUNT_AGGREGATES}
+                self.before["equity"] = self.equity
+            super().add(case, frames)
+
+        def fail(self, error: BaseException) -> None:
+            if self.selected:
+                after: dict[str, Any] = {
+                    name: list(getattr(self, name)) for name in cli.ACCOUNT_AGGREGATES
+                }
+                after["equity"] = self.equity
+                assert after == self.before
+                observed.append(after)
+            super().fail(error)
+
+    monkeypatch.setattr(cli, "Account", Tracked)
+    with PrivateOutput(tmp_path / "run") as output:
+        result = cli.run(sources, output, expected, old)
+    row = result["accounts"][model.configs()[0].name]["base"]
+    assert len(observed) == 1 and row["failed"] and row["final_equity"] is None
+    assert row["complete_trades"] == failed_segment
+    assert len(row["episodes"]) == failed_segment
+    assert len(row["completed_trades_per_UTC_day"]) == failed_segment
+    assert len(list((tmp_path / "run").glob("*-blocked.json"))) == 2 - failed_segment
+    assert result["case_attempts"] == 94 + failed_segment
+    assert row["last_completed_segment_equity"] == observed[0]["equity"]
+    if failed_segment:
+        assert all(observed[0][name] for name in cli.ACCOUNT_AGGREGATES)
+        assert row["fee_cost"] == pytest.approx(sum(t["fee"] for t in observed[0]["trades"]))
+        assert row["total_funding"] == pytest.approx(
+            sum(t["payment"] for t in observed[0]["funding"])
+        )
+    else:
+        assert all(observed[0][name] == [] for name in cli.ACCOUNT_AGGREGATES)
+        assert row["fee_cost"] == row["total_funding"] == 0
+
+
+def test_account_failure_after_equity_assignment_rolls_back_completed_prefix(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    sources, expected, old = chains(monkeypatch)
+    created = 0
+
+    class Tracked(Account):
+        selected: bool
+        calls = 0
+
+        def __init__(self, **kwargs: Any) -> None:
+            nonlocal created
+            super().__init__(**kwargs)
+            self.selected = created == 8
+            created += 1
+
+        def add(self, case: dict[str, Any], frames: tuple[Frame, ...]) -> None:
+            self.calls += 1
+            super().add(case, frames)
+            if self.selected and self.calls == 2:
+                raise MemoryError("synthetic failure after final equity mutation")
+
+    monkeypatch.setattr(cli, "Account", Tracked)
+    with PrivateOutput(tmp_path / "run") as output:
+        result = cli.run(sources, output, expected, old)
+    row = result["accounts"][model.configs()[0].name]["base"]
+    assert row["failed"] and row["complete_trades"] == 1
+    assert row["last_completed_segment_equity"] == pytest.approx(
+        expected[0, "base"]["final_equity"]
+    )
+    assert len(row["completed_trades_per_UTC_day"]) == 1
+    assert result["case_attempts"] == 95

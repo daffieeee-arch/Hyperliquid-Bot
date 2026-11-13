@@ -117,6 +117,7 @@ class Account:
         require(len(case["ledger"]) == len(frames), "complete matching ledger frames")
         quantity = 0.0
         payments = []
+        funding_rows = []
         for point, frame in zip(case["ledger"], frames, strict=True):
             require(point["timestamp_ms"] == frame.timestamp_ms, "matching source/ledger clocks")
             rate = frame.funding_rates[BTC]
@@ -124,13 +125,14 @@ class Account:
             if rate:
                 payment = -quantity * frame.marks[BTC] * rate
                 payments.append(payment)
-                self.funding.append({"timestamp_ms": frame.timestamp_ms, "payment": payment})
+                funding_rows.append({"timestamp_ms": frame.timestamp_ms, "payment": payment})
             quantity = point["positions"].get(BTC, 0.0)
         require(quantity == 0, "source segment terminal flatness")
         require(
             abs(math.fsum(payments) - case["total_funding"]) < 1e-7,
             "funding events reconcile ledger",
         )
+        self.funding.extend(funding_rows)
         self.points.extend(case["ledger"])
         self.episodes.extend(case["episodes"])
         self.trades.extend(case["trades"])

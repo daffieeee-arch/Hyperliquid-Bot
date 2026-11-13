@@ -180,8 +180,11 @@ def test_no_failed_segment_can_restore_original_capital(clock: int) -> None:
 def test_source_funding_mismatch_is_not_success(clock: int) -> None:
     case, frames = arithmetic_case(clock)
     case["total_funding"] = 0
+    account = cli.Account()
     with pytest.raises(IntegrityError, match="funding events reconcile"):
-        cli.Account().add(case, frames)
+        account.add(case, frames)
+    assert account.funding == account.points == account.episodes == account.trades == []
+    assert account.equity == cli.INITIAL
 
 
 def test_future_winning_or_failed_flags_cannot_pick_another_development_winner() -> None:

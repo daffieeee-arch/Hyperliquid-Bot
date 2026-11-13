@@ -40,6 +40,7 @@ from .capture_observability import (
     transport_exception_fields,
 )
 from .capture_operator_alert import write_health_then_alert
+from .hyperliquid_l2_mode import fast_book_payload_error, l2_ack_payload_matches
 from .hyperliquid_retained_instruments import (
     DEFAULT_CANDLE_INTERVAL,
     HYPERLIQUID_CANDLE_INTERVALS,
@@ -529,7 +530,42 @@ class HyperliquidRawResearchCollector:
                 if receive_task in done:
                     captured = receive_task.result()
                     last_inbound = self._monotonic()
-                    _, channel, document = await self._record_inbound(captured, session_id)
+                    raw_ordinal, channel, document = await self._record_inbound(
+                        captured, session_id
+                    )
+                    if (
+                        self._instrument_plan.l2_fast
+                        and channel not in self._expected_inbound_channels()
+                        and channel != "session"
+                    ):
+                        await self._append_marker(
+                            session_id,
+                            "data_quality",
+                            "schema_error",
+                            reason="fast capture received an unclassified/unrequested channel",
+                            raw_message_ordinal=raw_ordinal,
+                        )
+                        raise TimeoutError("Hyperliquid fast capture source channel mismatch.")
+                    if channel == "l2Book" and self._instrument_plan.l2_fast:
+                        reason = fast_book_payload_error(
+                            captured.payload_bytes, self._instrument_plan.started_coins
+                        )
+                        coins = _market_coins(channel, document)
+                        if reason is None and any(
+                            ("l2Book", coin) not in acknowledged_subscriptions for coin in coins
+                        ):
+                            reason = "fast L2 data arrived before its session mode acknowledgement"
+                        if reason is not None:
+                            await self._append_marker(
+                                session_id,
+                                "data_quality",
+                                "schema_error",
+                                reason=reason,
+                                raw_message_ordinal=raw_ordinal,
+                            )
+                            # Retain raw bytes and an integrity event, reset all
+                            # acknowledgement evidence on the new connection.
+                            raise TimeoutError("Hyperliquid fast L2 source contract mismatch.")
                     for coin in _market_coins(channel, document):
                         market_identity = (channel, coin)
                         if market_identity not in last_market:
@@ -551,6 +587,25 @@ class HyperliquidRawResearchCollector:
                             )
                     if channel == "subscriptionResponse" and document is not None:
                         identity = _subscription_identity_from_response(document)
+                        invalid_l2_ack = self._instrument_plan.l2_fast and identity is None
+                        if identity is not None and identity[0] == "l2Book":
+                            invalid_l2_ack = (
+                                identity not in expected_identities
+                                or not l2_ack_payload_matches(
+                                    captured.payload_bytes, fast=self._instrument_plan.l2_fast
+                                )
+                            )
+                        if invalid_l2_ack:
+                            await self._append_marker(
+                                session_id,
+                                "data_quality",
+                                "subscription_error",
+                                reason=(
+                                    "L2 acknowledgement differs from the requested mode/precision"
+                                ),
+                                raw_message_ordinal=raw_ordinal,
+                            )
+                            raise TimeoutError("Hyperliquid L2 acknowledgement mode mismatch.")
                         if identity is not None and identity in expected_identities:
                             acknowledged_subscriptions.add(identity)
                             await self._append_marker(
@@ -787,7 +842,7 @@ def _classify_inbound(
         return "session", None, None
     try:
         loaded = json.loads(payload_bytes, parse_float=str, parse_int=str)
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
         return "unknown", None, "payload was not a valid UTF-8 JSON object"
     if type(loaded) is not dict:
         return "unknown", None, "JSON root was not an object"
@@ -950,16 +1005,30 @@ def data1a_capture_claim(
         "database_path": paths.database_path.as_posix(),
     }
     claim.update(claim_profile_fields(duration))
+    config_fields = {
+        "feed": claim["feed"],
+        "websocket_url": claim["websocket_url"],
+        "heartbeat_interval_seconds": claim["heartbeat_interval_seconds"],
+        "receive_timeout_seconds": claim["receive_timeout_seconds"],
+        "market_data_stale_seconds": _MARKET_DATA_STALE_SECONDS,
+        "started_coins": claim["started_coins"],
+    }
+    if plan.l2_fast:
+        mode_fields: dict[str, object] = {
+            "l2_mode": "fast-5",
+            "l2_max_levels_per_side": 5,
+            "l2_subscription_payloads": [
+                item.payload_bytes.decode("utf-8")
+                for item in plan.subscriptions
+                if item.channel == "l2Book"
+            ],
+            "l2_mode_requires_session_ack": True,
+        }
+        claim.update(mode_fields)
+        config_fields.update(mode_fields)
     return stamp_start_metadata(
         claim,
-        config_fields={
-            "feed": claim["feed"],
-            "websocket_url": claim["websocket_url"],
-            "heartbeat_interval_seconds": claim["heartbeat_interval_seconds"],
-            "receive_timeout_seconds": claim["receive_timeout_seconds"],
-            "market_data_stale_seconds": _MARKET_DATA_STALE_SECONDS,
-            "started_coins": claim["started_coins"],
-        },
+        config_fields=config_fields,
     )
 
 
@@ -1144,6 +1213,14 @@ def _argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-id")
     parser.add_argument("--duration-seconds", required=True, type=float)
     parser.add_argument(
+        "--l2-fast",
+        action="store_true",
+        help=(
+            "Explicitly request the official fast five-level L2 mode. This starts a "
+            "distinct feed/config identity; never mixes fast/slow books in one session."
+        ),
+    )
+    parser.add_argument(
         "--addon-coins",
         default="",
         help="Optional Hyperliquid add-on coins (ETH,SOL). Never replaces BTC.",
@@ -1216,6 +1293,7 @@ async def _run_from_args(args: argparse.Namespace) -> dict[str, object]:
         enable_addons=bool(args.enable_addons),
         include_candles=include_candles,
         candle_interval=candle_interval,
+        l2_fast=cast(bool, args.l2_fast),
     )
     mode = _resolve_cli_mode(args)
     if mode == "reconstructable":

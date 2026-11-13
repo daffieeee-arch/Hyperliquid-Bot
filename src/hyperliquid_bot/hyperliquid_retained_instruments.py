@@ -114,6 +114,7 @@ class HyperliquidRetainedInstrumentPlan:
     include_candles: bool = False
     candle_interval: str = DEFAULT_CANDLE_INTERVAL
     websocket_url: str = HYPERLIQUID_MAINNET_WEBSOCKET_URL
+    l2_fast: bool = False
 
     def __post_init__(self) -> None:
         if self.required.coin != HYPERLIQUID_REQUIRED_COIN or self.required.role != "required":
@@ -132,6 +133,8 @@ class HyperliquidRetainedInstrumentPlan:
             raise HyperliquidInstrumentConfigError("addon_start_policy is not a documented value")
         if type(self.include_candles) is not bool:
             raise HyperliquidInstrumentConfigError("include_candles must be a bool")
+        if type(self.l2_fast) is not bool:
+            raise HyperliquidInstrumentConfigError("l2_fast must be a bool")
         if (
             type(self.candle_interval) is not str
             or self.candle_interval not in HYPERLIQUID_CANDLE_INTERVALS
@@ -159,7 +162,9 @@ class HyperliquidRetainedInstrumentPlan:
     @property
     def subscriptions(self) -> tuple[HyperliquidSubscription, ...]:
         market = tuple(
-            official_subscription(instrument.coin, channel)
+            official_subscription(
+                instrument.coin, channel, l2_fast=self.l2_fast and channel == "l2Book"
+            )
             for instrument in self.started_instruments
             for channel in instrument.channels
         )
@@ -182,20 +187,34 @@ class HyperliquidRetainedInstrumentPlan:
     @property
     def feed_name(self) -> str:
         base = "hyperliquid-public-btc-perp-trades-bbo-l2-ctx"
+        if self.l2_fast:
+            base += "-fast-l2-5"
         if not self.include_candles:
             return base
         return f"{base}-candles-{self.candle_interval}"
 
 
-def official_subscription(coin: str, channel: str) -> HyperliquidSubscription:
+def official_subscription(
+    coin: str, channel: str, *, l2_fast: bool = False
+) -> HyperliquidSubscription:
     """Build the official compact subscribe payload for one coin and channel."""
 
     if channel not in HYPERLIQUID_RETAINED_CHANNELS:
         raise HyperliquidInstrumentConfigError(f"unsupported Hyperliquid channel {channel!r}")
     if coin not in (HYPERLIQUID_REQUIRED_COIN, *HYPERLIQUID_OPTIONAL_ADDON_COINS):
         raise HyperliquidInstrumentConfigError(f"unsupported Hyperliquid retained coin {coin!r}")
+    if type(l2_fast) is not bool:
+        raise HyperliquidInstrumentConfigError("l2_fast must be a bool")
+    if l2_fast and channel != "l2Book":
+        raise HyperliquidInstrumentConfigError("l2_fast applies only to l2Book")
     payload = (
-        '{"method":"subscribe","subscription":{"type":"' + channel + '","coin":"' + coin + '"}}'
+        '{"method":"subscribe","subscription":{"type":"'
+        + channel
+        + '","coin":"'
+        + coin
+        + '"'
+        + (',"fast":true' if l2_fast else "")
+        + "}}"
     )
     return HyperliquidSubscription(
         coin=coin,
@@ -301,11 +320,14 @@ def build_hyperliquid_retained_plan(
     enable_addons: bool = False,
     include_candles: bool = False,
     candle_interval: str = DEFAULT_CANDLE_INTERVAL,
+    l2_fast: bool = False,
 ) -> HyperliquidRetainedInstrumentPlan:
     """Build a DATA-1A plan. BTC is always present. Add-ons and candles default off."""
 
     if type(include_candles) is not bool:
         raise HyperliquidInstrumentConfigError("include_candles must be a bool")
+    if type(l2_fast) is not bool:
+        raise HyperliquidInstrumentConfigError("l2_fast must be a bool")
     if type(candle_interval) is not str or candle_interval not in HYPERLIQUID_CANDLE_INTERVALS:
         raise HyperliquidInstrumentConfigError(
             "candle_interval must be one of the official Hyperliquid candle intervals"
@@ -325,6 +347,7 @@ def build_hyperliquid_retained_plan(
         addon_start_policy=policy,
         include_candles=include_candles,
         candle_interval=candle_interval,
+        l2_fast=l2_fast,
     )
     if HYPERLIQUID_REQUIRED_COIN not in plan.started_coins:
         raise HyperliquidInstrumentConfigError("plan dropped the required BTC channels")

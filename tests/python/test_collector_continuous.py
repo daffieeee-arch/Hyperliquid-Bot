@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import errno
 import hashlib
 import json
 import os
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -2038,3 +2039,387 @@ def test_changed_boot_counter_epoch_is_retained_before_owned_cleanup(
     monkeypatch.setattr(item, "stop_owned", stop)
     with pytest.raises(ValueError, match="Hard capacity counter changed across pressure stop"):
         item.wait_pressure()
+
+
+def typed_pause_fixture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[host.Supervisor, dict[str, dict[str, Any]], list[str], dict[str, Any]]:
+    """A real measured receipt followed by the observed missing-terminal pause."""
+    item, saved, effects = pressure_fixture(monkeypatch)
+    item.state = json.loads(json.dumps(item.state))
+    plan = item.state["current"]["plan"]
+    runtime = {
+        key: copy.deepcopy(plan[key])
+        for key in (
+            "campaign",
+            "chunks",
+            "chunk_seconds",
+            "source_commit",
+            "image_digest",
+            "storage_profile",
+        )
+    }
+    runtime.update(
+        lanes=list(plan["lanes"]), chunk=0, run_id=plan["campaign"] + "-0000", phase="capturing"
+    )
+    monkeypatch.setattr(item, "pressure_capture", lambda producer: copy.deepcopy(runtime))
+    item.begin_pressure_wait(pressure_error())
+    effects.clear()
+    runtime["phase"] = "failed"
+    item.state.update(phase="paused", boot_id=item.boot)
+    missing = (
+        Path(item.state["current"]["roots"]["spool"])
+        / plan["campaign"]
+        / "chunk-0000"
+        / "binance"
+        / LANES["binance"][1]
+        / runtime["run_id"]
+        / "capture-health.json"
+    )
+    item.state["reason"] = str(
+        FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(missing))
+    )[:240]
+    native: dict[str, Any] = {
+        "claim": {"run_id": runtime["run_id"], "credentialless": True},
+        "live": {"run_id": runtime["run_id"], "definitive_outage": None},
+        "health": {
+            "run_id": runtime["run_id"],
+            "credentialless": True,
+            "integrity_events": 0,
+            "status": "OPERATOR_STOP",
+        },
+    }
+
+    def read(path: Path, **kwargs: Any) -> dict[str, Any]:
+        if path.name in saved:
+            return copy.deepcopy(saved[path.name])
+        if path.name == "runtime-health.json":
+            return copy.deepcopy(runtime)
+        key = {
+            "capture-claim.json": "claim",
+            "capture-live.json": "live",
+            "capture-health.json": "health",
+        }[path.name]
+        return copy.deepcopy(native[key])
+
+    monkeypatch.setattr(host, "document", read)
+    monkeypatch.setattr(
+        Path,
+        "exists",
+        lambda path: not ("binance" in path.parts and path.name == "capture-health.json"),
+    )
+    monkeypatch.setattr(Path, "lstat", lambda path: SimpleNamespace(st_dev=1, st_ino=2, st_size=3))
+    item.state["current"]["app_config_sha256"] = host.digest({})
+    containers = {
+        name: managed_fixture(item.state["current"], role)
+        for name, role in ((host.COLLECTOR, "collector"), (host.STATUS, "status"))
+    }
+    containers[host.COLLECTOR]["State"]["Running"] = False
+    monkeypatch.setattr(host, "inspect", lambda name: copy.deepcopy(containers[name]))
+    monkeypatch.setattr(item, "app", lambda: {"config": {}})
+    monkeypatch.setattr(item, "verify_store", lambda *args: None)
+    monkeypatch.setattr(item, "pressure_rebind", host.Supervisor.pressure_rebind.__get__(item))
+    return item, saved, effects, {"runtime": runtime, "native": native, "containers": containers}
+
+
+def test_explicit_typed_pressure_quarantine_pins_history_without_rebasing_counters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    item, saved, effects, _evidence = typed_pause_fixture(monkeypatch)
+    old_state, old_files = copy.deepcopy(item.state), copy.deepcopy(saved)
+    original = item.pressure_receipt()
+    # The new release does not rewrite the interrupted producer's source/image.
+    item.settings = replace(
+        item.settings, source_commit="1" * 40, image_digest="sha256:" + "2" * 64
+    )
+    receipt = item.begin_pressure_wait(
+        expected_state_sha256=host.digest(old_state), abandon_unsealed=True
+    )
+    assert receipt["schema"] == "collector-pressure-operator-v2"
+    assert receipt["prior_state"] == old_state
+    assert receipt["prior_pressure_receipt"]["document"] == original
+    assert receipt["supervisor_source_commit"] == "1" * 40
+    assert receipt["producer_source_commit"] == original["producer_source_commit"]
+    assert receipt["current"] == original["current"]
+    assert receipt["operator_capacity_baseline"] is None
+    assert receipt["operator_capacity_readback"] == sample()
+    assert receipt["old_partial_research_qualified"] is False
+    assert item.state["pressure_retry_count"] == 2 and effects == ["stop-owned"]
+    assert all(saved[name] == value for name, value in old_files.items())
+    assert item.pressure_receipt() == receipt
+    del item.pressure_samples  # A new process still reads both pinned receipts.
+    assert item.pressure_receipt()["current"] == original["current"]
+    for counter in ("global_oom_kill", "memory_throttle_count", "evict_not_enough"):
+        fresh = sample(200)
+        if counter == "global_oom_kill":
+            fresh[counter] = 1
+        else:
+            fresh["arc"][counter] = 1
+        with pytest.raises(ValueError, match="Hard capacity counter changed"):
+            item.pressure_counters(fresh)
+
+
+@pytest.mark.parametrize("read_only", [False, True])
+@pytest.mark.parametrize(
+    "counter", ["global_oom_kill", "memory_throttle_count", "evict_not_enough"]
+)
+def test_typed_operator_cannot_erase_hard_counter_change(
+    monkeypatch: pytest.MonkeyPatch, read_only: bool, counter: str
+) -> None:
+    item, saved, effects, _evidence = typed_pause_fixture(monkeypatch)
+    before, files = copy.deepcopy(item.state), copy.deepcopy(saved)
+    current = sample(100)
+    if counter == "global_oom_kill":
+        current[counter] = 1
+    else:
+        current["arc"][counter] = 1
+    monkeypatch.setattr(cap, "snapshot", lambda: current)
+    with pytest.raises(ValueError, match="Hard capacity counter changed"):
+        item.begin_pressure_wait(
+            expected_state_sha256=host.digest(before), abandon_unsealed=True, read_only=read_only
+        )
+    assert item.state == before and saved == files and effects == []
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "no-abandon",
+        "wrong-pin",
+        "explicit-pause",
+        "clock-pause",
+        "storage-pause",
+        "writer-pause",
+        "receipt-hash",
+        "cause",
+        "policy",
+        "prestop-phase",
+        "prestop-source",
+        "prestop-image",
+        "prestop-duration",
+        "prestop-lanes",
+        "runtime-phase",
+        "runtime-source",
+        "boot",
+        "cid",
+        "image-id",
+        "source-env",
+        "app-config",
+        "running",
+        "oom",
+        "native-failed",
+        "native-integrity",
+        "foreign-claim",
+        "live-outage",
+    ],
+)
+def test_typed_pressure_quarantine_refuses_unrelated_or_changed_evidence(
+    monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    item, saved, effects, evidence = typed_pause_fixture(monkeypatch)
+    name = item.state["pressure_recovery"]["receipt"]
+    original = saved[name]
+    if change.endswith("-pause"):
+        item.state["reason"] = {
+            "explicit-pause": "Explicit persistent operator pause; revalidation required.",
+            "clock-pause": "Host clock out of bounds while pressure waiting.",
+            "storage-pause": "Project dataset GUID changed.",
+            "writer-pause": "Unknown native writer failure.",
+        }[change]
+    elif change == "receipt-hash":
+        item.state["pressure_recovery"]["receipt_sha256"] = "0" * 64
+    elif change == "cause":
+        original["reasons"] = ["memory-pressure", "global-oom"]
+    elif change == "policy":
+        original["capacity_policy"]["arc_max"] += 1
+    elif change.startswith("prestop-"):
+        key, value = {
+            "prestop-phase": ("phase", "publishing"),
+            "prestop-source": ("source_commit", "9" * 40),
+            "prestop-image": ("image_digest", "sha256:" + "9" * 64),
+            "prestop-duration": ("chunk_seconds", 600),
+            "prestop-lanes": ("lanes", ["hyperliquid"]),
+        }[change]
+        original["pre_stop_runtime"][key] = value
+    elif change.startswith("runtime-"):
+        evidence["runtime"]["phase" if change == "runtime-phase" else "source_commit"] = (
+            "publishing"
+        )
+    elif change == "boot":
+        item.boot = "different-host-boot"
+    elif change in {"cid", "image-id", "source-env", "running", "oom"}:
+        container = evidence["containers"][host.COLLECTOR]
+        if change == "cid":
+            container["Id"] = "9" * 64
+        elif change == "image-id":
+            container["Image"] = "sha256:" + "9" * 64
+        elif change == "source-env":
+            container["Config"]["Env"][0] = "COLLECTOR_SOURCE_COMMIT=" + "9" * 40
+        else:
+            container["State"]["Running" if change == "running" else "OOMKilled"] = True
+    elif change == "app-config":
+        item.state["current"]["app_config_sha256"] = "0" * 64
+    elif change == "native-failed":
+        evidence["native"]["health"]["status"] = "FAILED"
+    elif change == "native-integrity":
+        evidence["native"]["health"]["integrity_events"] = 1
+    elif change == "foreign-claim":
+        evidence["native"]["claim"]["run_id"] = "different-run"
+    elif change == "live-outage":
+        evidence["native"]["live"]["definitive_outage"] = {"error_class": "UnknownFailure"}
+    if change not in {"receipt-hash"}:
+        item.state["pressure_recovery"]["receipt_sha256"] = host.digest(original)
+    before, files = copy.deepcopy(item.state), copy.deepcopy(saved)
+    with pytest.raises((ValueError, OSError, KeyError)):
+        item.begin_pressure_wait(
+            expected_state_sha256="0" * 64 if change == "wrong-pin" else host.digest(before),
+            abandon_unsealed=change != "no-abandon",
+            read_only=True,
+        )
+    assert item.state == before and saved == files and effects == []
+
+
+def test_typed_operator_preflight_is_read_only_and_stable_audit_remains_required(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    item, saved, effects, evidence = typed_pause_fixture(monkeypatch)
+    before, files = copy.deepcopy(item.state), copy.deepcopy(saved)
+    receipt = item.begin_pressure_wait(
+        expected_state_sha256=host.digest(before), abandon_unsealed=True, read_only=True
+    )
+    assert receipt["schema"] == "collector-pressure-operator-v2"
+    assert item.state == before and saved == files and effects == []
+    item.begin_pressure_wait(expected_state_sha256=host.digest(before), abandon_unsealed=True)
+    effects.clear()
+    monkeypatch.setattr(time, "time_ns", lambda: 1_000_000_000_000)
+    samples = iter(sample(index) for index in range(128))
+    monkeypatch.setattr(cap, "snapshot", lambda: next(samples))
+    for _ in range(62):
+        assert item.wait_pressure() is False
+    monkeypatch.setattr(
+        item, "audit", lambda **kwargs: (_ for _ in ()).throw(ValueError("Bad sealed copy"))
+    )
+    with pytest.raises(ValueError, match="Bad sealed copy"):
+        item.wait_pressure()
+    assert item.state["phase"] == "pressure-wait"
+    assert "classified-host-pressure-interruption" not in effects
+    assert evidence["runtime"]["phase"] == "failed"
+    monkeypatch.setattr(item, "audit", lambda **kwargs: effects.append("all-sealed-copies-audited"))
+    assert item.wait_pressure() is True
+    assert effects == ["all-sealed-copies-audited", "classified-host-pressure-interruption"]
+    assert item.state["phase"] == "between-campaigns"
+
+
+@pytest.mark.parametrize("changed_metadata", ["live", "runtime"])
+def test_operator_receipt_restart_refuses_changed_original_or_partial_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    changed_metadata: str,
+) -> None:
+    item, saved, _effects, evidence = typed_pause_fixture(monkeypatch)
+    receipt = item.begin_pressure_wait(
+        expected_state_sha256=host.digest(item.state), abandon_unsealed=True
+    )
+    original_name = receipt["prior_pressure_receipt"]["name"]
+    saved[original_name]["current"]["global_oom_kill"] = 1
+    with pytest.raises(ValueError, match="lost its original incident"):
+        item.pressure_receipt()
+    saved[original_name] = copy.deepcopy(receipt["prior_pressure_receipt"]["document"])
+    assert item.pressure_receipt() == receipt
+    if changed_metadata == "runtime":
+        evidence["runtime"]["source_commit"] = "9" * 40
+    else:
+        evidence["native"]["live"]["extra"] = "changed-after-operator-decision"
+    item.pressure_stable_since = 1
+    item.pressure_samples = [sample(61), sample(62)]
+    item.previous = sample(62)
+    monkeypatch.setattr(cap, "snapshot", lambda: sample(63))
+    monkeypatch.setattr(time, "time_ns", lambda: 1_000_000_000_000)
+    with pytest.raises(ValueError, match="quarantine metadata changed"):
+        item.wait_pressure()
+
+
+@pytest.mark.parametrize("operation", ["--recover-pressure", "--inspect-pressure-recovery"])
+def test_wrong_pin_precedes_supervisor_lock_or_host_checks(
+    monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    item, saved, effects, _evidence = typed_pause_fixture(monkeypatch)
+    before, files = copy.deepcopy(item.state), copy.deepcopy(saved)
+    monkeypatch.setattr(os, "getuid", lambda: 0)
+    monkeypatch.setattr(host, "load_settings", lambda path: item.settings)
+    monkeypatch.setattr(host, "Supervisor", lambda cfg: item)
+    monkeypatch.setattr(host, "wait_host_ready", lambda *args: pytest.fail("host check before pin"))
+    monkeypatch.setattr(host, "singleton", lambda *args: pytest.fail("lock before pin"))
+    with pytest.raises(ValueError, match="pin differs"):
+        host.main(
+            ["--settings", "/tmp/fixture.json", operation, "--expected-state-sha256", "0" * 64]
+        )
+    assert item.state == before and saved == files and effects == []
+
+
+@pytest.mark.parametrize("malformed", [{}, None])
+def test_present_malformed_pressure_record_never_falls_back_to_legacy(
+    monkeypatch: pytest.MonkeyPatch, malformed: object
+) -> None:
+    item, saved, effects, _evidence = typed_pause_fixture(monkeypatch)
+    item.state.update(pressure_recovery=malformed, reason="Capacity stop: memory-pressure")
+    before, files = copy.deepcopy(item.state), copy.deepcopy(saved)
+    with pytest.raises(ValueError, match="valid pending receipt"):
+        item.begin_pressure_wait(
+            expected_state_sha256=host.digest(before), abandon_unsealed=True, read_only=True
+        )
+    assert item.state == before and saved == files and effects == []
+
+
+@pytest.mark.parametrize("change", ["claim", "live", "runtime"])
+def test_typed_operator_pins_only_the_metadata_it_actually_revalidated(
+    monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    item, saved, effects, evidence = typed_pause_fixture(monkeypatch)
+    before, files = copy.deepcopy(item.state), copy.deepcopy(saved)
+    read_metadata = item.pressure_metadata
+    calls = 0
+
+    def changed_metadata() -> list[dict[str, Any]]:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            target = evidence["runtime"] if change == "runtime" else evidence["native"][change]
+            target["extra"] = "replaced-after-first-validation"
+        return read_metadata()
+
+    monkeypatch.setattr(item, "pressure_metadata", changed_metadata)
+    with pytest.raises(ValueError, match="metadata changed during revalidation"):
+        item.begin_pressure_wait(
+            expected_state_sha256=host.digest(before), abandon_unsealed=True, read_only=True
+        )
+    assert item.state == before and saved == files and effects == []
+
+
+def test_valid_typed_pressure_cli_inspection_never_takes_lock_or_mutates(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    item, saved, effects, _evidence = typed_pause_fixture(monkeypatch)
+    before, files = copy.deepcopy(item.state), copy.deepcopy(saved)
+    monkeypatch.setattr(os, "getuid", lambda: 0)
+    monkeypatch.setattr(host, "load_settings", lambda path: item.settings)
+    monkeypatch.setattr(host, "Supervisor", lambda cfg: item)
+    monkeypatch.setattr(host, "wait_host_ready", lambda *args: None)
+    monkeypatch.setattr(
+        host, "singleton", lambda *args: pytest.fail("read-only inspection took lock")
+    )
+    assert (
+        host.main(
+            [
+                "--settings",
+                "/tmp/fixture.json",
+                "--inspect-pressure-recovery",
+                "--expected-state-sha256",
+                host.digest(before),
+                "--abandon-unsealed-pressure",
+            ]
+        )
+        == 0
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert result["read_only"] is True and result["no_runtime_changes"] is True
+    assert item.state == before and saved == files and effects == []

@@ -190,11 +190,51 @@ env TRADING_MODE=PAPER PYTHONPATH=/mnt/<pool>/hyperliquid-runtime/<release>/src 
 ```
 
 A wrong expected state pin fails before any state/control write or owned cleanup.
+It is checked before creating the supervisor lock and checked again after the
+lock is acquired. The inspection operation never acquires that lock.
 
 These flags apply only to the first start. They are excluded from ExecStopPost
 cleanup and from the registered POSTINIT command. Subsequent restarts need a
 valid pending receipt and fresh stable capacity evidence. Ordinary paused
 states continue to require explicit operator review.
+
+### Explicit quarantine after a measured pressure stop
+
+A newer measured pressure stop can itself pause when a stopped native writer
+has not produced terminal health. The legacy reason-only migration does not
+apply. The same first-start recovery/preflight flags may revalidate this narrow
+case only with the exact canonical paused-state pin and explicit
+`--abandon-unsealed-pressure` decision. A present but malformed pressure record
+never falls back to legacy migration.
+
+Admission requires the valid pending original measured receipt, sole host-PSI
+cause, original `capturing` controller and complete old producer plan, the same
+actual host boot, stopped producer, exact CIDs/App/source/image/storage and no
+OOM evidence. At least one native terminal must actually be absent. The paused
+reason must exactly equal the supervisor's bounded `FileNotFoundError` text for
+one of those expected terminal paths. This additional check excludes explicit
+operator, clock, storage and other pauses; an arbitrary error substring is not
+recovery authority. All existing claim/live identities must match, no live
+definitive outage may be hidden, and every available terminal must be safe.
+Known failed/integrity evidence, a failed or publishing pre-stop controller,
+changed policy or identity, and missing claim/live records refuse admission.
+
+The new `collector-pressure-operator-v2` receipt links the immutable original
+incident and its digest, complete prior state and state pin, and the exact
+quarantined metadata snapshot. It preserves the original before/current kernel
+samples, causal controller, pressure streaks and cumulative hard-counter
+baseline. A fresh operator readback validates those counters; it cannot replace
+their baseline. Both original and decision receipts remain hash-bound across
+supervisor restarts. The explicit action consumes another pressure retry and
+starts a new bounded 30-minute stable-admission window, without resetting the
+retry count. It grants no general second override of an operator decision.
+
+The existing stable-minute checks and full audit of all sealed WORK/HDD copies
+still precede new collection. Partial metadata must remain unchanged through
+admission. No raw namespace is resumed or research-qualified, and no partial or
+market archive is deleted. A separately reviewed new supervisor release/image
+may create a fresh campaign only through the normal immutable-release and
+host/network/storage admission. Merge and preflight start no runtime operation.
 
 Normal SIGTERM/shutdown stores `stopped` while retaining continuous intent.
 It refuses an unattended same-boot restart, but the next actual host boot audits

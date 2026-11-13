@@ -215,8 +215,9 @@ comparison, with positive settlement marks and exact terminal ownership.
 
 The micro audit checked 3,913,175 accounting/chronology/summary assertions over
 310 actual case artifacts, 2,945 flat-proof windows, 201 replayed windows and
-13 zero-duration windows. It independently sampled 54 native book/fill
-references across 73 hash-qualified parts, including every one of the five
+13 zero-duration windows. It independently checked 54 native book/fill
+references mapping to 20 distinct rows in 13 matched parts, with 73 parts
+independently hash-qualified during lookup. These include every one of the five
 opposite-touch capacity failures. All eighteen accounts (eight configurations
 plus momentum control, each base/stress) correctly retain an unresolved
 position; thirteen fail quote deadlines and five fail touch capacity. These

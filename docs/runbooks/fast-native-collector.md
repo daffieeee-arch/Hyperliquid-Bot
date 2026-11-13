@@ -82,8 +82,18 @@ merge. No command below authorizes runtime operations in this source task.
    do not re-adopt main or rewrite paused state ad hoc. The existing explicit
    `--accept-fast-pilot --expected-state-sha256 <actual-state-hash>` operation
    rechecks the stopped owned producer, completed FAST controller and both
-   publication audits, then records acceptance and moves to `between-campaigns`.
-   It starts nothing; invoke the bootstrap separately after acceptance. Qualify a full
+   publication audits. Its durable v2 receipt pins the persisted owned pilot's
+   plan, roots, source/image, original CIDs/App config and complete two-store
+   manifest evidence. Successor generations retain that receipt's hash. Changing
+   `first_create` does not grant admission: ordinary startup, launch and recovery
+   require the validated persisted receipt, and FAST adoption is refused.
+   A process/host death during acceptance stays paused even if the audit wrote
+   `auditing` or the receipt reached disk before the final state save. Retry the
+   same explicit acceptance with the newly observed state hash after checking the
+   owned stopped pilot. A valid orphan receipt is recovered without rewriting it;
+   missing receipt work is re-audited. Repeated explicit acceptance is idempotent.
+   Acceptance moves to `between-campaigns` and starts nothing; invoke the
+   bootstrap separately after acceptance. Qualify a full
    two-hour publication and rollover, then startup/stop/restart ownership and
    aggregate pressure before continuous adoption. Register only the FAST
    POSTINIT identity after those gates; the old unit stays unchanged.

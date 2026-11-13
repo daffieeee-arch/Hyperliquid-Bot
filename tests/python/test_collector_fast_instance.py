@@ -104,6 +104,55 @@ def rendered(config: host.Settings, plan: runtime.RuntimePlan) -> dict[str, Any]
     }
 
 
+def pilot_closure(campaign: str = "hl-fast-fixture") -> dict[str, Any]:
+    return {
+        "schema": "collector-continuous-closure-v1",
+        "campaign": campaign,
+        "complete": True,
+        "research_ready": False,
+        "accepted": [
+            {
+                "lane": "hyperliquid",
+                "run_id": campaign + "-0000",
+                "copies": 2,
+                "work_manifest_sha256": "1" * 64,
+                "archive_manifest_sha256": "2" * 64,
+            }
+        ],
+    }
+
+
+def install_fast_acceptance(
+    item: host.Supervisor, monkeypatch: pytest.MonkeyPatch
+) -> dict[str, Any]:
+    pilot = item.owned_fast_pilot(fast_generation(pilot=True))
+    receipt = {
+        "schema": "collector-fast-pilot-acceptance-v2",
+        "instance": FAST.name,
+        "pilot": pilot,
+        "closure": pilot_closure(),
+        "closure_sha256": host.digest(pilot_closure()),
+        "expected_state_sha256": "3" * 64,
+        "accepted_utc_ns": 123,
+        "starts_capture": False,
+    }
+    item.state.update(fast_pilot=pilot, fast_pilot_acceptance=copy.deepcopy(receipt))
+    if not item.state["current"]["plan"]["pilot"]:
+        item.state["current"]["fast_pilot_acceptance_sha256"] = host.digest(receipt)
+    documents = {
+        "hl-fast-fixture-acceptance.json": receipt,
+        "hl-fast-fixture-closure.json": pilot_closure(),
+    }
+
+    def document(path: Path, **kwargs: Any) -> dict[str, Any]:
+        if path.name not in documents:
+            raise FileNotFoundError(path)
+        return copy.deepcopy(documents[path.name])
+
+    monkeypatch.setattr(host, "document", document)
+    return documents
+
+
 def test_default_commands_and_instance_selection_remain_fixed() -> None:
     config = settings()
     plan = config.plan("fixture")
@@ -246,12 +295,19 @@ def test_first_create_absence_probe_is_readonly_and_refuses_existing_app(
         item.verify_first_create()
 
 
-def test_first_create_launch_is_pilot_and_never_updates_existing_app(
+@pytest.mark.parametrize("successor", [False, True])
+def test_fast_launch_separates_first_pilot_and_receipt_bound_successor(
     monkeypatch: pytest.MonkeyPatch,
+    successor: bool,
 ) -> None:
     item = supervisor(monkeypatch)
-    cfg = item.settings = fast_settings(pilot=True)
-    item.state["current"] = None
+    cfg = item.settings = fast_settings(pilot=not successor)
+    item.state["current"] = fast_generation(pilot=True) if successor else None
+    if successor:
+        install_fast_acceptance(item, monkeypatch)
+        monkeypatch.setattr(
+            item, "verify_current", lambda: {"State": {"Running": False, "ExitCode": 0}}
+        )
     effects: list[str] = []
     actual: dict[str, Any] = {}
     monkeypatch.setattr(item, "verify_store", lambda *a: None)
@@ -280,11 +336,15 @@ def test_first_create_launch_is_pilot_and_never_updates_existing_app(
     monkeypatch.setattr(host, "command", command)
 
     def child(argv: list[str], **kwargs: Any) -> str:
-        assert "app.update" not in argv and STANDARD.app not in argv
-        if "app.create" in argv:
-            effects.append("create")
+        assert STANDARD.app not in argv
+        if "app.create" in argv or "app.update" in argv:
+            assert ("app.update" in argv) is successor
+            effects.append("update" if successor else "create")
             body = json.loads(kwargs["stdin"])
-            assert body["app_name"] == FAST.app and body["custom_app"] is True
+            if successor:
+                assert json.dumps(FAST.app) in argv
+            else:
+                assert body["app_name"] == FAST.app and body["custom_app"] is True
             actual.update(body["custom_compose_config"])
             return "42"
         assert "--instance" in argv and FAST.name in argv
@@ -303,10 +363,16 @@ def test_first_create_launch_is_pilot_and_never_updates_existing_app(
     monkeypatch.setattr(host, "inspect", inspect)
     monkeypatch.setattr(item, "app", lambda: {"config": actual})
     item.launch()
-    assert effects.index("clock") < effects.index("capacity") < effects.index("create")
-    assert effects.index("create") < effects.index("network-gate")
+    action = "update" if successor else "create"
+    assert effects.index("clock") < effects.index("capacity") < effects.index(action)
+    assert effects.index(action) < effects.index("network-gate")
     assert item.state["phase"] == "capturing"
-    assert item.state["current"]["plan"]["pilot"] is True
+    assert item.state["current"]["plan"]["pilot"] is not successor
+    if successor:
+        assert item.state["current"]["fast_pilot_acceptance_sha256"] == host.digest(
+            item.state["fast_pilot_acceptance"]
+        )
+    assert item.state["fast_pilot"]["plan"]["pilot"] is True
     assert item.state["current"]["plan"]["lanes"] == ("hyperliquid",)
 
 
@@ -479,6 +545,7 @@ def test_fast_restart_audits_only_fast_and_preserves_old_namespace(
     original_roots = copy.deepcopy(gen["roots"])
     config = {"fixture": "fast"}
     gen["app_config_sha256"] = host.digest(config)
+    install_fast_acceptance(item, monkeypatch)
     monkeypatch.setattr(item, "app", lambda: {"config": config})
     monkeypatch.setattr(item, "verify_store", lambda *a: None)
     monkeypatch.setattr(item, "check_interrupted_metadata", lambda *a: None)
@@ -537,11 +604,24 @@ def test_explicit_fast_pilot_acceptance_reaudits_and_never_starts_capture(
     monkeypatch.setattr(
         item, "verify_current", lambda: {"State": {"Running": False, "ExitCode": 0}}
     )
-    monkeypatch.setattr(
-        host,
-        "document",
-        lambda *a: {"phase": "completed", "instance": FAST.name, "campaign": "hl-fast-fixture"},
-    )
+    documents = {
+        "runtime-health.json": {
+            "phase": "completed",
+            "instance": FAST.name,
+            "campaign": "hl-fast-fixture",
+        },
+        "hl-fast-fixture-closure.json": pilot_closure(),
+    }
+
+    def document(path: Path, **kwargs: Any) -> dict[str, Any]:
+        return copy.deepcopy(documents[path.name])
+
+    def publish(path: Path, value: Any) -> None:
+        effects.append("acceptance-receipt")
+        documents[path.name] = copy.deepcopy(value)
+
+    monkeypatch.setattr(host, "document", document)
+    monkeypatch.setattr(Path, "exists", lambda path: path.name in documents)
 
     def audit(**kwargs: Any) -> None:
         effects.append("both-copy-audit")
@@ -549,7 +629,7 @@ def test_explicit_fast_pilot_acceptance_reaudits_and_never_starts_capture(
             raise ValueError("synthetic bad seal")
 
     monkeypatch.setattr(item, "audit", audit)
-    monkeypatch.setattr(host, "publish", lambda *a: effects.append("acceptance-receipt"))
+    monkeypatch.setattr(host, "publish", publish)
     monkeypatch.setattr(item, "launch", lambda: pytest.fail("Acceptance started capture"))
     if failure:
         with pytest.raises(ValueError):
@@ -590,3 +670,247 @@ def test_fast_state_load_refuses_main_identity(
     monkeypatch.setattr(host, "document", lambda *a, **k: state)
     with pytest.raises(ValueError, match="Cross-instance state"):
         host.Supervisor(fast_settings())
+
+
+@pytest.mark.parametrize("phase", ["auditing", "between-campaigns", "retry-wait", "pressure-wait"])
+@pytest.mark.parametrize("changed_boot", [False, True])
+def test_mutable_settings_never_promote_an_unaccepted_persisted_pilot(
+    monkeypatch: pytest.MonkeyPatch,
+    phase: str,
+    changed_boot: bool,
+) -> None:
+    item = supervisor(monkeypatch)
+    item.settings = fast_settings()
+    item.state.update(current=fast_generation(pilot=True), phase=phase)
+    if changed_boot:
+        item.state["current"]["boot_id"] = "old-boot"
+    effects: list[str] = []
+    monkeypatch.setattr(item, "launch", lambda: pytest.fail("Unaccepted FAST launched"))
+    monkeypatch.setattr(item, "admission", lambda: pytest.fail("Unaccepted recovery advanced"))
+    monkeypatch.setattr(item, "stop_owned", lambda: effects.append("owned-cleanup"))
+    assert item.run() == 2
+    assert item.state["phase"] == "paused"
+    assert effects == ["owned-cleanup"]
+
+
+@pytest.mark.parametrize("operation", ["launch", "recover_boot", "pressure_rebind", "adopt"])
+def test_fast_mutation_paths_require_durable_acceptance_before_external_effects(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    item = supervisor(monkeypatch)
+    item.settings = fast_settings()
+    gen = fast_generation()
+    gen["boot_id"] = "old-boot"
+    item.state["current"] = gen
+    if operation == "adopt":
+        item.settings = replace(item.settings, adoption=gen)
+        item.state["current"] = None
+    monkeypatch.setattr(item, "verify_current", lambda: pytest.fail("External identity queried"))
+    monkeypatch.setattr(host, "directory", lambda *a, **k: pytest.fail("External path touched"))
+    with pytest.raises(ValueError, match=r"acceptance|adoption refused"):
+        getattr(item, operation)()
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "marker-missing",
+        "receipt-missing",
+        "receipt-differs",
+        "source",
+        "image",
+        "process",
+        "config",
+        "publication",
+        "pilot-campaign",
+        "successor",
+    ],
+)
+def test_fast_acceptance_requires_exact_durable_owned_identity_and_publication_proof(
+    monkeypatch: pytest.MonkeyPatch,
+    corruption: str,
+) -> None:
+    item = supervisor(monkeypatch)
+    item.settings = fast_settings()
+    item.state["current"] = fast_generation()
+    documents = install_fast_acceptance(item, monkeypatch)
+    item.require_fast_acceptance()
+    marker = item.state["fast_pilot_acceptance"]
+    if corruption == "marker-missing":
+        item.state.pop("fast_pilot_acceptance")
+    elif corruption == "receipt-missing":
+        documents.pop("hl-fast-fixture-acceptance.json")
+    elif corruption == "receipt-differs":
+        documents["hl-fast-fixture-acceptance.json"]["accepted_utc_ns"] += 1
+    elif corruption == "source":
+        item.state["fast_pilot"]["plan"]["source_commit"] = "9" * 40
+    elif corruption == "image":
+        item.state["fast_pilot"]["image_id"] = "sha256:" + "9" * 64
+    elif corruption == "process":
+        item.state["fast_pilot"]["collector_id"] = "9" * 64
+    elif corruption == "config":
+        item.state["fast_pilot"]["app_config_sha256"] = "9" * 64
+    elif corruption == "publication":
+        marker["closure"]["accepted"][0]["archive_manifest_sha256"] = "9" * 64
+    elif corruption == "pilot-campaign":
+        item.state["current"] = fast_generation(pilot=True)
+        item.state["current"]["plan"]["campaign"] = "hl-fast-foreign"
+    else:
+        item.state["current"].pop("fast_pilot_acceptance_sha256")
+    with pytest.raises((ValueError, FileNotFoundError)):
+        item.require_fast_acceptance()
+
+
+@pytest.mark.parametrize("successor", [False, True])
+def test_committed_fast_acceptance_survives_bootstrap_and_publication_reaudits(
+    monkeypatch: pytest.MonkeyPatch,
+    successor: bool,
+) -> None:
+    item = supervisor(monkeypatch)
+    item.settings = fast_settings()
+    item.state.update(current=fast_generation(pilot=not successor), phase="between-campaigns")
+    documents = install_fast_acceptance(item, monkeypatch)
+    # A later boot audit can replace the ordinary closure projection; accepted
+    # publication evidence is durably embedded in the acceptance receipt.
+    documents["hl-fast-fixture-closure.json"] = pilot_closure() | {"complete": False}
+    effects: list[str] = []
+    monkeypatch.setattr(item, "admission", lambda: effects.append("fresh-capacity"))
+    monkeypatch.setattr(host, "notify", lambda *a: None)
+
+    def launch() -> None:
+        item.require_fast_acceptance()
+        effects.append("accepted-launch")
+        item.stopping = True
+
+    monkeypatch.setattr(item, "launch", launch)
+    monkeypatch.setattr(item, "tick", lambda: None)
+    monkeypatch.setattr(item, "shutdown_phase", lambda: "stopped")
+    monkeypatch.setattr(item, "stop_owned", lambda: None)
+    assert item.run() == 0
+    assert effects == ["fresh-capacity", "accepted-launch"]
+
+
+@pytest.mark.parametrize("crash_point", ["audit", "receipt"])
+def test_real_process_death_during_acceptance_stays_paused_and_explicit_retry_is_idempotent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    crash_point: str,
+) -> None:
+    import sys
+    import textwrap
+
+    item = supervisor(monkeypatch)
+    item.settings = fast_settings()
+    item.state.update(
+        current=fast_generation(pilot=True),
+        phase="paused",
+        reason="FAST pilot closed; independent acceptance required.",
+    )
+    initial = tmp_path / "initial.json"
+    durable = tmp_path / "state.json"
+    receipt_file = tmp_path / "receipt.json"
+    initial.write_text(json.dumps(item.state))
+    script = tmp_path / "kill_acceptance.py"
+    script.write_text(
+        textwrap.dedent("""
+        import json, os, sys
+        from pathlib import Path
+        from unittest.mock import patch
+        from hyperliquid_bot import collector_continuous as host
+        from test_collector_fast_instance import fast_settings, pilot_closure
+        initial, durable, receipt_file, crash_point = map(Path, sys.argv[1:])
+        item = object.__new__(host.Supervisor)
+        item.settings = fast_settings()
+        item.state = json.loads(initial.read_text())
+        def save(phase=None, reason=None):
+            if phase is not None:
+                item.state['phase'] = phase
+            if reason is not None:
+                item.state['reason'] = reason
+            durable.write_text(json.dumps(item.state))
+        item.save = save
+        item.verify_current = lambda: {'State': {'Running': False, 'ExitCode': 0}}
+        def audit(**kwargs):
+            save('auditing')
+            if str(crash_point) == 'audit':
+                os._exit(86)
+        item.audit = audit
+        def document(path, **kwargs):
+            if path.name == 'runtime-health.json':
+                return {'phase':'completed', 'instance':'hyperliquid-fast',
+                        'campaign':'hl-fast-fixture'}
+            return pilot_closure()
+        def publish(path, value):
+            receipt_file.write_text(json.dumps(value))
+            os._exit(87)
+        with patch.object(Path, 'exists', return_value=False), \\
+             patch.object(host, 'document', document), patch.object(host, 'publish', publish):
+            item.accept_fast_pilot(host.digest(item.state))
+        raise AssertionError('Acceptance did not reach the crash point')
+    """)
+    )
+    root = Path(__file__).resolve().parents[2]
+    result = subprocess.run(
+        [sys.executable, str(script), str(initial), str(durable), str(receipt_file), crash_point],
+        check=False,
+        timeout=15,
+        capture_output=True,
+        text=True,
+        env={
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "PYTHONPATH": os.pathsep.join(
+                [str(root), str(root / "src"), str(root / "tests/python")]
+            ),
+        },
+    )
+    assert result.returncode == (86 if crash_point == "audit" else 87), result.stderr
+    item.state = json.loads(durable.read_text())
+    assert item.state["phase"] == "auditing"
+    assert "fast_pilot_acceptance" not in item.state
+    monkeypatch.setattr(item, "launch", lambda: pytest.fail("Crash promoted pilot"))
+    monkeypatch.setattr(item, "admission", lambda: pytest.fail("Crash advanced admission"))
+    monkeypatch.setattr(item, "stop_owned", lambda: None)
+    assert item.run() == 2
+    assert item.state["phase"] == "paused"
+
+    documents = {
+        "runtime-health.json": {
+            "phase": "completed",
+            "instance": FAST.name,
+            "campaign": "hl-fast-fixture",
+        },
+        "hl-fast-fixture-closure.json": pilot_closure(),
+    }
+    if receipt_file.exists():
+        documents["hl-fast-fixture-acceptance.json"] = json.loads(receipt_file.read_text())
+
+    def document(path: Path, **kwargs: Any) -> dict[str, Any]:
+        return copy.deepcopy(documents[path.name])
+
+    monkeypatch.setattr(host, "document", document)
+    monkeypatch.setattr(Path, "exists", lambda path: path.name in documents)
+    monkeypatch.setattr(
+        item, "verify_current", lambda: {"State": {"Running": False, "ExitCode": 0}}
+    )
+    effects: list[str] = []
+
+    def audit(**kwargs: Any) -> None:
+        effects.append("complete-audit")
+        item.save("auditing")
+
+    def publish(path: Path, value: Any) -> None:
+        effects.append("receipt-write")
+        documents[path.name] = copy.deepcopy(value)
+
+    monkeypatch.setattr(item, "audit", audit)
+    monkeypatch.setattr(host, "publish", publish)
+    item.accept_fast_pilot(host.digest(item.state))
+    assert effects == (["complete-audit", "receipt-write"] if crash_point == "audit" else [])
+    assert item.state["phase"] == "between-campaigns"
+    item.require_fast_acceptance()
+    committed = copy.deepcopy(documents["hl-fast-fixture-acceptance.json"])
+    effects.clear()
+    item.accept_fast_pilot(host.digest(item.state))
+    assert effects == []
+    assert documents["hl-fast-fixture-acceptance.json"] == committed

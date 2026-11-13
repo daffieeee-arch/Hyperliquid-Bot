@@ -976,6 +976,8 @@ class Supervisor:
     def pressure_rebind(self) -> dict[str, Any]:
         """Explicit recovery may rebind recreated CIDs only under the old full contract."""
         generation = self.state["current"]
+        if generation and (not self.settings.first_create or not generation["plan"]["pilot"]):
+            self.require_fast_acceptance()
         require(
             generation and not generation.get("adopted"), "Pressure recovery needs owned capture."
         )
@@ -1684,6 +1686,8 @@ class Supervisor:
         but never grants permission to reuse their data or stale TC controls.
         """
         generation = self.state["current"]
+        if not self.settings.first_create or not generation["plan"]["pilot"]:
+            self.require_fast_acceptance()
         require(generation["boot_id"] != self.boot, "Boot recovery requires an actual new boot.")
         for role, path in generation["roots"].items():
             self.verify_store(role, Path(path))
@@ -1817,6 +1821,9 @@ class Supervisor:
         require(
             RuntimePlan(**plan).instance == self.settings.instance,
             "Cross-instance adoption refused.",
+        )
+        require(
+            self.settings.profile != FAST, "FAST adoption refused; retained owned state required."
         )
         roots = {key: Path(value) for key, value in generation["roots"].items()}
         approved_host_roots(roots, campaign=plan["campaign"])
@@ -2017,8 +2024,139 @@ class Supervisor:
         self.state["audit_id"] = None
         self.save()
 
+    def owned_fast_pilot(self, generation: dict[str, Any]) -> dict[str, Any]:
+        """Freeze admitted identity, excluding mutable phase/timestamps and boot recovery."""
+        value = dict(generation["plan"])
+        value["lanes"] = tuple(value["lanes"])
+        plan = RuntimePlan(**value)
+        require(
+            plan.instance == FAST.name and plan.pilot and not generation.get("adopted"),
+            "Owned FAST pilot identity required.",
+        )
+        require(
+            generation["roots"]
+            == {key: str(path) for key, path in self.settings.roots(plan.campaign).items()},
+            "FAST pilot store scope differs.",
+        )
+        for key in ("collector_id", "status_id", "app_config_sha256"):
+            require(
+                type(generation.get(key)) is str
+                and re.fullmatch(r"[0-9a-f]{64}", generation[key]) is not None,
+                "Latched FAST pilot process/config identity required.",
+            )
+        require(
+            type(generation.get("image_id")) is str
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", generation["image_id"]) is not None,
+            "Latched FAST pilot engine image required.",
+        )
+        # Normalize tuples exactly as the durable JSON state/receipt does.
+        return cast(
+            dict[str, Any],
+            json.loads(
+                json.dumps(
+                    {
+                        key: generation[key]
+                        for key in (
+                            "plan",
+                            "roots",
+                            "image_id",
+                            "collector_id",
+                            "status_id",
+                            "app_config_sha256",
+                            "adopted",
+                        )
+                    },
+                    allow_nan=False,
+                )
+            ),
+        )
+
+    def fast_pilot_closure(
+        self, pilot: dict[str, Any], closure: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        campaign = pilot["plan"]["campaign"]
+        if closure is None:
+            closure = document(
+                self.settings.state_root / (campaign + "-closure.json"), trusted=True
+            )
+        accepted = closure.get("accepted")
+        require(
+            closure.get("schema") == "collector-continuous-closure-v1"
+            and closure.get("campaign") == campaign
+            and closure.get("complete") is True
+            and closure.get("research_ready") is False
+            and isinstance(accepted, list)
+            and len(accepted) == 1,
+            "Complete FAST pilot publication evidence required.",
+        )
+        record = cast(list[Any], accepted)[0]
+        require(
+            isinstance(record, dict)
+            and record.get("lane") == "hyperliquid"
+            and record.get("run_id") == campaign + "-0000"
+            and type(record.get("copies")) is int
+            and record["copies"] == 2
+            and all(
+                type(record.get(key)) is str
+                and re.fullmatch(r"[0-9a-f]{64}", record[key]) is not None
+                for key in ("work_manifest_sha256", "archive_manifest_sha256")
+            ),
+            "Both FAST pilot publication manifest hashes required.",
+        )
+        return closure
+
+    def verify_fast_acceptance(self, receipt: dict[str, Any]) -> None:
+        """A mutable settings flag or in-progress audit never authorizes promotion."""
+        pilot = self.state.get("fast_pilot")
+        require(isinstance(pilot, dict), "Persisted owned FAST pilot identity required.")
+        pilot = cast(dict[str, Any], pilot)
+        require(self.owned_fast_pilot(pilot) == pilot, "Persisted FAST pilot identity differs.")
+        campaign = pilot["plan"]["campaign"]
+        require(isinstance(receipt.get("closure"), dict), "Accepted FAST closure proof required.")
+        closure = self.fast_pilot_closure(pilot, receipt["closure"])
+        require(
+            receipt.get("schema") == "collector-fast-pilot-acceptance-v2"
+            and receipt.get("instance") == FAST.name
+            and receipt.get("pilot") == pilot
+            and receipt.get("starts_capture") is False
+            and type(receipt.get("accepted_utc_ns")) is int
+            and receipt["accepted_utc_ns"] > 0
+            and type(receipt.get("expected_state_sha256")) is str
+            and re.fullmatch(r"[0-9a-f]{64}", receipt["expected_state_sha256"]) is not None
+            and receipt.get("closure_sha256") == digest(closure),
+            "Durable FAST pilot acceptance binding differs.",
+        )
+        stored = document(self.settings.state_root / (campaign + "-acceptance.json"), trusted=True)
+        require(stored == receipt, "Durable FAST pilot acceptance receipt differs.")
+        current = self.state["current"]
+        if current["plan"]["pilot"]:
+            # Reboot can recreate CIDs; the originally admitted IDs stay pinned
+            # in fast_pilot/receipt, while normal owned() verifies rebound CIDs.
+            require(
+                all(
+                    current[key] == pilot[key]
+                    if key != "plan"
+                    else digest(current[key]) == digest(pilot[key])
+                    for key in ("plan", "roots", "image_id")
+                ),
+                "Acceptance belongs to a different FAST pilot.",
+            )
+        else:
+            require(
+                current.get("fast_pilot_acceptance_sha256") == digest(receipt),
+                "FAST successor lacks its admitted pilot acceptance binding.",
+            )
+
+    def require_fast_acceptance(self) -> None:
+        if self.settings.profile != FAST:
+            return
+        require(not self.settings.first_create, "FAST pilot settings cannot start a successor.")
+        receipt = self.state.get("fast_pilot_acceptance")
+        require(isinstance(receipt, dict), "Durable FAST pilot acceptance required.")
+        self.verify_fast_acceptance(cast(dict[str, Any], receipt))
+
     def accept_fast_pilot(self, expected_state_sha256: str) -> None:
-        """Explicit operator acceptance; re-audit copies, never start capture here."""
+        """Explicit retry/idempotent acceptance; never start capture here."""
         require(digest(self.state) == expected_state_sha256, "Explicit FAST state pin differs.")
         current = self.state.get("current")
         require(isinstance(current, dict), "Completed FAST pilot state required.")
@@ -2026,18 +2164,13 @@ class Supervisor:
         require(
             self.settings.profile == FAST
             and not self.settings.first_create
-            and not current.get("adopted")
             and self.settings.chunk_seconds == 7200
             and self.settings.chunks == 1
-            and self.state["phase"] == "paused"
-            and self.state.get("reason") == "FAST pilot closed; independent acceptance required."
-            and current["plan"].get("instance") == FAST.name
-            and current["plan"].get("l2_fast") is True
-            and current["plan"]["pilot"] is True
-            and current["plan"]["chunk_seconds"] == 600
-            and current["plan"]["chunks"] == 1,
+            and self.state["phase"] in {"paused", "auditing", "between-campaigns"},
             "Only an independently reviewed completed FAST first pilot may be accepted.",
         )
+        pilot = self.owned_fast_pilot(current)
+        require(self.state.get("fast_pilot", pilot) == pilot, "Persisted FAST pilot differs.")
         producer = self.verify_current()
         require(
             not producer["State"]["Running"] and producer["State"]["ExitCode"] == 0,
@@ -2046,24 +2179,39 @@ class Supervisor:
         health = document(Path(current["roots"]["spool"]) / "runtime-health.json")
         require(
             health.get("phase") == "completed"
-            and health.get("campaign") == current["plan"]["campaign"]
+            and health.get("campaign") == pilot["plan"]["campaign"]
             and health.get("instance") == FAST.name,
             "Completed FAST pilot health required.",
         )
+        self.state["fast_pilot"] = pilot
+        target = self.settings.state_root / (pilot["plan"]["campaign"] + "-acceptance.json")
         try:
-            self.audit(complete=True)
-            receipt = {
-                "schema": "collector-fast-pilot-acceptance-v1",
-                "instance": FAST.name,
-                "campaign": current["plan"]["campaign"],
-                "expected_state_sha256": expected_state_sha256,
-                "accepted_utc_ns": time.time_ns(),
-                "starts_capture": False,
-            }
-            publish(
-                self.settings.state_root / (current["plan"]["campaign"] + "-acceptance.json"),
-                receipt,
-            )
+            if target.exists():
+                # SIGKILL after receipt fsync but before state save is recovered
+                # only by another explicit pinned acceptance, never normal run.
+                receipt = document(target, trusted=True)
+                self.verify_fast_acceptance(receipt)
+            else:
+                require(
+                    self.state["phase"] != "between-campaigns"
+                    and "fast_pilot_acceptance" not in self.state,
+                    "Missing committed FAST acceptance cannot be recreated implicitly.",
+                )
+                self.save("paused", "FAST pilot closed; independent acceptance required.")
+                self.audit(complete=True)
+                closure = self.fast_pilot_closure(pilot)
+                receipt = {
+                    "schema": "collector-fast-pilot-acceptance-v2",
+                    "instance": FAST.name,
+                    "pilot": pilot,
+                    "closure": closure,
+                    "closure_sha256": digest(closure),
+                    "expected_state_sha256": expected_state_sha256,
+                    "accepted_utc_ns": time.time_ns(),
+                    "starts_capture": False,
+                }
+                publish(target, receipt)
+                self.verify_fast_acceptance(receipt)
             self.state["fast_pilot_acceptance"] = receipt
             self.save(
                 "between-campaigns", "Explicit FAST pilot accepted; fresh admission required."
@@ -2109,6 +2257,7 @@ class Supervisor:
         if creating:
             self.verify_first_create()
         else:
+            self.require_fast_acceptance()
             previous = self.verify_current()
             require(not previous["State"]["Running"], "Never replace an active admitted campaign.")
             for role, path in self.state["current"]["roots"].items():
@@ -2182,6 +2331,8 @@ class Supervisor:
             "started_utc_ns": time.time_ns(),
             "wall_budget_seconds": 96 * 3600,
         }
+        if self.settings.profile == FAST and not creating:
+            generation["fast_pilot_acceptance_sha256"] = digest(self.state["fast_pilot_acceptance"])
         self.last_clock = 0
         self.clock(generation)
         self.stopped_capacity_baseline()
@@ -2268,6 +2419,8 @@ class Supervisor:
             "Actual stored TrueNAS Compose differs from admitted render.",
         )
         generation["app_config_sha256"] = digest(app["config"])
+        if self.settings.profile == FAST and plan.pilot:
+            self.state["fast_pilot"] = self.owned_fast_pilot(generation)
         self.save("capturing")
         if self.state.get("pressure_recovery"):
             self.state["pressure_recovery"]["pending"] = False
@@ -2386,6 +2539,9 @@ class Supervisor:
 
     def run(self) -> int:
         try:
+            current = self.state["current"]
+            if current and (not self.settings.first_create or not current["plan"]["pilot"]):
+                self.require_fast_acceptance()
             if self.state["phase"] == "paused":
                 return 2
             if self.state["phase"] == "stopped":
@@ -2431,11 +2587,14 @@ class Supervisor:
                             continue
                         self.launch()
                     elif self.state["phase"] == "between-campaigns" or self.observe():
-                        if self.settings.first_create:
-                            self.save(
-                                "paused", "FAST pilot closed; independent acceptance required."
-                            )
-                            return 0
+                        if self.settings.profile == FAST and generation["plan"]["pilot"]:
+                            try:
+                                self.require_fast_acceptance()
+                            except (ValueError, OSError, KeyError):
+                                self.save(
+                                    "paused", "FAST pilot closed; independent acceptance required."
+                                )
+                                return 0
                         if self.state["phase"] == "retry-wait":
                             continue
                         self.launch()

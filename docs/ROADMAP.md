@@ -8,6 +8,13 @@ established. The phase history below records the broader platform; it is not
 the current task order. The [Program & Readiness board](https://github.com/users/daffieeee-arch/projects/2)
 tracks actual delivery evidence and remaining gates.
 
+The operator's current prerequisite is resolving recurring memory-related
+collector interruptions before further strategy work ([#235](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/235)).
+The old two-short-interval host-PSI stop is distinct from OOM or an exhausted
+collector limit. A versioned native-trend policy requires separate source review,
+immutable-image deployment and observed runtime acceptance; source tests alone
+do not establish that the running App has changed.
+
 | Order | Work | Current evidence and next gate |
 | --- | --- | --- |
 | 1 | Maintain collection after the first verified full campaign | Reviewed source `df0bf41` completed one real 7200-second campaign: all four lanes reported COMPLETED with zero integrity events, and an independent full-file audit accepted all eight WORK/HDD publications. Automatic handoff produced a fresh campaign with all four feeds fresh and growing. Publication/replacement caused several minutes of downtime; Kraken recorded one transport gap and `research_ready` remains false. See the [bounded runtime acceptance](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/223#issuecomment-6842833281). Broader continuity and untested physical reboot recovery remain [#205](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/205). |

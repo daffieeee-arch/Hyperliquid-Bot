@@ -115,6 +115,7 @@ def client(roots: status.StatusRoots) -> TestClient:
     [
         ("retry-wait", "classified-transport-interruption"),
         ("pressure-wait", "classified-host-pressure-interruption"),
+        ("capturing", "operator-release-upgrade"),
     ],
 )
 def test_continuous_status_is_separate_from_feed_freshness_and_goes_stale(

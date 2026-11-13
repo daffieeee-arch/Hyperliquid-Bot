@@ -39,12 +39,22 @@ Use BTCUSDT Binance USD-M native hourly trades, minute trades, minute marks
 and exact native/REST funding. Existing source inventory covers January 2020
 through August 2026. Early headerless CSVs are supported explicitly. Source
 hashes, official filename-bound checksums, finite OHLC, instrument, complete
-minute/hour grids and funding census must qualify before calculation.
+minute/hour grids and funding census must qualify before calculation. Full
+source qualification found twelve historical UTC entry days with missing minute
+marks, two in the primary period (2024-08-12 and 2026-06-29). Quarantine every
+affected day for all variants and benchmarks before signals. Count it as an
+unavailable/no-target day in the full calendar denominator. Dense replay clocks
+may retain empty marks only while all positions are flat; never interpolate a
+held mark or delete a losing position. Report this conditional availability
+limitation and retain the original files and exact gap census.
 
-Calculation starts January 8, 2020 00:00 UTC after seven fixed warm-up days;
-ends September 1, 2026 00:00 UTC, including the final charged close. Development
-is 2020–2023, validation is 2024, chronological diagnostics are 2025 and
-January–August 2026. All are exposed retrospective folds, not untouched OOS.
+Source qualification found that REST settlement marks are missing before late
+2023; do not invent those funding payments. The primary calculation therefore
+starts January 1, 2024 00:00 UTC, with December 2023 completed hourly warm-up,
+and ends September 1, 2026 00:00 UTC including the final charged close.
+Development is 2024, validation is 2025, and the chronological diagnostic is
+January–August 2026. This boundary is chosen from input availability before
+financial scoring, not from returns. All are exposed retrospective folds, not untouched OOS.
 Features always use only preceding completed observations; yearly/monthly
 boundaries must not fit parameters or reset away losses. Select at most one
 daily finalist from development net results under both cost cases, before
@@ -92,7 +102,12 @@ Historical venue collateral and intraminute ordering remain unproven.
 Report each calendar year's return, fees, friction, funding, marked drawdown,
 long/short attribution, complete trades, no-trade days, target attainment across
 all calendar days, realized margin ROI distribution and losing streaks. Include
-cash and identical-calendar always-long/always-short time-exit benchmarks.
+cash and identical-calendar always-long/always-short controls under both time
+and bracket exits. Each variant compares against the two controls matching its
+exit policy. Required comparator outcomes must be qualified; an unavailable or
+collateral-invalid comparator makes the assessment insufficient, not a rescued
+winning strategy. This risk/policy matching was fixed before any financial
+trial. Development selection never changes because of later comparator outcomes.
 An exploratory daily candidate must have positive base and stress net results
 in each later fold, beat both directional development benchmarks under the same
 cost cases, and have no unresolved calculation or collateral failures. This
@@ -110,8 +125,8 @@ receipt time and ordinal. B/A signs follow the project decoder; source semantics
 and any inferred aggressor interpretation remain explicit.
 
 Use all preselected hash-pinned closed September captures and the six completed
-Nov13 publications. September development is the first <=72h capture group
-(Sep18–21); validation is the Sep23 capture; diagnostic is the Sep24–26 capture
+Nov13 publications. September development includes both Sep18 captures (the two-hour gate plus
+the 72-hour capture, approximately 74 hours across Sep18–21); validation is the Sep23 capture; diagnostic is the Sep24–26 capture
 and remaining closed September captures. Nov13 is a separately reported recent
 bear-market diagnostic. All are exposed/selected coverage, not fresh OOS.
 Do not select campaigns by PnL. Old statuses and missing producer identities or
@@ -119,9 +134,18 @@ NTP attestations remain documented; new qualification is not retroactive old
 study admission. Current active recordings are excluded.
 
 Before financial reads, declare clock/session-contiguous research windows from
-capture metadata, ordinal/monotonic continuity and known gaps. Retain every
+capture metadata, ordinal/monotonic continuity and known gaps. Native best
+book timestamps must be no more than two seconds behind receipt UTC and no
+more than one second ahead; these are explicit observed clock/age assumptions,
+not NTP or network-latency certification. Late/snapshot trades outside that
+bound are ignored at arrival with counts retained. B/A signs remain the native
+pressure proxy, not a separately proven private taker flag. Retain every
 qualified window, all exclusions and durations. Reset features between windows;
 require warm-up and enough scheduled time for the full holding/deferred exit.
+Windows <=333 seconds provably cannot admit any registered configuration or
+benchmark (minimum 30s warm-up plus 300s hold plus deferred-exit guards). They
+retain explicit flat/no-target proof, source coverage and quality counts instead
+of redundant empty replay artifacts. They are never treated as active winners.
 This measures performance **conditional on intact windows**, not live recovery
 through unplanned gaps; the latter remains an operational limitation. An
 unexpected held gap/unknown exit fails its case with partial evidence retained,
@@ -138,9 +162,13 @@ L2 is a full snapshot and refreshes unchanged best quotes; BBO only arrives on
 changes. The observed pressure proxy is not full L3 order/cancellation history.
 
 One position at a time, initial account 10,000 USDC, requested notional 0.5 of
-marked equity, capped by executable displayed entry size, valid BTC lot/grid
-rounding and minimum notional. Immutable margin is actual filled entry notional
-divided by ten. Stop is -2% net initial-margin ROI; maximum holding is 300 seconds.
+marked equity with a fixed **100 USDC maximum entry notional**, additionally
+capped by executable displayed entry size, valid BTC lot/grid
+rounding and minimum notional. This small-order capacity cap was fixed before
+financial labels, matching the existing 100-unit exploratory quote-fill scale;
+it is not a leverage/size sweep or a claim that larger orders can exit at touch.
+Scaling is a separate depth/impact test. Immutable margin is actual filled entry notional
+divided by ten. Stop is -5% net initial-margin ROI; maximum holding is 300 seconds.
 No forced daily quantity or minimum net winner count.
 
 Long enters ask and exits bid; short enters bid and exits ask. Use the first
@@ -169,7 +197,10 @@ Report base/stress net equity, fees, spread/friction, marked risk, every fill,
 nonfill, signal/rejection count, immutable per-trade margin ROI and target
 attainment, activity per observed hour/day (not claimed 24h extrapolation),
 turnover and long/short contribution. Cash and a fixed 30s price-momentum/2%
-target benchmark share eligibility, fills, stop and costs. Choose at most one
+target benchmark share eligibility, fills, stop and costs. The -5% stop was
+fixed before financial reads because the 2x-cost case alone consumes >=2.2%
+of 10x margin before spread; a -2% stop would structurally stop on entry. This
+is a cost-only protocol correction, not an outcome-driven parameter search. Choose at most one
 micro finalist on development only; candidate assessment requires positive
 base/stress results in each qualified later group, improvement over the same
 benchmark in development, and no unresolved exposure/funding/calculation risks.

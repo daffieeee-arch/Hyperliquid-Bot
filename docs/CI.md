@@ -32,9 +32,10 @@ Both workflows set:
   `.github/actions/setup-node-pnpm` (pnpm store cache on);
 - runs `dependency-review` on `pull_request` (public repo, GitHub-native);
 - runs `actionlint` on every workflow (cheap, SHA-checked binary);
-- classifies the change set into the **areas** it can affect, so a PR runs
-  only the heavy jobs of those areas while every job name stays green
-  (required-check safe). See [Change-set areas](#change-set-areas).
+- classifies the change set into the **areas** it can affect, so a ready PR
+  runs only the heavy work of those areas while every required job name stays
+  green. Verified drafts skip the heavy jobs before allocating runners.
+  See [Change-set areas](#change-set-areas).
 
 `secret-scan`, `actionlint` and `dependency-review` always run, on every PR
 event including drafts and docs-only change sets.
@@ -84,17 +85,21 @@ same head. The `changes` job confirms a draft flag of the event payload live
 from the GitHub API (`pull-requests: read`), so a late run of a draft-era
 push or a re-run cannot skip on a PR that is already ready. Only a PR that
 both the payload and the API call a draft skips; if the state cannot be
-read, the PR counts as ready. A draft's skipped jobs report
-success, so before merging confirm the latest run on the head ran its heavy
-steps (its `changes` job does not say draft). A PR marked ready with the
+read, the PR counts as ready. Only a successful classification with both flags
+`false` and the complete verified-draft reason skips the five heavy jobs
+at job level on a pull-request event, avoiding five otherwise empty runners.
+Before merging, confirm the latest run on the head ran its applicable heavy steps (its `changes` job
+does not say draft). A PR marked ready with the
 Actions `GITHUB_TOKEN` starts no workflow run; mark it ready as a person or
 app, or push a commit.
 
-**Fail closed**: every gated job has `if: ${{ !cancelled() }}` and its steps
-run unless the flag is exactly `false`. If the `changes` job fails, its
-outputs are empty and every heavy step runs, instead of the jobs reporting a
-skipped success. A failed diff inside `ci_scope.py` also runs everything.
-Pushes to `main` always run everything.
+**Fail closed**: every gated job requires `!cancelled()` and skips only the
+complete verified-draft classification above. Its steps run unless the area
+flag is exactly `false`. If the `changes` job fails, its outputs are empty and
+every heavy step runs. Missing or inconsistent classification cannot avoid
+allocating the runner; `ci-gate` still rejects unavailable evidence. A failed
+diff inside `ci_scope.py` also runs everything. Pushes to `main` always run
+everything.
 
 ## Final CI gate
 
@@ -112,7 +117,9 @@ Unchanged areas keep their existing selective checks.
 
 Draft PRs therefore have a red `ci-gate` while retaining cheap draft checks and
 skipping heavy tests. Marking the PR ready starts new applicable checks on that
-head. Old draft-era success job names are not merge-ready evidence.
+head. Neither skipped draft jobs nor earlier draft-era success job names are
+merge-ready evidence. The gate does not accept `skipped` heavy jobs after a
+draft becomes ready.
 
 The gate aggregates only `ci.yml`; Cockpit's `first-paper-screen` remains a
 separate required check. It is not an independent AI-review publisher or an
@@ -186,12 +193,14 @@ New names (add if branch protection requires them):
 | `regress` | every CI run; its Python step needs the `python` area, its browser steps the `typescript` area (both skip on docs-only and draft PRs) | API + browser regress |
 | `ci-gate` | always after the CI workflow jobs | rejects draft-era skips, unavailable results and stale PR head/base; separate Cockpit check remains required |
 
-A job whose area is not affected (docs-only, the other area only, or a
-draft PR) still reports `python-foundation`, `d01-publication`,
+A ready PR job whose area is not affected (docs-only or the other area only)
+still reports `python-foundation`, `d01-publication`,
 `typescript-foundation`, `regress`, and `first-paper-screen` as **success**
 (early skip step). Do not require `dependency-review` on `push` to `main`.
-The final `ci-gate` intentionally fails for draft-skip runs despite those
-individual success names.
+Verified draft PRs instead report these five heavy jobs as **skipped**, without
+starting runners. The final `ci-gate` intentionally fails for draft-skip runs.
+Required check names, publishers, ready/main coverage and cheap draft checks
+are unchanged.
 
 ## Actual offline adapter observations in D01
 

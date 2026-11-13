@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import http.client
 import json
 import re
@@ -24,6 +25,13 @@ from hyperliquid_bot.ci_scope import (
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
+HEAVY_JOBS = (
+    ("ci.yml", "python-foundation"),
+    ("ci.yml", "d01-publication"),
+    ("ci.yml", "typescript-foundation"),
+    ("ci.yml", "regress"),
+    ("cockpit.yml", "first-paper-screen"),
+)
 
 
 @pytest.mark.parametrize(
@@ -281,6 +289,114 @@ def test_main_writes_the_outputs_the_workflows_read(
         read = set(re.findall(r"needs\.changes\.outputs\.([a-z_]+)", text))
         exported = set(re.findall(r"steps\.scope\.outputs\.([a-z_]+)", text))
         assert read <= exported <= set(written), workflow.name
+
+
+def _heavy_job_runs(
+    workflow: str,
+    job: str,
+    outputs: dict[str, str],
+    *,
+    event_name: str = "pull_request",
+    changes_result: str = "success",
+    cancelled: bool = False,
+) -> bool:
+    """Evaluate only the boolean/string subset used by the actual job conditions.
+
+    No workflow code is executed. Actions string equality is case-insensitive;
+    absent outputs become empty strings. actionlint checks the full syntax.
+    """
+
+    text = (WORKFLOWS / workflow).read_text(encoding="utf-8")
+    section = re.split(r"\n  [a-z0-9-]+:\n", text.split(f"\n  {job}:\n", 1)[1], maxsplit=1)[0]
+    match = re.search(r"^    if: >-\n((?:      .*\n)+)", section, re.MULTILINE)
+    assert match is not None, job
+    expression = " ".join(line.strip() for line in match.group(1).splitlines())
+    assert expression.startswith("${{ ") and expression.endswith(" }}")
+    expression = expression[4:-3].replace("cancelled()", str(cancelled))
+    expression = expression.replace("github.event_name", repr(event_name))
+    expression = expression.replace("needs.changes.result", repr(changes_result))
+    expression = re.sub(
+        r"needs\.changes\.outputs\.([a-z_]+)",
+        lambda found: repr(outputs.get(found.group(1), "")),
+        expression,
+    )
+    expression = re.sub(r"!(?!=)", "not ", expression).replace("&&", "and")
+
+    def value(node: ast.AST) -> bool | str:
+        if isinstance(node, ast.Constant) and isinstance(node.value, (str, bool)):
+            return node.value
+        if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.And):
+            return all(value(part) for part in node.values)
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            return not value(node.operand)
+        if isinstance(node, ast.Compare) and len(node.ops) == 1 and isinstance(node.ops[0], ast.Eq):
+            left, right = value(node.left), value(node.comparators[0])
+            assert isinstance(left, str) and isinstance(right, str)
+            return left.casefold() == right.casefold()
+        raise AssertionError(f"unsupported job-condition syntax: {ast.dump(node)}")
+
+    result = value(ast.parse(expression.strip(), mode="eval").body)
+    assert isinstance(result, bool)
+    return result
+
+
+@pytest.mark.parametrize(("workflow", "job"), HEAVY_JOBS)
+@pytest.mark.parametrize(
+    ("payload_draft", "live", "expected"),
+    [(True, True, False), (True, False, True), (True, None, True), (False, True, True)],
+)
+def test_actual_heavy_job_conditions_follow_verified_live_draft_transitions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    workflow: str,
+    job: str,
+    payload_draft: bool,
+    live: bool | None,
+    expected: bool,
+) -> None:
+    outputs = _run_main(tmp_path, monkeypatch, payload_draft=payload_draft, live=live)
+    assert _heavy_job_runs(workflow, job, outputs) is expected
+
+
+@pytest.mark.parametrize(("workflow", "job"), HEAVY_JOBS)
+def test_missing_or_inconsistent_draft_classification_cannot_skip_a_runner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, workflow: str, job: str
+) -> None:
+    draft = _run_main(tmp_path, monkeypatch, payload_draft=True, live=True)
+    assert not _heavy_job_runs(workflow, job, draft)
+    for result in ("failure", "cancelled", "skipped", ""):
+        assert _heavy_job_runs(workflow, job, draft, changes_result=result)
+    for field in ("python", "typescript", "reason"):
+        assert _heavy_job_runs(
+            workflow, job, {key: val for key, val in draft.items() if key != field}
+        )
+    for field, changed in (("python", "true"), ("typescript", "true"), ("reason", "unknown skip")):
+        assert _heavy_job_runs(workflow, job, draft | {field: changed})
+    assert _heavy_job_runs(workflow, job, {})
+    # Native Actions equality ignores case, including inside the full reason.
+    assert not _heavy_job_runs(workflow, job, {key: val.upper() for key, val in draft.items()})
+    # Main and unsupported events never use the draft optimization.
+    for event in ("push", "workflow_dispatch", ""):
+        assert _heavy_job_runs(workflow, job, draft, event_name=event)
+    # Explicit !cancelled() still overrides all classifications.
+    assert not _heavy_job_runs(workflow, job, {}, cancelled=True)
+
+
+@pytest.mark.parametrize(("workflow", "job"), HEAVY_JOBS)
+@pytest.mark.parametrize(
+    "paths",
+    [["docs/ROADMAP.md"], ["src/a.py"], ["apps/cockpit/src/a.ts"], ["unknown.file"]],
+)
+def test_ready_area_and_docs_classifications_keep_their_existing_job_results(
+    workflow: str, job: str, paths: list[str]
+) -> None:
+    scope = classify_areas(paths)
+    outputs = {
+        "python": str(scope.python).lower(),
+        "typescript": str(scope.typescript).lower(),
+        "reason": scope.reason,
+    }
+    assert _heavy_job_runs(workflow, job, outputs)
 
 
 # The classifier and its own tests name docs paths as data; they read none.

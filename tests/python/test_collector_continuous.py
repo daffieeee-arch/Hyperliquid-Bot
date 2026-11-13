@@ -1372,6 +1372,70 @@ def test_tick_raises_structured_capacity_incident_before_other_effects(
     assert caught.value.streaks["psi"] == 2
 
 
+def test_native_trend_tick_keeps_capturing_and_projects_short_stall_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    item = supervisor(monkeypatch)
+    item.settings = replace(
+        item.settings,
+        capacity=replace(item.settings.capacity, runtime_psi_profile=cap.NATIVE_TREND_PSI),
+    )
+    item.previous = sample()
+    item.streaks = {"psi": 1}
+    current = sample(1)
+    for kind in ("some", "full"):
+        current["psi"][kind]["total"] += 20_000
+    monkeypatch.setattr(time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(host, "notify", lambda message: None)
+    monkeypatch.setattr(cap, "snapshot", lambda: current)
+    item.tick()
+    assert item.state["phase"] == "capturing"
+    assert item.streaks["psi"] == 2
+    assert item.host_memory is not None
+    assert item.host_memory["state"] == "warning"
+    assert item.host_memory["runtime_psi_profile"] == cap.NATIVE_TREND_PSI
+    item.path = item.settings.state_root / "state.json"
+    item.state["current"]["adopted"] = False
+    published: dict[str, dict[str, Any]] = {}
+    monkeypatch.setattr(
+        host, "publish", lambda path, value, **kw: published.__setitem__(path.name, value)
+    )
+    host.Supervisor.save(item)
+    view = published["continuous-status.json"]
+    assert view["host_memory"] == item.host_memory
+    assert "opname blijft actief" in view["reason"]
+    assert len(view["reason"]) <= 240
+    assert view["research_ready"] is False
+
+
+def test_native_trend_pressure_receipt_pins_its_profile_and_native_samples(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    item, saved, effects = pressure_fixture(monkeypatch)
+    item.settings = replace(
+        item.settings,
+        capacity=replace(item.settings.capacity, runtime_psi_profile=cap.NATIVE_TREND_PSI),
+    )
+    before, current = sample(), sample(1)
+    for value in (before, current):
+        for kind in ("some", "full"):
+            value["psi"][kind].update(avg10=5.0, avg60=2.0)
+    streaks, reasons = cap.evaluate(before, current, {}, item.settings.capacity)
+    assert reasons == ["memory-pressure"]
+    error = host.CapacityStop(before, current, streaks, reasons)
+    item.begin_pressure_wait(error)
+    receipt = item.pressure_receipt()
+    assert receipt["capacity_policy"]["runtime_psi_profile"] == cap.NATIVE_TREND_PSI
+    assert receipt["before"] == before and receipt["current"] == current
+    assert effects == ["stop-owned"] and len(saved) == 1
+    item.settings = replace(
+        item.settings,
+        capacity=replace(item.settings.capacity, runtime_psi_profile=cap.LEGACY_PSI),
+    )
+    with pytest.raises(ValueError, match="Pressure recovery receipt differs"):
+        item.pressure_receipt()
+
+
 def test_pressure_records_proof_and_waits_a_full_stable_minute_before_audit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

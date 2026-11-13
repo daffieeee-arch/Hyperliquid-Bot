@@ -293,8 +293,48 @@ capture closes. ARC admission uses three fresh samples: direct available≥2GiB,
 effective≥5GiB, credit≤3GiB from one quarter of non-ghost evictable DATA above
 the explicitly pinned ARC floor. Startup PSI is strictly below full1%/some5%,
 with only the kernel's one-microsecond cumulative-export rounding allowance.
-Runtime memory pressure, OOM/throttle, telemetry gaps or changed module/bounds
+OOM/throttle, low available memory, telemetry gaps or changed module/bounds
 stop the owned capture. This is an engineering policy, not reserved memory.
+
+### Runtime PSI profiles
+
+The settings' capacity object may explicitly select
+`runtime_psi_profile: "native-trend-v2"`. Omission retains `short-streak-v1`
+and its exact historical receipt binding: full>=1% or some>=5% in two short
+consecutive counter intervals stops capture. Do not silently reinterpret an old
+incident or pending recovery under a different profile. Changing settings alone
+does not update a running supervisor; admit a reviewed frozen release and image.
+
+For the new profile, those short full1%/some5% bursts produce an operator warning
+while collection continues. The dashboard's existing continuous-detail message
+shows that warning and direct available memory. Root-produced status metadata
+also retains the profile, sample clock, interval rates and native PSI averages.
+These are host-wide stalls, not collector memory consumption or proof of OOM.
+
+Soft stops instead require the **same kind and trigger in both the previous and
+current sample**:
+
+| Trigger | Full PSI | Some PSI |
+| --- | --- | --- |
+| Corroborated native trend | avg10>=5% and avg60>=2% | avg10>=20% and avg60>=10% |
+| Critical native short trend | avg10>=25% | avg10>=50% |
+
+The kernel averages are exponentially weighted trends, **not exact ten- or
+sixty-second boxcar windows**. The critical route does not wait for avg60, but
+still inherits avg10 smoothing; direct low-memory, OOM and ZFS checks remain
+faster. Different kinds/routes cannot combine into stop permission. Original
+before/current samples and the explicit profile are sufficient to replay the
+decision; no warm rolling buffer is inferred across a supervisor restart.
+
+These thresholds are a project engineering choice, not a hardware guarantee.
+The stricter three-sample startup admission and full stable-minute recovery
+remain unchanged. Physical RAM is not reserved by a Docker upper limit; ZFS ARC
+is cache, and increasing a small collector's limit does not remove host PSI.
+No ARC/THP/kernel/VM allocation or unrelated App setting is changed by this
+profile. Native counter validation, hard headroom/OOM/ZFS stops, source/storage/
+clock/network boundaries and no-archive-deletion policy remain in force.
+Actual runtime admission and observation are required before declaring the
+deployed policy effective. See the [Linux PSI interface](https://docs.kernel.org/accounting/psi.html).
 
 Admission needs4GiB free per backing store; at2GiB the supervisor stops and
 records a pause. Runtime quota is also checked through actual available bytes.

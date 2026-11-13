@@ -687,6 +687,7 @@ class Supervisor:
         self.stopping = False
         self.previous: dict[str, Any] | None = None
         self.streaks: dict[str, int] = {}
+        self.host_memory: dict[str, Any] | None = None
         self.last_clock = 0.0
         self.last_store_check = 0.0
         self.owned_child: subprocess.Popen[str] | None = None
@@ -744,6 +745,19 @@ class Supervisor:
                 "supervisor_source_commit": self.settings.source_commit,
                 "producer_source_commit": generation["plan"]["source_commit"],
             }
+            memory = getattr(self, "host_memory", None)
+            if memory is not None:
+                view["host_memory"] = memory
+                if (
+                    self.state["phase"] == "capturing"
+                    and memory["runtime_psi_profile"] == capacity.NATIVE_TREND_PSI
+                    and memory["state"] == "warning"
+                ):
+                    available_gib = memory["direct_memavailable_bytes"] / capacity.GIB
+                    view["reason"] = (
+                        "Geheugenstalling op de NAS; opname blijft actief. "
+                        f"Beschikbaar: {available_gib:.2f} GiB."
+                    )
             publish(
                 Path(generation["roots"]["control"]) / "continuous-status.json", view, owner=1000
             )
@@ -783,6 +797,7 @@ class Supervisor:
             )
             if reasons:
                 raise CapacityStop(self.previous, current, self.streaks, reasons)
+        self.host_memory = capacity.runtime_status(self.previous, current, self.settings.capacity)
         self.previous = current
         self.save()
         generation = self.state.get("current")
@@ -834,7 +849,7 @@ class Supervisor:
             {
                 "schema": "collector-capacity-incident-v1",
                 "campaign": campaign,
-                "capacity_policy": asdict(self.settings.capacity),
+                "capacity_policy": capacity.policy_document(self.settings.capacity),
                 "supervisor_source_commit": self.settings.source_commit,
                 "created_utc_ns": time.time_ns(),
                 "boot_id": self.boot,
@@ -1023,7 +1038,7 @@ class Supervisor:
             if operator
             else "collector-pressure-incident-v1",
             "campaign": campaign,
-            "capacity_policy": asdict(self.settings.capacity),
+            "capacity_policy": capacity.policy_document(self.settings.capacity),
             "supervisor_source_commit": self.settings.source_commit,
             "producer_source_commit": self.state["current"]["plan"]["source_commit"],
             "created_utc_ns": time.time_ns(),
@@ -1279,7 +1294,7 @@ class Supervisor:
             digest(receipt) == value["receipt_sha256"]
             and receipt["campaign"] == campaign
             and receipt["reasons"] == ["memory-pressure"]
-            and receipt["capacity_policy"] == asdict(self.settings.capacity)
+            and receipt["capacity_policy"] == capacity.policy_document(self.settings.capacity)
             and receipt["producer_source_commit"] == self.state["current"]["plan"]["source_commit"]
             and re.fullmatch(r"[0-9a-f]{40}", receipt["supervisor_source_commit"]) is not None
             and receipt["schema"]

@@ -468,6 +468,7 @@ def snapshot(roots: StatusRoots, *, now_ns: int | None = None) -> dict[str, Any]
                     "classified-transport-interruption",
                     "host-reboot-interruption",
                     "classified-host-pressure-interruption",
+                    "operator-release-upgrade",
                 }:
                     safe_gap = {
                         "reason": gap["reason"],

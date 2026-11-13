@@ -33,16 +33,25 @@ The same locked candidate's [recent exposed diagnostic](research/locked-regime-r
 has also run on 73 completed September–November days: +2.3317% base / +2.2199%
 stress, three trades and zero 20%-margin hits. Its November short contributes
 most profit, but persistent short performs better; intervals still span zero.
+The [frozen micro entry-information diagnostic](research/micro-response-cost-result.md)
+has also run and passed full independent native reconstruction. All 200
+conditional charged-price cell means are negative; primary gross response is
+only +0.45–0.65 bps at base against an approximately 11-bps cost hurdle plus
+spread/rounding. These are exposed price observations, not realized trades or
+net margin returns. No endpoint or policy is selected; prioritize a different
+economic mechanism rather than more pressure-threshold tuning.
 Micro source [#246](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/246)
 is merged as opt-in source only. A separate FAST app is being prepared in
-[#252](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/252), with an
-interrupted pilot-acceptance finding under repair/re-review. It is not deployed.
+[#252](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/252). Its first
+native creation attempt stopped before App creation; the independently reviewed
+source fix [PR259](https://github.com/daffieeee-arch/Hyperliquid-Bot/pull/259)
+is merged, but the actual retry and pilot acceptance remain unproven.
 The existing collector remains unchanged. Nautilus/testnet preparation supports
 this work. TESTNET orders remain unapproved.
 
 | Order | Work | Current evidence and next gate |
 | --- | --- | --- |
-| 1 | Continue outcome-driven discovery on existing history | [Regime result](research/cost-aware-regime-result.md) selects one positive historical candidate. Its [locked recent diagnostic](research/locked-regime-recent-result.md) is also positive after both costs, but has only three trades and does not beat persistent short. Thin 2025 profit, uncertainty spanning zero and no native/fresh OOS proof keep admission closed. Qualify [#249](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/249) without retuning; preserve all earlier failures and the 32/40 budget. Opt-in fast source is merged; [#252](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/252) separately prepares its independent app before [#244](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/244)'s micro fill/exposure continuation. No FAST runtime deployment yet. |
+| 1 | Continue outcome-driven discovery on existing history | [Regime result](research/cost-aware-regime-result.md) selects one positive historical candidate. Its [locked recent diagnostic](research/locked-regime-recent-result.md) is also positive after both costs, but has only three trades and does not beat persistent short. Thin 2025 profit, uncertainty spanning zero and no native/fresh OOS proof keep admission closed. Qualify [#249](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/249) without retuning; preserve all earlier failures and the 32/40 budget. The [micro price-response result](research/micro-response-cost-result.md) independently confirms weak entry information relative to costs; it does not repair the original failed executions. Prioritize a different economic hypothesis. Opt-in fast source is merged; [#252](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/252) separately prepares its independent app. No FAST runtime deployment yet. |
 | 2 | Maintain collection after the first verified full campaign | Reviewed source `df0bf41` completed one real 7200-second campaign: all four lanes reported COMPLETED with zero integrity events, and an independent full-file audit accepted all eight WORK/HDD publications. Automatic handoff produced a fresh campaign with all four feeds fresh and growing. Publication/replacement caused several minutes of downtime; Kraken recorded one transport gap and `research_ready` remains false. See the [bounded runtime acceptance](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/223#issuecomment-6842833281). Broader continuity and untested physical reboot recovery remain [#205](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/205). |
 | 3 | Preserve the original BTC study's insufficient-input disposition | Independent full-file/hash and metadata admission found only three of twelve six-hour chunks per venue on both stores. The original Nov2–5 input attempt is closed as **INSUFFICIENT_DATA / NOT_TESTED**, with no OOS publication or financial scoring. A local partial remains retained and unqualified. Nov6 funding separately passes timing metadata admission for 120 native records / 74 padded slots; this cannot repair missing market data. See the [input disposition](research/btc-spot-flow-input-disposition.md) and [#192](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/192#issuecomment-6839899958). |
 | 4 | Use the corrected accounting as bounded research evidence | [PR225](https://github.com/daffieeee-arch/Hyperliquid-Bot/pull/225) delivered one fixed retrospective January 2025 reconstruction. Independent native-data/Decimal verification accepted +0.1898547% at base assumed costs and +0.1056243% at doubled costs, from **six trades** on 39 surviving symbols excluding ICP. Both NAS result packages passed independent copy admission. This does not restore the original primary rule or establish a Hyperliquid edge. See the [result and limits](research/january-volume-repair-result.md) and [#222](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/222). |

@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import enum
 import os
+import tempfile
 import threading
 import uuid
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import BinaryIO, Final
 
 import duckdb
 
@@ -71,9 +73,91 @@ CREATE TABLE raw_segment (
 )
 """
 
-_INSERT_SEGMENT_ROW: Final = """
-INSERT INTO raw_segment VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+# CSV is only an anonymous staging format. Binary payloads use base64 to avoid
+# hex's fourfold expansion; the declared final Parquet schema remains unchanged.
+_CSV_SEGMENT_TYPES: Final = {
+    "schema_version": "INTEGER",
+    "venue": "VARCHAR",
+    "product": "VARCHAR",
+    "channel": "VARCHAR",
+    "session_id": "VARCHAR",
+    "message_ordinal": "BIGINT",
+    "received_utc_ns": "BIGINT",
+    "received_monotonic_ns": "BIGINT",
+    "direction": "VARCHAR",
+    "frame_type": "VARCHAR",
+    "payload_encoding": "VARCHAR",
+    "payload_bytes": "VARCHAR",
+    "payload_sha256": "VARCHAR",
+}
+_CSV_CHUNK_BYTES: Final = 48 * 1024  # Divisible by three: only the final base64 block pads.
+_LOAD_SEGMENT_CSV: Final = r"""
+INSERT INTO raw_segment
+SELECT schema_version, venue, product, channel, session_id, message_ordinal,
+       received_utc_ns, received_monotonic_ns, direction, frame_type,
+       payload_encoding, from_base64(payload_bytes), payload_sha256
+FROM read_csv(?, columns = ?, auto_detect = false, header = false,
+              delim = ',', quote = '"', escape = '"', new_line = '\n',
+              force_not_null = ['schema_version', 'venue', 'product', 'channel',
+                                'session_id', 'message_ordinal', 'received_utc_ns',
+                                'received_monotonic_ns', 'direction', 'frame_type',
+                                'payload_encoding', 'payload_bytes', 'payload_sha256'],
+              parallel = false, compression = 'none', strict_mode = true,
+              ignore_errors = false, null_padding = false,
+              max_line_size = ?, buffer_size = ?)
 """
+
+
+def _csv_text(stream: BinaryIO, value: str) -> None:
+    """Quote bounded text chunks, including embedded NUL/newline and null-like text."""
+    stream.write(b'"')
+    for offset in range(0, len(value), _CSV_CHUNK_BYTES):
+        stream.write(value[offset : offset + _CSV_CHUNK_BYTES].replace('"', '""').encode())
+    stream.write(b'"')
+
+
+def _csv_payload(stream: BinaryIO, value: bytes) -> None:
+    stream.write(b'"')
+    view = memoryview(value)
+    for offset in range(0, len(view), _CSV_CHUNK_BYTES):
+        stream.write(base64.b64encode(view[offset : offset + _CSV_CHUNK_BYTES]))
+    stream.write(b'"')
+
+
+def _load_segment(
+    connection: duckdb.DuckDBPyConnection,
+    segment: tuple[RawResearchRecord, ...],
+    directory: Path,
+) -> None:
+    """Bulk-load without per-scalar DuckDB binds or a whole-segment CSV allocation."""
+    # Anonymous disk staging belongs to this writer's spool filesystem, never
+    # the container's shared /tmp tmpfs. Closing the FD also cleans up on error.
+    with tempfile.TemporaryFile(mode="w+b", dir=directory) as stream:
+        largest_line = 0
+        for record in segment:
+            start = stream.tell()
+            for index, value in enumerate(_storage_row(record)):
+                if index:
+                    stream.write(b",")
+                if isinstance(value, bytes):
+                    _csv_payload(stream, value)
+                else:
+                    # The schema-version constructor historically also accepts
+                    # values equal to integer 1, including True and 1.0.
+                    _csv_text(stream, str(int(record.schema_version)) if index == 0 else str(value))
+            stream.write(b"\n")
+            largest_line = max(largest_line, stream.tell() - start)
+        stream.flush()
+        stream.seek(0)
+        # DuckDB requires room for four maximum-size CSV lines. Set that bound
+        # from actual staged bytes, rather than its sixteen-line default or a
+        # new payload cap. A single oversized record remains a valid segment.
+        line_size = max(largest_line + 1, 8192)
+        connection.execute(
+            _LOAD_SEGMENT_CSV,
+            [f"/proc/self/fd/{stream.fileno()}", _CSV_SEGMENT_TYPES, line_size, 4 * line_size],
+        )
+
 
 # One in-flight segment plus one queued segment. Further appends wait.
 # The bound is the backpressure that keeps a slow disk from growing memory
@@ -474,10 +558,7 @@ class ParquetResearchWriter:
         connection = duckdb.connect(":memory:")
         try:
             connection.execute(_CREATE_SEGMENT_TABLE)
-            connection.executemany(
-                _INSERT_SEGMENT_ROW,
-                [_storage_row(record) for record in segment],
-            )
+            _load_segment(connection, segment, self._output_dir)
             escaped_partial_path = _sql_string(partial_path.as_posix())
             connection.execute(
                 f"COPY raw_segment TO '{escaped_partial_path}' (FORMAT PARQUET, COMPRESSION ZSTD)"

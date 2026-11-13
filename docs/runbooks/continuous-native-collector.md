@@ -204,6 +204,17 @@ survives reboot, as do integrity/storage/clock pauses.
 
 ## Lifecycle and limits
 
+The raw Parquet writer streams a typed base64 CSV staging file on its own spool
+filesystem, then bulk-loads the unchanged 13-column table. Staging is anonymous
+and disappears when its descriptor closes, including write/load failures; it
+does not consume the container's shared `/tmp` tmpfs. Only bounded text/binary
+chunks are encoded at once. The reader's line limit follows the largest actual
+staged record, with an explicit four-line buffer rather than the default
+sixteen-line allocation. Rotation remains a threshold, so a single record may
+exceed it. Queue, original receipt clocks, raw bytes/hashes, atomic Parquet
+publication and close/retry/cancellation contracts remain the same. This source
+change requires a separately reviewed image and runtime admission before use.
+
 1. Adopt the exact existing managed campaign; do not update/restart its App
    while it runs. Its current finite pressure/clock guards remain responsible.
 2. At normal exit require exit0/native COMPLETED and audit **every** chunk/lane

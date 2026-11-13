@@ -2,18 +2,21 @@
 
 ## Active priorities — checkpoint 2026-11-13
 
-The immediate goal is a reproducible **BTC strategy result after costs**, followed
-by PAPER only if the evidence supports it. No profitable strategy has been
+The immediate goal is **real comparative strategy discovery on existing data**,
+followed by fresh validation and PAPER only if the evidence supports it. No profitable strategy has been
 established. The phase history below records the broader platform; it is not
 the current task order. The [Program & Readiness board](https://github.com/users/daffieeee-arch/projects/2)
 tracks actual delivery evidence and remaining gates.
 
-The operator's current prerequisite is resolving recurring memory-related
-collector interruptions before further strategy work ([#235](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/235)).
-The old two-short-interval host-PSI stop is distinct from OOM or an exhausted
-collector limit. A versioned native-trend policy requires separate source review,
-immutable-image deployment and observed runtime acceptance; source tests alone
-do not establish that the running App has changed.
+The bounded memory-policy fix passed independent review and runtime acceptance
+([#235](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/235#issuecomment-6850450863)).
+Broader collector continuity remains open separately. It does not block the
+operator-approved [discovery pilot #237](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/237).
+The [first registered batch](experiments/exp_discovery_batch_one.md) compares
+twelve residual-dispersion/OI-recovery configurations on exposed January history
+for BTC/ETH/SOL, with costs, funding and paired stress. This specification records
+the planned run, not a completed result. Nautilus/testnet preparation supports
+the research and must not delay it; TESTNET orders remain unapproved.
 
 | Order | Work | Current evidence and next gate |
 | --- | --- | --- |

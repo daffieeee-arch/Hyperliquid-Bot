@@ -289,6 +289,7 @@ def run(
                         {"spec": asdict(request), "targets": [asdict(t) for t in targets[index]]},
                     )
                     attempts += 1
+                    case: dict[str, Any] | None = None
                     try:
                         case = original.evaluate_case(
                             request, segment.frames, targets[index], segment.minute_extremes
@@ -302,7 +303,6 @@ def run(
                                 "daily baseline exact native trade/cost/funding/equity parity",
                             )
                         account.add(case, segment.frames)
-                        del case
                     except (HarnessError, ArithmeticError, ValueError, MemoryError) as error:
                         if name == BASELINE:
                             raise
@@ -318,6 +318,9 @@ def run(
                                 "no_resume": True,
                             },
                         )
+                    finally:
+                        # A failed Account.add must not retain its case into the next chain.
+                        case = None
                 summary = summarize(account)
                 if name == BASELINE and not account.blocked:
                     require(

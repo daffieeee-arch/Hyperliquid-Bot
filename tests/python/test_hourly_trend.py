@@ -515,3 +515,35 @@ def test_private_failure_evidence_is_create_only_before_any_labels(
     with pytest.raises(Exception, match="exist"):
         cli.main(argv)
     assert (output / "claim.json").read_bytes() == before
+
+
+def test_failed_account_add_releases_returned_case_before_next_chain(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    sources, expected, old = chains(monkeypatch)
+    evaluate = original.evaluate_case
+    calls = 0
+    failed_cases: list[weakref.ReferenceType[dict[str, Any]]] = []
+
+    class Case(dict[str, Any]):
+        pass
+
+    def result_with_bad_account_binding(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        if calls == 8:
+            gc.collect()
+            assert failed_cases and failed_cases[0]() is None
+        result = evaluate(*args, **kwargs)
+        if calls == 7:
+            failed = Case(result)
+            failed["initial_equity"] += 1  # Force Account.add's carried-capital guard.
+            failed_cases.append(weakref.ref(failed))
+            return failed
+        return result
+
+    monkeypatch.setattr(original, "evaluate_case", result_with_bad_account_binding)
+    with PrivateOutput(tmp_path / "run") as output:
+        result = cli.run(sources, output, expected, old)
+    assert result["accounts"]["cash"]["base"]["failed"]
+    assert result["case_attempts"] == 94

@@ -10,7 +10,7 @@ import re
 import stat
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -18,6 +18,7 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 
+from .collector_instance import FAST, instance
 from .collector_runtime import LANES
 from .local_mode import UnsafeTradingModeError, require_local_paper_mode
 
@@ -51,8 +52,10 @@ class StatusRoots:
     capture: Path
     archive: Path
     control: Path
+    instance: str = field(default="standard", kw_only=True)
 
     def __post_init__(self) -> None:
+        instance(self.instance)
         for path in (self.spool, self.capture, self.archive, self.control):
             if not path.is_absolute() or ".." in path.parts:
                 raise ValueError("Status roots require explicit absolute paths.")
@@ -313,6 +316,48 @@ def _lane(
             state = "unknown"
         if live.get("definitive_outage") is not None:
             state = "outage"
+        if roots.instance == FAST.name:
+            source = live.get("source_status")
+            if not isinstance(source, dict):
+                raise ValueError("FAST native source status unavailable.")
+            safe = {
+                "mode": "fast-5" if source.get("mode") == "fast-5" else "unknown",
+                "l2_session_ack": source.get("l2_session_ack") is True if fresh else None,
+                "transport_config_version": (
+                    "hyperliquid-fast-bounded-v1"
+                    if source.get("transport_config_version") == "hyperliquid-fast-bounded-v1"
+                    else "unknown"
+                ),
+                **{
+                    key: _count(source.get(key))
+                    for key in (
+                        "max_message_bytes",
+                        "max_queue_frames",
+                        "gap_count",
+                        "reconnect_count",
+                        "integrity_error_count",
+                        "inbound_payload_bytes",
+                        "inbound_message_count",
+                    )
+                },
+                "connection_state": source.get("connection_state")
+                if source.get("connection_state")
+                in {"unknown", "connecting", "connected", "recovering", "stopped"}
+                else "unknown",
+                "fresh": fresh,
+                "cadence_percentiles": None,
+                "event_age_seconds": None,
+            }
+            result["source"] = safe
+            if (
+                safe["mode"] != "fast-5"
+                or safe["l2_session_ack"] is not True
+                or safe["integrity_error_count"] != 0
+                or safe["transport_config_version"] != "hyperliquid-fast-bounded-v1"
+                or safe["max_message_bytes"] != 1048576
+                or safe["max_queue_frames"] != 16
+            ):
+                state = "degraded" if fresh else "unknown"
         result.update(
             state=state,
             publisher_fresh=fresh,
@@ -408,7 +453,25 @@ def snapshot(roots: StatusRoots, *, now_ns: int | None = None) -> dict[str, Any]
         "note": "Public-data monitoring only; no orders or profitability assessment.",
     }
     try:
-        controller = _controller(metadata(roots.spool, "runtime-health.json"), current)
+        document = metadata(roots.spool, "runtime-health.json")
+        if document.get("instance", "standard") != roots.instance:
+            raise ValueError("Cross-instance controller metadata refused.")
+        controller = _controller(document, current)
+        if roots.instance == FAST.name:
+            if (
+                controller["lanes"] != ["hyperliquid"]
+                or not controller["campaign"].startswith(FAST.campaign_prefix)
+                or document.get("l2_mode") != "fast-5"
+            ):
+                raise ValueError("FAST controller source identity differs.")
+            controller.update(
+                instance=roots.instance,
+                l2_mode="fast-5",
+                l2_max_levels_per_side=5,
+                source_verified=False,
+                cadence_percentiles=None,
+                event_age_seconds=None,
+            )
         lanes = [_lane(roots, lane, controller, now) for lane in controller["lanes"]]
         phase = controller["phase"]
         overall = phase
@@ -429,7 +492,8 @@ def snapshot(roots: StatusRoots, *, now_ns: int | None = None) -> dict[str, Any]
             continuous = metadata(roots.control, "continuous-status.json")
             phase = continuous.get("phase")
             if (
-                continuous.get("schema") != "collector-continuous-status-v1"
+                continuous.get("instance", "standard") != roots.instance
+                or continuous.get("schema") != "collector-continuous-status-v1"
                 or continuous.get("intent") != "continuous-public-data"
                 or continuous.get("campaign") != controller["campaign"]
                 or phase
@@ -476,6 +540,24 @@ def snapshot(roots: StatusRoots, *, now_ns: int | None = None) -> dict[str, Any]
                         "end_utc": ended,
                         "missing_events_known": False,
                     }
+            resource: dict[str, Any] | None = None
+            host_memory = None
+            if roots.instance == FAST.name:
+                record = continuous.get("collector_memory")
+                if isinstance(record, dict):
+                    _, memory_age = _utc_ns(record.get("sampled_utc_ns"), current)
+                    resource = {
+                        key: _count(record.get(key))
+                        for key in ("current_bytes", "peak_bytes", "limit_bytes")
+                    }
+                    resource.update(
+                        age_seconds=memory_age, fresh=memory_age is not None and memory_age <= 10
+                    )
+                raw_memory = continuous.get("host_memory")
+                if isinstance(raw_memory, dict):
+                    host_memory = {
+                        key: _count(raw_memory.get(key)) for key in ("direct_memavailable_bytes",)
+                    }
             result["continuous"] = {
                 "phase": phase,
                 "fresh": age is not None and age <= 10,
@@ -490,6 +572,8 @@ def snapshot(roots: StatusRoots, *, now_ns: int | None = None) -> dict[str, Any]
                 "supervisor_source_commit": continuous["supervisor_source_commit"],
                 "producer_source_commit": controller["source_commit"],
             }
+            if roots.instance == FAST.name:
+                result["continuous"].update(collector_memory=resource, host_memory=host_memory)
         except (OSError, ValueError, TypeError, OverflowError):
             pass
     except (OSError, ValueError, TypeError, OverflowError):
@@ -560,12 +644,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     for role in ("spool", "capture", "archive", "control"):
         parser.add_argument("--" + role, required=True, type=Path)
+    parser.add_argument("--instance", choices=("standard", FAST.name), default="standard")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8080)
     args = parser.parse_args(argv)
     if not 1 <= args.port <= 65535:
         parser.error("Use a valid status HTTP port.")
-    roots = StatusRoots(args.spool, args.capture, args.archive, args.control)
+    roots = StatusRoots(
+        args.spool, args.capture, args.archive, args.control, instance=args.instance
+    )
     import uvicorn
 
     uvicorn.run(

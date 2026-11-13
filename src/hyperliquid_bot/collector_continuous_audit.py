@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from .collector_capacity import require
-from .collector_runtime import LANES, RuntimePlan
+from .collector_runtime import LANES, RuntimePlan, verify_fast_claim
 from .collector_storage import MAX_FILES, checked_relative, directory_fd, file_hash, read_json
 
 
@@ -72,6 +72,16 @@ def sealed_copy(root: Path, plan: RuntimePlan, lane: str, run_id: str) -> dict[s
         "storage_profile": "truenas-zfs",
     }.items():
         require(provenance.get(key) == value, "Publication provenance mismatch: " + key)
+    if plan.l2_fast:
+        require(
+            provenance.get("instance") == plan.instance and provenance.get("l2_mode") == "fast-5",
+            "FAST publication profile differs.",
+        )
+        verify_fast_claim(
+            read_json(root / "capture-claim.json", limit=1024**2),
+            source_commit=plan.source_commit,
+            run_id=run_id,
+        )
     expected = str(
         Path("/home/chupa/hyperliquid-spool")
         / plan.campaign

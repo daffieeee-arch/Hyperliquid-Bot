@@ -1,5 +1,9 @@
 # Native TrueNAS public collector App
 
+The separate opt-in [FAST-5 research App](fast-native-collector.md) uses its own
+fixed template, runtime dataset, controls and port18791. It never updates the
+existing four-feed App to add FAST; source merge does not deploy it.
+
 This is a separate explicitly selected runtime profile for the credentialless
 collector, not an automatic conversion of the Ubuntu VM runtime. Issue #198
 tracks the source, independent review, CI image and actual native pilot evidence.

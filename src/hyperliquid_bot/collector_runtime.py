@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
+from .collector_instance import FAST, instance
 from .collector_native_storage import require_native_storage
 from .collector_storage import (
     exclusive_json,
@@ -53,8 +54,21 @@ class RuntimePlan:
     image_digest: str
     prune_spool: bool = False
     storage_profile: str = "vm-nfs"
+    instance: str = "standard"
+    l2_fast: bool = False
 
     def __post_init__(self) -> None:
+        profile = instance(self.instance)
+        if type(self.l2_fast) is not bool or self.l2_fast is not (profile == FAST):
+            raise ValueError("FAST mode requires its separate fixed instance.")
+        if profile != FAST and self.campaign.startswith(FAST.campaign_prefix):
+            raise ValueError("FAST namespace requires the FAST instance.")
+        if profile == FAST and (
+            self.lanes != ("hyperliquid",)
+            or self.storage_profile != "truenas-zfs"
+            or not self.campaign.startswith(FAST.campaign_prefix)
+        ):
+            raise ValueError("FAST instance requires HL-only native FAST campaign identity.")
         if type(self.storage_profile) is not str or self.storage_profile not in {
             "vm-nfs",
             "truenas-zfs",
@@ -88,6 +102,44 @@ class RuntimePlan:
             raise ValueError("Immutable verified image digest required.")
 
 
+def verify_fast_claim(
+    claim: dict[str, object], *, source_commit: str | None = None, run_id: str | None = None
+) -> None:
+    """Compare the native claim and hashed config with the fixed FAST request."""
+    from .capture_live_status import config_identity
+    from .hyperliquid_raw_research import fast_transport_claim_fields
+    from .hyperliquid_retained_instruments import build_hyperliquid_retained_plan
+
+    native = build_hyperliquid_retained_plan(l2_fast=True)
+    expected: dict[str, object] = {
+        "feed": native.feed_name,
+        "websocket_url": "wss://api.hyperliquid.xyz/ws",
+        "heartbeat_interval_seconds": 45.0,
+        "receive_timeout_seconds": 60.0,
+        "started_coins": ["BTC"],
+        "l2_mode": "fast-5",
+        "l2_max_levels_per_side": 5,
+        "l2_subscription_payloads": [
+            item.payload_bytes.decode("utf-8")
+            for item in native.subscriptions
+            if item.channel == "l2Book"
+        ],
+        "l2_mode_requires_session_ack": True,
+        **fast_transport_claim_fields(),
+    }
+    if (
+        any(
+            type(claim.get(key)) is not type(value) or claim.get(key) != value
+            for key, value in expected.items()
+        )
+        or claim.get("config_identity")
+        != config_identity(expected | {"market_data_stale_seconds": 90.0})
+        or (source_commit is not None and claim.get("code_version") != source_commit)
+        or (run_id is not None and claim.get("run_id") != run_id)
+    ):
+        raise ValueError("Native FAST source claim differs from the requested profile.")
+
+
 def public_environment(source: Mapping[str, str]) -> dict[str, str]:
     require_local_paper_mode(source.get("TRADING_MODE"))
     if "D41_EXECUTION_MODE" in source:
@@ -106,7 +158,11 @@ def public_environment(source: Mapping[str, str]) -> dict[str, str]:
     }
 
 
-def native_command(lane: str, artifact_root: Path, run_id: str, seconds: int) -> list[str]:
+def native_command(
+    lane: str, artifact_root: Path, run_id: str, seconds: int, *, l2_fast: bool = False
+) -> list[str]:
+    if type(l2_fast) is not bool or (l2_fast and lane != "hyperliquid"):
+        raise ValueError("FAST applies only to Hyperliquid.")
     module = LANES[lane][0]
     return [
         sys.executable,
@@ -119,7 +175,7 @@ def native_command(lane: str, artifact_root: Path, run_id: str, seconds: int) ->
         run_id,
         "--duration-seconds",
         str(seconds),
-    ]
+    ] + (["--l2-fast"] if l2_fast else [])
 
 
 def capture_window_plan(
@@ -172,6 +228,8 @@ def capture_window_plan(
         "end_semantics": "lower-bound-on-uninterrupted-native-timer-not-actual-stop",
         "host_clock_evidence": clock,
     }
+    if plan.l2_fast:
+        result.update(instance=plan.instance, l2_mode="fast-5", l2_max_levels_per_side=5)
     content = (json.dumps(result, sort_keys=True, indent=2, allow_nan=False) + "\n").encode()
     if len(content) > WINDOW_PLAN_MAX_BYTES:
         raise ValueError("Prelaunch planning record exceeds its bound.")
@@ -200,7 +258,8 @@ def allocated_bytes(root: Path) -> int:
 def require_network_marker(path: Path, plan: RuntimePlan) -> dict[str, object]:
     marker = read_json(path)
     if (
-        marker.get("schema") != "collector-container-network-v1"
+        (plan.l2_fast and marker.get("instance") != plan.instance)
+        or marker.get("schema") != "collector-container-network-v1"
         or marker.get("campaign") != plan.campaign
         or marker.get("source_commit") != plan.source_commit
         or marker.get("image_digest") != plan.image_digest
@@ -393,6 +452,8 @@ def collect_campaign(
         "research_ready": False,
         "storage_profile": plan.storage_profile,
     }
+    if plan.l2_fast:
+        provenance.update(instance=plan.instance, l2_mode="fast-5", l2_max_levels_per_side=5)
     try:
         exclusive_json(campaign / "campaign.json", provenance)
     except BaseException:
@@ -411,6 +472,8 @@ def collect_campaign(
         "chunks": plan.chunks,
         "chunk_seconds": plan.chunk_seconds,
     }
+    if plan.l2_fast:
+        status.update(instance=plan.instance, l2_mode="fast-5", l2_max_levels_per_side=5)
     children: list[subprocess.Popen[bytes]] = []
     stopping = False
 
@@ -456,7 +519,9 @@ def collect_campaign(
                 output = (lane_root / "collector-output.log").open("xb")
                 try:
                     child = subprocess.Popen(
-                        native_command(lane, lane_root, run_id, plan.chunk_seconds),
+                        native_command(
+                            lane, lane_root, run_id, plan.chunk_seconds, l2_fast=plan.l2_fast
+                        ),
                         env=environment,
                         stdin=subprocess.DEVNULL,
                         stdout=output,
@@ -511,6 +576,17 @@ def collect_campaign(
                     or health.get("duration_seconds") != plan.chunk_seconds
                 ):
                     raise RuntimeError("Only completed credentialless chunks may be published.")
+                if plan.l2_fast:
+                    if (
+                        type(health.get("integrity_events")) is not int
+                        or health["integrity_events"] != 0
+                    ):
+                        raise ValueError("FAST native integrity evidence must be exactly zero.")
+                    verify_fast_claim(
+                        read_json(source / "capture-claim.json", limit=1024**2),
+                        source_commit=plan.source_commit,
+                        run_id=run_id,
+                    )
                 original_plan = read_bytes(
                     chunk_root / lane / WINDOW_PLAN_NAME, limit=WINDOW_PLAN_MAX_BYTES
                 )
@@ -586,6 +662,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--chunk-seconds", type=int)
     parser.add_argument("--chunks", type=int)
     parser.add_argument("--pilot", action="store_true")
+    parser.add_argument("--instance", choices=("standard", FAST.name), default="standard")
+    parser.add_argument("--l2-fast", action="store_true")
     parser.add_argument("--prune-spool", action="store_true")
     parser.add_argument("--storage-profile", choices=("vm-nfs", "truenas-zfs"), default="vm-nfs")
     parser.add_argument("--spool", type=Path, default=Path("/spool"))
@@ -654,6 +732,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.expected_image,
             args.prune_spool,
             args.storage_profile,
+            args.instance,
+            args.l2_fast,
         )
         collect_campaign(
             plan,

@@ -98,7 +98,39 @@ def uncertainty(values: list[float], block: int) -> dict[str, Any]:
 
 
 class Account:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
+        folds: dict[str, tuple[int, int]] | None = None,
+    ) -> None:
+        self.start_ms = START if start_ms is None else start_ms
+        self.end_ms = END if end_ms is None else end_ms
+        self.folds = dict(FOLDS if folds is None else folds)
+        require(
+            type(self.start_ms) is int
+            and type(self.end_ms) is int
+            and self.start_ms >= 0
+            and self.end_ms > self.start_ms
+            and self.start_ms % DAY == self.end_ms % DAY == 0,
+            "Whole UTC research account interval.",
+        )
+        boundary = self.start_ms
+        require(bool(self.folds), "At least one chronological account fold.")
+        for name, (start, end) in self.folds.items():
+            require(
+                type(name) is str
+                and bool(name)
+                and type(start) is int
+                and type(end) is int
+                and start == boundary
+                and start < end
+                and start % DAY == end % DAY == 0,
+                "Account folds must be an ordered complete calendar partition.",
+            )
+            boundary = end
+        require(boundary == self.end_ms, "Account folds must reach the declared end.")
         self.equity = INITIAL
         self.points: list[dict[str, Any]] = []
         self.episodes: list[dict[str, Any]] = []
@@ -110,6 +142,12 @@ class Account:
 
     def add(self, case: dict[str, Any], frames: tuple[Frame, ...]) -> None:
         require(not self.blocked, "failed account cannot silently resume")
+        require(
+            bool(frames)
+            and self.start_ms <= frames[0].timestamp_ms < frames[-1].timestamp_ms <= self.end_ms
+            and (not self.points or frames[0].timestamp_ms > self.points[-1]["timestamp_ms"]),
+            "Source segments must lie in the account interval in chronological order.",
+        )
         require(
             abs(case["initial_equity"] - self.equity) < 1e-7,
             "source segments carry actual closing capital",
@@ -178,9 +216,9 @@ class Account:
             for day in range(row["entry_ms"] // DAY, (row["exit_ms"] - 1) // DAY + 1)
         }
         if not self.blocked:
-            require(bool(clock) and clock[-1] == END, "complete financial endpoint")
+            require(bool(clock) and clock[-1] == self.end_ms, "complete financial endpoint")
         if clock:
-            for name, (start, end) in FOLDS.items():
+            for name, (start, end) in self.folds.items():
                 if clock[-1] < end:
                     continue
                 values = [
@@ -232,7 +270,7 @@ class Account:
             "nonflat_calendar_days": len(active_days),
             "no_trade_calendar_days": None
             if self.blocked
-            else (END - START) // DAY - len(active_days),
+            else (self.end_ms - self.start_ms) // DAY - len(active_days),
             "target_attainment_count": sum(row["target_met"] for row in self.episodes),
             "fee_cost": fees,
             "slippage_cost": friction,

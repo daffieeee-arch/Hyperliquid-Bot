@@ -88,9 +88,9 @@ Fold returns use marked equity at fixed UTC boundaries, including a position
 still open across a year. They do not allocate a later episode's full profit
 to its entry year. The complete ledger carries equity across both source gaps.
 
-Base gross price PnL is +1,973.9049 quote units. Subtract 50.2715 fees,
-22.3430 adverse friction and signed funding -254.1126 to obtain net
-+1,647.1778 from 10,000 initial equity. Net long contribution is +987.5841;
+Base gross price PnL is +1,973.9049 quote units. Subtract 50.2715 fees
+and 22.3430 adverse friction, then add signed funding -254.1126 to obtain
+net +1,647.1778 from 10,000 initial equity. Net long contribution is +987.5841;
 short contribution +659.5937. At doubled costs those contributions are
 +940.8372/+629.3128. Positive returns come from both sides in this history;
 that is not proof of predictive edge in the current downtrend.

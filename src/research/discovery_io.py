@@ -36,7 +36,7 @@ from research.volume_repair_io import (
     START as START,
 )
 
-STUDY_ID = "discovery-real-history-20261113-b1"
+STUDY_ID = "discovery-real-history-20261113-b2"
 SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOLUSDT")
 SPLIT = START + 15 * 24 * HOUR
 LEGACY_SHA = "fcc687f5272ab355579f4f9dfe990a4f7553101427b87f32ebf4608e49ce7172"
@@ -51,7 +51,7 @@ METRICS_HEADER = (
     "count_long_short_ratio",
     "sum_taker_long_short_vol_ratio",
 )
-PLAN = Path(__file__).resolve().parents[2] / "docs/experiments/exp_discovery_batch_one.md"
+PLAN = Path(__file__).resolve().parents[2] / "docs/experiments/exp_discovery_batch_two.md"
 
 
 def plan_hash() -> str:
@@ -183,12 +183,12 @@ def check_index(body: dict[str, object]) -> tuple[Path, Path]:
     return paths[0], paths[1]
 
 
-def oi_values(source: Source, checksum: Source, day_start_ms: int) -> dict[int, float]:
+def oi_values(source: Source, checksum: Source, day_start_ms: int) -> dict[int, float | None]:
     """Decode a complete day; no imputation or claim of historical receipt proof."""
     raw = source.read()
     check = checksum.read().decode("ascii").split()
     require(len(check) == 2 and check == [sha256(raw), source.path.name], "OI official checksum")
-    out: dict[int, float] = {}
+    out: dict[int, float | None] = {}
     with zipfile.ZipFile(io.BytesIO(raw)) as archive:
         members = archive.infolist()
         require(len(members) == 1, "single OI CSV member")
@@ -222,15 +222,15 @@ def oi_values(source: Source, checksum: Source, day_start_ms: int) -> dict[int, 
                     "contiguous UTC five-minute BTC OI snapshots",
                 )
                 value = float(row[2])
-                require(math.isfinite(value) and value > 0, "positive native base-unit OI")
-                out[instant] = value
+                require(math.isfinite(value) and value >= 0, "nonnegative native base-unit OI")
+                out[instant] = value if value > 0 else None
     require(len(out) == 288, "complete daily OI snapshot count")
     return out
 
 
 def observations(
     body: dict[str, object],
-) -> tuple[dict[str, list[DiscoveryBar]], list[Frame], ReplaySpec]:
+) -> tuple[dict[str, list[DiscoveryBar]], list[Frame], ReplaySpec, dict[str, object]]:
     legacy_path, metrics_path = check_index(body)
     _, sources = _legacy(legacy_path)
     _, metrics = _metrics_inventory(metrics_path)
@@ -274,7 +274,15 @@ def observations(
         tuple(Instrument(symbol, "perp", 5.0, 2.0) for symbol in SYMBOLS),
         tuple(frame.timestamp_ms for frame in values),
     )
-    return bars, values, spec
+    quality: dict[str, object] = {
+        "native_oi_rows": len(oi),
+        "zero_oi_unavailable_ms": sorted(t for t, value in oi.items() if value is None),
+        "zero_oi_policy": "unavailable_no_imputation",
+        "zero_oi_selected_by_hourly_clock": sum(
+            value is None and (t + 5 * MINUTE) % HOUR == 0 for t, value in oi.items()
+        ),
+    }
+    return bars, values, spec, quality
 
 
 def source_identity() -> dict[str, str]:
@@ -288,6 +296,7 @@ def source_identity() -> dict[str, str]:
         "src/research/volume_repair_io.py",
         "src/research/btc_flow_io.py",
         "docs/experiments/exp_discovery_batch_one.md",
+        "docs/experiments/exp_discovery_batch_two.md",
     )
     return {name: sha256(read_bytes(root / name, 1 << 20)) for name in names}
 

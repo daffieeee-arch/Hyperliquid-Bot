@@ -105,7 +105,8 @@ def run_batch(
             },
         )
         try:
-            bars, frames, spec = observations(index)
+            bars, frames, spec, quality = observations(index)
+            output.json("data-quality.json", quality)
             rows: list[dict[str, Any]] = []
             for config in configs():
                 try:
@@ -141,6 +142,7 @@ def run_batch(
                 "split_ms": SPLIT,
                 "end_ms": END,
                 "spec": as_spec(spec),
+                "data_quality": quality,
                 "configuration_count": len(rows),
                 "max_discovery_configurations": 40,
                 "failed_count": sum(row["verdict"] == "failed" for row in rows),

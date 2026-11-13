@@ -16,6 +16,7 @@ import pytest
 from scripts.collector_network_gate import validate_container
 from scripts.truenas_collector_bootstrap import start_argv
 
+from hyperliquid_bot import collector_capacity as cap
 from hyperliquid_bot import collector_continuous as host
 from hyperliquid_bot import collector_runtime as runtime
 from hyperliquid_bot import collector_status as status
@@ -23,7 +24,7 @@ from hyperliquid_bot.capture_live_status import write_capture_live
 from hyperliquid_bot.collector_instance import FAST, STANDARD, instance
 from hyperliquid_bot.collector_native_storage import CONTAINER_ROOTS
 from hyperliquid_bot.collector_storage import exclusive_json, publish_closed_chunk
-from test_collector_continuous import generation, managed_fixture, settings, supervisor
+from test_collector_continuous import generation, managed_fixture, sample, settings, supervisor
 from test_collector_runtime import clock_document, network_document
 
 
@@ -315,6 +316,14 @@ def test_fast_launch_separates_first_pilot_and_receipt_bound_successor(
     monkeypatch.setattr(item, "clock", lambda *a: effects.append("clock"))
     monkeypatch.setattr(item, "admission", lambda: effects.append("capacity"))
     monkeypatch.setattr(item, "stopped_capacity_baseline", lambda: None)
+    samples = iter([sample(i) for i in range(3)])
+
+    def snapshot() -> dict[str, Any]:
+        effects.append("capacity")
+        return next(samples)
+
+    monkeypatch.setattr(cap, "snapshot", snapshot)
+    monkeypatch.setattr(time, "sleep", lambda *a: None)
     monkeypatch.setattr(item, "tick", lambda: None)
     monkeypatch.setattr(host, "publish", lambda *a, **k: effects.append("intent"))
     monkeypatch.setattr(Path, "mkdir", lambda *a, **k: None)

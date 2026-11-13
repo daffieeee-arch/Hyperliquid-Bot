@@ -168,7 +168,7 @@ def directory(path: Path, *, owner: int | None = None) -> None:
         os.close(descriptor)
 
 
-def document(path: Path, *, trusted: bool = False, limit: int = 131_072) -> dict[str, Any]:
+def control_bytes(path: Path, *, trusted: bool = False, limit: int = 131_072) -> bytes:
     directory(path.parent)
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
@@ -188,6 +188,12 @@ def document(path: Path, *, trusted: bool = False, limit: int = 131_072) -> dict
     finally:
         os.close(fd)
 
+    return raw
+
+
+def document(path: Path, *, trusted: bool = False, limit: int = 131_072) -> dict[str, Any]:
+    raw = control_bytes(path, trusted=trusted, limit=limit)
+
     def unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
         result = dict(pairs)
         require(len(result) == len(pairs), "Duplicate JSON fields.")
@@ -201,7 +207,7 @@ def document(path: Path, *, trusted: bool = False, limit: int = 131_072) -> dict
     return dict(value)
 
 
-def publish(path: Path, value: object, *, owner: int = 0) -> None:
+def publish(path: Path, value: object, *, owner: int = 0, exclusive: bool = False) -> None:
     """Atomic bounded own-control replacement; never a market archive path."""
     directory(path.parent)
     raw = (json.dumps(value, sort_keys=True, allow_nan=False) + "\n").encode()
@@ -214,7 +220,13 @@ def publish(path: Path, value: object, *, owner: int = 0) -> None:
             stream.write(raw)
             stream.flush()
             os.fsync(fd)
-        os.replace(temporary, path)
+        if exclusive:
+            try:
+                os.link(temporary, path, follow_symlinks=False)
+            finally:
+                os.unlink(temporary)
+        else:
+            os.replace(temporary, path)
     finally:
         os.close(fd)
     parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -2251,6 +2263,204 @@ class Supervisor:
             ]
         )
         require(not ids.strip(), "FAST project already has containers.")
+        marker = self.state.get("precreate_revalidation")
+        if marker is not None:
+            require(
+                isinstance(marker, dict)
+                and type(marker.get("receipt")) is str
+                and re.fullmatch(r"precreate-[0-9a-f]{64}\.json", marker["receipt"]) is not None,
+                "Pinned precreate revalidation reference required.",
+            )
+            receipt = document(self.settings.state_root / marker["receipt"], trusted=True)
+            require(
+                digest(receipt) == marker.get("sha256")
+                and receipt.get("schema") == "collector-fast-precreate-revalidation-v1"
+                and receipt.get("starts_capture") is False
+                and receipt.get("source_commit") == self.settings.source_commit
+                and receipt.get("image_digest") == self.settings.image_digest
+                and receipt.get("image_id") == self.settings.image_id
+                and receipt.get("settings_identity")
+                == digest(json.loads(json.dumps(asdict(self.settings), default=str)))
+                and "precreate-" + digest(receipt.get("failed_state")) + ".json"
+                == marker["receipt"],
+                "Retained precreate revalidation binding differs.",
+            )
+
+    def precreate_admission(self) -> dict[str, Any]:
+        """Measure an absent producer's host without inventing stopped-CID evidence."""
+        self.verify_first_create()
+        samples = []
+        for index in range(3):
+            if index:
+                time.sleep(1)
+                notify("WATCHDOG=1")
+            require(not self.stopping, "Operator stopped precreate admission.")
+            samples.append(capacity.snapshot())
+        proofs = capacity.admit(samples, self.settings.capacity)
+        if self.previous is not None:
+            require(
+                samples[0]["global_oom_kill"] == self.previous["global_oom_kill"]
+                and all(
+                    samples[0]["arc"][key] == self.previous["arc"][key]
+                    for key in ("memory_throttle_count", "evict_not_enough")
+                ),
+                "Hard capacity counter changed during precreate preparation.",
+            )
+        self.verify_first_create()
+        self.previous = samples[-1]
+        self.streaks = {}
+        return {
+            "schema": "collector-fast-precreate-admission-v1",
+            "capacity_policy": capacity.policy_document(self.settings.capacity),
+            "samples": samples,
+            "proofs": proofs,
+            "producer_absent": True,
+        }
+
+    def revalidate_fast_precreate(
+        self,
+        *,
+        expected_state_sha256: str,
+        expected_settings_sha256: str,
+        settings_path: Path,
+        failed_campaign: str,
+    ) -> None:
+        """Preserve a pinned zero-generation failure; explicitly permit a later fresh pilot."""
+        before = dict(self.state)
+        require(digest(before) == expected_state_sha256, "Explicit precreate state pin differs.")
+        require(
+            set(before)
+            == {
+                "schema",
+                "instance",
+                "phase",
+                "current",
+                "generations",
+                "retry_count",
+                "last_gap",
+                "reason",
+                "boot_id",
+                "pid",
+                "updated_utc_ns",
+            }
+            and before["schema"] == "collector-continuous-state-v1"
+            and before["instance"] == FAST.name
+            and before["phase"] == "paused"
+            and before["reason"] == "Host command failed: midclt"
+            and before["current"] is None
+            and type(before["generations"]) is int
+            and before["generations"] == 0
+            and type(before["retry_count"]) is int
+            and before["retry_count"] == 0
+            and before["last_gap"] is None,
+            "Only the retained zero-generation FAST precreate failure may be revalidated.",
+        )
+        self.verify_first_create()
+        value = document(settings_path, trusted=True)
+        require(
+            digest(value) == expected_settings_sha256
+            and load_settings(settings_path) == self.settings,
+            "Explicit precreate settings pin differs.",
+        )
+        verify_release(self.settings)
+        plan = self.settings.plan(failed_campaign)
+        roots = self.settings.roots(plan.campaign)
+        approved_host_roots(roots, campaign=plan.campaign)
+        inventory = {}
+        for role, path in roots.items():
+            directory(path, owner=1000)
+            self.verify_store(role, path)
+            if role not in {"spool", "control"}:
+                continue
+            names = sorted(child.name for child in path.iterdir())
+            require(
+                names == ([] if role == "spool" else ["clock.json"]),
+                "Only untouched preparatory FAST roots may be retained.",
+            )
+            inventory[role] = {
+                "path": str(path),
+                "identity": filesystem_identity(path),
+                "files": names,
+            }
+        old_clock = roots["control"] / "clock.json"
+        document(old_clock)
+        inventory["control"]["clock_sha256"] = hashlib.sha256(control_bytes(old_clock)).hexdigest()
+        for path in (self.settings.runtime_root, self.settings.capture, self.settings.archive):
+            space = os.statvfs(path)
+            require(
+                space.f_bavail * space.f_frsize >= 4 * capacity.GIB,
+                "Storage reserve exhausted; market archives are never deleted.",
+            )
+        report = cast(
+            dict[str, Any],
+            parse_tracking(
+                command(["chronyc", "-n", "tracking"], timeout=3), now_ns=time.time_ns()
+            ),
+        )
+        require(
+            report["synchronized"] is True
+            and abs(float(report["system_offset_seconds"])) <= 0.050
+            and 0 <= float(report["root_dispersion_seconds"]) <= 0.250
+            and 0 <= float(report["root_delay_seconds"]) <= 0.500,
+            "Host clock out of bounds during precreate revalidation.",
+        )
+        admission = self.precreate_admission()
+        require(
+            digest(document(self.path, trusted=True)) == expected_state_sha256,
+            "Precreate state changed during revalidation.",
+        )
+        raw = control_bytes(self.path, trusted=True)
+        require(
+            digest(json.loads(raw)) == expected_state_sha256,
+            "Precreate raw state changed during revalidation.",
+        )
+        receipt = {
+            "schema": "collector-fast-precreate-revalidation-v1",
+            "expected_state_sha256": expected_state_sha256,
+            "failed_state": before,
+            "failed_state_json": raw.decode("utf-8"),
+            "failed_state_file_sha256": hashlib.sha256(raw).hexdigest(),
+            "settings_sha256": expected_settings_sha256,
+            "settings_identity": digest(json.loads(json.dumps(asdict(self.settings), default=str))),
+            "source_commit": self.settings.source_commit,
+            "image_digest": self.settings.image_digest,
+            "image_id": self.settings.image_id,
+            "retained_preparatory_roots": inventory,
+            "clock": report,
+            "host_admission": admission,
+            "starts_capture": False,
+        }
+        name = "precreate-" + expected_state_sha256 + ".json"
+        target = self.settings.state_root / name
+        if target.exists():
+            prior = document(target, trusted=True)
+            require(
+                all(
+                    prior.get(key) == receipt[key]
+                    for key in (
+                        "schema",
+                        "expected_state_sha256",
+                        "failed_state",
+                        "failed_state_json",
+                        "failed_state_file_sha256",
+                        "settings_sha256",
+                        "settings_identity",
+                        "source_commit",
+                        "image_digest",
+                        "image_id",
+                        "retained_preparatory_roots",
+                        "starts_capture",
+                    )
+                ),
+                "Retained precreate revalidation differs.",
+            )
+        else:
+            publish(target, receipt, exclusive=True)
+        self.state["precreate_revalidation"] = {
+            "receipt": name,
+            "sha256": digest(document(target, trusted=True)),
+        }
+        self.save("adopting", "Explicit FAST precreate revalidation; fresh namespace required.")
 
     def launch(self) -> None:
         creating = self.state["current"] is None
@@ -2335,8 +2545,11 @@ class Supervisor:
             generation["fast_pilot_acceptance_sha256"] = digest(self.state["fast_pilot_acceptance"])
         self.last_clock = 0
         self.clock(generation)
-        self.stopped_capacity_baseline()
-        self.admission()
+        if creating:
+            generation["precreate_admission"] = self.precreate_admission()
+        else:
+            self.stopped_capacity_baseline()
+            self.admission()
         self.state["current"] = generation
         self.state["generations"] += 1
         self.save("admitting")
@@ -2633,16 +2846,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     operation.add_argument("--stop-owned", action="store_true")
     operation.add_argument("--inspect-only", action="store_true")
     operation.add_argument("--accept-fast-pilot", action="store_true")
+    operation.add_argument("--revalidate-fast-precreate", action="store_true")
     operation.add_argument("--pause", action="store_true")
     operation.add_argument("--recover-pressure", action="store_true")
     operation.add_argument("--inspect-pressure-recovery", action="store_true")
     parser.add_argument("--expected-state-sha256")
+    parser.add_argument("--expected-settings-sha256")
+    parser.add_argument("--failed-campaign")
     parser.add_argument("--abandon-unsealed-pressure", action="store_true")
     args = parser.parse_args(argv)
     require(
-        bool(args.recover_pressure or args.inspect_pressure_recovery or args.accept_fast_pilot)
+        bool(
+            args.recover_pressure
+            or args.inspect_pressure_recovery
+            or args.accept_fast_pilot
+            or args.revalidate_fast_precreate
+        )
         == bool(args.expected_state_sha256),
         "Explicit recovery/acceptance requires the expected state SHA256.",
+    )
+    require(
+        bool(args.expected_settings_sha256) == bool(args.revalidate_fast_precreate)
+        and bool(args.failed_campaign) == bool(args.revalidate_fast_precreate),
+        "Precreate revalidation requires explicit settings pin and failed campaign.",
     )
     require(
         not args.abandon_unsealed_pressure
@@ -2695,6 +2921,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     with singleton(settings.state_root):
         supervisor = Supervisor(settings)
+        if args.revalidate_fast_precreate:
+            supervisor.revalidate_fast_precreate(
+                expected_state_sha256=args.expected_state_sha256,
+                expected_settings_sha256=args.expected_settings_sha256,
+                settings_path=args.settings,
+                failed_campaign=args.failed_campaign,
+            )
+            print(json.dumps({"fast_precreate_revalidated": True, "starts_capture": False}))
+            return 0
         if args.accept_fast_pilot:
             supervisor.accept_fast_pilot(args.expected_state_sha256)
             print(json.dumps({"fast_pilot_accepted": True, "starts_capture": False}))

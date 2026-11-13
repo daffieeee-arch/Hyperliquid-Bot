@@ -154,3 +154,79 @@ Existing Python CI covers these modules and deterministic fixtures. No additiona
 workflow, database, broker, trading mode, key, capital or retention change is
 required. Release, pilot and continuous acceptance evidence belong to their
 separately assigned runtime operations.
+
+## Paused before first App creation (#258)
+
+The first actual bootstrap on source `20de621` stopped before `app.create`:
+`launch()` asked the stopped-producer baseline to verify an App that did not
+exist, and middleware returned ENOENT. No FAST producer, TC gate, pilot or
+publication existed. The old four-feed App remained unchanged. This failure is
+not classified as memory pressure and must not enter pressure recovery.
+
+First creation now measures three fresh host-only capacity samples while the
+exact FAST App/project remains absent. It keeps the same memory/ARC/PSI/OOM
+rules and hard-counter comparison with prior samples. Existing producers still
+require their actual stopped, owned, non-OOM container proof before a successor;
+continuous admission still requires durable pilot acceptance. No absent producer
+is invented as evidence. The finite source/image and TC/storage/clock gates
+remain mandatory.
+
+A later separately assigned operator may revalidate only this retained paused,
+zero-generation, no-current FAST failure. Ordinary restart continues to refuse
+paused state. Use a **new reviewed frozen release and trusted CI image**, with
+new explicit source, registry digest, host engine ID and settings pins. Keep the
+old `20de621` release, image, original settings, journals and preparatory
+spool/control directories intact. Never patch either the old release or a
+container. Revalidation does not upgrade files or reset systemd itself.
+
+Before any operation, record the actual root-owned failed state and calculate
+its **canonical object digest** using the reviewed `collector_continuous.digest`.
+A raw `sha256sum state.json` is a different pin. Preserve both digests. Prepare a
+new root-owned settings file pointing to the new frozen release/image; pin that
+file's canonical object digest too. Verify the exact original failed campaign
+from its retained operator evidence, rather than guessing a directory name.
+
+Invoke the new frozen module explicitly with PAPER and its frozen `PYTHONPATH`:
+
+```text
+python3 -B -m hyperliquid_bot.collector_continuous \
+  --settings <new-root-owned-settings.json> \
+  --revalidate-fast-precreate \
+  --expected-state-sha256 <canonical-failed-state-digest> \
+  --expected-settings-sha256 <canonical-new-settings-digest> \
+  --failed-campaign <exact-retained-failed-fast-campaign>
+```
+
+This root operation requires the exact FAST profile, first-create pilot settings,
+zero generations/current, the known precreate failure class, absent App/project,
+verified frozen source/image, all store GUID/inode pins, private orphan spool
+(empty) and control (`clock.json` only), storage reserves, a new synchronized
+host-clock measurement and three fresh capacity samples. The orphan clock is
+preserved evidence; it does not supply current clock admission. Stale pins,
+foreign state, any existing App/producer/project or unexpected orphan data refuse.
+
+It writes a create-only root-owned receipt containing the complete failed state,
+its original JSON bytes/raw hash, pinned new settings/source/image, retained
+orphan identities/clock hash and measured admission. Only after receipt fsync does
+it permit a later fresh pilot; it starts no App, capture, TC gate or boot task.
+Receipt/state-write interruption leaves the original failure paused, and an
+explicit repeat with the same original pin preserves the existing receipt.
+A later start verifies the receipt binding and allocates a new namespace. It
+never resumes, deletes or overwrites the failed roots.
+
+The original **`hyperliquid-fast-continuous-supervisor.service`** transient unit
+also needs separate operator revalidation. Preserve its journal and exact
+ExecStart/source/settings, verify its MainPID is zero and its state/result match
+the retained failed attempt, and independently reconfirm the FAST App/project is
+absent. Only a concrete newly assigned runtime plan may clear that exact dead
+failed unit with `systemctl reset-failed hyperliquid-fast-continuous-supervisor.service`
+and confirm `LoadState=not-found` before the new bootstrap. If it stays loaded,
+stop and review that exact transient unit; do not restart its old ExecStart or
+use a global reset/daemon change. The bootstrap continues to refuse loaded units.
+Never reset, restart or modify `hyperliquid-continuous-supervisor.service`.
+
+The new bootstrap and fresh 600s pilot require another explicit runtime GO after
+review, current CI, separate merge, immutable image publication and actual
+admission. This source task performs none of those operations. #252/#244/#246
+remain open for actual source/cadence/ACK, two-store publication and continuity
+qualification. Market archives and failed-study identities remain preserved.

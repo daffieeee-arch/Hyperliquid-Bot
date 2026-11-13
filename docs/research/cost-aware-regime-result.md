@@ -26,7 +26,8 @@ There was no threshold, sizing or leverage search after these results.
 
 Signals use only completed Binance USD-M BTCUSDT hourly closes. At each daily
 00:00 decision, normalized momentum admits long/short at absolute score >=1;
-it holds the same quantity while the same direction remains >=0.5, otherwise
+it holds the same quantity while the sign agrees and the absolute score remains
+>=0.5, otherwise
 it goes flat or reverses. Confirmed variants also require the slow 720-hour
 price average to agree. Entries/closes execute at the next completed 00:01
 trade-minute reference; opposite re-entry occurs at 00:02. No daily resizing,

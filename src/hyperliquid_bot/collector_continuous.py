@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import errno
 import fcntl
 import hashlib
 import ipaddress
@@ -967,7 +968,7 @@ class Supervisor:
         abandon_unsealed: bool = False,
         read_only: bool = False,
     ) -> dict[str, Any]:
-        """Persist typed evidence before stopping; legacy migration requires an explicit pin."""
+        """Persist pressure evidence; operator decisions require an exact paused-state pin."""
         operator = expected_state_sha256 is not None
         require(
             not abandon_unsealed or operator,
@@ -975,12 +976,26 @@ class Supervisor:
         )
         if operator:
             require(
-                self.state["phase"] == "paused"
-                and self.state.get("reason") == "Capacity stop: memory-pressure"
-                and digest(self.state) == expected_state_sha256,
-                "Explicit legacy pressure state pin differs.",
+                self.state["phase"] == "paused" and digest(self.state) == expected_state_sha256,
+                "Explicit pressure state pin differs.",
             )
+            measured = "pressure_recovery" in self.state
+            if measured:
+                require(
+                    isinstance(self.state["pressure_recovery"], dict)
+                    and self.state["pressure_recovery"].get("pending") is True,
+                    "A present pressure recovery must retain its valid pending receipt.",
+                )
+            revalidation = self.paused_pressure_incident(abandon_unsealed) if measured else None
+            incident = revalidation[0] if revalidation is not None else None
+            if incident is None:
+                require(
+                    self.state.get("reason") == "Capacity stop: memory-pressure",
+                    "Only the exact legacy pressure pause can be migrated.",
+                )
         else:
+            incident = None
+            revalidation = None
             require(
                 error is not None and error.reasons == ("memory-pressure",),
                 "Only measured host PSI pressure is recoverable.",
@@ -992,11 +1007,15 @@ class Supervisor:
         assert delay is not None
         producer = self.pressure_rebind() if operator else self.verify_current()
         require(not self.state["current"].get("adopted"), "Cannot stop adopted pressure producer.")
+        if incident is not None:
+            require(not producer["State"]["Running"], "Paused pressure producer must be stopped.")
         pre_stop_runtime = None if operator else self.pressure_capture(producer)
         events = self.capacity_events(producer)
         operator_baseline = capacity.snapshot() if operator else None
         if operator_baseline is not None:
             capacity.metric(operator_baseline, self.settings.capacity)
+            if incident is not None:
+                self.pressure_counters(operator_baseline)
         campaign = self.state["current"]["plan"]["campaign"]
         name = campaign + "-pressure-" + uuid.uuid4().hex + ".json"
         receipt = {
@@ -1024,6 +1043,33 @@ class Supervisor:
             "partial_metadata": self.pressure_metadata() if abandon_unsealed else None,
             "old_partial_research_qualified": False,
         }
+        if incident is not None:
+            assert revalidation is not None
+            require(
+                receipt["partial_metadata"] == revalidation[1]
+                and digest(
+                    document(Path(self.state["current"]["roots"]["spool"]) / "runtime-health.json")
+                )
+                == revalidation[2],
+                "Typed pressure quarantine metadata changed during revalidation.",
+            )
+            # Keep the original numeric counter baseline across this explicit decision.
+            # A fresh operator sample must never erase an intervening hard failure.
+            receipt.update(
+                schema="collector-pressure-operator-v2",
+                prior_pressure_receipt={
+                    "name": previous_state["pressure_recovery"]["receipt"],
+                    "sha256": previous_state["pressure_recovery"]["receipt_sha256"],
+                    "document": incident,
+                },
+                before=incident["before"],
+                current=incident["current"],
+                streaks=incident["streaks"],
+                pre_stop_runtime=incident["pre_stop_runtime"],
+                operator_capacity_baseline=None,
+                operator_capacity_readback=operator_baseline,
+                quarantined_runtime_sha256=revalidation[2],
+            )
         if read_only:
             require(operator, "Read-only pressure preflight requires an operator state pin.")
             self.state = previous_state
@@ -1047,6 +1093,104 @@ class Supervisor:
         self.pressure_samples: list[dict[str, Any]] = []
         self.pressure_stable_since: int | None = None
         return receipt
+
+    def paused_pressure_incident(
+        self, abandon_unsealed: bool
+    ) -> tuple[dict[str, Any], list[dict[str, Any]], str]:
+        """Revalidate one measured incident paused specifically for a missing terminal.
+
+        The computed bounded errno text excludes unrelated pauses. Permission comes
+        from the operator's state pin plus the immutable causal receipt and full
+        producer contract, never from matching an arbitrary log substring.
+        """
+        incident = self.pressure_receipt()
+        generation = self.state["current"]
+        require(
+            abandon_unsealed
+            and incident["schema"] == "collector-pressure-incident-v1"
+            and incident["operator_revalidated"] is False
+            and self.state["boot_id"] == generation["boot_id"] == incident["boot_id"] == self.boot,
+            "Typed pressure quarantine requires its original same-boot measured incident.",
+        )
+        before = incident["pre_stop_runtime"]
+        plan = generation["plan"]
+        runtime = document(Path(generation["roots"]["spool"]) / "runtime-health.json")
+        chunk = before.get("chunk")
+        require(
+            type(chunk) is int
+            and 0 <= chunk < plan["chunks"]
+            and before.get("phase") == "capturing"
+            and runtime.get("phase") == "failed"
+            and runtime.get("chunk") == chunk,
+            "Typed pressure quarantine lacks its causal capturing controller.",
+        )
+        expected = {
+            key: plan[key]
+            for key in (
+                "campaign",
+                "chunks",
+                "chunk_seconds",
+                "source_commit",
+                "image_digest",
+                "storage_profile",
+            )
+        }
+        expected.update(lanes=list(plan["lanes"]), run_id=f"{plan['campaign']}-{chunk:04d}")
+        require(
+            all(
+                before.get(key) == value and runtime.get(key) == value
+                for key, value in expected.items()
+            ),
+            "Typed pressure controller differs from the original producer plan.",
+        )
+        streaks = incident["streaks"]
+        prior_streaks = {key: max(0, capacity.count(streaks[key]) - 1) for key in ("low", "psi")}
+        capacity.metric(incident["before"], self.settings.capacity)
+        observed_streaks, reasons = capacity.evaluate(
+            incident["before"], incident["current"], prior_streaks, self.settings.capacity
+        )
+        require(
+            reasons == ["memory-pressure"] and observed_streaks == streaks,
+            "Original pressure interval includes an unapproved capacity failure.",
+        )
+        records = self.pressure_metadata()
+        missing_reasons = []
+        for lane in plan["lanes"]:
+            base = (
+                Path(generation["roots"]["spool"])
+                / plan["campaign"]
+                / f"chunk-{chunk:04d}"
+                / lane
+                / LANES[lane][1]
+                / expected["run_id"]
+            )
+            for name in ("capture-claim.json", "capture-live.json"):
+                value = document(base / name, limit=1024**2)
+                recorded = next(r for r in records if r["lane"] == lane and r["name"] == name)
+                require(
+                    value.get("run_id") == expected["run_id"]
+                    and value.get("definitive_outage") is None
+                    and recorded.get("document_sha256") == digest(value),
+                    "Typed pressure quarantine has foreign or failed native evidence.",
+                )
+            if any(
+                r["lane"] == lane and r["name"] == "capture-health.json" and not r["present"]
+                for r in records
+            ):
+                missing_reasons.append(
+                    str(
+                        FileNotFoundError(
+                            errno.ENOENT,
+                            os.strerror(errno.ENOENT),
+                            str(base / "capture-health.json"),
+                        )
+                    )[:240]
+                )
+        require(
+            self.state.get("reason") in missing_reasons,
+            "Only a proved missing-terminal pressure pause can be quarantined.",
+        )
+        return incident, records, digest(runtime)
 
     def stopped_capacity_baseline(self) -> None:
         """A verified stopped producer has no continuous capture interval to certify."""
@@ -1139,10 +1283,53 @@ class Supervisor:
             and receipt["producer_source_commit"] == self.state["current"]["plan"]["source_commit"]
             and re.fullmatch(r"[0-9a-f]{40}", receipt["supervisor_source_commit"]) is not None
             and receipt["schema"]
-            in {"collector-pressure-incident-v1", "collector-pressure-operator-v1"}
+            in {
+                "collector-pressure-incident-v1",
+                "collector-pressure-operator-v1",
+                "collector-pressure-operator-v2",
+            }
             and receipt["cgroup_events"] == {"oom": 0, "oom_kill": 0},
             "Pressure recovery receipt differs.",
         )
+        if receipt["schema"] == "collector-pressure-operator-v2":
+            prior = receipt["prior_pressure_receipt"]
+            require(
+                type(prior["name"]) is str
+                and re.fullmatch(
+                    re.escape(campaign) + r"-pressure-[0-9a-f]{32}\.json", prior["name"]
+                )
+                is not None,
+                "Original pressure receipt path differs.",
+            )
+            original = document(self.settings.state_root / prior["name"], trusted=True)
+            require(
+                prior["name"] == receipt["prior_state"]["pressure_recovery"]["receipt"]
+                and prior["sha256"] == receipt["prior_state"]["pressure_recovery"]["receipt_sha256"]
+                and digest(receipt["prior_state"]) == receipt["prior_state_sha256"]
+                and digest(original) == prior["sha256"]
+                and original == prior["document"]
+                and original["schema"] == "collector-pressure-incident-v1"
+                and receipt["operator_revalidated"] is True
+                and receipt["abandon_unsealed"] is True
+                and receipt["operator_capacity_baseline"] is None
+                and re.fullmatch(r"[0-9a-f]{64}", receipt["quarantined_runtime_sha256"]) is not None
+                and all(
+                    receipt[key] == original[key]
+                    for key in (
+                        "before",
+                        "current",
+                        "streaks",
+                        "pre_stop_runtime",
+                        "boot_id",
+                        "producer_source_commit",
+                        "capacity_policy",
+                        "campaign",
+                        "reasons",
+                        "cgroup_events",
+                    )
+                ),
+                "Operator pressure decision lost its original incident evidence.",
+            )
         return receipt
 
     def pressure_counters(self, current: dict[str, Any]) -> None:
@@ -1271,9 +1458,19 @@ class Supervisor:
         receipt = self.pressure_receipt()
         if receipt.get("abandon_unsealed") is True:
             require(
-                receipt["schema"] == "collector-pressure-operator-v1"
+                receipt["schema"]
+                in {"collector-pressure-operator-v1", "collector-pressure-operator-v2"}
                 and receipt["operator_revalidated"] is True
-                and self.pressure_metadata() == receipt["partial_metadata"],
+                and self.pressure_metadata() == receipt["partial_metadata"]
+                and (
+                    receipt["schema"] != "collector-pressure-operator-v2"
+                    or digest(
+                        document(
+                            Path(self.state["current"]["roots"]["spool"]) / "runtime-health.json"
+                        )
+                    )
+                    == receipt["quarantined_runtime_sha256"]
+                ),
                 "Operator quarantine metadata changed.",
             )
         else:
@@ -2051,6 +2248,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     require(os.getuid() == 0, "Trusted root host operator required.")
     settings = load_settings(args.settings)
+    if args.expected_state_sha256 is not None:
+        # Refuse a stale/wrong operator pin before even creating the own lock file.
+        # begin_pressure_wait checks again after acquiring the lock to close races.
+        require(
+            digest(Supervisor(settings).state) == args.expected_state_sha256,
+            "Explicit pressure state pin differs.",
+        )
     if args.pause:
         verify_release(settings, check_image=False)
     elif not args.stop_owned:

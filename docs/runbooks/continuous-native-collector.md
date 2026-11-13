@@ -1,5 +1,9 @@
 # Continuous native public-data collection
 
+The explicit additive [FAST-5 instance](fast-native-collector.md) has separate
+App/project/state/controls/port and a create-only first pilot. The default
+profile and existing four-feed adoption contract below remain unchanged.
+
 This host supervisor rolls **fresh bounded campaigns**, keeping the same
 `hyperliquid-collector` TrueNAS Custom App and read-only portal. Each campaign
 uses the unchanged finite runtime contract: six four-hour chunks by default,

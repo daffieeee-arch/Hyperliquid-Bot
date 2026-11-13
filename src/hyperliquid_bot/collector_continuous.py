@@ -32,6 +32,7 @@ from typing import Any, cast
 
 from . import collector_capacity as capacity
 from .collector_clock import parse_tracking
+from .collector_instance import FAST, CollectorInstance, instance
 from .collector_native_storage import CONTAINER_ROOTS, approved_host_roots, filesystem_identity
 from .collector_runtime import LANES, RuntimePlan, public_environment
 from .local_mode import require_local_paper_mode
@@ -243,8 +244,22 @@ class Settings:
     chunks: int = 6
     max_retries: int = 5
     prune_new_spool: bool = True
+    instance: str = "standard"
+    first_create: bool = False
 
     def __post_init__(self) -> None:
+        profile = instance(self.instance)
+        require(type(self.first_create) is bool, "Exact first-create flag required.")
+        require(
+            not self.first_create or (profile == FAST and not self.adoption),
+            "First-create is only for an unadopted FAST instance.",
+        )
+        if profile == FAST:
+            require(
+                self.runtime_root == Path("/mnt/fastdisk/hyperliquid-runtime")
+                and self.bind_ip == "192.168.1.234",
+                "FAST requires its separate approved runtime dataset and LAN address.",
+            )
         require(
             ipaddress.ip_address(self.bind_ip).is_private, "Explicit private LAN address required."
         )
@@ -266,7 +281,11 @@ class Settings:
             re.fullmatch(r"sha256:[0-9a-f]{64}", self.image_id) is not None,
             "Host-specific immutable engine image identity required.",
         )
-        self.plan("admission-check")
+        self.plan(
+            self.profile.campaign_prefix + "admission-check"
+            if self.profile == FAST
+            else "admission-check"
+        )
         approved_host_roots(self.roots("admission-check"), campaign="admission-check")
         require(
             set(self.storage_sources)
@@ -286,6 +305,10 @@ class Settings:
             )
 
     @property
+    def profile(self) -> CollectorInstance:
+        return instance(self.instance)
+
+    @property
     def image(self) -> str:
         return IMAGE_REPOSITORY + self.image_digest
 
@@ -300,14 +323,16 @@ class Settings:
     def plan(self, campaign: str) -> RuntimePlan:
         return RuntimePlan(
             campaign,
-            tuple(LANES),
+            ("hyperliquid",) if self.profile == FAST else tuple(LANES),
             self.chunk_seconds,
             self.chunks,
-            False,
+            self.first_create,
             self.source_commit,
             self.image_digest,
             self.prune_new_spool,
             "truenas-zfs",
+            self.instance,
+            self.profile == FAST,
         )
 
 
@@ -403,9 +428,22 @@ def wait_host_ready(settings: Settings, *, seconds: int = 180) -> None:
     while True:
         try:
             verify_release(settings)
-            command(["midclt", "call", "app.get_instance", json.dumps(APP)])
-            inspect(COLLECTOR)
-            status = inspect(STATUS)
+            if settings.first_create:
+                apps = json.loads(
+                    command(
+                        [
+                            "midclt",
+                            "call",
+                            "app.query",
+                            json.dumps([["id", "=", settings.profile.app]]),
+                        ]
+                    )
+                )
+                if apps == []:
+                    return
+            command(["midclt", "call", "app.get_instance", json.dumps(settings.profile.app)])
+            inspect(settings.profile.container("collector"))
+            status = inspect(settings.profile.container("status"))
             if status["State"]["Running"]:
                 return
         except (HostUnavailableError, subprocess.TimeoutExpired, ConnectionError):
@@ -429,6 +467,7 @@ def owned(
     value = dict(generation["plan"])
     value["lanes"] = tuple(value["lanes"])
     plan = RuntimePlan(**value)
+    profile = instance(plan.instance)
     entrypoint, argv = process_contract(plan, role)
     environment = conf["Env"]
     require(
@@ -470,8 +509,8 @@ def owned(
         "Exact public collector/status process contract differs.",
     )
     require(
-        doc["Name"] == "/" + (COLLECTOR if role == "collector" else STATUS)
-        and labels.get("com.docker.compose.project") == PROJECT
+        doc["Name"] == "/" + profile.container(role)
+        and labels.get("com.docker.compose.project") == profile.project
         and labels.get("com.docker.compose.service") == role
         and labels.get("org.hyperliquid-bot.campaign") == generation["plan"]["campaign"]
         and labels.get("org.opencontainers.image.revision") == generation["plan"]["source_commit"]
@@ -521,6 +560,12 @@ def owned(
         ),
         "Unexpected mount.",
     )
+    if role == "status" and profile == FAST:
+        require(
+            host["PortBindings"]
+            == {"8080/tcp": [{"HostIp": "192.168.1.234", "HostPort": str(FAST.port)}]},
+            "FAST status must publish only its fixed LAN port.",
+        )
     if role == "collector" and not cleanup:
         require(not host["PortBindings"], "Collector must not publish a port.")
 
@@ -541,7 +586,7 @@ def process_contract(plan: RuntimePlan, role: str) -> tuple[list[str], list[str]
             "0.0.0.0",
             "--port",
             "8080",
-        ]
+        ] + (["--instance", plan.instance] if plan.l2_fast else [])
     args = [
         "--storage-profile",
         "truenas-zfs",
@@ -552,6 +597,8 @@ def process_contract(plan: RuntimePlan, role: str) -> tuple[list[str], list[str]
         "--campaign",
         plan.campaign,
     ]
+    if plan.l2_fast:
+        args += ["--instance", plan.instance, "--l2-fast"]
     for lane in plan.lanes:
         args += ["--lane", lane]
     args += ["--chunk-seconds", str(plan.chunk_seconds), "--chunks", str(plan.chunks)]
@@ -584,16 +631,24 @@ def normalize_compose(
     )
     require(
         [args[index + 1] for index, arg in enumerate(args[:-1]) if arg == "--lane"]
-        == ["hyperliquid", "binance"],
+        == (["hyperliquid"] if settings.profile == FAST else ["hyperliquid", "binance"]),
         "Reviewed template lanes differ.",
     )
-    args.remove("--pilot")
+    if not plan.pilot:
+        args.remove("--pilot")
     args[args.index("--chunk-seconds") + 1] = str(plan.chunk_seconds)
     args[args.index("--chunks") + 1] = str(plan.chunks)
     at = args.index("--chunk-seconds")
-    args[at:at] = ["--lane", "kraken", "--lane", "bitvavo-standard"]
+    if settings.profile != FAST:
+        args[at:at] = ["--lane", "kraken", "--lane", "bitvavo-standard"]
     if plan.prune_spool:
         args.append("--prune-spool")
+    if settings.profile == FAST:
+        require(args == process_contract(plan, "collector")[1], "Rendered process differs.")
+        require(
+            value["services"]["status"]["command"] == process_contract(plan, "status")[1],
+            "FAST status process differs.",
+        )
     for role, service in value["services"].items():
         require(service["image"] == settings.image, "Rendered image differs.")
         mounts = service["volumes"]
@@ -618,12 +673,23 @@ def normalize_compose(
             )
             options["create_host_path"] = False
         service.setdefault("labels", {})["org.hyperliquid-bot.campaign"] = plan.campaign
+    if settings.profile == FAST:
+        ports = value["services"]["status"].get("ports")
+        require(
+            isinstance(ports, list)
+            and len(ports) == 1
+            and ports[0].get("host_ip") == settings.bind_ip
+            and str(ports[0].get("published")) == str(FAST.port)
+            and ports[0].get("target") == 8080
+            and ports[0].get("protocol", "tcp") == "tcp",
+            "FAST status service must publish only its fixed LAN port.",
+        )
     portal = value["x-portals"]
     require(
         len(portal) == 1
         and portal[0]["host"] == settings.bind_ip
         and type(portal[0]["port"]) is int
-        and portal[0]["port"] == 18790,
+        and portal[0]["port"] == settings.profile.port,
         "Fixed TrueNAS portal required.",
     )
     return value
@@ -684,6 +750,17 @@ class Supervisor:
             }
         )
         require(self.state["schema"] == "collector-continuous-state-v1", "State schema differs.")
+        current = self.state.get("current")
+        if current:
+            require(
+                instance(current["plan"].get("instance", "standard")) == settings.profile,
+                "Cross-instance state refused.",
+            )
+        require(
+            self.state.get("instance", "standard") == settings.instance
+            or (not self.path.exists() and not current),
+            "Cross-instance state refused.",
+        )
         self.stopping = False
         self.previous: dict[str, Any] | None = None
         self.streaks: dict[str, int] = {}
@@ -720,6 +797,8 @@ class Supervisor:
             self.state["phase"] = phase
         if reason is not None:
             self.state["reason"] = reason
+        if self.settings.profile == FAST:
+            self.state["instance"] = self.settings.instance
         self.state.update(updated_utc_ns=time.time_ns(), boot_id=self.boot, pid=os.getpid())
         publish(self.path, self.state)
         generation = self.state["current"]
@@ -745,6 +824,9 @@ class Supervisor:
                 "supervisor_source_commit": self.settings.source_commit,
                 "producer_source_commit": generation["plan"]["source_commit"],
             }
+            if self.settings.profile == FAST:
+                view["instance"] = self.settings.instance
+                view["collector_memory"] = getattr(self, "collector_memory", None)
             memory = getattr(self, "host_memory", None)
             if memory is not None:
                 view["host_memory"] = memory
@@ -809,7 +891,7 @@ class Supervisor:
                     "Storage reserve reached; no archive deletion is permitted.",
                 )
             if generation.get("collector_id") and generation["boot_id"] == self.boot:
-                doc = inspect(COLLECTOR)
+                doc = inspect(self.settings.profile.container("collector"))
                 owned(doc, generation, "collector")
                 if doc["State"]["Running"]:
                     pid = int(doc["State"]["Pid"])
@@ -823,6 +905,14 @@ class Supervisor:
                         and ".." not in Path(cgroup[0]).parts,
                         "Owned cgroup v2 identity missing.",
                     )
+                    if self.settings.profile == FAST:
+                        memory_root = Path("/sys/fs/cgroup") / cgroup[0].lstrip("/")
+                        self.collector_memory = {
+                            "current_bytes": int((memory_root / "memory.current").read_text()),
+                            "peak_bytes": int((memory_root / "memory.peak").read_text()),
+                            "limit_bytes": 2 * capacity.GIB,
+                            "sampled_utc_ns": time.time_ns(),
+                        }
                     events = dict(
                         line.split()
                         for line in (
@@ -886,6 +976,8 @@ class Supervisor:
     def pressure_rebind(self) -> dict[str, Any]:
         """Explicit recovery may rebind recreated CIDs only under the old full contract."""
         generation = self.state["current"]
+        if generation and (not self.settings.first_create or not generation["plan"]["pilot"]):
+            self.require_fast_acceptance()
         require(
             generation and not generation.get("adopted"), "Pressure recovery needs owned capture."
         )
@@ -898,7 +990,10 @@ class Supervisor:
         rebound = dict(generation)
         if generation["boot_id"] != self.boot:
             rebound.update(collector_id=None, status_id=None)
-        collector, status = inspect(COLLECTOR), inspect(STATUS)
+        collector, status = (
+            inspect(self.settings.profile.container("collector")),
+            inspect(self.settings.profile.container("status")),
+        )
         owned(collector, rebound, "collector")
         owned(status, rebound, "status")
         require(
@@ -1534,12 +1629,15 @@ class Supervisor:
                     "midclt",
                     "call",
                     "app.get_instance",
-                    json.dumps(APP),
+                    json.dumps(self.settings.profile.app),
                     json.dumps({"extra": {"retrieve_config": True}}),
                 ]
             )
         )
-        require(value["id"] == APP and value["custom_app"] is True, "Managed Custom App required.")
+        require(
+            value["id"] == self.settings.profile.app and value["custom_app"] is True,
+            "Managed Custom App required.",
+        )
         native_app_config(value)
         return dict(value)
 
@@ -1558,7 +1656,7 @@ class Supervisor:
                     "-aq",
                     "--no-trunc",
                     "--filter",
-                    "label=com.docker.compose.project=" + PROJECT,
+                    "label=com.docker.compose.project=" + self.settings.profile.project,
                 ]
             ).split()
         )
@@ -1566,7 +1664,10 @@ class Supervisor:
             ids == {generation["collector_id"], generation["status_id"]},
             "Unexpected managed App container set.",
         )
-        collector, status = inspect(COLLECTOR), inspect(STATUS)
+        collector, status = (
+            inspect(self.settings.profile.container("collector")),
+            inspect(self.settings.profile.container("status")),
+        )
         owned(collector, generation, "collector")
         owned(status, generation, "status")
         services = app["config"]["services"]
@@ -1585,6 +1686,8 @@ class Supervisor:
         but never grants permission to reuse their data or stale TC controls.
         """
         generation = self.state["current"]
+        if not self.settings.first_create or not generation["plan"]["pilot"]:
+            self.require_fast_acceptance()
         require(generation["boot_id"] != self.boot, "Boot recovery requires an actual new boot.")
         for role, path in generation["roots"].items():
             self.verify_store(role, Path(path))
@@ -1594,7 +1697,10 @@ class Supervisor:
             "App changed across reboot; independent revalidation required.",
         )
         rebound = dict(generation) | {"collector_id": None, "status_id": None}
-        collector, status = inspect(COLLECTOR), inspect(STATUS)
+        collector, status = (
+            inspect(self.settings.profile.container("collector")),
+            inspect(self.settings.profile.container("status")),
+        )
         owned(collector, rebound, "collector")
         owned(status, rebound, "status")
         generation["collector_id"], generation["status_id"] = collector["Id"], status["Id"]
@@ -1677,7 +1783,7 @@ class Supervisor:
             require(transport_failure(terminal), "Known unsafe native failure before reboot.")
 
     def verify_adopted_guard(self, generation: dict[str, Any]) -> None:
-        value = inspect(COLLECTOR)
+        value = inspect(self.settings.profile.container("collector"))
         if not value["State"]["Running"]:
             return
         guard = generation["capacity_guard"]
@@ -1712,7 +1818,13 @@ class Supervisor:
         generation["adopted"] = True
         plan = dict(generation["plan"])
         plan["lanes"] = tuple(plan["lanes"])
-        RuntimePlan(**plan)
+        require(
+            RuntimePlan(**plan).instance == self.settings.instance,
+            "Cross-instance adoption refused.",
+        )
+        require(
+            self.settings.profile != FAST, "FAST adoption refused; retained owned state required."
+        )
         roots = {key: Path(value) for key, value in generation["roots"].items()}
         approved_host_roots(roots, campaign=plan["campaign"])
         require(
@@ -1912,13 +2024,249 @@ class Supervisor:
         self.state["audit_id"] = None
         self.save()
 
+    def owned_fast_pilot(self, generation: dict[str, Any]) -> dict[str, Any]:
+        """Freeze admitted identity, excluding mutable phase/timestamps and boot recovery."""
+        value = dict(generation["plan"])
+        value["lanes"] = tuple(value["lanes"])
+        plan = RuntimePlan(**value)
+        require(
+            plan.instance == FAST.name and plan.pilot and not generation.get("adopted"),
+            "Owned FAST pilot identity required.",
+        )
+        require(
+            generation["roots"]
+            == {key: str(path) for key, path in self.settings.roots(plan.campaign).items()},
+            "FAST pilot store scope differs.",
+        )
+        for key in ("collector_id", "status_id", "app_config_sha256"):
+            require(
+                type(generation.get(key)) is str
+                and re.fullmatch(r"[0-9a-f]{64}", generation[key]) is not None,
+                "Latched FAST pilot process/config identity required.",
+            )
+        require(
+            type(generation.get("image_id")) is str
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", generation["image_id"]) is not None,
+            "Latched FAST pilot engine image required.",
+        )
+        # Normalize tuples exactly as the durable JSON state/receipt does.
+        return cast(
+            dict[str, Any],
+            json.loads(
+                json.dumps(
+                    {
+                        key: generation[key]
+                        for key in (
+                            "plan",
+                            "roots",
+                            "image_id",
+                            "collector_id",
+                            "status_id",
+                            "app_config_sha256",
+                            "adopted",
+                        )
+                    },
+                    allow_nan=False,
+                )
+            ),
+        )
+
+    def fast_pilot_closure(
+        self, pilot: dict[str, Any], closure: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        campaign = pilot["plan"]["campaign"]
+        if closure is None:
+            closure = document(
+                self.settings.state_root / (campaign + "-closure.json"), trusted=True
+            )
+        accepted = closure.get("accepted")
+        require(
+            closure.get("schema") == "collector-continuous-closure-v1"
+            and closure.get("campaign") == campaign
+            and closure.get("complete") is True
+            and closure.get("research_ready") is False
+            and isinstance(accepted, list)
+            and len(accepted) == 1,
+            "Complete FAST pilot publication evidence required.",
+        )
+        record = cast(list[Any], accepted)[0]
+        require(
+            isinstance(record, dict)
+            and record.get("lane") == "hyperliquid"
+            and record.get("run_id") == campaign + "-0000"
+            and type(record.get("copies")) is int
+            and record["copies"] == 2
+            and all(
+                type(record.get(key)) is str
+                and re.fullmatch(r"[0-9a-f]{64}", record[key]) is not None
+                for key in ("work_manifest_sha256", "archive_manifest_sha256")
+            ),
+            "Both FAST pilot publication manifest hashes required.",
+        )
+        return closure
+
+    def verify_fast_acceptance(self, receipt: dict[str, Any]) -> None:
+        """A mutable settings flag or in-progress audit never authorizes promotion."""
+        pilot = self.state.get("fast_pilot")
+        require(isinstance(pilot, dict), "Persisted owned FAST pilot identity required.")
+        pilot = cast(dict[str, Any], pilot)
+        require(self.owned_fast_pilot(pilot) == pilot, "Persisted FAST pilot identity differs.")
+        campaign = pilot["plan"]["campaign"]
+        require(isinstance(receipt.get("closure"), dict), "Accepted FAST closure proof required.")
+        closure = self.fast_pilot_closure(pilot, receipt["closure"])
+        require(
+            receipt.get("schema") == "collector-fast-pilot-acceptance-v2"
+            and receipt.get("instance") == FAST.name
+            and receipt.get("pilot") == pilot
+            and receipt.get("starts_capture") is False
+            and type(receipt.get("accepted_utc_ns")) is int
+            and receipt["accepted_utc_ns"] > 0
+            and type(receipt.get("expected_state_sha256")) is str
+            and re.fullmatch(r"[0-9a-f]{64}", receipt["expected_state_sha256"]) is not None
+            and receipt.get("closure_sha256") == digest(closure),
+            "Durable FAST pilot acceptance binding differs.",
+        )
+        stored = document(self.settings.state_root / (campaign + "-acceptance.json"), trusted=True)
+        require(stored == receipt, "Durable FAST pilot acceptance receipt differs.")
+        current = self.state["current"]
+        if current["plan"]["pilot"]:
+            # Reboot can recreate CIDs; the originally admitted IDs stay pinned
+            # in fast_pilot/receipt, while normal owned() verifies rebound CIDs.
+            require(
+                all(
+                    current[key] == pilot[key]
+                    if key != "plan"
+                    else digest(current[key]) == digest(pilot[key])
+                    for key in ("plan", "roots", "image_id")
+                ),
+                "Acceptance belongs to a different FAST pilot.",
+            )
+        else:
+            require(
+                current.get("fast_pilot_acceptance_sha256") == digest(receipt),
+                "FAST successor lacks its admitted pilot acceptance binding.",
+            )
+
+    def require_fast_acceptance(self) -> None:
+        if self.settings.profile != FAST:
+            return
+        require(not self.settings.first_create, "FAST pilot settings cannot start a successor.")
+        receipt = self.state.get("fast_pilot_acceptance")
+        require(isinstance(receipt, dict), "Durable FAST pilot acceptance required.")
+        self.verify_fast_acceptance(cast(dict[str, Any], receipt))
+
+    def accept_fast_pilot(self, expected_state_sha256: str) -> None:
+        """Explicit retry/idempotent acceptance; never start capture here."""
+        require(digest(self.state) == expected_state_sha256, "Explicit FAST state pin differs.")
+        current = self.state.get("current")
+        require(isinstance(current, dict), "Completed FAST pilot state required.")
+        current = cast(dict[str, Any], current)
+        require(
+            self.settings.profile == FAST
+            and not self.settings.first_create
+            and self.settings.chunk_seconds == 7200
+            and self.settings.chunks == 1
+            and self.state["phase"] in {"paused", "auditing", "between-campaigns"},
+            "Only an independently reviewed completed FAST first pilot may be accepted.",
+        )
+        pilot = self.owned_fast_pilot(current)
+        require(self.state.get("fast_pilot", pilot) == pilot, "Persisted FAST pilot differs.")
+        producer = self.verify_current()
+        require(
+            not producer["State"]["Running"] and producer["State"]["ExitCode"] == 0,
+            "FAST pilot must be stopped successfully.",
+        )
+        health = document(Path(current["roots"]["spool"]) / "runtime-health.json")
+        require(
+            health.get("phase") == "completed"
+            and health.get("campaign") == pilot["plan"]["campaign"]
+            and health.get("instance") == FAST.name,
+            "Completed FAST pilot health required.",
+        )
+        self.state["fast_pilot"] = pilot
+        target = self.settings.state_root / (pilot["plan"]["campaign"] + "-acceptance.json")
+        try:
+            if target.exists():
+                # SIGKILL after receipt fsync but before state save is recovered
+                # only by another explicit pinned acceptance, never normal run.
+                receipt = document(target, trusted=True)
+                self.verify_fast_acceptance(receipt)
+            else:
+                require(
+                    self.state["phase"] != "between-campaigns"
+                    and "fast_pilot_acceptance" not in self.state,
+                    "Missing committed FAST acceptance cannot be recreated implicitly.",
+                )
+                self.save("paused", "FAST pilot closed; independent acceptance required.")
+                self.audit(complete=True)
+                closure = self.fast_pilot_closure(pilot)
+                receipt = {
+                    "schema": "collector-fast-pilot-acceptance-v2",
+                    "instance": FAST.name,
+                    "pilot": pilot,
+                    "closure": closure,
+                    "closure_sha256": digest(closure),
+                    "expected_state_sha256": expected_state_sha256,
+                    "accepted_utc_ns": time.time_ns(),
+                    "starts_capture": False,
+                }
+                publish(target, receipt)
+                self.verify_fast_acceptance(receipt)
+            self.state["fast_pilot_acceptance"] = receipt
+            self.save(
+                "between-campaigns", "Explicit FAST pilot accepted; fresh admission required."
+            )
+        except BaseException:
+            self.save("paused", "FAST pilot acceptance failed; evidence retained.")
+            raise
+
+    def verify_first_create(self) -> None:
+        require(
+            self.settings.first_create
+            and self.settings.profile == FAST
+            and not self.settings.adoption
+            and self.state["current"] is None
+            and self.state["generations"] == 0,
+            "Fresh FAST create-only settings required.",
+        )
+        apps = json.loads(
+            command(
+                [
+                    "midclt",
+                    "call",
+                    "app.query",
+                    json.dumps([["id", "=", self.settings.profile.app]]),
+                ]
+            )
+        )
+        require(apps == [], "FAST App already exists; never overwrite during first-create.")
+        ids = command(
+            [
+                "docker",
+                "ps",
+                "-aq",
+                "--no-trunc",
+                "--filter",
+                "label=com.docker.compose.project=" + self.settings.profile.project,
+            ]
+        )
+        require(not ids.strip(), "FAST project already has containers.")
+
     def launch(self) -> None:
-        previous = self.verify_current()
-        require(not previous["State"]["Running"], "Never replace an active admitted campaign.")
-        for role, path in self.state["current"]["roots"].items():
-            self.verify_store(role, Path(path))
+        creating = self.state["current"] is None
+        if creating:
+            self.verify_first_create()
+        else:
+            self.require_fast_acceptance()
+            previous = self.verify_current()
+            require(not previous["State"]["Running"], "Never replace an active admitted campaign.")
+            for role, path in self.state["current"]["roots"].items():
+                self.verify_store(role, Path(path))
         campaign = (
-            "hl-cont-" + time.strftime("%Y%m%d%H%M%S", time.gmtime()) + "-" + uuid.uuid4().hex[:8]
+            self.settings.profile.campaign_prefix
+            + time.strftime("%Y%m%d%H%M%S", time.gmtime())
+            + "-"
+            + uuid.uuid4().hex[:8]
         )
         plan = self.settings.plan(campaign)
         roots = self.settings.roots(campaign)
@@ -1954,9 +2302,9 @@ class Supervisor:
                         "docker",
                         "compose",
                         "--project-name",
-                        PROJECT,
+                        self.settings.profile.project,
                         "-f",
-                        str(self.settings.release / "deploy/truenas-collector.compose.yml"),
+                        str(self.settings.release / "deploy" / self.settings.profile.template),
                         "config",
                         "--format",
                         "json",
@@ -1967,7 +2315,10 @@ class Supervisor:
             self.settings,
             plan,
         )
-        self.verify_current()
+        if creating:
+            self.verify_first_create()
+        else:
+            self.verify_current()
         generation = {
             "plan": asdict(plan),
             "roots": {key: str(path) for key, path in roots.items()},
@@ -1980,6 +2331,8 @@ class Supervisor:
             "started_utc_ns": time.time_ns(),
             "wall_budget_seconds": 96 * 3600,
         }
+        if self.settings.profile == FAST and not creating:
+            generation["fast_pilot_acceptance_sha256"] = digest(self.state["fast_pilot_acceptance"])
         self.last_clock = 0
         self.clock(generation)
         self.stopped_capacity_baseline()
@@ -1993,8 +2346,25 @@ class Supervisor:
         )
         job = json.loads(
             self.poll_child(
-                ["midclt", "call", "app.update", json.dumps(APP), "-"],
-                stdin=json.dumps({"custom_compose_config": rendered}),
+                (
+                    ["midclt", "call", "app.create", "-"]
+                    if creating
+                    else [
+                        "midclt",
+                        "call",
+                        "app.update",
+                        json.dumps(self.settings.profile.app),
+                        "-",
+                    ]
+                ),
+                stdin=json.dumps(
+                    (
+                        {"app_name": self.settings.profile.app, "custom_app": True}
+                        if creating
+                        else {}
+                    )
+                    | {"custom_compose_config": rendered}
+                ),
                 timeout=60,
             )
         )
@@ -2004,7 +2374,7 @@ class Supervisor:
         for _ in range(90):
             self.tick()
             with contextlib.suppress(ValueError, KeyError):
-                doc = inspect(COLLECTOR)
+                doc = inspect(self.settings.profile.container("collector"))
                 owned(doc, generation, "collector")
                 if doc["State"]["Running"]:
                     generation["collector_id"] = doc["Id"]
@@ -2019,8 +2389,10 @@ class Supervisor:
             str(self.settings.release / "scripts/collector_network_gate.py"),
             "--profile",
             "truenas-zfs",
+            "--instance",
+            self.settings.instance,
             "--container",
-            COLLECTOR,
+            self.settings.profile.container("collector"),
             "--source",
             plan.source_commit,
             "--image",
@@ -2034,7 +2406,7 @@ class Supervisor:
         for _ in range(60):
             self.tick()
             with contextlib.suppress(ValueError, KeyError):
-                status = inspect(STATUS)
+                status = inspect(self.settings.profile.container("status"))
                 owned(status, generation, "status")
                 if status["State"]["Running"]:
                     generation["status_id"] = status["Id"]
@@ -2047,6 +2419,8 @@ class Supervisor:
             "Actual stored TrueNAS Compose differs from admitted render.",
         )
         generation["app_config_sha256"] = digest(app["config"])
+        if self.settings.profile == FAST and plan.pilot:
+            self.state["fast_pilot"] = self.owned_fast_pilot(generation)
         self.save("capturing")
         if self.state.get("pressure_recovery"):
             self.state["pressure_recovery"]["pending"] = False
@@ -2132,7 +2506,7 @@ class Supervisor:
             # before the parent died. Recover only its full admitted identity;
             # the old adopted campaign will fail the campaign/mount/image pins.
             try:
-                doc = inspect(COLLECTOR)
+                doc = inspect(self.settings.profile.container("collector"))
                 owned(doc, generation, "collector")
             except (ValueError, KeyError, OSError, subprocess.SubprocessError):
                 return
@@ -2142,7 +2516,7 @@ class Supervisor:
             with contextlib.suppress(OSError):
                 self.save()
         else:
-            doc = inspect(COLLECTOR)
+            doc = inspect(self.settings.profile.container("collector"))
             owned(doc, generation, "collector", cleanup=True)
         if doc["State"]["Running"]:
             command(["docker", "stop", "--time", "90", generation["collector_id"]], timeout=100)
@@ -2165,6 +2539,9 @@ class Supervisor:
 
     def run(self) -> int:
         try:
+            current = self.state["current"]
+            if current and (not self.settings.first_create or not current["plan"]["pilot"]):
+                self.require_fast_acceptance()
             if self.state["phase"] == "paused":
                 return 2
             if self.state["phase"] == "stopped":
@@ -2190,7 +2567,10 @@ class Supervisor:
             else:
                 self.admission()
             if self.state["current"] is None:
-                self.adopt()
+                if self.settings.first_create:
+                    self.launch()
+                else:
+                    self.adopt()
             notify("READY=1\nWATCHDOG=1")
             while not self.stopping:
                 try:
@@ -2207,6 +2587,14 @@ class Supervisor:
                             continue
                         self.launch()
                     elif self.state["phase"] == "between-campaigns" or self.observe():
+                        if self.settings.profile == FAST and generation["plan"]["pilot"]:
+                            try:
+                                self.require_fast_acceptance()
+                            except (ValueError, OSError, KeyError):
+                                self.save(
+                                    "paused", "FAST pilot closed; independent acceptance required."
+                                )
+                                return 0
                         if self.state["phase"] == "retry-wait":
                             continue
                         self.launch()
@@ -2244,6 +2632,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     operation = parser.add_mutually_exclusive_group()
     operation.add_argument("--stop-owned", action="store_true")
     operation.add_argument("--inspect-only", action="store_true")
+    operation.add_argument("--accept-fast-pilot", action="store_true")
     operation.add_argument("--pause", action="store_true")
     operation.add_argument("--recover-pressure", action="store_true")
     operation.add_argument("--inspect-pressure-recovery", action="store_true")
@@ -2251,9 +2640,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--abandon-unsealed-pressure", action="store_true")
     args = parser.parse_args(argv)
     require(
-        bool(args.recover_pressure or args.inspect_pressure_recovery)
+        bool(args.recover_pressure or args.inspect_pressure_recovery or args.accept_fast_pilot)
         == bool(args.expected_state_sha256),
-        "Pressure recovery requires the explicit expected state SHA256.",
+        "Explicit recovery/acceptance requires the expected state SHA256.",
     )
     require(
         not args.abandon_unsealed_pressure
@@ -2283,7 +2672,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 read_only=True,
             )
         elif supervisor.state["current"] is None:
-            supervisor.adopt(read_only=True)
+            if settings.first_create:
+                supervisor.verify_first_create()
+            else:
+                supervisor.adopt(read_only=True)
         else:
             supervisor.verify_current()
         print(
@@ -2291,7 +2683,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 {
                     "schema": "collector-continuous-preflight-v1",
                     "read_only": True,
-                    "campaign": supervisor.state["current"]["plan"]["campaign"],
+                    "campaign": (
+                        supervisor.state["current"]["plan"]["campaign"]
+                        if supervisor.state["current"]
+                        else None
+                    ),
                     "no_runtime_changes": True,
                 }
             )
@@ -2299,6 +2695,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     with singleton(settings.state_root):
         supervisor = Supervisor(settings)
+        if args.accept_fast_pilot:
+            supervisor.accept_fast_pilot(args.expected_state_sha256)
+            print(json.dumps({"fast_pilot_accepted": True, "starts_capture": False}))
+            return 0
         if args.recover_pressure:
             try:
                 supervisor.begin_pressure_wait(

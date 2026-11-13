@@ -112,6 +112,16 @@ function showVenue(lane) {
     counters.append(item);
   }
   card.append(counters);
+  if (lane.source) {
+    const source = lane.source;
+    card.append(
+      element("p", "muted", "FAST-5 · sessie-ACK: " +
+        (source.fresh && source.l2_session_ack === true ? "bevestigd" : "onbekend") +
+        " · gaten " + count(source.gap_count) + " · herverbindingen " +
+        count(source.reconnect_count) + " · integriteitsfouten " + count(source.integrity_error_count)),
+      element("p", "muted", "Cadans en exacte eventleeftijd: onbekend. Geen uitvoerbare liquiditeit bevestigd."),
+    );
+  }
   const work = lane.publication?.work?.state === "seal_present";
   const archive = lane.publication?.archive?.state === "seal_present";
   card.append(
@@ -277,7 +287,12 @@ function render(data) {
           ". Herstelpogingen bij geheugenbelasting: " +
           count(continuous.pressure_retry_count) +
           ". Marktarchieven worden niet automatisch verwijderd. " +
-          (continuous.reason || "")
+          (continuous.reason || "") +
+          (continuous.collector_memory?.fresh
+            ? " Collector RAM: " + bytes(continuous.collector_memory.current_bytes) +
+              "; piek " + bytes(continuous.collector_memory.peak_bytes) +
+              "; limiet " + bytes(continuous.collector_memory.limit_bytes) + "."
+            : controller?.instance === "hyperliquid-fast" ? " Collector RAM: onbekend/verouderd." : "")
       : "Een bereikbare pagina bewijst geen actieve dataverzameling.",
   );
   text(

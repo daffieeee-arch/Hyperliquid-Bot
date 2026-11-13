@@ -79,6 +79,15 @@ MAX_CAPTURE_SECONDS: Final = 7 * 24 * 60 * 60
 DATA1A_CLAIM_SCHEMA: Final = "data-1a-retained-capture-claim-v1"
 DATA1A_HEALTH_SCHEMA: Final = "data-1a-retained-capture-health-v1"
 HYPERLIQUID_TRANSPORT_PROFILE: Final = "hyperliquid_public"
+FAST_TRANSPORT_CONFIG_VERSION: Final = "hyperliquid-fast-bounded-v1"
+FAST_TRANSPORT_MAX_MESSAGE_BYTES: Final = 1024 * 1024
+FAST_TRANSPORT_MAX_QUEUE_FRAMES: Final = 16
+FAST_TRANSPORT_QUEUE_PAYLOAD_HIGH_WATER_BYTES: Final = (
+    FAST_TRANSPORT_MAX_MESSAGE_BYTES * FAST_TRANSPORT_MAX_QUEUE_FRAMES
+)
+# websockets 17.1 pauses reading at a frame high-water mark. Frames already
+# parsed in one callback can overshoot it; this is not a hard byte/RSS cap.
+FAST_TRANSPORT_QUEUE_LIMIT_SEMANTICS: Final = "frame-high-water-backpressure-not-hard-byte-limit"
 _SERVER_IDLE_TIMEOUT_SECONDS: Final = 60.0
 _MIN_HEARTBEAT_SECONDS: Final = 5.0
 # Official HL websocket (timeouts and heartbeats, fetched 2026-09-24): the server
@@ -197,7 +206,7 @@ class HyperliquidRawResearchCollector:
         self._connection_factory = (
             connection_factory
             if connection_factory is not None
-            else _mainnet_connection_factory(self._config)
+            else _mainnet_connection_factory(self._config, l2_fast=self._instrument_plan.l2_fast)
         )
         self._utc_ns = utc_ns
         self._monotonic_ns = monotonic_ns
@@ -211,6 +220,13 @@ class HyperliquidRawResearchCollector:
         self._live_run_id: str | None = None
         self._feed_last_market_utc: dict[tuple[str, str], str] = {}
         self._feed_state: dict[tuple[str, str], str] = {}
+        self._l2_session_ack = False
+        self._connection_state = "unknown"
+        self._gap_count = 0
+        self._reconnect_count = 0
+        self._integrity_error_count = 0
+        self._inbound_payload_bytes = 0
+        self._inbound_message_count = 0
 
     def _expected_inbound_channels(self) -> frozenset[str]:
         return self._instrument_plan.expected_channels | _CONTROL_INBOUND_CHANNELS
@@ -238,6 +254,8 @@ class HyperliquidRawResearchCollector:
             await self._capture_until(capture_stop)
         finally:
             capture_stop.set()
+            self._l2_session_ack = False
+            self._connection_state = "stopped"
             live_stop.set()
             timer.cancel()
             await asyncio.gather(timer, live_task, return_exceptions=True)
@@ -250,6 +268,8 @@ class HyperliquidRawResearchCollector:
         previous_connected_session_id: str | None = None
         while not stop_event.is_set():
             session_id = self._session_id_factory()
+            self._l2_session_ack = False
+            self._connection_state = "connecting"
             capture_logger().info(
                 "hyperliquid session_start transport_profile=%s reason=%s",
                 HYPERLIQUID_TRANSPORT_PROFILE,
@@ -272,6 +292,7 @@ class HyperliquidRawResearchCollector:
             try:
                 async with self._connection_factory() as connection:
                     connected = True
+                    self._connection_state = "connected"
                     await self._append_marker(
                         session_id,
                         "session",
@@ -296,6 +317,8 @@ class HyperliquidRawResearchCollector:
                     )
                     return
             except asyncio.CancelledError:
+                self._l2_session_ack = False
+                self._connection_state = "stopped"
                 if connected:
                     await self._append_marker(
                         session_id,
@@ -305,6 +328,8 @@ class HyperliquidRawResearchCollector:
                     )
                 raise
             except (WebSocketException, OSError, TimeoutError) as error:
+                self._l2_session_ack = False
+                self._connection_state = "recovering"
                 failure_fields = transport_exception_fields(error)
                 del error
                 capture_logger().info(
@@ -433,6 +458,23 @@ class HyperliquidRawResearchCollector:
                 writer_published_parts=published,
                 feeds=feeds,
                 definitive_outage=None,
+                source_status=(
+                    {
+                        "mode": "fast-5",
+                        "l2_session_ack": self._l2_session_ack,
+                        "connection_state": self._connection_state,
+                        "transport_config_version": FAST_TRANSPORT_CONFIG_VERSION,
+                        "max_message_bytes": FAST_TRANSPORT_MAX_MESSAGE_BYTES,
+                        "max_queue_frames": FAST_TRANSPORT_MAX_QUEUE_FRAMES,
+                        "gap_count": self._gap_count,
+                        "reconnect_count": self._reconnect_count,
+                        "integrity_error_count": self._integrity_error_count,
+                        "inbound_payload_bytes": self._inbound_payload_bytes,
+                        "inbound_message_count": self._inbound_message_count,
+                    }
+                    if self._instrument_plan.l2_fast
+                    else None
+                ),
             )
         except OSError:
             capture_logger().info("hyperliquid live_status_write_failed")
@@ -608,6 +650,12 @@ class HyperliquidRawResearchCollector:
                             raise TimeoutError("Hyperliquid L2 acknowledgement mode mismatch.")
                         if identity is not None and identity in expected_identities:
                             acknowledged_subscriptions.add(identity)
+                            if identity[0] == "l2Book":
+                                self._l2_session_ack = all(
+                                    expected in acknowledged_subscriptions
+                                    for expected in expected_identities
+                                    if expected[0] == "l2Book"
+                                )
                             await self._append_marker(
                                 session_id,
                                 "subscription",
@@ -742,6 +790,9 @@ class HyperliquidRawResearchCollector:
             payload_bytes=captured.payload_bytes,
         )
         await self._sink.append(record)
+        if direction is MessageDirection.INBOUND:
+            self._inbound_payload_bytes += len(captured.payload_bytes)
+            self._inbound_message_count += 1
         return record.message_ordinal
 
     async def _append_marker(
@@ -778,27 +829,58 @@ class HyperliquidRawResearchCollector:
             payload_bytes=payload_bytes,
         )
         await self._sink.append(record)
+        # Match the raw/report classifications only after the marker was
+        # accepted. A transport gap is distinct from source integrity errors.
+        if event == "gap_detected":
+            self._gap_count += 1
+        elif event == "reconnected":
+            self._reconnect_count += 1
+        elif event in {"schema_error", "subscription_error"}:
+            self._integrity_error_count += 1
+        elif event == "session_stopped":
+            self._l2_session_ack = False
+            self._connection_state = "stopped"
         return record.message_ordinal
 
 
 @asynccontextmanager
 async def _mainnet_connection(
     config: HyperliquidRawResearchConfig,
+    *,
+    l2_fast: bool = False,
 ) -> AsyncIterator[WebSocketConnection]:
     async with connect(
         HYPERLIQUID_MAINNET_WEBSOCKET_URL,
         open_timeout=10.0,
         close_timeout=5.0,
         ping_interval=None,
-        max_size=config.max_application_payload_bytes,
-        max_queue=1024,
+        max_size=(
+            FAST_TRANSPORT_MAX_MESSAGE_BYTES if l2_fast else config.max_application_payload_bytes
+        ),
+        max_queue=FAST_TRANSPORT_MAX_QUEUE_FRAMES if l2_fast else 1024,
         logger=_TRANSPORT_PRIVACY_LOGGER,
+        compression=None if l2_fast else "deflate",
     ) as connection:
         yield cast(WebSocketConnection, connection)
 
 
-def _mainnet_connection_factory(config: HyperliquidRawResearchConfig) -> ConnectionFactory:
-    return lambda: _mainnet_connection(config)
+def _mainnet_connection_factory(
+    config: HyperliquidRawResearchConfig, *, l2_fast: bool = False
+) -> ConnectionFactory:
+    return lambda: _mainnet_connection(config, l2_fast=l2_fast)
+
+
+def fast_transport_claim_fields() -> dict[str, object]:
+    """Exact FAST-only native settings, including the queue-bound limitation."""
+
+    return {
+        "transport_config_version": FAST_TRANSPORT_CONFIG_VERSION,
+        "transport_max_message_bytes": FAST_TRANSPORT_MAX_MESSAGE_BYTES,
+        "transport_max_queue_frames": FAST_TRANSPORT_MAX_QUEUE_FRAMES,
+        "transport_queue_payload_high_water_bytes": FAST_TRANSPORT_QUEUE_PAYLOAD_HIGH_WATER_BYTES,
+        "transport_queue_limit_semantics": FAST_TRANSPORT_QUEUE_LIMIT_SEMANTICS,
+        "transport_compression": "disabled",
+    }
 
 
 def _oldest_silent_identity(
@@ -1015,6 +1097,7 @@ def data1a_capture_claim(
     }
     if plan.l2_fast:
         mode_fields: dict[str, object] = {
+            **fast_transport_claim_fields(),
             "l2_mode": "fast-5",
             "l2_max_levels_per_side": 5,
             "l2_subscription_payloads": [

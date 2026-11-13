@@ -16,6 +16,7 @@ from typing import Any
 # The operator release retains reviewed scripts/ and src/ together. No package
 # installation or mutable development checkout is needed on the NAS.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from hyperliquid_bot.collector_instance import FAST, instance
 from hyperliquid_bot.collector_native_storage import (
     CONTAINER_ROOTS,
     approved_host_roots,
@@ -51,10 +52,14 @@ def validate_container(
     host_roots: dict[str, Path] | None = None,
     container: str = CONTAINER,
     campaign: str | None = None,
+    instance_name: str = "standard",
 ) -> int:
     if profile not in {"vm-nfs", "truenas-zfs"}:
         raise ValueError("Unknown collector gate profile.")
+    identity = instance(instance_name)
     native = profile == "truenas-zfs"
+    if identity == FAST and not native:
+        raise ValueError("FAST requires native storage admission.")
     if native:
         temporary = document["HostConfig"].get("Tmpfs")
         expected_options = {"rw", "noexec", "nosuid", "size=536870912", "mode=1777"}
@@ -72,15 +77,31 @@ def validate_container(
         approved_host_roots(host_roots, campaign=campaign)
         labels = document["Config"]["Labels"]
         if (
-            re.fullmatch(r"ix-hyperliquid-collector-collector-[1-9][0-9]*", container) is None
+            re.fullmatch(re.escape(identity.project) + r"-collector-[1-9][0-9]*", container) is None
             or document.get("Name", "").lstrip("/") != container
-            or labels.get("com.docker.compose.project") != "ix-hyperliquid-collector"
+            or labels.get("com.docker.compose.project") != identity.project
             or labels.get("com.docker.compose.service") != "collector"
         ):
             raise ValueError("Only the explicitly managed Hyperliquid collector may be admitted.")
     elif host_roots is not None or container != CONTAINER:
         raise ValueError("VM gate keeps its fixed container and mount identity.")
     config, host = document["Config"], document["HostConfig"]
+    if identity == FAST:
+        args = config.get("Cmd", [])
+        if (
+            type(campaign) is not str
+            or not campaign.startswith(FAST.campaign_prefix)
+            or host_roots is None
+            or host_roots["spool"].parent != Path("/mnt/fastdisk/hyperliquid-runtime")
+            or args.count("--l2-fast") != 1
+            or args.count("--instance") != 1
+            or args[args.index("--instance") + 1] != FAST.name
+            or [args[i + 1] for i, arg in enumerate(args[:-1]) if arg == "--lane"]
+            != ["hyperliquid"]
+        ):
+            raise ValueError("FAST source, campaign or isolated runtime identity differs.")
+    elif "--l2-fast" in config.get("Cmd", []) or "--instance" in config.get("Cmd", []):
+        raise ValueError("Standard gate refuses FAST source identity.")
     if (
         not document["State"]["Running"]
         or config["Image"] != image
@@ -196,6 +217,7 @@ def main() -> int:
     parser.add_argument("--campaign", required=True)
     parser.add_argument("--profile", choices=("vm-nfs", "truenas-zfs"), default="vm-nfs")
     parser.add_argument("--container", default=CONTAINER)
+    parser.add_argument("--instance", choices=("standard", FAST.name), default="standard")
     for role in CONTAINER_ROOTS:
         parser.add_argument("--" + role + "-host", type=Path)
     args = parser.parse_args()
@@ -241,6 +263,7 @@ def main() -> int:
             host_roots=host_roots,
             container=args.container,
             campaign=args.campaign,
+            instance_name=args.instance,
         )
         inode = Path(f"/proc/{pid}/ns/net").stat().st_ino
         if inode == Path("/proc/self/ns/net").stat().st_ino:
@@ -317,6 +340,8 @@ def main() -> int:
         "download_qdisc": download,
         "upload_qdisc": upload,
     }
+    if args.instance == FAST.name:
+        report["instance"] = args.instance
     if storage is not None:
         report["storage_profile"] = "truenas-zfs"
         report["storage_verification"] = storage

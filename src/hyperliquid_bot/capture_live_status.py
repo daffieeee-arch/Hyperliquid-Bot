@@ -74,6 +74,7 @@ def write_capture_live(
     writer_published_parts: int | None,
     feeds: Sequence[Mapping[str, object]],
     definitive_outage: Mapping[str, object] | None,
+    source_status: Mapping[str, object] | None = None,
 ) -> None:
     """Atomically replace capture-live.json. Never raises into the capture loop."""
 
@@ -87,6 +88,32 @@ def write_capture_live(
         "feeds": [dict(feed) for feed in feeds],
         "definitive_outage": None if definitive_outage is None else dict(definitive_outage),
     }
+    if source_status is not None:
+        allowed = {
+            "mode",
+            "l2_session_ack",
+            "transport_config_version",
+            "max_message_bytes",
+            "max_queue_frames",
+            "gap_count",
+            "reconnect_count",
+            "integrity_error_count",
+            "connection_state",
+            "inbound_payload_bytes",
+            "inbound_message_count",
+        }
+        if (
+            not set(source_status) <= allowed
+            or len(source_status) > len(allowed)
+            or any(
+                type(value) not in {str, bool, int, type(None)}
+                or (isinstance(value, str) and len(value) > 100)
+                or (type(value) is int and not 0 <= value < 2**64)
+                for value in source_status.values()
+            )
+        ):
+            raise ValueError("Bounded source status scalars required.")
+        document["source_status"] = dict(source_status)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.tmp")
     temporary.write_text(

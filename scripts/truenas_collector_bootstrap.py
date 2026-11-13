@@ -18,6 +18,17 @@ UNIT = "hyperliquid-continuous-supervisor.service"
 COMMENT = "Hyperliquid public collector continuous supervisor (project-owned)"
 
 
+def identity(name: str) -> tuple[str, str]:
+    if type(name) is not str or name not in {"standard", "hyperliquid-fast"}:
+        raise ValueError("Unknown fixed collector instance.")
+    if name == "hyperliquid-fast":
+        return (
+            "hyperliquid-fast-continuous-supervisor.service",
+            "Hyperliquid FAST-5 collector continuous supervisor (project-owned)",
+        )
+    return UNIT, COMMENT
+
+
 def trusted(path: Path) -> None:
     if not path.is_absolute() or ".." in path.parts:
         raise ValueError("Absolute frozen paths required.")
@@ -40,7 +51,12 @@ def call(argv: list[str]) -> str:
 
 
 def start_argv(
-    release: Path, settings: Path, state_root: Path, recovery: tuple[str, ...] = ()
+    release: Path,
+    settings: Path,
+    state_root: Path,
+    recovery: tuple[str, ...] = (),
+    *,
+    instance_name: str = "standard",
 ) -> list[str]:
     entry = [
         "/usr/bin/env",
@@ -58,7 +74,7 @@ def start_argv(
     return [
         "systemd-run",
         "--no-block",
-        "--unit=" + UNIT,
+        "--unit=" + identity(instance_name)[0],
         "--property=Type=notify",
         "--property=NotifyAccess=main",
         "--property=After=docker.service middlewared.service",
@@ -109,6 +125,7 @@ def main() -> int:
         settings = json.load(stream)
     if settings["release"] != str(release):
         raise ValueError("Settings and bootstrap frozen releases differ.")
+    unit, comment = identity(settings.get("instance", "standard"))
     state_root = Path(settings["state_root"])
     trusted(state_root)
     if args.register_postinit:
@@ -116,14 +133,14 @@ def main() -> int:
             ["/usr/bin/python3", "-B", str(script), "--settings", str(args.settings)]
         )
         scripts = json.loads(call(["midclt", "call", "initshutdownscript.query"]))
-        existing = [item for item in scripts if item["comment"] == COMMENT]
+        existing = [item for item in scripts if item["comment"] == comment]
         intent = {
             "type": "COMMAND",
             "command": command,
             "when": "POSTINIT",
             "enabled": True,
             "timeout": 60,
-            "comment": COMMENT,
+            "comment": comment,
         }
         if existing:
             if len(existing) != 1 or any(
@@ -134,11 +151,11 @@ def main() -> int:
             call(["midclt", "call", "initshutdownscript.create", json.dumps(intent)])
         print(json.dumps({"postinit_registered": True, "starts_now": False}))
         return 0
-    active = call(["systemctl", "show", UNIT, "--property=ActiveState", "--value"]).strip()
+    active = call(["systemctl", "show", unit, "--property=ActiveState", "--value"]).strip()
     if active in {"active", "activating", "deactivating"}:
         raise ValueError("Project supervisor unit already exists; refusing a second start.")
     # A previous same-boot failure is retained, not reset/restarted automatically.
-    loaded = call(["systemctl", "show", UNIT, "--property=LoadState", "--value"]).strip()
+    loaded = call(["systemctl", "show", unit, "--property=LoadState", "--value"]).strip()
     if loaded != "not-found":
         raise ValueError("Existing supervisor unit needs operator revalidation.")
     recovery: tuple[str, ...] = ()
@@ -146,8 +163,16 @@ def main() -> int:
         recovery = ("--recover-pressure", "--expected-state-sha256", args.expected_state_sha256)
         if args.abandon_unsealed_pressure:
             recovery += ("--abandon-unsealed-pressure",)
-    call(start_argv(release, args.settings, state_root, recovery))
-    print(json.dumps({"unit": UNIT, "start_requested": True}))
+    call(
+        start_argv(
+            release,
+            args.settings,
+            state_root,
+            recovery,
+            instance_name=settings.get("instance", "standard"),
+        )
+    )
+    print(json.dumps({"unit": unit, "start_requested": True}))
     return 0
 
 

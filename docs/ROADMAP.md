@@ -40,18 +40,28 @@ only +0.45–0.65 bps at base against an approximately 11-bps cost hurdle plus
 spread/rounding. These are exposed price observations, not realized trades or
 net margin returns. No endpoint or policy is selected; prioritize a different
 economic mechanism rather than more pressure-threshold tuning.
-Micro source [#246](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/246)
-is merged as opt-in source only. A separate FAST app is being prepared in
-[#252](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/252). Its first
-native creation attempt stopped before App creation; the independently reviewed
-source fix [PR259](https://github.com/daffieeee-arch/Hyperliquid-Bot/pull/259)
-is merged, but the actual retry and pilot acceptance remain unproven.
-The existing collector remains unchanged. Nautilus/testnet preparation supports
-this work. TESTNET orders remain unapproved.
+The [broader OI recovery study](research/oi-recovery-broader-result.md) has now
+run all four existing hypotheses on 974 calendar days and passed independent
+full native/accounting reconstruction. One line earns +11.3783% at base but
+-3.1890% at stress and loses in 2025; matched long performs better. The other
+three lines are negative under both costs. No robust finalist is established;
+all outcomes and the original 32/40 configuration budget remain preserved.
+
+Opt-in FAST source [#246](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/246)
+and first-create bug [#258](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/258)
+are closed after actual independent native acceptance. The separate FAST app
+in [#252](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/252#issuecomment-6866235548)
+completed a 600s pilot with all 7,497 raw records and both copies verified.
+Its current-boot continuous loop started at 22:13 UTC on November 13 with
+fresh data and real Parquet growth. First complete 7200s publication/rollover,
+supported restart and separate POSTINIT/reboot gates remain open; continuous
+start is not proof of all those gates. The standard four-venue collector
+remains unchanged. Nautilus/testnet preparation supports this work. TESTNET
+orders remain unapproved.
 
 | Order | Work | Current evidence and next gate |
 | --- | --- | --- |
-| 1 | Continue outcome-driven discovery on existing history | [Regime result](research/cost-aware-regime-result.md) selects one positive historical candidate. Its [locked recent diagnostic](research/locked-regime-recent-result.md) is also positive after both costs, but has only three trades and does not beat persistent short. Thin 2025 profit, uncertainty spanning zero and no native/fresh OOS proof keep admission closed. Qualify [#249](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/249) without retuning; preserve all earlier failures and the 32/40 budget. The [micro price-response result](research/micro-response-cost-result.md) independently confirms weak entry information relative to costs; it does not repair the original failed executions. Prioritize a different economic hypothesis. Opt-in fast source is merged; [#252](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/252) separately prepares its independent app. No FAST runtime deployment yet. |
+| 1 | Continue outcome-driven discovery on existing history | [Regime result](research/cost-aware-regime-result.md) retains one positive retrospective candidate; its [recent diagnostic](research/locked-regime-recent-result.md) has only three trades and does not beat persistent short. Qualify [#249](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/249) without retuning; native/fresh OOS and fragile 2025 stress keep admission closed. [Micro price response](research/micro-response-cost-result.md) is below costs. [Broader OI recovery](research/oi-recovery-broader-result.md) delivers all four outcomes with no cost-robust winner; preserve failures and the 32/40 budget. Source #246 and bug #258 are complete. FAST #252 is recording continuously on this boot after independent 600s acceptance; first full 2h publication/rollover and restart/POSTINIT remain pending. |
 | 2 | Maintain collection after the first verified full campaign | Reviewed source `df0bf41` completed one real 7200-second campaign: all four lanes reported COMPLETED with zero integrity events, and an independent full-file audit accepted all eight WORK/HDD publications. Automatic handoff produced a fresh campaign with all four feeds fresh and growing. Publication/replacement caused several minutes of downtime; Kraken recorded one transport gap and `research_ready` remains false. See the [bounded runtime acceptance](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/223#issuecomment-6842833281). Broader continuity and untested physical reboot recovery remain [#205](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/205). |
 | 3 | Preserve the original BTC study's insufficient-input disposition | Independent full-file/hash and metadata admission found only three of twelve six-hour chunks per venue on both stores. The original Nov2–5 input attempt is closed as **INSUFFICIENT_DATA / NOT_TESTED**, with no OOS publication or financial scoring. A local partial remains retained and unqualified. Nov6 funding separately passes timing metadata admission for 120 native records / 74 padded slots; this cannot repair missing market data. See the [input disposition](research/btc-spot-flow-input-disposition.md) and [#192](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/192#issuecomment-6839899958). |
 | 4 | Use the corrected accounting as bounded research evidence | [PR225](https://github.com/daffieeee-arch/Hyperliquid-Bot/pull/225) delivered one fixed retrospective January 2025 reconstruction. Independent native-data/Decimal verification accepted +0.1898547% at base assumed costs and +0.1056243% at doubled costs, from **six trades** on 39 surviving symbols excluding ICP. Both NAS result packages passed independent copy admission. This does not restore the original primary rule or establish a Hyperliquid edge. See the [result and limits](research/january-volume-repair-result.md) and [#222](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/222). |

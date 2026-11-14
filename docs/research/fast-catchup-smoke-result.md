@@ -9,11 +9,10 @@ and window**. Zero net account growth is an accounting outcome, not profitable
 strategy evidence, confirmed alpha or proof that cross-venue trading is impossible.
 No strategy is admitted.
 
-Independent native source/release reconstruction passes. The independent actual
-financial/feature audit and fixed-policy descriptive rejection diagnosis are
-**pending**; this report remains a draft until their receipts and independent
-nonauthor report review are incorporated. Reporting consistency checks below do
-not substitute for those reviews.
+Independent native source/release reconstruction and the scoped actual
+financial/feature audit pass. A separate fixed-policy diagnosis finds that every
+recorded size/depth rejection fails the frozen fee/target price limit. This
+complete no-trade smoke provides no empirical delayed-fill or capacity evidence.
 
 ## Frozen question, objectives and costs
 
@@ -49,8 +48,9 @@ cost stress. Neither 500 nor 2,500-USDC capacity is registered or run; both rema
 complete-baseline gate and does not authorize their activation.
 
 At fixed one-second decisions, the frozen policy combines signed native USD-M
-five-second flow with a lagged 305-second HL/Binance median basis (at least
-240/300 valid paired samples). A fixed five-bps reference buffer and the exact
+five-second flow with a 300-second HL/Binance median basis ending five seconds
+before the decision (at least 240 valid paired one-second samples). A fixed
+five-bps reference buffer and the exact
 fee/target algebra set separate charged-fill and raw IOC limits. Original-clock
 freshness, a one-percent decision price band, observed eligible depth, lot-rounded
 quantity, minimum submitted order and unchanged PAPER risk limits also gate entry.
@@ -131,6 +131,8 @@ Median, fifth-percentile, worst/best margin ROI and median/maximum holding are
 **unavailable**, not zero, because the episode population is empty. Total completed
 holding is zero and completed trades per source-observed hour are zero. This does
 not estimate the strategy's future trade frequency, expectancy, tails or win rate.
+Observed win and target-attainment rates are also unavailable with zero trades;
+the target-winner counts remain valid zeros.
 The numerical longest completed loss streak is zero over an empty population.
 
 The [decision-funnel CSV](fast-catchup-smoke-funnel.csv) preserves all four cases.
@@ -139,6 +141,9 @@ Base/stress counts coincide within each availability model in this run:
 | Sampled one-second decision funnel | RAW, each cost | WITNESS, each cost |
 | --- | ---: | ---: |
 | All decision ticks | 7,199 | 7,199 |
+| Independently reconstructed paired-fresh ticks | 7,184 | 7,174 |
+| Of those, lagged reference qualified | 6,879 | 6,869 |
+| Of those, feature + calendar/endpoint + nonzero flow qualified | 5,614 | 5,607 |
 | Halt/quote unavailable | 12 | 22 |
 | Calendar/endpoint excluded | 1,265 | 1,262 |
 | Flat/calendar/quote evaluation ticks | 5,922 | 5,915 |
@@ -154,13 +159,41 @@ not additional excluded decision seconds. The funnel uses emitted decision
 counters and contemporaneous reference/flow fields. Grid counts and their
 one-second weights are sampled denominators, **not continuous eligible seconds**;
 7,199 grid ticks do not change the exact 7,198.908826468-second source interval.
+The independent paired-fresh, reference-qualified and feature/calendar/flow
+stages are nested subsets of all grid ticks, evaluated before the price/depth
+entry gate. Paired-fresh requires both currently qualified quotes; the reference
+stage additionally requires the warm-up and lagged sample count; the last stage
+also applies calendar/endpoint and nonzero signed flow. The other table rows
+describe the model's counter funnel and overlap these independent stages; they
+are not additional disjoint exclusions to subtract from the total.
 
-`size_or_depth_rejected` is a combined implementation counter: it can include
-failure of the fee/target raw-price limit to admit a marketable level as well as
-lot size, minimum order or observed capacity. Its name alone does **not** show
-that native depth was missing or too small. A separate fixed-policy descriptive
-diagnosis is pending. No alternative limit, threshold, target, source window or
-capacity is tested to obtain a trade.
+`size_or_depth_rejected` is a combined implementation counter: its name alone
+does **not** show that native depth was missing or too small. A separate fixed-policy
+diagnosis examines all **22,442** rejection ticks across all four cases. Every
+recorded execution-side level is outside the frozen raw IOC price limit; the
+touch also fails the charged-fill bound. All those touches pass the one-percent
+decision band and every observed side has native lot quantity. The resulting
+*policy-admissible* depth and candidate lot-rounded quantity are zero because of price
+infeasibility, not demonstrated lack of displayed liquidity. The risk-approval
+gate, delayed fills, exit model and empirical capacity are never exercised.
+These four case-tick cohorts reuse the same source and are not independent
+statistical samples.
+
+| Case | Rejection ticks | Closest raw-limit deficit, bps | Median, bps | Worst, bps |
+| --- | ---: | ---: | ---: | ---: |
+| RAW/base | 5,614 | 20.3568 | 26.0544 | 30.4600 |
+| RAW/stress | 5,614 | 31.4871 | 37.0441 | 41.4962 |
+| WITNESS/base | 5,607 | 20.3568 | 26.0568 | 30.4600 |
+| WITNESS/stress | 5,607 | 31.4871 | 37.0452 | 41.4962 |
+
+Deficit is 10,000 × (raw ask minus BUY limit)/that same ask for a long, or
+10,000 × (SELL limit minus raw bid)/that same bid for a short. These are positive
+decision-price shortfalls relative to the frozen model, not realized returns,
+fees alone, independent observations or permission to relax a threshold. The
+diagnosis reconstructs the unchanged price algebra from recorded references,
+signed flow and source observations. The completed independent audit separately
+reconstructs and matches those causal source, reference and flow inputs. No alternative
+limit, threshold, target, source window or capacity is tested to obtain a trade.
 
 The aggregate schema does not separately emit every zero-fill IOC cancellation
 quantity or detailed retry event. Its all-cancellation-quantity CSV field remains
@@ -172,8 +205,14 @@ only up to failure; later open exposure could not be declared flat.
 ## Audit scope, limitations and disposition
 
 The independent source audit passes full native rows, source/projection
-commitments and both availability constructions. Actual financial/feature audit
-is pending. The report's deterministic aggregation separately checks the final
+commitments and both availability constructions. The independent actual audit
+reconstructs every decision's source, original-clock signed flow and lagged
+reference, and reconciles all four complete flat accounts, costs, counters,
+funding flatness and zero order-state populations. Individual case JSONs match
+the aggregate cases; all 17 actual files and 14 bound evidence artifacts remain
+unchanged after verification. The account pass took 299.451 seconds with
+44,324 KiB peak RSS and exit 0; a separate complete counter census also passes.
+The report's deterministic aggregation separately checks the final
 four-case identities, bound audit bytes/SHA256, episode/fill/intent/tick agreement,
 fees/turnover, account growth, ROI/margin mapping and observed exposure.
 
@@ -186,6 +225,11 @@ gaps block trading promotion; any future positive result needs a separately
 predeclared independent policy gate, plus its own fresh/native validation.
 
 This attempt supplies no qualified trades and no profitable native strategy.
+It is insufficient economic opportunity under the frozen policy in this window,
+not an implementation failure or proof of global impossibility. Future research
+should begin with a cheap, predeclared economic-feasibility/cost screen before
+adding execution detail. A longer/different cohort or economic mechanism needs
+its own frozen scope under the remaining programme budget; none is started here.
 Do not tune it after the result, quietly re-register it, consume the remaining
 configuration budget, scale a zero curve, or activate larger caps automatically.
 There is no annualized return, daily frequency, Sharpe/bootstrap or fresh future
@@ -218,6 +262,15 @@ bytes; native data, indices, projections and full ledgers remain outside Git.
 | Complete actual result | `d87c56cee646b795b555415ccafb64abd4acd9f9303c9950e04cc2afb0e135eb` |
 | Actual resource receipt | `342820c805a0dfed8357f2e49949abe99de22d1e381fb2c40d13999c262a4b5b` |
 | Actual bundle manifest | `79144ccf7fe268e7d2c8c11e94ed47976c0a47e98060fc4a2b2dabd9472b189e` |
+| Fixed-policy all-rejection descriptive diagnosis | `a0443622c026369c0b872c31f76506364edadce2d918f8954b3f9b9c6d62c01a` |
+| Descriptive diagnosis report | `c5a5eb6d12a4c8cf8450b3bdb33f9e29fd09c66b0f0d474e89cd85108c7a366b` |
+| Descriptive diagnosis receipt | `7ff1439d0098756de6110d8c8a96ca9e18dbbbd5b14a7bd694b08adce7889f08` |
+| Independent actual account/feature audit | `964071d9897c4156445acc25aee6ee04daec29b638842b8cf0dbcdf50a8792c7` |
+| Independent account-audit resource receipt | `ae803fd87d0f1469108f5191d3f3cee559f1044101bfddb6de1509dfe34b8a8b` |
+| Independent complete flat-counter census | `27ebfc20129d5093a7f31c2297fe4976093a48c0c6d025b830110a0df6065a22` |
+| Independent all-outcomes aggregate | `3ab5e160e41e3e2bfce5c20466b38544e3f7c03332b9566a92e35a5c94616560` |
+| Final scoped independent actual-audit receipt | `d1160f2aeae649a9e17ab670c121cf608ccdbe29a1137b57fe024175e0fd39e0` |
 
-Each case audit SHA256/byte count is retained in the account CSV. Financial audit
-and descriptive diagnosis receipts will be added before this draft is ready.
+Each case audit SHA256/byte count is retained in the account CSV. Frequency uses
+the original monotonic source envelope above; the source-qualification UTC span
+differs by 742 ns and does not replace that denominator or indicate changed input.

@@ -21,8 +21,9 @@ OI and pressure studies retain their original outcomes and limits.
 One configuration asks whether unusually narrow completed hours precede
 cost-covering directional expansion. At whole hour S, arm the completed H1 box
 when its positive normalized range is at most half the median of 24 prior H1
-ranges. The first strict minute-close breakout during S+1 through S+59 commits
-a long/short entry, consumes the box even if busy, and executes the next minute.
+ranges. The first strict minute-close breakout during S+1 through S+59 consumes
+the box even if busy. Only a flat account with no pending order commits the
+long/short entry for the next minute; busy crossings remain excluded.
 Whole-hour decisions, zero-range boxes and equality are not breakouts.
 
 Quantity is fixed at the decision using 25% of then-known equity divided by
@@ -151,8 +152,8 @@ than becoming profitable zeroes; this run has no failed chain.
 Collateral uses immutable initial margin, entry fee, marked PnL, owned funding,
 every held native minute's adverse MARK extreme and conservative adverse-first
 funding timing, against a 1.25% maintenance proxy. It is not an exchange
-liquidation engine or historical tier certification. Maximum sampled gross
-exposure is about 0.255x under each cost; no sampled 1x gross, 0.5 asset/strategy,
+liquidation engine or historical tier certification. For the candidate, maximum
+sampled gross exposure is about 0.255x under each cost; no sampled 1x gross, 0.5 asset/strategy,
 1% UTC daily-loss or 1% sampled intraday-loss breach is reported. Both breach
 PAPER DD7%. Sampled minute/exact-funding drawdown is not continuous tick risk.
 Actual trading modes and all real risk limits remain unchanged.

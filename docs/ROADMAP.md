@@ -69,22 +69,19 @@ track remains separate research. The superseded account-day oracle #268/#269
 remains preserved without financial execution. Native #249 and residual-intake
 #267 local WIPs are unreviewed, undeployed and lower priority.
 
-The separate [C100 cross-venue catch-up source](experiments/exp_fast_catchup_20261114.md)
-([#272](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/272)) proposes ONE
-new predictive policy in the existing fourth microstructure family, **38/40
-subject to independent family/budget acceptance**. It uses external Binance
-USD-M aggressive flow and lagged basis to require enough native HL executable
-gap to cover costs and a 1% net entry-fill reference-margin target. Exactly four
-C100 chains cross two availability assumptions with base/stressed costs and
-delays; 2% attainment is secondary, and 500/2500 remain unregistered NOT_RUN.
-The fixed Nov13 20:38 native pair, complete padded funding and explicit input
-SHA need independent admission. Source/engineering tests do not claim market
-outcomes, fresh OOS, native execution readiness or profitability. The
-[pre-label engineering amendment](experiments/exp_fast_catchup_20261114_engineering.md)
-preserves the initial protocol pin and owns every nonzero IOC partial.
-Fresh nonauthor CODE/security + QUANT/family review, current ready CI and a
-separate merge precede any financial smoke. The actual smoke/audit/report stays
-open after source merge; no daily profit/frequency extrapolation from two hours.
+The [C100 cross-venue catch-up smoke](research/fast-catchup-smoke-result.md)
+([#272](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/272)) has now run
+all four fixed RAW/WITNESS × base/stress chains on the admitted Nov13 20:38 pair.
+Each finishes with 10,000 USDC, zero account growth and no intents, fills or
+closed trades over 7,198.908826468 seconds. This is **NO_QUALIFIED_TRADES /
+insufficient opportunity**, not profitable strategy evidence or global
+impossibility. Programme use is **38/40**, one policy in the existing fourth
+family; 1% is primary and 2% secondary. Independent native source/release audit
+passes; actual financial/feature audit and fixed-policy rejection diagnosis are
+pending, so report delivery remains draft/open. No post-result tuning,
+daily-frequency inference or promotion follows. 500/2500 remain unregistered
+NOT_RUN. The original protocol, amendment, old results and family stops remain
+unchanged.
 
 Opt-in FAST source [#246](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/246)
 and first-create bug [#258](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/258)
@@ -102,11 +99,11 @@ orders remain unapproved.
 
 | Order | Work | Current evidence and next gate |
 | --- | --- | --- |
-| 1 | Evaluate distinct large and frequent mechanisms against actual net account results | [Compression breakout](research/compression-breakout-result.md) / [#270](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/270): one configuration, 37/40, full independent audit passes but account results are -8.8130% base / -28.9688% stress. Stop this attempt; margin winners do not establish profitability. The frequent 1–2% margin cross-venue hypothesis [#272](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/272) is in source preparation; no financial result or admission yet. FAST first 7200s publication and one fresh successor independently pass ([evidence](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/252#issuecomment-6868552507)), with a 16.6–17s handoff hiatus. Supported restart, POSTINIT/reboot and longer continuity remain open. |
+| 1 | Evaluate distinct large and frequent mechanisms against actual net account results | [Compression breakout](research/compression-breakout-result.md) / [#270](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/270): one configuration, 37/40, full independent audit passes but account results are -8.8130% base / -28.9688% stress. Stop this attempt; margin winners do not establish profitability. The [frequent C100 smoke](research/fast-catchup-smoke-result.md) / [#272](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/272) completes four unchanged accounts with zero trades; financial audit/diagnosis/report review remain pending, no admission. Programme use 38/40. FAST first 7200s publication and one fresh successor independently pass ([evidence](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/252#issuecomment-6868552507)), with a 16.6–17s handoff hiatus. Supported restart, POSTINIT/reboot and longer continuity remain open. |
 | 2 | Maintain collection after the first verified full campaign | Reviewed source `df0bf41` completed one real 7200-second campaign: all four lanes reported COMPLETED with zero integrity events, and an independent full-file audit accepted all eight WORK/HDD publications. Automatic handoff produced a fresh campaign with all four feeds fresh and growing. Publication/replacement caused several minutes of downtime; Kraken recorded one transport gap and `research_ready` remains false. See the [bounded runtime acceptance](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/223#issuecomment-6842833281). Broader continuity and untested physical reboot recovery remain [#205](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/205). |
 | 3 | Preserve the original BTC study's insufficient-input disposition | Independent full-file/hash and metadata admission found only three of twelve six-hour chunks per venue on both stores. The original Nov2–5 input attempt is closed as **INSUFFICIENT_DATA / NOT_TESTED**, with no OOS publication or financial scoring. A local partial remains retained and unqualified. Nov6 funding separately passes timing metadata admission for 120 native records / 74 padded slots; this cannot repair missing market data. See the [input disposition](research/btc-spot-flow-input-disposition.md) and [#192](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/192#issuecomment-6839899958). |
 | 4 | Use the corrected accounting as bounded research evidence | [PR225](https://github.com/daffieeee-arch/Hyperliquid-Bot/pull/225) delivered one fixed retrospective January 2025 reconstruction. Independent native-data/Decimal verification accepted +0.1898547% at base assumed costs and +0.1056243% at doubled costs, from **six trades** on 39 surviving symbols excluding ICP. Both NAS result packages passed independent copy admission. This does not restore the original primary rule or establish a Hyperliquid edge. See the [result and limits](research/january-volume-repair-result.md) and [#222](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/222). |
-| 5 | Admit only evidence-supported candidates through their own gates | No current strategy is admitted. H720 remains a preserved positive retrospective result with fragile stress and low frequency, operator-deprioritized. Compression publishes all outcomes and fails; stop that attempt. A distinct frequent hypothesis still needs independent source and result admission before fresh/native validation or PAPER. No oracle, recorder, research result or merge enables trading. |
+| 5 | Admit only evidence-supported candidates through their own gates | No current strategy is admitted. H720 remains a preserved positive retrospective result with fragile stress and low frequency, operator-deprioritized. Compression publishes all outcomes and fails; stop that attempt. The fixed C100 frequent smoke has no trades; its audit/review remains open and does not establish a candidate. No oracle, recorder, research result or merge enables trading. |
 | 6 | Expand data where it supports a defined experiment | Coinbase's 600s public pilot and both stored copies passed independent acceptance; continuous Coinbase is still open. Bitvavo MD Pro access/entitlement remains unverified; Pro is L2, not L3. These additions do not block the existing HL/Binance hypothesis. |
 | 7 | Complete execution and platform gates as needed | PAPER strategy integration, venue-authoritative recovery/reconciliation [#178](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/178), trading observability and backup/recovery proof remain separate work. TESTNET/SHADOW/LIVE are not enabled by data collection or a research result. |
 

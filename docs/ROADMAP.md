@@ -66,6 +66,23 @@ no new market outcome or strategy admission is claimed. The superseded account-d
 oracle #268/#269 remains preserved without financial execution. Native #249 and
 residual-intake #267 local WIPs are unreviewed, undeployed and lower priority.
 
+The separate [C100 cross-venue catch-up source](experiments/exp_fast_catchup_20261114.md)
+([#272](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/272)) proposes ONE
+new predictive policy in the existing fourth microstructure family, **38/40
+subject to independent family/budget acceptance**. It uses external Binance
+USD-M aggressive flow and lagged basis to require enough native HL executable
+gap to cover costs and a 1% net entry-fill reference-margin target. Exactly four
+C100 chains cross two availability assumptions with base/stressed costs and
+delays; 2% attainment is secondary, and 500/2500 remain unregistered NOT_RUN.
+The fixed Nov13 20:38 native pair, complete padded funding and explicit input
+SHA need independent admission. Source/engineering tests do not claim market
+outcomes, fresh OOS, native execution readiness or profitability. The
+[pre-label engineering amendment](experiments/exp_fast_catchup_20261114_engineering.md)
+preserves the initial protocol pin and owns every nonzero IOC partial.
+Fresh nonauthor CODE/security + QUANT/family review, current ready CI and a
+separate merge precede any financial smoke. The actual smoke/audit/report stays
+open after source merge; no daily profit/frequency extrapolation from two hours.
+
 Opt-in FAST source [#246](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/246)
 and first-create bug [#258](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/258)
 are closed after actual independent native acceptance. The separate FAST app

@@ -58,13 +58,16 @@ paired interval spans zero. The old daily h720 financial baseline reproduces.
 Programme usage is now 36/40. Stop this clock/horizon family as registered;
 do not automatically spend the remaining four on retrospective retuning.
 
-The newly registered [compression-breakout study](experiments/exp_compression_breakout_20261114.md)
-([#270](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/270)) tests ONE
-distinct compression mechanism in the existing price-continuation family,
-bringing registered use to **37/40**. Source/tests/protocol are in development;
-no new market outcome or strategy admission is claimed. The superseded account-day
-oracle #268/#269 remains preserved without financial execution. Native #249 and
-residual-intake #267 local WIPs are unreviewed, undeployed and lower priority.
+The [compression-breakout study](research/compression-breakout-result.md)
+([#270](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/270)) has now run
+its single registered configuration and passed full independent native/accounting
+reconstruction. It loses -8.8130% base / -28.9688% stress account equity despite
+90/76 realized >=20% initial-margin winners. Costs, drawdown and chronological
+diagnostics reject it. Programme use is **37/40**; stop this registered attempt,
+without post-result threshold/expiry/leverage tuning. The frequent 1–2% margin
+track remains separate research. The superseded account-day oracle #268/#269
+remains preserved without financial execution. Native #249 and residual-intake
+#267 local WIPs are unreviewed, undeployed and lower priority.
 
 The separate [C100 cross-venue catch-up source](experiments/exp_fast_catchup_20261114.md)
 ([#272](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/272)) proposes ONE
@@ -99,11 +102,11 @@ orders remain unapproved.
 
 | Order | Work | Current evidence and next gate |
 | --- | --- | --- |
-| 1 | Test one causal large-move hypothesis on existing history | [Compression breakout](experiments/exp_compression_breakout_20261114.md) / [#270](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/270): one registered configuration, 37/40, targeting 20% net initial position margin per large winner. Source/tests/protocol first; independent CODE/security + QUANT, CI and separate merge precede financial labels. Preserve all old results and the hourly-family stop. The separate frequent 1–2% margin track remains research; no strategy is certified. FAST first 7200s publication and one fresh successor independently pass ([evidence](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/252#issuecomment-6868552507)), with a 16.6–17s handoff hiatus. Supported restart, POSTINIT/reboot and longer continuity remain open. |
+| 1 | Evaluate distinct large and frequent mechanisms against actual net account results | [Compression breakout](research/compression-breakout-result.md) / [#270](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/270): one configuration, 37/40, full independent audit passes but account results are -8.8130% base / -28.9688% stress. Stop this attempt; margin winners do not establish profitability. The frequent 1–2% margin cross-venue hypothesis [#272](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/272) is in source preparation; no financial result or admission yet. FAST first 7200s publication and one fresh successor independently pass ([evidence](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/252#issuecomment-6868552507)), with a 16.6–17s handoff hiatus. Supported restart, POSTINIT/reboot and longer continuity remain open. |
 | 2 | Maintain collection after the first verified full campaign | Reviewed source `df0bf41` completed one real 7200-second campaign: all four lanes reported COMPLETED with zero integrity events, and an independent full-file audit accepted all eight WORK/HDD publications. Automatic handoff produced a fresh campaign with all four feeds fresh and growing. Publication/replacement caused several minutes of downtime; Kraken recorded one transport gap and `research_ready` remains false. See the [bounded runtime acceptance](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/223#issuecomment-6842833281). Broader continuity and untested physical reboot recovery remain [#205](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/205). |
 | 3 | Preserve the original BTC study's insufficient-input disposition | Independent full-file/hash and metadata admission found only three of twelve six-hour chunks per venue on both stores. The original Nov2–5 input attempt is closed as **INSUFFICIENT_DATA / NOT_TESTED**, with no OOS publication or financial scoring. A local partial remains retained and unqualified. Nov6 funding separately passes timing metadata admission for 120 native records / 74 padded slots; this cannot repair missing market data. See the [input disposition](research/btc-spot-flow-input-disposition.md) and [#192](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/192#issuecomment-6839899958). |
 | 4 | Use the corrected accounting as bounded research evidence | [PR225](https://github.com/daffieeee-arch/Hyperliquid-Bot/pull/225) delivered one fixed retrospective January 2025 reconstruction. Independent native-data/Decimal verification accepted +0.1898547% at base assumed costs and +0.1056243% at doubled costs, from **six trades** on 39 surviving symbols excluding ICP. Both NAS result packages passed independent copy admission. This does not restore the original primary rule or establish a Hyperliquid edge. See the [result and limits](research/january-volume-repair-result.md) and [#222](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/222). |
-| 5 | Admit only evidence-supported candidates through their own gates | No current strategy is admitted. H720 remains a preserved positive retrospective result with fragile stress and low frequency, operator-deprioritized. The new compression hypothesis must publish all costs, conditional controls, margin outcomes, actual account growth/frequency and risk-invalid curves before any fresh/native validation or PAPER admission. No oracle, recorder, research result or merge enables trading. |
+| 5 | Admit only evidence-supported candidates through their own gates | No current strategy is admitted. H720 remains a preserved positive retrospective result with fragile stress and low frequency, operator-deprioritized. Compression publishes all outcomes and fails; stop that attempt. A distinct frequent hypothesis still needs independent source and result admission before fresh/native validation or PAPER. No oracle, recorder, research result or merge enables trading. |
 | 6 | Expand data where it supports a defined experiment | Coinbase's 600s public pilot and both stored copies passed independent acceptance; continuous Coinbase is still open. Bitvavo MD Pro access/entitlement remains unverified; Pro is L2, not L3. These additions do not block the existing HL/Binance hypothesis. |
 | 7 | Complete execution and platform gates as needed | PAPER strategy integration, venue-authoritative recovery/reconciliation [#178](https://github.com/daffieeee-arch/Hyperliquid-Bot/issues/178), trading observability and backup/recovery proof remain separate work. TESTNET/SHADOW/LIVE are not enabled by data collection or a research result. |
 

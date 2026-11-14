@@ -138,11 +138,26 @@ def execute(
                         }
                     )
                     output.json(case + ".json", text(result["cases"][-1]))
+                    require(
+                        not replay.fatal_run_error,
+                        "fatal projected input/accounting error: " + str(replay.failed),
+                    )
             verify_projection(projection)
             recheck(index)
             require(identity(source_commit) == source_identity, "source changed during run")
             require(load(source_index, expected_sha) == index, "input index changed during run")
-            result["status"] = "COMPLETE_ALL_FOUR_CONDITIONAL_CHAINS"
+            failed = [
+                case["case"]
+                for case in result["cases"]
+                if case["status"] != "COMPLETE_CONDITIONAL_RESEARCH"
+            ]
+            result["status"] = (
+                "FAILED_ONE_OR_MORE_CONDITIONAL_CHAINS"
+                if failed
+                else "COMPLETE_ALL_FOUR_CONDITIONAL_CHAINS"
+            )
+            result["attempted_case_count"] = len(result["cases"])
+            result["failed_cases"] = failed
             result["source_projection"] = asdict(projection)
             result["statistical_profitability_or_PAPER_admission"] = False
             result["daily_return_or_frequency_extrapolation"] = None
@@ -163,7 +178,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
-        execute(
+        result = execute(
             mode=os.environ.get("TRADING_MODE"),
             source_index=args.source_index,
             expected_sha=args.expected_index_sha256,
@@ -173,7 +188,7 @@ def main(argv: list[str] | None = None) -> int:
     except (HarnessError, OSError, ValueError, ArithmeticError, UnsafeTradingModeError) as error:
         print(str(error), file=sys.stderr)
         return 1
-    return 0
+    return 0 if result["status"] == "COMPLETE_ALL_FOUR_CONDITIONAL_CHAINS" else 1
 
 
 if __name__ == "__main__":

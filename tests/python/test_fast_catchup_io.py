@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from decimal import Decimal
 from itertools import pairwise
 from pathlib import Path
 from typing import Any
@@ -13,7 +14,7 @@ from hyperliquid_bot.local_mode import UnsafeTradingModeError
 from research import fast_catchup_cli as cli
 from research import fast_catchup_io as io
 from research.btc_flow_io import PrivateOutput
-from research.fast_catchup import SECOND
+from research.fast_catchup import SECOND, Event, Intent, Level, Replay
 from research.harness.errors import IntegrityError
 from research.micro_flow_io import COLUMNS
 from research.two_models_io import record
@@ -98,7 +99,7 @@ def acknowledgement(at: int, ordinal: int) -> tuple[Any, ...]:
 
 
 def local(at: int, ordinal: int, linked: int, *, kind: str = "flow") -> tuple[Any, ...]:
-    return native(
+    row = native(
         at,
         ordinal=ordinal,
         kind=kind,
@@ -108,6 +109,8 @@ def local(at: int, ordinal: int, linked: int, *, kind: str = "flow") -> tuple[An
             "source_channel": "usdm_agg_trade" if kind == "flow" else "usdm_book_ticker",
         },
     )
+
+    return (*row[:3], "normalized_usdm_context", *row[4:])
 
 
 def rewrite(row: tuple[Any, ...], change: dict[str, Any]) -> tuple[Any, ...]:
@@ -412,3 +415,231 @@ def test_complete_synthetic_native_cli_writes_exact_four_cases_and_create_only_a
 def test_protocol_initial_pin_is_unchanged_and_amendment_is_separate() -> None:
     assert hashlib.sha256(io.PLAN.read_bytes()).hexdigest() == io.PLAN_SHA
     assert "20,000,000 physical" in io.AMENDMENT.read_text()
+
+
+@pytest.mark.parametrize(
+    "bad", ["unknown", "missing", "repeated", "session", "product", "channel", "profile", "boolean"]
+)
+def test_required_local_normalizer_requires_exact_existing_raw_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    bad: str,
+) -> None:
+    rows = tape()
+    marker = list(rows["binance"][2])
+    body = json.loads(marker[-2])
+    if bad == "unknown":
+        body["raw_message_ordinal"] = 999999
+    elif bad == "missing":
+        del body["raw_message_ordinal"]
+    elif bad == "repeated":
+        marker = list(local(4 * SECOND, 4, 1))
+        body = json.loads(marker[-2])
+    elif bad == "session":
+        marker[4] = "other"
+    elif bad == "product":
+        marker[2] = "BTCUSDT-SPOT"
+    elif bad == "channel":
+        marker[3] = "normalized_spot_bbo"
+    elif bad == "profile":
+        body["source_channel"] = "usdm_book_ticker"
+    else:
+        body["raw_message_ordinal"] = True
+    marker[-2] = json.dumps(body).encode()
+    marker[-1] = hashlib.sha256(marker[-2]).hexdigest()
+    rows["binance"][3 if bad == "repeated" else 2] = tuple(marker)
+    monkeypatch.setattr(io, "records", lambda capture, lane: iter(rows[lane]))
+    index = {"captures": {lane: {"metadata": []} for lane in rows}, "clock_offset_ns": OFFSET}
+    with PrivateOutput(tmp_path / "bad-link") as output:
+        with pytest.raises(IntegrityError, match="LOCAL"):
+            io.project(index, output)
+
+
+@pytest.mark.parametrize("disposition", ["duplicate", "excluded"])
+def test_legitimate_duplicate_and_excluded_raw_normalizers_are_explicit_not_extra_flow(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    disposition: str,
+) -> None:
+    rows = tape()
+    initial = rows["binance"][0]
+    if disposition == "duplicate":
+        extra = (*initial[:5], 3, *initial[6:])
+        witness = local(3 * SECOND + 1, 5, 3)
+    else:
+        excluded = list(native(2 * SECOND, ordinal=3, kind="book", session="spot"))
+        excluded[2:4] = ["BTCUSDT-SPOT", "spot_book_ticker"]
+        extra = tuple(excluded)
+        marker = list(local(3 * SECOND + 1, 5, 3))
+        marker[2:5] = ["BTCUSDT-SPOT", "normalized_spot_bbo", "spot"]
+        body = {"raw_message_ordinal": 3, "source_channel": "spot_book_ticker"}
+        marker[-2] = json.dumps(body).encode()
+        marker[-1] = hashlib.sha256(marker[-2]).hexdigest()
+        witness = tuple(marker)
+    rows["binance"] = [
+        initial,
+        rows["binance"][1],
+        extra,
+        local(3 * SECOND, 4, 1),
+        witness,
+        local(4 * SECOND, 6, 2, kind="book"),
+        native(402 * SECOND, ordinal=7, ident=2),
+        native(401 * SECOND, ordinal=8, ident=2, kind="book"),
+        local(403 * SECOND, 9, 7),
+        local(404 * SECOND, 10, 8, kind="book"),
+    ]
+    monkeypatch.setattr(io, "records", lambda capture, lane: iter(rows[lane]))
+    index = {"captures": {lane: {"metadata": []} for lane in rows}, "clock_offset_ns": OFFSET}
+    with PrivateOutput(tmp_path / "classified-links") as output:
+        projection = io.project(index, output)
+        assert projection.source_counts["binance:linked_" + disposition] == 1
+        assert projection.source_counts["binance:unwitnessed_tail_events"] == 0
+        assert len([e for e in io.merged(output, projection, "WITNESS") if e.kind == "flow"]) == 2
+
+
+def test_real_raw_tail_without_any_normalizer_is_unavailable_not_unknown_marker(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    rows = tape()
+    rows["binance"].append(native(406 * SECOND, ordinal=9, ident=3))
+    monkeypatch.setattr(io, "records", lambda capture, lane: iter(rows[lane]))
+    index = {"captures": {lane: {"metadata": []} for lane in rows}, "clock_offset_ns": OFFSET}
+    with PrivateOutput(tmp_path / "unwitnessed-tail") as output:
+        projection = io.project(index, output)
+        assert projection.source_counts["binance:unwitnessed_tail_events"] == 1
+        assert len([e for e in io.merged(output, projection, "WITNESS") if e.kind == "flow"]) == 2
+
+
+def test_cli_input_error_retains_current_owned_case_audit_and_aborts_without_restart(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _, path, sha = fixture_index(tmp_path)
+    monkeypatch.setattr(cli, "identity", lambda commit: {"synthetic_fixture": "only"})
+
+    class Started(Replay):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            self.pending = Intent(
+                "entry",
+                1,
+                self.start,
+                self.start + self.cost.latency,
+                self.start + self.cost.latency + SECOND,
+                Decimal(".00099"),
+                Decimal("101000"),
+                Decimal("101000"),
+                Decimal("99000"),
+                Decimal("101000"),
+                "fixture",
+                "prior",
+            )
+
+    attempts = 0
+
+    def broken(output: PrivateOutput, projection: io.Projection, availability: str) -> Any:
+        nonlocal attempts
+        attempts += 1
+        at = projection.start + SECOND
+        for when in (at, at + 1):
+            yield Event(
+                "hyperliquid",
+                "hl",
+                when,
+                when,
+                OFFSET + when,
+                (OFFSET + when) // 1_000_000,
+                when,
+                str(when),
+                "hl_book",
+                (Level(Decimal("99999"), Decimal(1)),),
+                (Level(Decimal("100001"), Decimal(1)),),
+            )
+        raise OSError("synthetic projected input failure")
+
+    monkeypatch.setattr(cli, "Replay", Started)
+    monkeypatch.setattr(cli, "merged", broken)
+    with pytest.raises(IntegrityError, match="synthetic projected"):
+        cli.execute(
+            mode="PAPER",
+            source_index=path,
+            expected_sha=sha,
+            source_commit="0" * 40,
+            destination=tmp_path / "failed-owned",
+        )
+    failure = json.loads((tmp_path / "failed-owned/failure.json").read_bytes())
+    assert attempts == 1 and len(failure["cases"]) == 1
+    case = failure["cases"][0]
+    assert case["status"] == "FAILED_NULLACCOUNT" and case["fatal_run_error"]
+    assert case["final_equity"] is None and case["net_return"] is None
+    assert Decimal(case["remaining_quantity"]) != 0
+    assert Decimal(case["last_observed_state"]["fees_usdc"]) > 0
+    audit = case["audit"]["RAW-base-C100.jsonl"]
+    raw = Path(audit["path"]).read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == audit["sha256"]
+    assert json.loads(raw.splitlines()[-1])["kind"] == "failure"
+
+
+@pytest.mark.parametrize("fail_indices", [{0}, {0, 1, 2, 3}])
+def test_top_level_completion_is_derived_from_every_case_status(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fail_indices: set[int],
+) -> None:
+    _, path, sha = fixture_index(tmp_path)
+    monkeypatch.setattr(cli, "identity", lambda commit: {"synthetic_fixture": "only"})
+    attempts = 0
+
+    class ConditionalFailure(Replay):
+        def run(self, events: Any) -> dict[str, Any]:
+            nonlocal attempts
+            summary = super().run(events)
+            if attempts in fail_indices:
+                summary.update(
+                    status="FAILED_NULLACCOUNT",
+                    failure="synthetic conditional failure",
+                    final_equity=None,
+                    net_return=None,
+                )
+            attempts += 1
+            return summary
+
+    monkeypatch.setattr(cli, "Replay", ConditionalFailure)
+    result = cli.execute(
+        mode="PAPER",
+        source_index=path,
+        expected_sha=sha,
+        source_commit="0" * 40,
+        destination=tmp_path / "failed-status",
+    )
+    assert result["status"] == "FAILED_ONE_OR_MORE_CONDITIONAL_CHAINS"
+    assert result["attempted_case_count"] == 4 and len(result["cases"]) == 4
+    assert len(result["failed_cases"]) == len(fail_indices)
+
+
+@pytest.mark.parametrize(
+    "status,expected",
+    [("FAILED_ONE_OR_MORE_CONDITIONAL_CHAINS", 1), ("COMPLETE_ALL_FOUR_CONDITIONAL_CHAINS", 0)],
+)
+def test_command_exit_status_does_not_make_failed_chains_successful(
+    monkeypatch: pytest.MonkeyPatch,
+    status: str,
+    expected: int,
+) -> None:
+    monkeypatch.setattr(cli, "execute", lambda **kwargs: {"status": status})
+    assert (
+        cli.main(
+            [
+                "--source-index",
+                "/synthetic",
+                "--expected-index-sha256",
+                "0" * 64,
+                "--source-commit",
+                "0" * 40,
+                "--output",
+                "/synthetic-output",
+            ]
+        )
+        == expected
+    )

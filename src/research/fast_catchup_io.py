@@ -40,6 +40,27 @@ MAX_ROWS = 20_000_000
 MAX_PROJECTION = 4 << 30
 MAX_PENDING = 32 << 20
 REQUIRED = {"usdm_agg_trade", "usdm_book_ticker"}
+NORMALIZED = {
+    "spot_trade": "normalized_spot_trade",
+    "spot_book_ticker": "normalized_spot_bbo",
+    "spot_depth": "normalized_spot_depth",
+    "spot_depth_snapshot": "normalized_spot_depth",
+    "usdm_agg_trade": "normalized_usdm_context",
+    "usdm_book_ticker": "normalized_usdm_context",
+    "usdm_mark_price": "normalized_usdm_context",
+    "usdm_force_order": "normalized_usdm_context",
+    "usdm_open_interest": "normalized_usdm_context",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class RawLink:
+    session: str
+    product: str
+    channel: str
+    event: Event | None
+    disposition: str
+    budget_bytes: int
 
 
 def obj(value: Any) -> dict[str, Any]:
@@ -500,14 +521,17 @@ def project(index: dict[str, Any], output: PrivateOutput) -> Projection:
             decoder = Decoder()
             high = 0
             clocks: dict[str, int] = {}
-            pending: dict[int | str, Event] = {}
+            pending: dict[str, Event] = {}
+            raw_links: dict[int, RawLink] = {}
             pending_bytes = 0
             serialized = f"witness-{lane}.jsonl.gz"
             witness_files.append(serialized)
             for row in records(capture, lane):
                 total_rows += 1
                 require(total_rows <= MAX_ROWS, "twenty-million PHYSICAL row ceiling")
-                _, _, _, channel, session, ordinal, utc, mono, direction, _, _, raw, _ = row
+                _, _, product, channel, session, ordinal, utc, mono, direction, frame, _, raw, _ = (
+                    row
+                )
                 require(
                     abs(utc - mono - index["clock_offset_ns"]) <= 100_000_000,
                     "fixed prelaunch clock-offset assumption exceeded",
@@ -516,28 +540,61 @@ def project(index: dict[str, Any], output: PrivateOutput) -> Projection:
                 counts[f"{lane}:{direction}:{channel}"] += 1
                 if lane == "binance" and direction == "local":
                     marker = obj(json_value(raw))
-                    linked = marker.get("raw_message_ordinal")
-                    if type(linked) is int and linked in pending:
-                        linked_event = pending.pop(linked)
-                        pending_bytes -= len(json.dumps(text(asdict(linked_event))))
+                    source_channel = marker.get("source_channel")
+                    normalized = isinstance(channel, str) and channel.startswith("normalized_")
+                    if normalized or (
+                        isinstance(source_channel, str) and source_channel in REQUIRED
+                    ):
                         require(
-                            session == linked_event.session
-                            and marker.get("source_channel")
-                            == (
-                                "usdm_agg_trade"
-                                if linked_event.kind == "flow"
-                                else "usdm_book_ticker"
-                            ),
-                            "matching online LOCAL normalization witness",
+                            isinstance(source_channel, str) and source_channel in NORMALIZED,
+                            "known LOCAL normalization source channel",
                         )
-                        released = replace(
-                            linked_event, available_ns=high, witness=f"{lane}:{ordinal}"
+                        linked = marker.get("raw_message_ordinal")
+                        require(
+                            type(linked) is int and 0 < linked < ordinal,
+                            "required LOCAL witness has a prior raw ordinal",
                         )
-                        streams.emit(serialized, asdict(released))
+                        assert isinstance(linked, int)
+                        link = raw_links.pop(linked, None)
+                        require(link is not None, "unknown or repeated LOCAL raw witness ordinal")
+                        assert link is not None
+                        require(
+                            session == link.session
+                            and product == link.product
+                            and source_channel == link.channel
+                            and channel == NORMALIZED[link.channel]
+                            and frame == "marker",
+                            "matching online LOCAL normalization witness identity",
+                        )
+                        pending_bytes -= link.budget_bytes
+                        counts[f"binance:linked_{link.disposition}"] += 1
+                        if link.event is not None:
+                            released = replace(
+                                link.event, available_ns=high, witness=f"{lane}:{ordinal}"
+                            )
+                            streams.emit(serialized, asdict(released))
                         continue
-                    if "source_channel" in marker:
-                        continue  # Excluded/duplicate raw records have no pending event.
+                # Check required raw WS clocks even if a duplicate has no new event.
+                if direction == "inbound" and (lane == "hyperliquid" or channel in REQUIRED):
+                    require(mono >= clocks.get(session, 0), "required WS session receipt backstep")
+                    clocks[session] = mono
                 event = decoder.decode(row)
+                if lane == "binance" and direction == "inbound" and channel in NORMALIZED:
+                    disposition = (
+                        "required"
+                        if event is not None
+                        else ("duplicate" if channel in REQUIRED else "excluded")
+                    )
+                    # Conservative fixed overhead plus encoded state bounds both
+                    # unresolved identities and event payloads without a history set.
+                    budget = 4096 + len(session) + len(product) + len(channel)
+                    if event is not None:
+                        budget += 2 * len(json.dumps(text(asdict(event))))
+                    raw_links[ordinal] = RawLink(
+                        session, product, channel, event, disposition, budget
+                    )
+                    pending_bytes += budget
+                    require(pending_bytes <= MAX_PENDING, "bounded unresolved online linkage")
                 if lane == "hyperliquid" and direction == "inbound":
                     # Even pong/ACK/context is a genuine later receiver-progress witness.
                     old = pending.pop(session, None)
@@ -562,19 +619,21 @@ def project(index: dict[str, Any], output: PrivateOutput) -> Projection:
                 streams.emit(raw_files[key], asdict(event))
                 if event.kind in ("flow", "bn_book", "hl_book"):
                     bounds.setdefault(event.kind, [mono, mono])[1] = mono
-                if lane == "binance" and direction == "inbound":
-                    pending[ordinal] = event
-                    pending_bytes += len(json.dumps(text(asdict(event))))
-                elif lane == "hyperliquid" and direction == "inbound":
+                if lane == "hyperliquid" and direction == "inbound":
                     pending[session] = event
                     pending_bytes += len(json.dumps(text(asdict(event))))
-                else:
+                elif direction != "inbound":
                     streams.emit(
                         serialized,
                         asdict(replace(event, available_ns=high, witness="physical-control")),
                     )
                 require(pending_bytes <= MAX_PENDING, "bounded unresolved online linkage")
-            counts[f"{lane}:unwitnessed_tail_events"] = len(pending)
+            counts[f"{lane}:unwitnessed_tail_events"] = len(pending) + sum(
+                link.event is not None for link in raw_links.values()
+            )
+            counts[f"{lane}:unwitnessed_excluded_or_duplicate_links"] = sum(
+                link.event is None for link in raw_links.values()
+            )
             for ref in capture["metadata"]:
                 read_record(ref)
         require(set(bounds) == {"flow", "bn_book", "hl_book"}, "required native economic streams")

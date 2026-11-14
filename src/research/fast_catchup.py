@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import statistics
 from collections import Counter, deque
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, replace
 from decimal import Decimal, localcontext
-from itertools import groupby
+from itertools import groupby, islice
 from typing import Any, Literal
 
 from hyperliquid_bot.paper_engine.execution import (
@@ -39,6 +40,7 @@ STOP = D("-0.05")
 BUFFER = D("0.0005")
 CAP = D(100)
 INITIAL = D(10_000)
+MAX_EQUAL_TIME_EVENTS = 100_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,6 +214,19 @@ class Liquidity:
         return fills
 
 
+def batch_binding(events: list[Event]) -> dict[str, Any]:
+    """Bind rejected groups without a potentially multi-megabyte audit line."""
+    digest = hashlib.sha256()
+    for event in events:
+        digest.update(event.identity.encode() + b"\0")
+    return {
+        "count": len(events),
+        "ordered_source_ids_sha256": digest.hexdigest(),
+        "first_source": events[0].identity if events else None,
+        "last_source": events[-1].identity if events else None,
+    }
+
+
 class Replay:
     """Own a single deterministic modeled book and every partial-exit obligation."""
 
@@ -231,6 +246,7 @@ class Replay:
         self.episode: Episode | None = None
         self.pending: Intent | None = None
         self.book: Event | None = None
+        self.hl_blocked = False
         self.bn: Event | None = None
         self.liquidity = Liquidity()
         self.flow: deque[tuple[int, Decimal]] = deque()
@@ -251,6 +267,7 @@ class Replay:
         self.version = 0
         self.episodes: list[dict[str, Any]] = []
         self.failed: str | None = None
+        self.fatal_run_error = False
         self.key = PaperPositionKey(
             "PAPER", "fast-catchup-C100", "hyperliquid", "BTC-PERP", "cross-venue-catchup-v1"
         )
@@ -278,10 +295,13 @@ class Replay:
             and -1000 <= (self.offset + now) // 1_000_000 - event.native_ms <= 2000
         )
 
+    def book_ready(self, now: int) -> bool:
+        return not self.hl_blocked and self.fresh(self.book, now)
+
     def equity(self) -> Decimal | None:
         if self.state.position_quantity == 0:
             return self.state.cash_usdc
-        if self.book is None or self.book.mid is None or not self.fresh(self.book, self.now):
+        if self.book is None or self.book.mid is None or not self.book_ready(self.now):
             return None
         return self.state.cash_usdc + self.state.position_quantity * self.book.mid
 
@@ -363,7 +383,7 @@ class Replay:
         if (
             self.now - self.first_ns < 305 * SECOND
             or not self.fresh(self.bn, self.now)
-            or not self.fresh(self.book, self.now)
+            or not self.book_ready(self.now)
         ):
             return None
         values = [v for t, v in self.basis if self.now - 305 * SECOND < t <= self.now - 5 * SECOND]
@@ -457,7 +477,7 @@ class Replay:
             self.basis.popleft()
         # Append only today's genuinely available pair; never fill missing past samples.
         if (
-            self.fresh(self.book, now)
+            self.book_ready(now)
             and self.fresh(self.bn, now)
             and self.book is not None
             and self.bn is not None
@@ -471,7 +491,7 @@ class Replay:
         self.mark()
         if (
             self.risk_halt_now
-            or not self.fresh(self.book, now)
+            or not self.book_ready(now)
             or self.book is None
             or self.book.mid is None
         ):
@@ -522,7 +542,7 @@ class Replay:
             self.record("entry_nonfill", reason="deadline", intent=asdict(self.pending))
             self.pending = None
         if self.episode and self.pending is None:
-            if not self.fresh(self.book, now):
+            if not self.book_ready(now):
                 self.exit("stale_guard")
             elif now >= self.episode.entry_ns + 60 * SECOND:
                 self.exit("time")
@@ -657,6 +677,9 @@ class Replay:
     def exit_checks(self) -> None:
         if self.episode is None or self.pending is not None or self.book is None:
             return
+        if not self.book_ready(self.now):
+            self.exit("stale_guard")
+            return
         self.mark()
         if self.risk_halt_now:
             self.exit("risk_halt")
@@ -700,20 +723,47 @@ class Replay:
             self.exit("gap_closed")
 
     def observe(self, events: list[Event]) -> None:
+        # Safety is atomic over the entire equal-time group. Cross-lane tie order
+        # cannot fill an entry before a reset that is already known at this time.
+        self.counts["released_events"] += len(events)
+        sessions = dict(self.sessions)
+        boundary = False
         for event in events:
-            self.counts["released_events"] += 1
             logical = "bn_flow" if event.kind == "flow" else event.kind
-            old = self.sessions.get(logical)
-            if event.kind == "reset" or (old is not None and old != event.session):
-                require(self.episode is None, "unknown held session/source gap")
+            old = sessions.get(logical)
+            boundary |= event.kind == "reset" or (old is not None and old != event.session)
+            sessions[logical] = event.session
+        if boundary:
+            require(self.episode is None, "unknown held session/source gap")
+            self.pending = None
+            self.flow.clear()
+            self.basis.clear()
+            self.book = self.bn = None
+            self.hl_blocked = False
+            self.sessions.clear()
+            self.liquidity = Liquidity()
+            self.first_ns = self.now
+            self.counts["source_resets"] += 1
+            self.record("source_boundary", rejected_batch=batch_binding(events))
+            return  # None of a boundary's simultaneous observations is entry/fill eligible.
+        invalid = [e for e in events if e.kind == "hl_book" and not self.fresh(e, self.now)]
+        if invalid:
+            self.hl_blocked = True
+            self.counts["native_stale_hl_books"] += len(invalid)
+            self.record(
+                "unqualified_hl_batch",
+                rejected_sources=batch_binding(invalid),
+                last_valid_source=self.book.identity if self.book else None,
+            )
+            if self.episode is not None:
+                self.exit(
+                    "stale_guard"
+                )  # Anchor only to the previous valid quote, never this price.
+            else:
                 self.pending = None
-                self.flow.clear()
-                self.basis.clear()
-                self.book = self.bn = None
-                self.liquidity = Liquidity()
-                self.first_ns = self.now
-                self.counts["source_resets"] += 1
-            self.sessions[logical] = event.session
+            return
+        self.sessions = sessions
+        for event in events:
             if event.kind == "flow":
                 if 0 <= self.now - event.raw_ns < 5 * SECOND:
                     self.flow.append((event.raw_ns, event.signed_notional))
@@ -722,6 +772,7 @@ class Replay:
             elif event.kind == "bn_book":
                 self.bn = event
             elif event.kind == "hl_book":
+                self.hl_blocked = False
                 self.book = event
                 self.liquidity.update(event)
                 self.mark()
@@ -736,8 +787,8 @@ class Replay:
             with localcontext() as context:
                 context.prec = 50
                 for now, group in groupby(events, key=lambda e: e.available_ns):
-                    batch = list(group)
-                    require(len(batch) <= 100_000, "bounded equal-time batch")
+                    batch = list(islice(group, MAX_EQUAL_TIME_EVENTS + 1))
+                    require(len(batch) <= MAX_EQUAL_TIME_EVENTS, "bounded equal-time batch")
                     if now < self.start:
                         continue
                     if now > self.end:
@@ -755,11 +806,13 @@ class Replay:
                     self.episode is None and self.state.position_quantity == 0,
                     "unknown residual exposure at source end",
                 )
-        except HarnessError as error:
-            self.failed = str(error)
+        except (HarnessError, OSError, ValueError, ArithmeticError) as error:
+            self.failed = f"{type(error).__name__}: {error}"
+            self.fatal_run_error = not isinstance(error, HarnessError)
             self.record(
                 "failure",
                 reason=self.failed,
+                fatal_run_error=self.fatal_run_error,
                 remaining_position=self.state.position_quantity,
                 pending=asdict(self.pending) if self.pending else None,
                 state=asdict(self.state),
@@ -772,11 +825,14 @@ class Replay:
             streak = streak + 1 if episode["net_pnl"] < 0 else 0
             maximum_streak = max(maximum_streak, streak)
         return {
-            "status": "FAILED_NULLACCOUNT" if self.failed else "COMPLETE_CONDITIONAL_RESEARCH",
+            "status": "FAILED_NULLACCOUNT"
+            if self.failed is not None
+            else "COMPLETE_CONDITIONAL_RESEARCH",
             "failure": self.failed,
+            "fatal_run_error": self.fatal_run_error,
             "initial_equity": INITIAL,
-            "final_equity": None if self.failed else self.state.cash_usdc,
-            "net_return": None if self.failed else self.state.cash_usdc / INITIAL - 1,
+            "final_equity": None if self.failed is not None else self.state.cash_usdc,
+            "net_return": None if self.failed is not None else self.state.cash_usdc / INITIAL - 1,
             "last_observed_state": asdict(self.state),
             "sampled_quote_drawdown": self.max_drawdown,
             "counts": dict(self.counts),

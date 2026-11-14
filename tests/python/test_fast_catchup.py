@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from research import fast_catchup as model
 from research.fast_catchup import (
     CAP,
     COSTS,
@@ -306,3 +307,151 @@ def test_funding_settlement_with_owned_position_fails_without_zero_imputation() 
     assert result["status"] == "FAILED_NULLACCOUNT"
     assert "funding" in result["failure"]
     assert result["remaining_quantity"] != 0
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("boundary", ["reset", "session"])
+@pytest.mark.parametrize("owned", [False, True])
+def test_entire_equal_time_safety_batch_precedes_any_fill(
+    reverse: bool,
+    boundary: str,
+    owned: bool,
+) -> None:
+    replay, _ = harness()
+    replay.pending = entry()
+    if owned:
+        deliver(replay, book(SECOND))
+        replay.start = replay.now
+    at = 2 * SECOND if owned else SECOND
+    before = asdict(replay.state)
+    observed = book(at)
+    if boundary == "reset":
+        unsafe = replace(book(at, source="binance"), kind="reset", reason="gap")
+    else:
+        replay.sessions["bn_book"] = "old"
+        unsafe = book(at, source="binance", session="new")
+    batch = [unsafe, observed] if reverse else [observed, unsafe]
+    result = replay.run(batch)
+    assert result["status"] == ("FAILED_NULLACCOUNT" if owned else "COMPLETE_CONDITIONAL_RESEARCH")
+    assert result["last_observed_state"] == before
+    if not owned:
+        assert replay.pending is None and replay.book is None
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_multiple_sessions_in_same_first_batch_are_a_boundary_before_fills(reverse: bool) -> None:
+    replay, _ = harness()
+    replay.pending = entry()
+    events = [book(SECOND, session="old"), book(SECOND, session="new")]
+    replay.advance(SECOND)
+    replay.observe(events[::-1] if reverse else events)
+    assert replay.pending is None and replay.state.position_quantity == 0
+    assert replay.counts["source_resets"] == 1
+
+
+@pytest.mark.parametrize("when", [0, 2 * SECOND, 2000 * SECOND])
+def test_group_collection_stops_at_cap_plus_one_even_outside_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+    when: int,
+) -> None:
+    monkeypatch.setattr(model, "MAX_EQUAL_TIME_EVENTS", 7)
+    replay, _ = harness()
+    replay.pending = entry()
+    deliver(replay, book(SECOND))
+    replay.start = replay.now
+    before = asdict(replay.state)
+    consumed = 0
+
+    def oversized() -> Any:
+        nonlocal consumed
+        for _ in range(10000):
+            consumed += 1
+            yield book(when)
+
+    result = replay.run(oversized())
+    assert consumed == 8
+    assert result["status"] == "FAILED_NULLACCOUNT" and "equal-time" in result["failure"]
+    assert result["last_observed_state"] == before
+
+
+@pytest.mark.parametrize("side", [-1, 1])
+@pytest.mark.parametrize("would_trigger", ["target", "stop"])
+def test_native_stale_quote_cannot_supply_close_roi_mark_or_exit_band(
+    side: int,
+    would_trigger: str,
+) -> None:
+    replay, rows = harness()
+    replay.pending = entry(side=side)
+    deliver(replay, book(SECOND))
+    valid = replay.book
+    before = asdict(replay.state)
+    baseline_marks = len([row for row in rows if row["kind"] == "equity"])
+    direction = side if would_trigger == "target" else -side
+    invalid = book(2 * SECOND, mid="110000" if direction == 1 else "90000")
+    invalid = replace(invalid, native_ms=invalid.native_ms - 3000, identity="stale-native")
+    deliver(replay, invalid)
+    assert replay.book is valid and replay.hl_blocked
+    assert replay.pending is not None and replay.pending.reason == "stale_guard"
+    assert valid is not None and replay.pending.decision_source == valid.identity
+    assert asdict(replay.state) == before and replay.equity() is None
+    assert len([row for row in rows if row["kind"] == "equity"]) == baseline_marks
+    assert replay.episode is not None
+    deliver(replay, book(3 * SECOND))
+    assert not replay.hl_blocked and replay.state.position_quantity == 0
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_stale_observation_blocks_whole_tied_batch_and_cached_eligibility(reverse: bool) -> None:
+    replay, _ = harness()
+    deliver(replay, book(0))
+    replay.pending = entry()
+    valid = book(SECOND)
+    stale = replace(valid, native_ms=valid.native_ms - 3000, identity="stale")
+    replay.advance(SECOND)
+    replay.observe([valid, stale] if reverse else [stale, valid])
+    assert replay.state.position_quantity == 0 and replay.pending is None
+    assert not replay.book_ready(SECOND) and replay.reference() is None
+    deliver(replay, book(SECOND + 1))
+    assert replay.book_ready(SECOND + 1)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        OSError("synthetic input read"),
+        ZeroDivisionError("synthetic arithmetic"),
+        OSError(),
+        ArithmeticError(),
+    ],
+)
+def test_input_or_arithmetic_failure_keeps_owned_state_and_terminal_audit(error: Exception) -> None:
+    replay, rows = harness()
+    replay.pending = entry()
+
+    def broken() -> Any:
+        yield book(SECOND)
+        yield book(SECOND + 1)
+        raise error
+
+    result = replay.run(broken())
+    assert result["status"] == "FAILED_NULLACCOUNT" and result["fatal_run_error"]
+    assert result["remaining_quantity"] != 0 and result["net_return"] is None
+    assert result["last_observed_state"]["fees_usdc"] > 0
+    assert rows[-1]["kind"] == "failure" and str(error) in rows[-1]["reason"]
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_source_break_precedes_stale_price_guard_and_preserves_original_owner(
+    reverse: bool,
+) -> None:
+    replay, _ = harness()
+    replay.pending = entry()
+    deliver(replay, book(SECOND))
+    replay.start = replay.now
+    before = asdict(replay.state)
+    stale = book(2 * SECOND, mid="110000")
+    stale = replace(stale, native_ms=stale.native_ms - 3000)
+    reset = replace(book(2 * SECOND, source="binance"), kind="reset", reason="gap")
+    result = replay.run([stale, reset] if reverse else [reset, stale])
+    assert result["status"] == "FAILED_NULLACCOUNT" and "session/source gap" in result["failure"]
+    assert result["last_observed_state"] == before and replay.pending is None

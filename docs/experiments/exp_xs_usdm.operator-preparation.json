@@ -1,0 +1,140 @@
+{
+  "bounded_official_source_probe": {
+    "API_records_in_bounded_window": 2,
+    "API_records_within_60s_of_inferred_04UTC": 0,
+    "GET_requests": 3,
+    "all_HTTP_status": 200,
+    "archive_interval_labels_hours": [
+      4
+    ],
+    "conclusion": "No verified replacement from the two queried official channels. Historical cause remains unknown; no zero amount or missed actual payment is inferred.",
+    "current_monthly_zip_identical_to_retained": true,
+    "date": "2026-06-24",
+    "funding_history_documentation": "https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Get-Funding-Rate-History",
+    "monthly_zip_sha256": "c0cab727b872e2e28bc2e7aaa56b8c2e704d44e993db258933ba12a7e1d443bb",
+    "observed_bracketing_UTC": [
+      "2026-06-24T00:00:00.005Z",
+      "2026-06-24T08:00:00.005Z"
+    ],
+    "official_probe_report_sha256": "f1b05e34805f92e13bf531cf49c5b81237c1011229f0c633d4b9bd10f1543cfd",
+    "raw_converted_metadata_mismatches": 0,
+    "redirects": 0,
+    "retained_raw_timestamp_interval_pairs": 179,
+    "retained_source_diagnosis_sha256": "e3af153c44c0688ab09d78ddd4a9beec14442d3415cd3f5156d0a0753f26e664",
+    "retries": 0,
+    "symbol": "1000000BOBUSDT"
+  },
+  "date": "2026-10-31",
+  "deployment": false,
+  "engineering_resource_amendment_before_execution": {
+    "DuckDB_memory_setting": "2GB",
+    "diagnostic_parent_wall_seconds": 900,
+    "diagnostic_worker_CPU_seconds": 300,
+    "diagnostic_worker_wall_seconds": 360,
+    "panel_parent_wall_seconds": 1200,
+    "panel_worker_CPU_seconds": 600,
+    "panel_worker_wall_seconds": 600,
+    "process_AS_bytes": 8589934592,
+    "single_heavy_worker": true,
+    "spill_bytes": 0,
+    "statistical_time_row_cost_and_gate_contracts_changed": false
+  },
+  "executed_contract_head": "64a6c10ba88e08fa3c1d3cd73669393ab526d334",
+  "frozen_before_recovery_contract": "exp_xs_usdm.operator-inputs.json",
+  "funding_temporal_ledger": {
+    "independent_record_acceptance_sha256": "9874b585376eb920665de314bb4a99a1dfdd602ab653cf158da4261f90527971",
+    "all_fatal_records_internal": true,
+    "audited_funding_runs": 863,
+    "audited_symbols": 860,
+    "crypto_records": 398,
+    "fatal_records_by_date": {
+      "2025-07-10": 1,
+      "2025-07-23": 2,
+      "2025-12-11": 1,
+      "2026-01-20": 1,
+      "2026-06-24": 403,
+      "2026-07-02": 1,
+      "2026-07-15": 1,
+      "2026-07-21": 1,
+      "2026-07-22": 1,
+      "2026-07-23": 1
+    },
+    "fatal_run_day_records": 413,
+    "fatal_unique_symbol_days": 413,
+    "fatal_unique_symbols": 406,
+    "following_boundary_file_count": 702,
+    "interpretation": "Pinned native-inferred funding-run failures, not proof of actual historical settlement schedules or missing paid amounts. No outside-run reach/shape evaluation.",
+    "ledger_complete": true,
+    "metadata_rows_processed": 3365025,
+    "native_inferred_due_occurrences": 441,
+    "noncrypto_records": 15,
+    "report_sha256": "06e5fe40860bdcda0e28500ce540ecb9a6044bf1ccc96f7cb900e3c681b3243b",
+    "result_sha256": "11bb82b7cfc2592b16e79395ca9e40d66735ecc893326551cbb18b96964101fa",
+    "status": "FUNDING_TEMPORAL_LEDGER_GAPS",
+    "wrapper_sha256": "c6c055ca7958792a7c6ca5dfea94e08b19c2ddf5e370c0a644f9ee1cc9c8aec8"
+  },
+  "nas_writes": false,
+  "native_integrity_audit": {
+    "date": "2026-06-24",
+    "diagnostic": "missing_funding_settlement",
+    "failed_stage": "CHECK_FUNDING_RUNS",
+    "preceding_stages_passed": [
+      "READ_BARS",
+      "CHECK_KLINE_RUNS",
+      "READ_SETTLEMENTS"
+    ],
+    "report_sha256": "b3282dd27d527954aab81fc308a82003a48b8fd151d7e6f0065dbfa6d82be736",
+    "status": "NATIVE_CHECKS_STOP",
+    "symbol": "1000000BOBUSDT",
+    "wrapper_sha256": "714a6415747f68672941031ba7531a24b5230a909a7b4ac2908bb7c7e38b83cc"
+  },
+  "original_archives_modified": false,
+  "panel_attempt": {
+    "automatic_retry": false,
+    "child_error_details_suppressed": true,
+    "name": "build-a",
+    "original_error_cause_not_captured": true,
+    "reservation_retained": true,
+    "status": "INCOMPLETE_NO_PANEL_LOCK_OR_SHAPE",
+    "subsequent_native_audit_established_funding_blocker": true,
+    "threads": 2,
+    "wrapper_sha256": "7c0b010513e63cce4998cd052301754c5cb1d7553eb79eeedc4df6373ab754d1"
+  },
+  "power_loss_durability_claimed": false,
+  "remaining_gates": [
+    "Resolve or qualify native funding coverage under a separately reviewed source/data contract; no invented rates or silent scope change.",
+    "Actual dual selected panel builds and original 1/2/8/32-thread byte checks.",
+    "Both matching locks and unchanged shape gates/remedies; measured placeholders.",
+    "Final sealed-input scoring recipe, independent final preregistration review and current-ready CI."
+  ],
+  "repair_after_funding_stop": false,
+  "research_ready": false,
+  "schema": "s4-operator-preparation-evidence-v1",
+  "scope": "Explicit operator no-ICP selection before strategy scoring; original source and full-323 STOP preserved.",
+  "selected_input_curation": {
+    "C_files_sha256": "df41c6914c765218fffda9be0480870f2a7a5f9c96e46672432a56718cf4fbed",
+    "C_manifest_sha256": "e9467146ff64f99ff7aef3b6961971ba8768442394f89d8a666d407a91bbd66d",
+    "ICP_selected_inputs": 0,
+    "curator_sha256": "4c97ce8070f94eb96c3005eb658ef8033036b48e465f9f213d2857432021cf8d",
+    "data_file_count": 84544,
+    "data_logical_bytes": 196706466,
+    "data_pairs": 42272,
+    "independent_acceptance_report_sha256": "1fa4cba2362c6acf210238754dd65705ad236d9e92557febd4b58740d826ad02",
+    "months_repaired": 102,
+    "native_days_added": 297,
+    "old_field_mismatches": 0,
+    "original_rows_preservation_proof": 2630,
+    "proof_control_sha256": {
+      "attempt.json": "2ae00af1aca4affa0c2cb99ff8ee29c7c020428d6a0e18ccc8297f61986cdb88",
+      "month-checks.json": "e1bef971063a25b896ae7e08489ab6226f6c359fee06c97a291f5184c982b853",
+      "verified-sources.json": "9c524fbadb6db19817e3849da81d170ac927772cf566ba8d0239d3d90d62ce28"
+    },
+    "staged_source_files_verified": 798,
+    "status": "PASS_INPUT_IDENTITY_ONLY",
+    "unaffected_pairs_sha_identical_to_original": 42170
+  },
+  "source_config_pin": "d1378756e25ba04a580061a304037290f1fc9538",
+  "status": "BLOCKED_NATIVE_FUNDING_INTEGRITY",
+  "strategy_or_holdout_returns_inspected": false,
+  "strategy_scoring": false
+}
